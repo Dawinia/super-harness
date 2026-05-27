@@ -11,6 +11,7 @@ Public surface:
 - WorkspaceContext — workspace info passed into check()
 - Determinism / SensorStatus — Literal aliases
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
