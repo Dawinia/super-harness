@@ -3,7 +3,10 @@ import click
 from super_harness.version import __version__
 
 
-@click.group(help="super-harness — CI-first cross-framework + cross-agent AI coding harness.")
+@click.group(
+    help="super-harness — CI-first cross-framework + cross-agent AI coding harness.",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
 @click.version_option(__version__, "--version", "-V")
 @click.option(
     "--workspace",
@@ -23,6 +26,12 @@ def main(
     verbose: int,
 ) -> None:
     """Root command group for super-harness."""
+    # Naming convention for ctx.obj keys:
+    #   - Keys use the SHORT CLI flag name (e.g. "json", "quiet", "workspace"), NOT the
+    #     Python param name (`json_output` was renamed only to avoid shadowing stdlib `json`).
+    #   - Subcommands must read `ctx.obj["json"]`, `ctx.obj["quiet"]`, etc. — never
+    #     `ctx.obj["json_output"]`. The Python param `json_output` is private to this function.
+    #   - If you add a new global flag in the future, store it under its CLI name in ctx.obj.
     ctx.ensure_object(dict)
     ctx.obj["workspace"] = workspace
     ctx.obj["json"] = json_output
