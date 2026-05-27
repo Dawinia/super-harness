@@ -13,9 +13,13 @@ def test_help_flag():
     result = CliRunner().invoke(main, ["--help"])
     assert result.exit_code == 0
     assert "super-harness" in result.output
+    assert "--workspace" in result.output       # actual option must appear
+    assert "--version" in result.output         # actual option must appear
 
 
 def test_help_short_flag():
     result = CliRunner().invoke(main, ["-h"])
     assert result.exit_code == 0
     assert "super-harness" in result.output
+    assert "--workspace" in result.output
+    assert "--version" in result.output

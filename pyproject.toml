@@ -47,7 +47,6 @@ dev = [
 
 [project.scripts]
 super-harness = "super_harness.cli:main"
-super-harness-daemon = "super_harness.daemon.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/super_harness"]
