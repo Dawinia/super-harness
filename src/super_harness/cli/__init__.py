@@ -10,7 +10,9 @@ import click
 
 from super_harness.cli.change import change_group
 from super_harness.cli.event import event_group
+from super_harness.cli.gate import gate_group
 from super_harness.cli.init import init_cmd
+from super_harness.cli.sensor import sensor_group
 from super_harness.cli.state import state_group
 from super_harness.cli.status import status_cmd
 from super_harness.version import __version__
@@ -62,3 +64,5 @@ main.add_command(event_group)
 main.add_command(init_cmd)
 main.add_command(change_group)
 main.add_command(status_cmd)
+main.add_command(sensor_group)
+main.add_command(gate_group)
