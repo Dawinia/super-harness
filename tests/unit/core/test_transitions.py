@@ -17,14 +17,26 @@ from super_harness.core.transitions import INVALID, compute_target_state
         ("IMPLEMENTATION_IN_PROGRESS", "implementation_complete", "AWAITING_CODE_REVIEW"),
         ("AWAITING_CODE_REVIEW", "code_review_passed", "READY_TO_MERGE"),
         ("AWAITING_CODE_REVIEW", "code_review_failed", "CODE_REVIEW_REJECTED"),
-        ("CODE_REVIEW_REJECTED", "implementation_complete", "AWAITING_CODE_REVIEW"),
+        # === CODE_REVIEW_REJECTED fix-loop (C1 + C2 fixes) ===
+        # Per §3.4 implementation_complete is single-fire; user re-submits via
+        # code-reviewer re-run which emits new code_review_passed/failed (§3.7 line 438).
+        ("CODE_REVIEW_REJECTED", "code_review_passed", "READY_TO_MERGE"),
+        ("CODE_REVIEW_REJECTED", "code_review_failed", "CODE_REVIEW_REJECTED"),
+        ("CODE_REVIEW_REJECTED", "implementation_complete", INVALID),  # NOT a re-submit path
         ("READY_TO_MERGE", "merged", "MERGED"),
         ("MERGED", "l1_update_completed", "ARCHIVED"),
-        # === Restart / withdraw ===
-        ("IMPLEMENTATION_IN_PROGRESS", "implementation_restarted", "PLAN_APPROVED"),
-        ("IMPLEMENTATION_IN_PROGRESS", "implementation_invalidated", "IMPLEMENTATION_IN_PROGRESS"),
+        # === Withdraw ===
         ("AWAITING_CODE_REVIEW", "implementation_withdrawn", "READY_TO_MERGE"),
         ("READY_TO_MERGE", "implementation_withdrawn", "READY_TO_MERGE"),
+        # === implementation_restarted / implementation_invalidated as universal
+        # events (I1 fix) — `* → PLAN_APPROVED` / `* → IMPLEMENTATION_IN_PROGRESS`
+        # per §3.6 lines 373-374 (any non-terminal active state) ===
+        ("IMPLEMENTATION_IN_PROGRESS", "implementation_restarted", "PLAN_APPROVED"),
+        ("IMPLEMENTATION_IN_PROGRESS", "implementation_invalidated", "IMPLEMENTATION_IN_PROGRESS"),
+        ("PLAN_APPROVED", "implementation_restarted", "PLAN_APPROVED"),
+        ("AWAITING_CODE_REVIEW", "implementation_invalidated", "IMPLEMENTATION_IN_PROGRESS"),
+        ("READY_TO_MERGE", "implementation_restarted", "PLAN_APPROVED"),
+        ("CODE_REVIEW_REJECTED", "implementation_restarted", "PLAN_APPROVED"),
         # === Universal re-declarations ===
         ("PLAN_APPROVED", "intent_redeclared", "INTENT_DECLARED"),
         ("IMPLEMENTATION_IN_PROGRESS", "plan_redeclared", "INTENT_DECLARED"),
@@ -52,6 +64,11 @@ from super_harness.core.transitions import INVALID, compute_target_state
         ("ARCHIVED", "plan_ready", INVALID),
         ("ABANDONED", "intent_declared", INVALID),
         ("ABANDONED", "plan_ready", INVALID),
+        # Terminal early-return uses TERMINAL_STATES — even universal events blocked (M2 fix)
+        ("ARCHIVED", "implementation_restarted", INVALID),
+        ("ABANDONED", "implementation_invalidated", INVALID),
+        ("ARCHIVED", "intent_redeclared", INVALID),
+        ("ABANDONED", "intent_abandoned", INVALID),
         (None, "plan_ready", INVALID),  # first event must be intent_declared
         (None, "implementation_complete", INVALID),
         ("PLAN_APPROVED", "code_review_passed", INVALID),  # skip review

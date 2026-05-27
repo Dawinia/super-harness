@@ -7,6 +7,8 @@ ChangeState is the **per-change** record inside state.yaml's `changes` map.
 from dataclasses import dataclass, field
 from typing import Any
 
+from super_harness.core.events import Framework
+
 # 11 states per lifecycle-event-model §3.7. Order matches the spec's listing.
 STATES: tuple[str, ...] = (
     "INTENT_DECLARED",
@@ -48,7 +50,7 @@ class ChangeState:
     """
     change_id: str
     current_state: str = "INTENT_DECLARED"
-    framework: str = "plain"
+    framework: Framework = "plain"
     last_event_id: str = ""
     last_event_type: str = ""
     last_event_at: str = ""
