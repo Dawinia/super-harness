@@ -37,3 +37,14 @@ def main(
     ctx.obj["json"] = json_output
     ctx.obj["quiet"] = quiet
     ctx.obj["verbose"] = verbose
+
+
+# Subgroup registration. Imports are placed at module bottom (not at top) to
+# avoid a circular import: state.py and event.py both `from super_harness.cli
+# import main` would re-enter this module before `main` is defined. Loading
+# them after `main` exists keeps the dependency one-directional.
+from super_harness.cli.event import event_group  # noqa: E402
+from super_harness.cli.state import state_group  # noqa: E402
+
+main.add_command(state_group)
+main.add_command(event_group)
