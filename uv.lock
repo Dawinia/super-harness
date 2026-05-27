@@ -448,7 +448,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "click", specifier = ">=8.2" },
+    { name = "click", specifier = ">=8.4" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "pyfakefs", marker = "extra == 'dev'", specifier = ">=5.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
