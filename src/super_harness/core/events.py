@@ -75,7 +75,9 @@ class Event:
 
     Fields:
         event_id: ULID-prefixed unique id (see ulid.new_event_id)
-        type: one of KNOWN_EVENT_TYPES (validated at parse time)
+        type: a known event type (CORE or EXTENSION). parse_event_line does NOT
+            validate this against KNOWN_EVENT_TYPES — unknown types are accepted
+            at parse time per lifecycle §3.8.1 layered-validation (reducer skips them).
         change_id: slug identifying the change this event belongs to
         timestamp: ISO 8601 UTC (e.g., "2026-05-27T10:00:00Z")
         actor: who emitted (human/agent/adapter/sensor/ci + identifier)
@@ -88,13 +90,19 @@ class Event:
     change_id: str
     timestamp: str
     actor: Actor
-    framework: str
+    framework: Framework
     framework_state: dict[str, Any] | None = None
     payload: dict[str, Any] = field(default_factory=dict)
 
 
 def parse_event_line(line: str) -> Event:
     """Parse one JSON line from events.jsonl into an Event.
+
+    This validator checks SHAPE (required fields present + actor.type / framework in
+    enum) but NOT SEMANTICS (payload schema per event type / timestamp ISO format /
+    event.type ∈ KNOWN_EVENT_TYPES). Semantic checks belong in:
+    - emit_validation (Task 1.5) for emit-time strict rejection
+    - reducer (Task 1.6) for reducer-time tolerant warn + skip
 
     Strict at emit-time; reducer-time callers should catch EventSchemaError and
     `log.warning + skip` per layered-validation rules (§3.8.1).
@@ -135,7 +143,7 @@ def parse_event_line(line: str) -> Event:
         actor=Actor(type=actor_raw["type"], identifier=actor_raw["identifier"]),
         framework=obj["framework"],
         framework_state=obj.get("framework_state"),
-        payload=obj.get("payload", {}),
+        payload=obj.get("payload") or {},
     )
 
 

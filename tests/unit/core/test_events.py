@@ -123,6 +123,21 @@ def test_event_is_frozen():
         ev.type = "other"  # type: ignore[misc]
 
 
+def test_parse_handles_null_payload():
+    """JSON line with explicit `"payload": null` should parse to empty dict."""
+    payload_json = {
+        "event_id": "ev_null",
+        "type": "intent_declared",
+        "change_id": "c1",
+        "timestamp": "2026-05-27T10:00:00Z",
+        "actor": {"type": "human", "identifier": "alice"},
+        "framework": "plain",
+        "payload": None,
+    }
+    ev = parse_event_line(json.dumps(payload_json))
+    assert ev.payload == {}
+
+
 def test_serialize_compact_no_spaces():
     """events.jsonl format §2 requires compact one-line JSON."""
     ev = Event(
