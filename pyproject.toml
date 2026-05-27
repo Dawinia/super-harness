@@ -32,9 +32,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/dawinialo/super-harness"
-Repository = "https://github.com/dawinialo/super-harness"
-Issues = "https://github.com/dawinialo/super-harness/issues"
+Homepage = "https://github.com/Dawinia/super-harness"
+Repository = "https://github.com/Dawinia/super-harness"
+Issues = "https://github.com/Dawinia/super-harness/issues"
 
 [project.optional-dependencies]
 dev = [
