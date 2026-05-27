@@ -1,6 +1,7 @@
 import click
 
 from super_harness.cli.event import event_group
+from super_harness.cli.init import init_cmd
 from super_harness.cli.state import state_group
 from super_harness.version import __version__
 
@@ -48,3 +49,4 @@ def main(
 # no circular-import risk.
 main.add_command(state_group)
 main.add_command(event_group)
+main.add_command(init_cmd)
