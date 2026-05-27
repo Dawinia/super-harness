@@ -37,8 +37,13 @@ from super_harness.core.paths import (
 from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.reducer import derive_state
 from super_harness.core.slug import SlugError, validate_slug
+from super_harness.core.state import STATES
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
+
+# TODO(post-v0.1): distinguish CLI invocations by user (getpass.getuser()) or
+# session id for multi-operator audit trails. v0.1 = single "cli" identifier
+# is used for every `Actor(type="human", identifier="cli")` below.
 
 
 def _utc_now_iso() -> str:
@@ -106,6 +111,17 @@ def start(ctx: click.Context, slug: str, description: str, framework: str) -> No
 @click.pass_context
 def abandon(ctx: click.Context, slug: str, reason: str) -> None:
     """Abandon an existing change by emitting `intent_abandoned`."""
+    # Symmetric with `change start`: validate slug BEFORE find_harness_root so
+    # users get a fast, actionable error on a bad slug regardless of cwd, and
+    # don't fall through to the (confusing) lifecycle-state-rule error.
+    try:
+        validate_slug(slug)
+    except SlugError as e:
+        click.echo(
+            f"super-harness change abandon: {e}\n  Hint: see cli-reference#slug-rules",
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
@@ -132,7 +148,12 @@ def abandon(ctx: click.Context, slug: str, reason: str) -> None:
 
 
 @change_group.command("list")
-@click.option("--state", "state_filter", help="Show only changes in this state.")
+@click.option(
+    "--state",
+    "state_filter",
+    type=click.Choice(STATES),
+    help="Show only changes in this state (one of the 11 lifecycle states, uppercase).",
+)
 @click.option("--active", is_flag=True, help="Exclude ARCHIVED + ABANDONED.")
 @click.option("--archived", is_flag=True, help="Show only ARCHIVED.")
 @click.option("--abandoned", is_flag=True, help="Show only ABANDONED.")
@@ -145,11 +166,23 @@ def list_cmd(
     abandoned: bool,
 ) -> None:
     """List changes derived from events.jsonl with optional filtering."""
+    # `--active`, `--archived`, `--abandoned` partition the state space into
+    # disjoint slices; combining them never makes sense. Reject at parse time
+    # so users get an actionable error instead of an always-empty result.
+    if sum((active, archived, abandoned)) > 1:
+        click.echo(
+            "super-harness change list: --active, --archived, --abandoned are "
+            "mutually exclusive\n  Hint: pick one",
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
         click.echo(str(e), err=True)
         sys.exit(EXIT_NO_CONFIG)
+    # v0.1: always recompute from events.jsonl for read-after-write consistency.
+    # Phase 8 daemon hot path should consume state.yaml instead (O(1) vs O(N)).
     derived = derive_state(events_path(root))
     rows = []
     for _cid, cs in derived.items():
