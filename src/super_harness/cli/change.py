@@ -37,6 +37,7 @@ from typing import Any
 
 import click
 
+from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
 from super_harness.core.events import Actor, Event, EventSchemaError, parse_event_line
@@ -92,14 +93,21 @@ def start(ctx: click.Context, slug: str, description: str, framework: str) -> No
         validate_slug(slug)
     except SlugError as e:
         click.echo(
-            f"super-harness change start: {e}\n  Hint: see cli-reference#slug-rules",
+            format_error(
+                subcommand="change start",
+                message=str(e),
+                hint="see cli-reference#slug-rules",
+            ),
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
-        click.echo(str(e), err=True)
+        click.echo(
+            format_error(subcommand="change start", message=str(e)),
+            err=True,
+        )
         sys.exit(EXIT_NO_CONFIG)
     ev = Event(
         event_id=new_event_id(),
@@ -113,7 +121,10 @@ def start(ctx: click.Context, slug: str, description: str, framework: str) -> No
     try:
         EventWriter(events_path(root)).emit(ev)
     except EmitPreconditionError as e:
-        click.echo(f"super-harness change start: {e}", err=True)
+        click.echo(
+            format_error(subcommand="change start", message=str(e)),
+            err=True,
+        )
         sys.exit(EXIT_VALIDATION)
     # B-3 wiring (Task 1.9): keep state.yaml current after every emit so
     # downstream gate decisions don't read a lagged cache.
@@ -135,14 +146,21 @@ def abandon(ctx: click.Context, slug: str, reason: str) -> None:
         validate_slug(slug)
     except SlugError as e:
         click.echo(
-            f"super-harness change abandon: {e}\n  Hint: see cli-reference#slug-rules",
+            format_error(
+                subcommand="change abandon",
+                message=str(e),
+                hint="see cli-reference#slug-rules",
+            ),
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
-        click.echo(str(e), err=True)
+        click.echo(
+            format_error(subcommand="change abandon", message=str(e)),
+            err=True,
+        )
         sys.exit(EXIT_NO_CONFIG)
     ev = Event(
         event_id=new_event_id(),
@@ -156,7 +174,10 @@ def abandon(ctx: click.Context, slug: str, reason: str) -> None:
     try:
         EventWriter(events_path(root)).emit(ev)
     except EmitPreconditionError as e:
-        click.echo(f"super-harness change abandon: {e}", err=True)
+        click.echo(
+            format_error(subcommand="change abandon", message=str(e)),
+            err=True,
+        )
         sys.exit(EXIT_VALIDATION)
     # B-3 wiring (Task 1.9): same rationale as `change start`.
     refresh_state_after_emit(root)
@@ -188,15 +209,21 @@ def list_cmd(
     # so users get an actionable error instead of an always-empty result.
     if sum((active, archived, abandoned)) > 1:
         click.echo(
-            "super-harness change list: --active, --archived, --abandoned are "
-            "mutually exclusive\n  Hint: pick one",
+            format_error(
+                subcommand="change list",
+                message="--active, --archived, --abandoned are mutually exclusive",
+                hint="pick one",
+            ),
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
-        click.echo(str(e), err=True)
+        click.echo(
+            format_error(subcommand="change list", message=str(e)),
+            err=True,
+        )
         sys.exit(EXIT_NO_CONFIG)
     # v0.1: always recompute from events.jsonl for read-after-write consistency.
     # Phase 8 daemon hot path should consume state.yaml instead (O(1) vs O(N)).
@@ -352,20 +379,30 @@ def resume(ctx: click.Context, slug: str) -> None:
         validate_slug(slug)
     except SlugError as e:
         click.echo(
-            f"super-harness change resume: {e}\n  Hint: see cli-reference#slug-rules",
+            format_error(
+                subcommand="change resume",
+                message=str(e),
+                hint="see cli-reference#slug-rules",
+            ),
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
-        click.echo(str(e), err=True)
+        click.echo(
+            format_error(subcommand="change resume", message=str(e)),
+            err=True,
+        )
         sys.exit(EXIT_NO_CONFIG)
     derived = derive_state(events_path(root))
     if slug not in derived:
         click.echo(
-            f"super-harness change resume: unknown change {slug!r}\n"
-            "  Hint: run `super-harness change list` to see known slugs",
+            format_error(
+                subcommand="change resume",
+                message=f"unknown change {slug!r}",
+                hint="run `super-harness change list` to see known slugs",
+            ),
             err=True,
         )
         sys.exit(EXIT_VALIDATION)

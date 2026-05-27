@@ -12,6 +12,7 @@ from pathlib import Path
 
 import click
 
+from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK
 
 _TEMPLATES = files("super_harness.templates")
@@ -88,8 +89,11 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
     harness = root / ".harness"
     if harness.exists() and not force:
         click.echo(
-            f"super-harness init: .harness/ already exists at {harness}\n"
-            f"  Hint: pass --force to overwrite",
+            format_error(
+                subcommand="init",
+                message=f".harness/ already exists at {harness}",
+                hint="pass --force to overwrite",
+            ),
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
