@@ -11,10 +11,18 @@ Output modes:
   ``NAME / VERSION / SOURCE``. Plugin rows annotate the source with the
   yaml-declared path so contributors can grep their config.
 - JSON envelope (`--json` global flag): the standard 6-key envelope wrapping
-  ``{"sensors": [{"name", "version", "source", "path"?}, ...]}``.
+  ``{"sensors": [{"name", "version", "source", "path"}, ...]}`` — `path` is
+  emitted symmetrically for both built-in (always ``null``) and plugin
+  (always a string) rows so JSON consumers can rely on the key existing.
 
 If `.harness/sensors.yaml` is absent, only built-ins are listed (this is the
 expected default state in v0.1 before Phase 5/8/11/13 register their sensors).
+
+Error surfacing: when `.harness/sensors.yaml` exists, the strict loader
+(`load_sensors`) is invoked unconditionally so that yaml schema / plugin
+bugs surface to the user running `sensor list` with EXIT_VALIDATION rather
+than being silently swallowed and presenting a misleading "No sensors
+registered." line.
 """
 from __future__ import annotations
 
@@ -23,10 +31,10 @@ from pathlib import Path
 from typing import Any
 
 import click
-import yaml
 
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK
+from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
+from super_harness.core._registry import read_plugin_paths
 from super_harness.core.paths import (
     HarnessNotInitialized,
     find_harness_root,
@@ -51,7 +59,22 @@ def sensor_list(ctx: click.Context) -> None:
         sys.exit(EXIT_NO_CONFIG)
 
     yaml_path = sensors_yaml_path(root)
-    rows = _collect_sensor_rows(yaml_path)
+    try:
+        rows = _collect_sensor_rows(yaml_path)
+    except (
+        ValueError,
+        KeyError,
+        FileNotFoundError,
+        ImportError,
+        AttributeError,
+        TypeError,
+    ) as exc:
+        # Translate the documented exception surface of `core._registry`
+        # (see load_components docstring) to EXIT_VALIDATION. Without this,
+        # a malformed sensors.yaml would either print a stack trace or be
+        # silently swallowed — both UX regressions.
+        click.echo(f"super-harness sensor list: {exc}", err=True)
+        sys.exit(EXIT_VALIDATION)
 
     if ctx.obj.get("json"):
         click.echo(
@@ -68,12 +91,19 @@ def sensor_list(ctx: click.Context) -> None:
 
 
 def _collect_sensor_rows(yaml_path: Path) -> list[dict[str, Any]]:
-    """Build the (name, version, source[, path]) rows for every visible sensor.
+    """Build the (name, version, source, path) rows for every visible sensor.
 
     Builtins are read from the in-process registry (class attrs `name` /
-    `version`). Plugins are first instantiated via `load_sensors` so any
-    config error surfaces to the user running `list`, then the yaml is
-    re-parsed to map name → source path for the human/JSON display.
+    `version`). If `yaml_path` exists, `load_sensors` is invoked
+    unconditionally so that any yaml-shape or plugin error surfaces to the
+    caller (translated to EXIT_VALIDATION by the `list` command). After the
+    strict load succeeds, the yaml is re-parsed display-side via
+    `read_plugin_paths` to map plugin id → source path for the
+    human/JSON output.
+
+    The returned rows always include a `path` key (string for plugins,
+    `None` for built-ins) so downstream JSON consumers can treat the key
+    as required.
     """
     rows: list[dict[str, Any]] = []
 
@@ -82,55 +112,37 @@ def _collect_sensor_rows(yaml_path: Path) -> list[dict[str, Any]]:
         cls = get_builtin(name)
         if cls is None:  # registration race / removal between calls — defensive only
             continue
-        rows.append({"name": name, "version": cls.version, "source": "built-in"})
+        rows.append(
+            {"name": name, "version": cls.version, "source": "built-in", "path": None}
+        )
 
-    # Plugins: instantiate via the real loader (surfaces config errors here);
-    # then re-read the yaml just to extract the source path for display.
-    plugin_paths = _read_plugin_paths(yaml_path, top_key="sensors")
-    if plugin_paths:
-        for inst in load_sensors(yaml_path, builtin_only=False):
-            # Built-ins are also returned by load_sensors when listed by name
-            # in the yaml; skip the duplicate (already in `rows` from the
-            # _BUILTIN walk above).
-            if inst.name in {r["name"] for r in rows if r["source"] == "built-in"}:
+    if yaml_path.exists():
+        # Invoke strict loader unconditionally to surface yaml/plugin errors
+        # (malformed top key, plugin schema bugs, etc.). Display-side
+        # `read_plugin_paths` then maps plugin id → source path for the
+        # "path" column. Built-ins listed by name in the yaml are deduped
+        # against the rows already populated above.
+        instances = load_sensors(yaml_path, builtin_only=False)
+        plugin_paths = read_plugin_paths(yaml_path, top_key="sensors")
+        builtin_names = {r["name"] for r in rows}
+        for inst in instances:
+            if inst.name in builtin_names:
                 continue
             rows.append(
                 {
                     "name": inst.name,
                     "version": inst.version,
                     "source": "plugin",
-                    "path": plugin_paths.get(inst.name, ""),
+                    "path": plugin_paths.get(inst.name),
                 }
             )
     return rows
 
 
-def _read_plugin_paths(yaml_path: Path, *, top_key: str) -> dict[str, str]:
-    """Map plugin id → declared `path` from the yaml.
-
-    Returns an empty dict when the file is absent or the yaml has no plugin
-    (dict-shaped) entries. Schema validation lives in `core._registry`;
-    this is a display-only lookup so we keep it tolerant.
-    """
-    if not yaml_path.exists():
-        return {}
-    cfg = yaml.safe_load(yaml_path.read_text()) or {}
-    entries = cfg.get(top_key, []) or []
-    if not isinstance(entries, list):
-        return {}
-    paths: dict[str, str] = {}
-    for entry in entries:
-        if isinstance(entry, dict) and len(entry) == 1:
-            sid, spec = next(iter(entry.items()))
-            if isinstance(spec, dict) and isinstance(spec.get("path"), str):
-                paths[sid] = spec["path"]
-    return paths
-
-
 def _render_human_table(rows: list[dict[str, Any]], *, kind: str) -> None:
     """Print an aligned ``NAME / VERSION / SOURCE`` table; empty → hint line."""
     if not rows:
-        click.echo(f"No {kind} registered. (No built-ins and no .harness/{kind}.yaml.)")
+        click.echo(f"No {kind} registered.")
         return
     name_w = max(len("NAME"), max(len(r["name"]) for r in rows))
     ver_w = max(len("VERSION"), max(len(r["version"]) for r in rows))

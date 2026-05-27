@@ -14,7 +14,12 @@ from super_harness.gates import (
     GateResult,
 )
 from super_harness.gates import registry as gates_registry
-from super_harness.gates.registry import list_builtins, load_gates, register_builtin
+from super_harness.gates.registry import (
+    get_builtin,
+    list_builtins,
+    load_gates,
+    register_builtin,
+)
 
 
 class _StubGate(Gate):
@@ -145,6 +150,17 @@ def test_load_skips_disabled_plugin(
         rec.levelno == logging.INFO and "disabled-one" in rec.message
         for rec in caplog.records
     )
+
+
+def test_get_builtin_known_and_unknown() -> None:
+    """Direct coverage for `get_builtin` (I-3 review fix).
+
+    Previously only exercised indirectly via the Phase 3.5 CLI tests. The
+    `_StubGate` is registered as `stub-gate` by the autouse fixture above,
+    which already snapshot-copies `_BUILTIN`.
+    """
+    assert get_builtin("stub-gate") is _StubGate
+    assert get_builtin("definitely-not-registered") is None
 
 
 def test_list_builtins_returns_registered_names_sorted() -> None:

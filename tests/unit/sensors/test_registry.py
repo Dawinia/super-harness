@@ -14,7 +14,12 @@ from super_harness.sensors import (
     SensorResult,
 )
 from super_harness.sensors import registry as sensors_registry
-from super_harness.sensors.registry import list_builtins, load_sensors, register_builtin
+from super_harness.sensors.registry import (
+    get_builtin,
+    list_builtins,
+    load_sensors,
+    register_builtin,
+)
 
 
 class _Stub(Sensor):
@@ -280,6 +285,17 @@ def test_load_handles_empty_yaml_file(tmp_path: Path) -> None:
     yml = tmp_path / "sensors.yaml"
     yml.write_text("")
     assert load_sensors(yml) == []
+
+
+def test_get_builtin_known_and_unknown() -> None:
+    """Direct coverage for `get_builtin` (I-3 review fix).
+
+    Previously only exercised indirectly via the Phase 3.5 CLI tests. The
+    `_Stub` is registered as `stub-runner` by the autouse fixture above,
+    which already snapshot-copies `_BUILTIN`.
+    """
+    assert get_builtin("stub-runner") is _Stub
+    assert get_builtin("definitely-not-registered") is None
 
 
 def test_list_builtins_returns_registered_names_sorted() -> None:

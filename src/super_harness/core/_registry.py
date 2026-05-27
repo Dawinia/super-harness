@@ -37,7 +37,7 @@ from typing import ClassVar, Protocol, TypeVar, runtime_checkable
 
 import yaml
 
-__all__ = ["RegistryComponent", "load_components"]
+__all__ = ["RegistryComponent", "load_components", "read_plugin_paths"]
 
 log = logging.getLogger(__name__)
 
@@ -125,6 +125,40 @@ def load_components(
             )
 
     return components
+
+
+def read_plugin_paths(yaml_path: Path, *, top_key: str) -> dict[str, str]:
+    """Map plugin id → declared `path` from the yaml (display-only lookup).
+
+    Used by `super-harness sensor list` / `gate list` (Phase 3.5 CLI) to
+    annotate plugin rows with the yaml-declared source path. Schema
+    validation lives in `load_components`; this helper is intentionally
+    tolerant (returns `{}` for absent or malformed shapes) so it stays
+    safe to call from display code paths that have already invoked the
+    strict loader for error surfacing.
+
+    Args:
+        yaml_path: Path to the yaml file (e.g. `.harness/sensors.yaml`).
+            Missing files yield an empty dict.
+        top_key: Top-level yaml key (e.g. "sensors" or "gates").
+
+    Returns:
+        Mapping plugin-id → path string, populated only for entries that
+        match the canonical `{id: {path: <str>, ...}}` plugin shape.
+    """
+    if not yaml_path.exists():
+        return {}
+    cfg = yaml.safe_load(yaml_path.read_text()) or {}
+    entries = cfg.get(top_key, []) or []
+    if not isinstance(entries, list):
+        return {}
+    paths: dict[str, str] = {}
+    for entry in entries:
+        if isinstance(entry, dict) and len(entry) == 1:
+            sid, spec = next(iter(entry.items()))
+            if isinstance(spec, dict) and isinstance(spec.get("path"), str):
+                paths[sid] = spec["path"]
+    return paths
 
 
 def _load_builtin(name: str, builtin: dict[str, type[_T]], components: list[_T]) -> None:

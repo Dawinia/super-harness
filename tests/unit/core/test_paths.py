@@ -6,7 +6,9 @@ from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
     find_harness_root,
+    gates_yaml_path,
     lock_path,
+    sensors_yaml_path,
     state_path,
 )
 
@@ -33,3 +35,14 @@ def test_path_helpers(tmp_path: Path):
     assert events_path(tmp_path) == tmp_path / ".harness" / "events.jsonl"
     assert state_path(tmp_path) == tmp_path / ".harness" / "state.yaml"
     assert lock_path(tmp_path, "state") == tmp_path / ".harness" / ".state.lock"
+
+
+def test_sensors_and_gates_yaml_paths(tmp_path: Path):
+    """Direct coverage for the registry-config path helpers (I-3 review fix).
+
+    Prior to this test the helpers were only exercised indirectly via the
+    Phase 3.5 CLI tests; if Phase 5/8/11/13 change the signature we now get
+    a localized failure here rather than a cascade through the CLI suite.
+    """
+    assert sensors_yaml_path(tmp_path) == tmp_path / ".harness" / "sensors.yaml"
+    assert gates_yaml_path(tmp_path) == tmp_path / ".harness" / "gates.yaml"

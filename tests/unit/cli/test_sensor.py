@@ -19,7 +19,7 @@ import yaml
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK
+from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.sensors import ActivityType, Determinism, Sensor, SensorResult
 from super_harness.sensors import registry as sensors_registry
 from super_harness.sensors.registry import register_builtin
@@ -38,8 +38,15 @@ class _Stub(Sensor):
 
 @pytest.fixture
 def isolated_registry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Snapshot `_BUILTIN` so per-test registrations don't leak."""
-    monkeypatch.setattr(sensors_registry, "_BUILTIN", dict())
+    """Snapshot `_BUILTIN` so per-test registrations don't leak.
+
+    Uses a snapshot-copy of the current `_BUILTIN` rather than an empty
+    dict so that Phase 5/8/11/13 built-in registrations (which happen at
+    import time) remain visible to tests that expect them — keeping this
+    aligned with the registry-test fixture pattern in
+    `tests/unit/sensors/test_registry.py`.
+    """
+    monkeypatch.setattr(sensors_registry, "_BUILTIN", dict(sensors_registry._BUILTIN))
 
 
 @pytest.fixture
@@ -127,6 +134,10 @@ def test_list_json_output(harness_workspace: Path, isolated_registry: None) -> N
     assert "stub-runner" in by_name
     assert by_name["stub-runner"]["source"] == "built-in"
     assert by_name["stub-runner"]["version"] == "0.1.0"
+    # M-4 symmetry: built-ins emit `path: null` so JSON consumers can
+    # rely on the key existing on every row.
+    assert "path" in by_name["stub-runner"]
+    assert by_name["stub-runner"]["path"] is None
     assert "p-id" in by_name
     assert by_name["p-id"]["source"] == "plugin"
     # Plugin entries expose the path so users can grep their config.
@@ -154,3 +165,26 @@ def test_list_marks_builtin_vs_plugin(
     # Sources differentiated
     assert "built-in" in r.output
     assert "plugin" in r.output
+
+
+def test_list_reports_yaml_validation_errors(
+    harness_workspace: Path, isolated_registry: None
+) -> None:
+    """Malformed sensors.yaml → EXIT_VALIDATION with the registry's error.
+
+    Regression guard for the I-1 review fix: prior to invoking
+    `load_sensors` unconditionally when the yaml exists, malformed
+    shapes (e.g. `sensors: "not-a-list"`) silently produced
+    "No sensors registered." with exit code 0. The error must surface.
+    """
+    yml = harness_workspace / ".harness" / "sensors.yaml"
+    yml.write_text("sensors: not-a-list")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(harness_workspace), "sensor", "list"]
+    )
+    assert r.exit_code == EXIT_VALIDATION
+    # `core/_registry.py` raises `ValueError("... 'sensors' must be a list ...")`
+    # which is then prefixed by `super-harness sensor list: ` on stderr.
+    combined = r.output + (r.stderr or "")
+    assert "must be a list" in combined
+    assert "super-harness sensor list" in combined
