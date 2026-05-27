@@ -52,11 +52,16 @@ def _skeleton_files() -> dict[str, str]:
 
 
 @click.command("init")
-@click.option("--setup-github", is_flag=True, help="Also run GitHub repo setup.")
+@click.option(
+    "--setup-github",
+    is_flag=True,
+    help="(v0.1: no-op placeholder; Phase 11 wires gh CLI integration.)",
+)
 @click.option(
     "--framework",
     type=click.Choice(["openspec", "spec-kit", "superpowers", "plain"]),
-    help="Explicit framework; default = auto-detect.",
+    help="Explicit framework; default = auto-detect "
+    "(v0.1: no-op placeholder; Phase 4 wires adapter selection.)",
 )
 @click.option("--force", is_flag=True)
 @click.pass_context
@@ -66,19 +71,13 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
     v0.1: --json is not honored by init (bootstrap command produces no
     machine-parseable state).
     """
-    # I-2 fix: --setup-github and --framework are CLI-surface placeholders in
-    # v0.1. Same pattern as `state rebuild --verify` and `event log --tail`:
-    # accept the flag, mark it unread, and emit a stderr notice when the user
-    # actually passes it so the no-op is not silent. Phase 4 wires --framework
-    # detection; Phase 11 wires --setup-github.
+    # I-2 (round 2): --setup-github and --framework are CLI-surface placeholders
+    # in v0.1. Match Phase 1 convention (`state rebuild --verify`, `event log
+    # --tail`): accept the flag, mark it unread, and advertise the no-op via the
+    # --help caveat — NO runtime stderr notice (one convention, project-wide).
+    # Phase 4 wires --framework detection; Phase 11 wires --setup-github.
     _ = setup_github
     _ = framework
-    if setup_github or framework:
-        click.echo(
-            "super-harness init: --framework / --setup-github accepted but not "
-            "yet implemented in v0.1 (Phase 4 / Phase 11).",
-            err=True,
-        )
     root = Path(ctx.obj.get("workspace") or ".").resolve()
     harness = root / ".harness"
     if harness.exists() and not force:

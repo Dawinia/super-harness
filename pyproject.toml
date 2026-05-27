@@ -25,7 +25,7 @@ classifiers = [
   "Topic :: Software Development :: Quality Assurance",
 ]
 dependencies = [
-  "click>=8.1",
+  "click>=8.2",
   "PyYAML>=6.0",
   "python-ulid>=2.2",
   "watchdog>=4.0",

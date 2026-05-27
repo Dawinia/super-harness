@@ -58,3 +58,33 @@ def test_init_refuses_when_partial_harness_exists(tmp_path: Path):
     r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
     assert r.exit_code == 3
     assert not (tmp_path / ".harness" / "events.jsonl").exists()
+
+
+def test_init_accepts_noop_flags_silently(tmp_path: Path):
+    """v0.1: --setup-github / --framework are accepted but produce no runtime notice.
+
+    Help text carries the placeholder caveat (Phase 4 / Phase 11 will wire these).
+    Locks in the Phase 1 convention so a future regression that re-introduces
+    a runtime stderr notice would be caught.
+    """
+    runner = CliRunner()
+    r = runner.invoke(
+        main,
+        [
+            "--workspace",
+            str(tmp_path),
+            "init",
+            "--setup-github",
+            "--framework",
+            "openspec",
+        ],
+    )
+    assert r.exit_code == 0
+    assert "no-op" not in r.stderr.lower()
+    assert "not yet implemented" not in r.stderr.lower()
+
+
+def test_init_help_advertises_v01_caveat(tmp_path: Path):
+    r = CliRunner().invoke(main, ["init", "--help"])
+    assert r.exit_code == 0
+    assert "v0.1" in r.output  # caveat is in --help for at least one no-op flag
