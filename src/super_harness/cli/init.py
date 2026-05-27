@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import sys
 from importlib.resources import files
 from pathlib import Path
@@ -16,21 +18,37 @@ def _source_paths_default() -> str:
     return "source_paths:\n  include:\n    - '**/*'\n  exclude:\n    - 'docs/**'\n"
 
 
-_SKELETON_FILES = {
-    "policy.yaml": "# super-harness policy (see sensor-gate-architecture §2.4)\n",
-    "sensors.yaml": "sensors: []\n",
-    "gates.yaml": (
-        "gates:\n"
-        "  - pre-tool-use\n"
-        "  - pre-commit\n"
-        "  - pre-push\n"
-        "  - pr-open\n"
-        "  - pr-merge\n"
-    ),
-    "source-paths.yaml": _source_paths_default(),
-    "verification.yaml": _TEMPLATES.joinpath("verification_defaults.yaml").read_text(),
-    "conventions.md": "# Project conventions (referenced by reviewer sensors)\n",
-}
+def _verification_default() -> str:
+    # I-1 fix: load lazily (inside init_cmd, not at module import) so that
+    # `super-harness --help` and every unrelated subcommand still works even
+    # if the wheel install is corrupt. Asymmetric with _source_paths_default
+    # because we have NO sensible inline fallback for verification policy —
+    # the only honest behavior is to abort with an actionable message.
+    src = _TEMPLATES.joinpath("verification_defaults.yaml")
+    if not src.is_file():
+        raise click.ClickException(
+            "super-harness install is corrupt — bundled template "
+            "'verification_defaults.yaml' missing. Reinstall super-harness."
+        )
+    return src.read_text()
+
+
+def _skeleton_files() -> dict[str, str]:
+    return {
+        "policy.yaml": "# super-harness policy (see sensor-gate-architecture §2.4)\n",
+        "sensors.yaml": "sensors: []\n",
+        "gates.yaml": (
+            "gates:\n"
+            "  - pre-tool-use\n"
+            "  - pre-commit\n"
+            "  - pre-push\n"
+            "  - pr-open\n"
+            "  - pr-merge\n"
+        ),
+        "source-paths.yaml": _source_paths_default(),
+        "verification.yaml": _verification_default(),
+        "conventions.md": "# Project conventions (referenced by reviewer sensors)\n",
+    }
 
 
 @click.command("init")
@@ -43,13 +61,30 @@ _SKELETON_FILES = {
 @click.option("--force", is_flag=True)
 @click.pass_context
 def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, force: bool) -> None:
-    """Initialize a project for super-harness."""
+    """Initialize a project for super-harness.
+
+    v0.1: --json is not honored by init (bootstrap command produces no
+    machine-parseable state).
+    """
+    # I-2 fix: --setup-github and --framework are CLI-surface placeholders in
+    # v0.1. Same pattern as `state rebuild --verify` and `event log --tail`:
+    # accept the flag, mark it unread, and emit a stderr notice when the user
+    # actually passes it so the no-op is not silent. Phase 4 wires --framework
+    # detection; Phase 11 wires --setup-github.
+    _ = setup_github
+    _ = framework
+    if setup_github or framework:
+        click.echo(
+            "super-harness init: --framework / --setup-github accepted but not "
+            "yet implemented in v0.1 (Phase 4 / Phase 11).",
+            err=True,
+        )
     root = Path(ctx.obj.get("workspace") or ".").resolve()
     harness = root / ".harness"
     if harness.exists() and not force:
         click.echo(
             f"super-harness init: .harness/ already exists at {harness}\n"
-            f"  Hint: pass --force to overwrite\n",
+            f"  Hint: pass --force to overwrite",
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
@@ -66,7 +101,7 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
         "pending-reviews",
     ):
         (harness / subdir).mkdir(exist_ok=True)
-    for name, content in _SKELETON_FILES.items():
+    for name, content in _skeleton_files().items():
         path = harness / name
         if path.exists() and not force:
             continue
