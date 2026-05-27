@@ -22,7 +22,7 @@ def test_emit_implementation_complete_without_verification_rejected(tmp_path: Pa
     w.emit(_make_event("c1", "plan_approved"))
     w.emit(_make_event("c1", "implementation_started"))
     # implementation_complete without prior verification_passed: rejected
-    with pytest.raises(EmitPreconditionError):
+    with pytest.raises(EmitPreconditionError, match="requires prior"):
         w.emit(_make_event("c1", "implementation_complete"))
 
 

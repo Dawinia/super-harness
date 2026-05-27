@@ -132,3 +132,19 @@ def test_writer_skip_validation_kwarg_exists(tmp_path: Path):
     w = EventWriter(events_file)
     w.emit(_make_event("c1"), skip_validation=True)  # must not raise
     assert events_file.exists()
+
+
+def test_writer_skip_validation_bypasses_illegal(tmp_path: Path):
+    """skip_validation=True must bypass emit-time validation even for illegal events.
+
+    Pins the polarity of the `if not skip_validation` guard so a future
+    refactor that flips it would fail loudly. (Without this test, the kwarg
+    could be silently inverted and the existing happy-path test would still
+    pass.)
+    """
+    events_file = tmp_path / "events.jsonl"
+    w = EventWriter(events_file)
+    # plan_ready as first event is illegal (must follow intent_declared);
+    # default emit would raise EmitPreconditionError. skip_validation=True bypasses.
+    w.emit(_make_event("c1", "plan_ready"), skip_validation=True)
+    assert events_file.read_text().count("\n") == 1

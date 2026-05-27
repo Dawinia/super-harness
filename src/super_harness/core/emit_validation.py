@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from super_harness.core.events import Event, parse_event_line
+from super_harness.core.events import Event, EventSchemaError, parse_event_line
 from super_harness.core.transitions import INVALID, compute_target_state
 
 
@@ -54,7 +54,7 @@ def _current_state(events_file: Path, change_id: str) -> str | None:
             continue
         try:
             ev = parse_event_line(line)
-        except Exception:
+        except EventSchemaError:
             # Tolerant per §3.8.1 reducer-time: skip malformed lines on disk.
             continue
         if ev.change_id != change_id:
@@ -76,7 +76,7 @@ def _change_event_types(events_file: Path, change_id: str) -> set[str]:
             continue
         try:
             ev = parse_event_line(line)
-        except Exception:
+        except EventSchemaError:
             continue
         if ev.change_id == change_id:
             seen.add(ev.type)
