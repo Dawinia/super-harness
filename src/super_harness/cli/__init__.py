@@ -1,5 +1,7 @@
 import click
 
+from super_harness.cli.event import event_group
+from super_harness.cli.state import state_group
 from super_harness.version import __version__
 
 
@@ -37,3 +39,12 @@ def main(
     ctx.obj["json"] = json_output
     ctx.obj["quiet"] = quiet
     ctx.obj["verbose"] = verbose
+
+
+# Subgroup registration is at module bottom because it must reference `main`
+# after its definition. The subgroup *imports* themselves are top-of-file —
+# state.py / event.py only depend on `super_harness.cli.exit_codes` and
+# `super_harness.cli.output`, never on `super_harness.cli` itself, so there's
+# no circular-import risk.
+main.add_command(state_group)
+main.add_command(event_group)
