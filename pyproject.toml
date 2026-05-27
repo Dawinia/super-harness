@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "super-harness"
+version = "0.1.0"
+description = "CI-first cross-framework + cross-agent AI coding harness"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "super-harness contributors" }]
+keywords = ["ai", "agent", "coding-agent", "ci", "claude-code", "openspec"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Quality Assurance",
+]
+dependencies = [
+  "click>=8.1",
+  "PyYAML>=6.0",
+  "python-ulid>=2.2",
+  "watchdog>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Dawinia/super-harness"
+Repository = "https://github.com/Dawinia/super-harness"
+Issues = "https://github.com/Dawinia/super-harness/issues"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+  "pyfakefs>=5.4",
+  "ruff>=0.4",
+  "mypy>=1.10",
+]
+
+[project.scripts]
+super-harness = "super_harness.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/super_harness"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/super_harness"]
+
+[[tool.mypy.overrides]]
+module = "super_harness.core.*"
+strict = true
