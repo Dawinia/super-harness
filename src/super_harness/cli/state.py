@@ -65,13 +65,21 @@ def state_rebuild(ctx: click.Context, dry_run: bool, verify_flag: bool) -> None:
         click.echo(str(e), err=True)
         sys.exit(EXIT_NO_CONFIG)
     derived = derive_state(events_path(root))
-    # last_reduced_event_id = last event_id we actually consumed.
-    # Prefer scanning the dict in insertion order and picking the newest non-empty
-    # last_event_id; ties resolved by append order (dict preserves insertion).
+    # last_reduced_event_id semantics per spec §3.8.2 + §3.8.3: the literal
+    # event_id of the last non-blank parseable line in events.jsonl (file-position
+    # truth, NOT dict-iteration order). v0.1 uses this as audit metadata; Phase 2
+    # daemon consumers will rely on it for short-circuit decisions.
     last_id = ""
-    for cs in derived.values():
-        if cs.last_event_id:
-            last_id = cs.last_event_id
+    events_file = events_path(root)
+    if events_file.exists():
+        for line in reversed(events_file.read_text().splitlines()):
+            if not line.strip():
+                continue
+            try:
+                last_id = parse_event_line(line).event_id
+                break
+            except EventSchemaError:
+                continue
     if dry_run:
         for cid, cs in derived.items():
             click.echo(f"{cid}\t{cs.current_state}\t{cs.last_event_type}")

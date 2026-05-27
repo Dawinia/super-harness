@@ -1,5 +1,7 @@
 import click
 
+from super_harness.cli.event import event_group
+from super_harness.cli.state import state_group
 from super_harness.version import __version__
 
 
@@ -39,12 +41,10 @@ def main(
     ctx.obj["verbose"] = verbose
 
 
-# Subgroup registration. Imports are placed at module bottom (not at top) to
-# avoid a circular import: state.py and event.py both `from super_harness.cli
-# import main` would re-enter this module before `main` is defined. Loading
-# them after `main` exists keeps the dependency one-directional.
-from super_harness.cli.event import event_group  # noqa: E402
-from super_harness.cli.state import state_group  # noqa: E402
-
+# Subgroup registration is at module bottom because it must reference `main`
+# after its definition. The subgroup *imports* themselves are top-of-file —
+# state.py / event.py only depend on `super_harness.cli.exit_codes` and
+# `super_harness.cli.output`, never on `super_harness.cli` itself, so there's
+# no circular-import risk.
 main.add_command(state_group)
 main.add_command(event_group)
