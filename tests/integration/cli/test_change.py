@@ -133,6 +133,22 @@ def test_change_resume_text(tmp_path: Path):
     assert "ch1" in r.output
 
 
+def test_change_resume_rejects_invalid_slug(tmp_path: Path):
+    """Symmetric with start/abandon: bad slug → EXIT_VALIDATION at command entry.
+
+    Without this fix, an invalid slug fell through to the "unknown change" error
+    path (also exit 2, but with a misleading message that points to
+    `change list` instead of slug-rules).
+    """
+    _init(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "change", "resume", "Has Spaces",
+    ])
+    assert r.exit_code == 2  # EXIT_VALIDATION
+    # Verify it's the SLUG error path, not the "unknown change" path
+    assert "see cli-reference#slug-rules" in r.stderr
+
+
 def test_change_resume_unknown_slug(tmp_path: Path):
     """Unknown slug → exit 2 (validation) with an actionable error.
 

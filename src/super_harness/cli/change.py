@@ -344,6 +344,18 @@ def resume(ctx: click.Context, slug: str) -> None:
     If the slug doesn't exist, there's no context to dump — surface that as a
     user error (exit 2) rather than silently returning an empty markdown shell.
     """
+    # Symmetric with `change start` / `change abandon`: validate slug BEFORE
+    # find_harness_root so users get a fast, actionable error on a bad slug
+    # regardless of cwd, instead of falling through to the (less specific)
+    # "unknown change" error path below.
+    try:
+        validate_slug(slug)
+    except SlugError as e:
+        click.echo(
+            f"super-harness change resume: {e}\n  Hint: see cli-reference#slug-rules",
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:

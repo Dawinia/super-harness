@@ -1,3 +1,9 @@
+"""super-harness init — scaffold the `.harness/` workspace.
+
+Creates the canonical directory layout (6 subdirs + 6 skeleton files) per
+`engineering-integration` §2.1. Idempotent without `--force`; `--force`
+overwrites all skeleton files including user edits. Per `cli-command-surface` §2.3.
+"""
 from __future__ import annotations
 
 import sys
