@@ -16,6 +16,10 @@ Concurrency model:
   scales with event count). Acceptable for v0.1; daemon (Phase 2) will batch.
 - The lock guards the rebuild + write sequence, not events.jsonl itself —
   EventWriter already provides multi-process atomic O_APPEND for emit.
+- NOT reentrant: do not call from within `derive_state` / `write_state_yaml`
+  hooks (would block on LOCK_EX waiting for itself). Phase 2 dispatcher /
+  adapter loops must invoke this at the top of an event-handling tick, not
+  recursively from within the reducer / writer call chain.
 
 Note: this module duplicates the 8-line file-tail scan from cli/state.py for
 last_reduced_event_id. We have two call sites — per rule-of-three we defer
