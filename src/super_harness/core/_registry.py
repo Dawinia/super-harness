@@ -81,9 +81,10 @@ def load_components(
             If the file does not exist, returns an empty list.
         yaml_top_key: The top-level key inside the yaml ("sensors" or "gates").
         base_class: The ABC every loaded component must subclass. Because the
-            Sensor / Gate base classes are abstract, wrapper modules must pass
-            this via `cast(type[Sensor], Sensor)` (or equivalent) to satisfy
-            mypy under `--strict` — see `sensors/registry.py` for the pattern.
+            Sensor / Gate base classes are abstract, wrapper modules bind them
+            once at module scope via `_BASE: type[Sensor] = Sensor  # type: ignore[type-abstract]`
+            and pass `_BASE` here — see `sensors/registry.py` for the pattern.
+            (`cast(type[Sensor], Sensor)` is rejected by mypy as redundant.)
         builtin: Mapping of built-in name → component class.
         builtin_only: If True, plugin entries are skipped silently. Useful for
             tests / minimal runs where contributor code shouldn't be loaded.
