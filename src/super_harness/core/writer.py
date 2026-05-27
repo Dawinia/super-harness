@@ -13,15 +13,22 @@ NFS / SMB / FUSE — these break atomic append semantics. README must call this
 out before users try to put .harness/ on a network drive.
 
 emit-time validation: this writer accepts a `skip_validation: bool = False`
-kwarg whose body is currently a no-op (validation is wired in Task 1.5 via
-`emit_validation.validate_preconditions`). Existing callers pass nothing →  get
-defaults; Task 1.5 will toggle the behavior without breaking the API.
+kwarg. When False (default) emit calls `emit_validation.validate_preconditions`
+BEFORE writing — illegal transitions raise `EmitPreconditionError` and nothing
+hits disk (strict per spec §3.8.1). Pass `skip_validation=True` to bypass (used
+by replay/import tooling that already vetted the stream).
 """
 import os
 import threading
 from pathlib import Path
 
+from super_harness.core.emit_validation import (
+    EmitPreconditionError,
+    validate_preconditions,
+)
 from super_harness.core.events import Event, serialize_event
+
+__all__ = ["EmitPreconditionError", "EventWriter"]
 
 
 class EventWriter:
@@ -42,11 +49,21 @@ class EventWriter:
         """Append one event to events.jsonl.
 
         Args:
-            event: the Event to write (already constructed + validated by caller)
-            skip_validation: kwarg reserved for Task 1.5 emit-time validation;
-                currently a no-op (validation will be wired here). Future-proof
-                API so Task 1.5 doesn't break callers.
+            event: the Event to write (already constructed by caller)
+            skip_validation: when True, bypass emit-time precondition checks
+                (illegal transitions + hard prereqs). Default False — emit is
+                strict per spec §3.8.1 and raises EmitPreconditionError before
+                touching disk. Set True only for replay/import paths where the
+                event stream has already been vetted.
+
+        Raises:
+            EmitPreconditionError: if `skip_validation=False` and the event
+                would create an illegal transition or is missing a hard
+                prerequisite (e.g. implementation_complete without prior
+                verification_passed on the same change_id).
         """
+        if not skip_validation:
+            validate_preconditions(self.path, event)
         line = serialize_event(event) + "\n"
         data = line.encode("utf-8")
         with self._lock:
