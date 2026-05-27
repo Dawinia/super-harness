@@ -120,7 +120,13 @@ def derive_state(events_file: Path) -> dict[str, ChangeState]:
         cs.last_event_id = ev.event_id
         cs.last_event_type = ev.type
         cs.last_event_at = ev.timestamp
-        cs.framework = ev.framework
+        # Framework is a CHANGE-level attribute set at declaration. Downstream events
+        # (plan_ready, intent_abandoned, sensor emissions) carry their actor's framework
+        # default ("plain" for CLI / sensors with no framework context) which must NOT
+        # clobber the user's original choice. intent_redeclared is the canonical channel
+        # for switching frameworks mid-change.
+        if ev.type in ("intent_declared", "intent_redeclared"):
+            cs.framework = ev.framework
 
         # Payload field accumulation (subset of §3.8.4 — v0.1 scope).
         p = ev.payload or {}

@@ -125,3 +125,45 @@ def test_reducer_clock_drift_warning_fires(tmp_path: Path, caplog):
     # append order respected — plan_ready still moves state forward
     assert state["c1"].current_state == "AWAITING_PLAN_REVIEW"
     assert any("timestamp drift" in r.message for r in caplog.records)
+
+
+def _ev(change_id: str, event_type: str, framework: str) -> Event:
+    """Local helper — _make_event hardcodes framework='plain'; we need to vary it."""
+    return Event(
+        event_id=new_event_id(), type=event_type, change_id=change_id,
+        timestamp="2026-05-27T10:00:00Z",
+        actor=Actor(type="adapter", identifier="test"),
+        framework=framework,  # type: ignore[arg-type]
+        payload={},
+    )
+
+
+def test_reducer_preserves_framework_across_non_declaration_events(tmp_path: Path):
+    """Non-declaration events (plan_ready, intent_abandoned, etc.) must NOT clobber framework.
+
+    Bug context: CLI `change abandon` and sensor-emitted events default framework='plain'
+    because their actor has no framework context. The reducer previously assigned
+    cs.framework = ev.framework unconditionally, erasing the original framework choice
+    from state.yaml even though events.jsonl preserved it.
+    """
+    f = tmp_path / "events.jsonl"
+    w = EventWriter(f)
+    w.emit(_ev("c1", "intent_declared", "openspec"))
+    w.emit(_ev("c1", "plan_ready", "plain"))       # sensor-emitted default
+    w.emit(_ev("c1", "intent_abandoned", "plain"))  # CLI-emitted default
+    state = derive_state(f)
+    assert state["c1"].framework == "openspec"
+
+
+def test_reducer_intent_redeclared_can_change_framework(tmp_path: Path):
+    """intent_redeclared IS allowed to update framework (user explicitly switches).
+
+    Distinguishes the fix from a blanket 'never update framework after first event' —
+    redeclaration is the canonical channel for switching frameworks mid-change.
+    """
+    f = tmp_path / "events.jsonl"
+    w = EventWriter(f)
+    w.emit(_ev("c1", "intent_declared", "openspec"))
+    w.emit(_ev("c1", "intent_redeclared", "spec-kit"))
+    state = derive_state(f)
+    assert state["c1"].framework == "spec-kit"
