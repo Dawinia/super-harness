@@ -7,9 +7,10 @@ must be portable across filesystems + shells.
 
 Rules (§2.3 "slug syntax"):
 - length 3-80 (inclusive)
-- kebab-case alphanumeric: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+- kebab-case alphanumeric: `^[a-z0-9]+(-[a-z0-9]+)*$` (no consecutive dashes)
 - no leading / trailing dash, no uppercase, no underscore, no whitespace, no
-  non-ASCII, no punctuation.
+  non-ASCII, no punctuation, no consecutive dashes (matches npm / Cargo /
+  Go-module slug conventions).
 
 Called by Task 2.3 (`change start`) before emitting `intent_declared`.
 """
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 import re
 
-_SLUG_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+_SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 _MIN, _MAX = 3, 80
 
 

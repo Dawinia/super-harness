@@ -4,13 +4,16 @@ Read-only command: replays events.jsonl through reducer and renders per-change
 state. No event emission, no post_emit_refresh wiring needed.
 
 Coverage map:
-- test_status_no_harness_exits_3        — exit 3 when .harness/ missing
-- test_status_with_slug_shows_change    — `status <slug>` for known slug
-- test_status_unknown_slug_empty_ok     — unknown slug → exit 0 + empty result
-                                          (query succeeded; result empty)
-- test_status_default_first_active      — no args + no flag → first active
-- test_status_all_includes_terminal     — `--all` includes ARCHIVED/ABANDONED
-- test_status_json_envelope_schema      — `--json` shape: envelope.data.changes[]
+- test_status_no_harness_exits_3              — exit 3 when .harness/ missing
+- test_status_with_slug_shows_change          — `status <slug>` for known slug
+- test_status_unknown_slug_exits_validation_with_format_error
+                                                — unknown slug is an
+                                                  identifier-miss, NOT an
+                                                  empty-filter; exit 2 + Hint
+- test_status_rejects_slug_with_all_flag      — `<slug> --all` mutex → exit 2
+- test_status_default_first_active            — no args + no flag → first active
+- test_status_all_includes_terminal           — `--all` includes ARCHIVED/ABANDONED
+- test_status_json_envelope_schema            — `--json` shape: envelope.data.changes[]
 """
 import json
 from pathlib import Path
@@ -50,17 +53,46 @@ def test_status_with_slug_shows_change(tmp_path: Path) -> None:
     assert "INTENT_DECLARED" in r.output
 
 
-def test_status_unknown_slug_empty_ok(tmp_path: Path) -> None:
-    """Unknown slug: query succeeded, result is empty → exit 0 (mirrors list)."""
+def test_status_unknown_slug_exits_validation_with_format_error(tmp_path: Path) -> None:
+    """Identifier semantics: unknown slug → EXIT_VALIDATION + actionable stderr.
+
+    `status <slug>` is an identifier query (like `change resume <slug>`, `git
+    show <sha>`, `docker inspect <name>`, `kubectl get pod <name>`, `gh pr view
+    <num>`): naming a specific missing object is a user error, not "filter
+    matched nothing". This contrasts with `change list` (filter command),
+    which still returns exit 0 + empty result.
+
+    Verifies the canonical format_error shape lands on stderr: subcommand
+    prefix + the offending slug + a Hint line pointing at recovery.
+    """
     _init(tmp_path)
     _start(tmp_path, "ch-known")
     r = CliRunner().invoke(
         main,
-        ["--workspace", str(tmp_path), "--json", "status", "ch-missing"],
+        ["--workspace", str(tmp_path), "status", "no-such-slug"],
     )
-    assert r.exit_code == 0
-    payload = json.loads(r.output)
-    assert payload["data"]["changes"] == []
+    assert r.exit_code == 2  # EXIT_VALIDATION — same as `change resume <unknown>`
+    assert "super-harness status:" in r.stderr
+    assert "unknown change slug" in r.stderr
+    assert "no-such-slug" in r.stderr
+    assert "Hint:" in r.stderr
+
+
+def test_status_rejects_slug_with_all_flag(tmp_path: Path) -> None:
+    """`status <slug> --all` is mutex-incoherent → EXIT_VALIDATION with hint.
+
+    Symmetric with `change list --active --archived` (also exit 2): the user
+    asked for one specific change AND every change simultaneously, which can't
+    both be honored. Previously, `--all` silently shadowed the slug.
+    """
+    _init(tmp_path)
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "status", "any-slug", "--all"],
+    )
+    assert r.exit_code == 2  # EXIT_VALIDATION
+    assert "cannot be combined" in r.stderr
+    assert "Hint:" in r.stderr
 
 
 def test_status_default_first_active(tmp_path: Path) -> None:
