@@ -11,3 +11,17 @@ private/
 # Node (placeholder for future)
 node_modules/
 *.log
+
+# Python build artifacts
+dist/
+build/
+*.egg-info/
+
+# Python virtual environments
+.venv/
+
+# Python caches
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
