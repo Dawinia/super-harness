@@ -13,7 +13,8 @@ from super_harness.gates import (
     GateFiresOn,
     GateResult,
 )
-from super_harness.gates.registry import load_gates, register_builtin
+from super_harness.gates import registry as gates_registry
+from super_harness.gates.registry import list_builtins, load_gates, register_builtin
 
 
 class _StubGate(Gate):
@@ -26,7 +27,14 @@ class _StubGate(Gate):
 
 
 @pytest.fixture(autouse=True)
-def _register_stub_builtin() -> None:
+def _stub_builtin_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Snapshot `_BUILTIN` and register a stub gate, restoring on teardown.
+
+    Without this, registrations leak into the module-global `_BUILTIN` dict
+    and pollute subsequent tests (and any Phase 3.5 CLI test that
+    enumerates the gate registry).
+    """
+    monkeypatch.setattr(gates_registry, "_BUILTIN", dict(gates_registry._BUILTIN))
     register_builtin("stub-gate", _StubGate)
 
 
@@ -50,7 +58,12 @@ def test_load_skips_unknown_builtin_with_warning(
     with caplog.at_level(logging.WARNING):
         gates = load_gates(yml)
     assert gates == []
-    assert any("typo-gate" in rec.message for rec in caplog.records)
+    # Pin both level AND message — a future log.debug downgrade should fail
+    # this test (contributor-UX regression guard).
+    assert any(
+        rec.levelno == logging.WARNING and "typo-gate" in rec.message
+        for rec in caplog.records
+    )
 
 
 def test_load_custom_plugin(tmp_path: Path) -> None:
@@ -92,3 +105,61 @@ def test_load_rejects_non_list_entries(tmp_path: Path) -> None:
     yml.write_text(yaml.safe_dump({"gates": 42}))
     with pytest.raises(ValueError, match="must be a list"):
         load_gates(yml)
+
+
+def test_load_skips_disabled_plugin(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    mod = tmp_path / "disabled_gate.py"
+    mod.write_text(
+        "from typing import ClassVar\n"
+        "from super_harness.gates import Gate, GateDecision, GateResult\n"
+        "class DisabledGate(Gate):\n"
+        "    name: ClassVar[str] = 'disabled-g'\n"
+        "    version: ClassVar[str] = '0.0.1'\n"
+        "    def decide(self, action, state, events):\n"
+        "        return GateResult(decision=GateDecision.ALLOW)\n"
+    )
+    yml = tmp_path / "gates.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "gates": [
+                    {
+                        "disabled-one": {
+                            "path": str(mod),
+                            "class": "DisabledGate",
+                            "enabled": False,
+                        }
+                    }
+                ]
+            }
+        )
+    )
+    with caplog.at_level(logging.INFO):
+        gates = load_gates(yml)
+    assert gates == []
+    # The INFO log is a contributor-facing debug aid — silently dropping it
+    # would be a UX regression. Pin both level and id substring.
+    assert any(
+        rec.levelno == logging.INFO and "disabled-one" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_list_builtins_returns_registered_names_sorted() -> None:
+    # _StubGate is registered by the autouse fixture; add a second to verify
+    # ordering. Both registrations are isolated to this test by monkeypatch.
+    class _Another(Gate):
+        name: ClassVar[str] = "another-gate"
+        version: ClassVar[str] = "0.1.0"
+        fires_on: ClassVar[GateFiresOn] = "pre_tool_use"
+
+        def decide(self, action, state, events):  # type: ignore[no-untyped-def]
+            return GateResult(decision=GateDecision.ALLOW)
+
+    register_builtin("another-gate", _Another)
+    names = list_builtins()
+    assert "stub-gate" in names
+    assert "another-gate" in names
+    assert names == sorted(names)

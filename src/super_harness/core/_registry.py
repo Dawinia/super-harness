@@ -31,16 +31,39 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import sys
 from pathlib import Path
-from typing import TypeVar
+from typing import ClassVar, Protocol, TypeVar, runtime_checkable
 
 import yaml
 
-__all__ = ["load_components"]
+__all__ = ["RegistryComponent", "load_components"]
 
 log = logging.getLogger(__name__)
 
-_T = TypeVar("_T")
+
+@runtime_checkable
+class RegistryComponent(Protocol):
+    """Structural contract a yaml-loadable component must satisfy.
+
+    Sensor and Gate ABCs both declare `name: ClassVar[str]` and
+    `version: ClassVar[str]`, so they naturally satisfy this Protocol.
+    Binding `_T` to this Protocol upgrades the type contract: mypy will
+    now reject `load_components(base_class=str)` at call sites instead of
+    relying on the runtime `issubclass` check inside `_load_plugin`.
+
+    The runtime `issubclass(cls, base_class)` check in `_load_plugin`
+    remains the load-bearing safety net for plugin classes (which mypy
+    cannot see). Sensor / Gate also enforce non-empty `name` and
+    non-default `version` via `__init_subclass__`, so the structural
+    Protocol is precise enough for v0.1's needs.
+    """
+
+    name: ClassVar[str]
+    version: ClassVar[str]
+
+
+_T = TypeVar("_T", bound=RegistryComponent)
 
 
 def load_components(
@@ -57,7 +80,10 @@ def load_components(
         yaml_path: Path to the yaml file (e.g. `.harness/sensors.yaml`).
             If the file does not exist, returns an empty list.
         yaml_top_key: The top-level key inside the yaml ("sensors" or "gates").
-        base_class: The ABC every loaded component must subclass.
+        base_class: The ABC every loaded component must subclass. Because the
+            Sensor / Gate base classes are abstract, wrapper modules must pass
+            this via `cast(type[Sensor], Sensor)` (or equivalent) to satisfy
+            mypy under `--strict` — see `sensors/registry.py` for the pattern.
         builtin: Mapping of built-in name → component class.
         builtin_only: If True, plugin entries are skipped silently. Useful for
             tests / minimal runs where contributor code shouldn't be loaded.
@@ -156,7 +182,16 @@ def _load_plugin(
             f"{yaml_path}: plugin {sid!r} path {str(spec_path)!r} does not exist"
         )
 
+    # Plugin module name; persists in sys.modules after exec_module.
+    # v0.1 limitation: same-sid plugins in one yaml — or repeated load_*()
+    # calls on the same yaml within one process (Phase 3.5 CLI tests will
+    # trigger this) — silently shadow earlier registrations. We explicitly
+    # pop the stale entry below so each load re-exec's the file and yields
+    # fresh class objects (cleaner semantics for tests + CLI list commands).
+    # Sandboxing + reload-on-mtime are deferred to v0.2 (sensor-gate-architecture
+    # spec §3.6 #6).
     module_name = f"super_harness_user.{sid}"
+    sys.modules.pop(module_name, None)
     module_spec = importlib.util.spec_from_file_location(module_name, spec_path)
     if module_spec is None or module_spec.loader is None:
         raise ImportError(f"{yaml_path}: cannot load plugin spec for {sid!r} from {spec_path}")

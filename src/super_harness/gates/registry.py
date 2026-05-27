@@ -27,7 +27,13 @@ from pathlib import Path
 from super_harness.core._registry import load_components
 from super_harness.gates import Gate
 
-__all__ = ["load_gates", "register_builtin"]
+__all__ = ["list_builtins", "load_gates", "register_builtin"]
+
+# Gate is abstract; mypy rejects passing it to `type[T]` parameters under
+# strict mode (error: type-abstract). We bind it once here so future call
+# sites (Phase 3.4 wiring, Phase 3.5 CLI, later gate modules) can reuse
+# `_BASE` without restating the `type: ignore` per call.
+_BASE: type[Gate] = Gate  # type: ignore[type-abstract]
 
 _BUILTIN: dict[str, type[Gate]] = {}
 
@@ -38,8 +44,22 @@ def register_builtin(name: str, cls: type[Gate]) -> None:
     Later phases will call this at import time to register their gates.
     The registry is process-global; tests that register stubs should clean up
     or use fixtures if isolation matters.
+
+    Note: `sensors.registry.register_builtin` has the same name — the symmetry
+    is intentional, but a module that imports both must use an alias, e.g.
+    `from super_harness.sensors.registry import register_builtin as register_sensor`.
     """
     _BUILTIN[name] = cls
+
+
+def list_builtins() -> list[str]:
+    """Return names of all registered built-in gates, sorted alphabetically.
+
+    Phase 3.5 (`super-harness gate list` CLI) and other introspection
+    consumers should use this instead of peeking at the private `_BUILTIN`
+    dict — the mutation surface (`register_builtin`) stays controlled.
+    """
+    return sorted(_BUILTIN)
 
 
 def load_gates(yaml_path: Path, *, builtin_only: bool = False) -> list[Gate]:
@@ -61,7 +81,7 @@ def load_gates(yaml_path: Path, *, builtin_only: bool = False) -> list[Gate]:
     return load_components(
         yaml_path,
         yaml_top_key="gates",
-        base_class=Gate,  # type: ignore[type-abstract]
+        base_class=_BASE,
         builtin=_BUILTIN,
         builtin_only=builtin_only,
     )
