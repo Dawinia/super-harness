@@ -1,0 +1,13 @@
+# Private strategy / discussion notes (not for public release)
+private/
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Node (placeholder for future)
+node_modules/
+*.log
