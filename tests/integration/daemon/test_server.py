@@ -40,13 +40,19 @@ def _write_state(state_path: Path, change_id: str, current_state: str) -> None:
 def _start_server(server: DaemonServer) -> threading.Thread:
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
-    # Wait for socket to appear (up to 2s).
+    # Poll connect() success (not file existence): the socket file is created
+    # at bind() but accepts connections only after listen(). On a loaded
+    # system, racing into the bind→listen window yields ConnectionRefusedError.
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
-        if server.socket_path.exists():
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.05)
+                probe.connect(str(server.socket_path))
             return t
-        time.sleep(0.01)
-    raise RuntimeError(f"daemon socket never appeared at {server.socket_path}")
+        except (FileNotFoundError, ConnectionRefusedError, OSError):
+            time.sleep(0.01)
+    raise RuntimeError(f"daemon socket never accepted at {server.socket_path}")
 
 
 def _request(socket_path: Path, method: str, params: dict[str, Any]) -> dict[str, Any]:
