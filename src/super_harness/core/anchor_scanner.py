@@ -103,9 +103,10 @@ def scan_sentinels(root: Path, file_globs: list[str] | None = None) -> set[str]:
             `.harness/`). MUST exist.
         file_globs: optional list of glob patterns (relative to `root`) used to
             restrict which files are read. `None` means "no filter" — every
-            file returned by `_list_files` is scanned. The sentinels `"**/*"`
-            and `"**"` are treated as "match all" because fnmatch does not
-            implement recursive `**`.
+            file returned by `_list_files` is scanned. An empty list `[]` means
+            "filter to nothing" (returns empty set) — pass `None` if you want
+            "no filter." The sentinels `"**/*"` and `"**"` are treated as
+            "match all" because fnmatch does not implement recursive `**`.
 
     Returns:
         A set of capability IDs (the `<id>` portion of `@capability:<id>`).
