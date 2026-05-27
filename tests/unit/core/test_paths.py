@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from super_harness.core.paths import HarnessNotInitialized, find_harness_root
+from super_harness.core.paths import (
+    HarnessNotInitialized,
+    events_path,
+    find_harness_root,
+    lock_path,
+    state_path,
+)
 
 
 def test_find_harness_root_walks_up(tmp_path: Path):
@@ -24,7 +30,6 @@ def test_find_harness_root_raises_when_missing(tmp_path: Path):
 
 
 def test_path_helpers(tmp_path: Path):
-    from super_harness.core.paths import events_path, lock_path, state_path
     assert events_path(tmp_path) == tmp_path / ".harness" / "events.jsonl"
     assert state_path(tmp_path) == tmp_path / ".harness" / "state.yaml"
     assert lock_path(tmp_path, "state") == tmp_path / ".harness" / ".state.lock"

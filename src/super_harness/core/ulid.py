@@ -14,5 +14,10 @@ import ulid
 
 
 def new_event_id() -> str:
-    """Generate a fresh event_id like `ev_01H8KX2GH0000000000000000`."""
+    """Generate a fresh event_id like `ev_01H8KX2GH0000000000000000`.
+
+    The `ev_` prefix is a type tag distinguishing events from change_ids /
+    adapter ids / etc. To recover the canonical 26-char ULID:
+    `event_id.removeprefix("ev_")`.
+    """
     return f"ev_{ulid.ULID()}"

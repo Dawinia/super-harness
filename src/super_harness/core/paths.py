@@ -11,7 +11,11 @@ from pathlib import Path
 
 
 class HarnessNotInitialized(RuntimeError):
-    """Raised when no `.harness/` directory is found walking up from start."""
+    """Raised when no `.harness/` directory is found walking up from start.
+
+    CLI callers should map this exception to exit code 3 (EXIT_NO_CONFIG) per
+    cli-command-surface §2.2 "Config not found" semantics.
+    """
 
 
 def find_harness_root(start: Path) -> Path:
