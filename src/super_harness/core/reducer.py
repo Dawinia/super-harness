@@ -71,24 +71,23 @@ def derive_state(events_file: Path) -> dict[str, ChangeState]:
 
         cs = state.setdefault(ev.change_id, ChangeState(change_id=ev.change_id))
 
-        # Clock-drift detection — string-lex compare works for ISO 8601 UTC
-        # ("YYYY-MM-DDTHH:MM:SSZ") because lex order = chronological for same-zone.
-        # Per §3.8.3 we DO NOT reorder; the warning is purely diagnostic.
+        # clock drift detection (do not reorder; §3.8.3 — append order is causal truth).
+        # Parse both timestamps via datetime to avoid string-lex misfires across
+        # mixed ISO 8601 forms (Z vs +00:00, second vs microsecond precision).
         prev_ts = last_ts.get(ev.change_id)
-        if prev_ts and ev.timestamp < prev_ts:
+        if prev_ts:
             try:
-                drift = (
-                    datetime.fromisoformat(prev_ts.replace("Z", "+00:00"))
-                    - datetime.fromisoformat(ev.timestamp.replace("Z", "+00:00"))
-                ).total_seconds()
-                if drift > CLOCK_DRIFT_WARN_THRESHOLD_S:
-                    log.warning(
-                        "line %d: timestamp drift %.1fs (append order preserved)",
-                        line_num,
-                        drift,
-                    )
+                prev_dt = datetime.fromisoformat(prev_ts.replace("Z", "+00:00"))
+                cur_dt = datetime.fromisoformat(ev.timestamp.replace("Z", "+00:00"))
+                if cur_dt < prev_dt:
+                    drift = (prev_dt - cur_dt).total_seconds()
+                    if drift > CLOCK_DRIFT_WARN_THRESHOLD_S:
+                        log.warning(
+                            "events.jsonl line %d: timestamp drift %.1fs (append order preserved)",
+                            line_num, drift,
+                        )
             except ValueError:
-                # Non-ISO timestamp string — already in an audit-only field, ignore.
+                # Non-ISO timestamp on either side — audit-only field, don't crash.
                 pass
         last_ts[ev.change_id] = ev.timestamp
 

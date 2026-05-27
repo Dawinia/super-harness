@@ -149,3 +149,29 @@ def test_serialize_compact_no_spaces():
     line = serialize_event(ev)
     assert ": " not in line  # no JSON space after colon
     assert ", " not in line  # no JSON space after comma
+
+
+def test_parse_rejects_empty_event_id():
+    line = json.dumps({
+        "event_id": "",
+        "type": "intent_declared",
+        "change_id": "c1",
+        "timestamp": "2026-05-27T10:00:00Z",
+        "actor": {"type": "adapter", "identifier": "test"},
+        "framework": "plain",
+    })
+    with pytest.raises(EventSchemaError, match="event_id"):
+        parse_event_line(line)
+
+
+def test_parse_rejects_empty_change_id():
+    line = json.dumps({
+        "event_id": "ev_1",
+        "type": "intent_declared",
+        "change_id": "",
+        "timestamp": "2026-05-27T10:00:00Z",
+        "actor": {"type": "adapter", "identifier": "test"},
+        "framework": "plain",
+    })
+    with pytest.raises(EventSchemaError, match="change_id"):
+        parse_event_line(line)

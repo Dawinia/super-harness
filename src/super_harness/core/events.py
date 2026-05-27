@@ -120,6 +120,10 @@ def parse_event_line(line: str) -> Event:
     missing = _REQUIRED_FIELDS - obj.keys()
     if missing:
         raise EventSchemaError(f"missing required fields: {sorted(missing)}")
+    if not obj["event_id"]:
+        raise EventSchemaError("event_id must be non-empty")
+    if not obj["change_id"]:
+        raise EventSchemaError("change_id must be non-empty")
     actor_raw = obj["actor"]
     if not isinstance(actor_raw, dict):
         raise EventSchemaError("actor must be an object with 'type' and 'identifier'")
