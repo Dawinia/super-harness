@@ -32,6 +32,7 @@ from typing import Any
 
 import click
 
+from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
 from super_harness.core._registry import read_plugin_paths
@@ -55,7 +56,10 @@ def sensor_list(ctx: click.Context) -> None:
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
-        click.echo(str(e), err=True)
+        click.echo(
+            format_error(subcommand="sensor list", message=e.message, hint=e.hint),
+            err=True,
+        )
         sys.exit(EXIT_NO_CONFIG)
 
     yaml_path = sensors_yaml_path(root)
@@ -73,7 +77,10 @@ def sensor_list(ctx: click.Context) -> None:
         # (see load_components docstring) to EXIT_VALIDATION. Without this,
         # a malformed sensors.yaml would either print a stack trace or be
         # silently swallowed — both UX regressions.
-        click.echo(f"super-harness sensor list: {exc}", err=True)
+        click.echo(
+            format_error(subcommand="sensor list", message=str(exc)),
+            err=True,
+        )
         sys.exit(EXIT_VALIDATION)
 
     if ctx.obj.get("json"):

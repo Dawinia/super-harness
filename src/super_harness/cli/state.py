@@ -21,6 +21,7 @@ from pathlib import Path
 
 import click
 
+from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
 from super_harness.core.events import (
@@ -62,7 +63,10 @@ def state_rebuild(ctx: click.Context, dry_run: bool, verify_flag: bool) -> None:
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
-        click.echo(str(e), err=True)
+        click.echo(
+            format_error(subcommand="state rebuild", message=e.message, hint=e.hint),
+            err=True,
+        )
         sys.exit(EXIT_NO_CONFIG)
     derived = derive_state(events_path(root))
     # last_reduced_event_id semantics per spec §3.8.2 + §3.8.3: the literal
@@ -113,7 +117,10 @@ def state_verify(ctx: click.Context) -> None:
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
-        click.echo(str(e), err=True)
+        click.echo(
+            format_error(subcommand="state verify", message=e.message, hint=e.hint),
+            err=True,
+        )
         sys.exit(EXIT_NO_CONFIG)
     f = events_path(root)
     violations: list[str] = []
@@ -158,7 +165,10 @@ def state_verify(ctx: click.Context) -> None:
 
     if violations:
         for v in violations:
-            click.echo(f"super-harness state verify: {v}", err=True)
+            click.echo(
+                format_error(subcommand="state verify", message=v),
+                err=True,
+            )
         sys.exit(EXIT_VALIDATION)
 
     if ctx.obj.get("json"):

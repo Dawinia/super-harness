@@ -17,6 +17,7 @@ from pathlib import Path
 
 import click
 
+from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK
 from super_harness.cli.output import json_envelope
 from super_harness.core.events import Event, EventSchemaError, parse_event_line
@@ -56,7 +57,10 @@ def event_log(
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
-        click.echo(str(e), err=True)
+        click.echo(
+            format_error(subcommand="event log", message=e.message, hint=e.hint),
+            err=True,
+        )
         sys.exit(EXIT_NO_CONFIG)
     events: list[Event] = []
     f = events_path(root)

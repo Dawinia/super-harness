@@ -24,7 +24,8 @@ from pathlib import Path
 
 import click
 
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK
+from super_harness.cli.errors import format_error
+from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
 from super_harness.core.paths import (
     HarnessNotInitialized,
@@ -46,18 +47,54 @@ from super_harness.core.state import TERMINAL_STATES
 @click.pass_context
 def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
     """Show current state for one change, all changes, or the first active change."""
+    # Mutex: `status <slug> --all` is incoherent — `--all` is a list-everything
+    # flag, `<slug>` is a single-object selector. Reject at parse time with an
+    # actionable error rather than silently letting one shadow the other.
+    # Symmetric with `change list --active --archived` (same exit 2 + Hint).
+    if all_changes and slug:
+        click.echo(
+            format_error(
+                subcommand="status",
+                message="--all cannot be combined with a slug argument",
+                hint=(
+                    "Use `status <slug>` to query one change OR "
+                    "`status --all` to list all."
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
-        click.echo(str(e), err=True)
+        # Route remediation to format_error's `Hint:` line per the format
+        # contract (message stays one-line; remediation is a separate field).
+        click.echo(
+            format_error(subcommand="status", message=e.message, hint=e.hint),
+            err=True,
+        )
         sys.exit(EXIT_NO_CONFIG)
     derived = derive_state(events_path(root))
     if all_changes:
         target = list(derived.values())
     elif slug:
-        # Unknown slug → empty result + exit 0. Mirrors `change list` semantics:
-        # the query succeeded, the result happens to be empty. NOT exit 1.
-        target = [derived[slug]] if slug in derived else []
+        # Identifier semantics: a specific slug is an object identifier, NOT a
+        # filter. When the user names a specific object that doesn't exist, exit
+        # with EXIT_VALIDATION + actionable error — matches `change resume
+        # <unknown>` (this CLI), `git show <bad-sha>`, `docker inspect <missing>`,
+        # `kubectl get pod <missing>`, `gh pr view <missing>`. Filter commands
+        # (`change list`) returning empty stays exit 0.
+        if slug not in derived:
+            click.echo(
+                format_error(
+                    subcommand="status",
+                    message=f"unknown change slug: {slug!r}",
+                    hint="Run `super-harness change list` to see known changes.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
+        target = [derived[slug]]
     else:
         # v0.1 default: first ACTIVE change by events.jsonl insertion order.
         # TODO(post-v0.1): infer from current git branch when branch-naming

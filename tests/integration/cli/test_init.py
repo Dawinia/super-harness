@@ -23,7 +23,7 @@ def test_init_idempotent_without_force(tmp_path: Path):
     assert r2.exit_code == 3  # EXIT_NO_CONFIG-style for already-init
     # I-3: verify the --force hint reaches stderr (Click 8.4 exposes r.stderr
     # directly on the Result; CliRunner no longer takes mix_stderr).
-    assert "Hint: pass --force to overwrite" in r2.stderr
+    assert "Hint: Pass `--force` to overwrite the existing directory." in r2.stderr
 
 
 def test_init_force_overwrites(tmp_path: Path):

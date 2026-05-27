@@ -7,6 +7,22 @@ All CLI commands emit errors via `format_error(...)` to ensure consistent shape:
       Docs: <link to relevant doc anchor>
 
 Per cli-command-surface §3.3.
+
+Hint text style guide
+---------------------
+- Start with an imperative verb (Run, Use, Pass, See, Check, Pick).
+- Sentence-cased: first letter uppercase, trailing period.
+- One sentence; if longer guidance is needed, prefer a `Docs:` link via
+  ``docs_anchor=`` instead of running multi-line in the hint.
+- Reference subcommands in backticks: ``super-harness <subcommand>``.
+
+Examples (all current call sites follow this shape):
+
+- ``"Run `super-harness init` first."``
+- ``"Use `status <slug>` to query one change OR `status --all` to list all."``
+- ``"Pass `--force` to overwrite the existing directory."``
+- ``"Pick one filter at a time."``
+- ``"See cli-command-surface §3.2 for slug rules."``
 """
 
 DOCS_BASE = "https://super-harness.dev/docs"
