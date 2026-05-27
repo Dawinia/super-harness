@@ -47,6 +47,14 @@ def register_builtin(name: str, cls: type[Sensor]) -> None:
     Note: `gates.registry.register_builtin` has the same name — the symmetry
     is intentional, but a module that imports both must use an alias, e.g.
     `from super_harness.gates.registry import register_builtin as register_gate`.
+
+    Recommended placement: call this from your sensor package's `__init__.py`
+    so registrations land at import time. Do NOT call it from a plugin module
+    that is also loaded via `.harness/sensors.yaml` path+class — `load_sensors`
+    re-execs the module each call (with `sys.modules` eviction for clean
+    semantics), so import-time `register_builtin` calls would overwrite
+    `_BUILTIN[name]` with a freshly-instantiated class on every load,
+    invalidating any class-identity comparisons held by earlier callers.
     """
     _BUILTIN[name] = cls
 

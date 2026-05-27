@@ -1,3 +1,10 @@
+"""Gate registry tests — Gate-specific symmetry only.
+
+Schema / error-path coverage for the shared loader (`core/_registry.py`)
+lives in `tests/unit/sensors/test_registry.py`. This file verifies the
+Gate-side wrapper handles the gate-specific contract (top-key="gates",
+base-class rejection on non-Gate plugins, gate `enabled: false` path).
+"""
 from __future__ import annotations
 
 import logging

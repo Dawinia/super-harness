@@ -25,6 +25,11 @@ Behavior contract (spec §3.5 / AC-9):
 the daemon process. Sandboxing / permission isolation / per-component resource
 limits are deferred to v0.2. Pin to v0.1 if depending on this loader; the v0.1 →
 v0.2 boundary may breaking-change the plugin interface.
+
+**Intra-package access:** Intended consumers are `sensors.registry`,
+`gates.registry`, `cli.sensor`, `cli.gate`. The leading underscore signals
+"shared infrastructure, not a third-party public API" — symbols listed in
+`__all__` are stable across intra-package calls but may break in v0.2.
 """
 
 from __future__ import annotations
