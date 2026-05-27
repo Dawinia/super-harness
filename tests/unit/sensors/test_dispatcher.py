@@ -1,6 +1,6 @@
 """Tests for SensorDispatcher (sensor-gate-architecture §3.3, §3.6 #1).
 
-Covers happy path, parallel execution, per-sensor timeout with
+Covers happy path, parallel execution, batch wall-clock timeout with
 `sensor_timeout_exceeded` auto-emit, crash with `sensor_crashed` auto-emit,
 trigger matching (events + activities), extension event stamping (actor),
 EmitPreconditionError tolerance, empty sensor list, and state.yaml refresh
@@ -227,8 +227,7 @@ def test_dispatcher_emits_sensor_timeout_exceeded(tmp_path: Path) -> None:
         [_Sleeper()],
         writer=writer,
         context=WorkspaceContext(workspace_root=tmp_path),
-        # timeout_s accepts float for sub-second tests; v0.1 default is 300 (int)
-        timeout_s=0.1,  # type: ignore[arg-type]
+        timeout_s=0.1,
     )
     d.on_event_emit(_mk_event())
     lines = _read_events(tmp_path / "events.jsonl")
@@ -316,7 +315,7 @@ def test_dispatcher_handles_emit_precondition_error_gracefully(
 ) -> None:
     writer, ctx, events_file = _setup_harness(tmp_path)
     # Seed intent_declared + plan_ready so AWAITING_PLAN_REVIEW is current;
-    # _BadEmit will then try to emit verification_passed → illegal.
+    # _BadEmit will then try to emit merged → illegal.
     EventWriter(events_file).emit(
         Event(
             event_id="ev_seed1",

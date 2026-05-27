@@ -93,6 +93,16 @@ class SensorDispatcher:
     (default 4 workers). Sensors run in parallel; extension events are
     appended to events.jsonl in **completion order** (per spec §3.3 I-6).
 
+    - **Blocking on runaway sensors**: when the batch timeout fires, in-flight
+      sensors cannot be killed (no thread-kill in CPython). `on_event_emit` /
+      `on_activity` blocks until they return on their own. A genuinely
+      non-terminating sensor will hang the dispatcher (and the daemon's event
+      loop) until v0.2 subprocess isolation lands (spec §3.6 #6).
+    - **GIL caveat**: real parallelism applies to I/O-bound sensors
+      (subprocess, filesystem, network). CPU-bound work (heavy parsing,
+      hashing, regex over large strings) is serialized by Python's GIL. Don't
+      expect 4x throughput on CPU-bound batches.
+
     Failure modes — `skip_validation=True` is used for these system events
     because they may legitimately precede `intent_declared` (e.g., a sensor
     on an `activity` fires before any change exists), and we never want a
@@ -115,7 +125,7 @@ class SensorDispatcher:
         *,
         writer: EventWriter,
         context: WorkspaceContext,
-        timeout_s: int = DEFAULT_TIMEOUT_S,
+        timeout_s: float = DEFAULT_TIMEOUT_S,
         max_parallelism: int = DEFAULT_PARALLELISM,
     ) -> None:
         self.sensors = sensors
@@ -141,12 +151,13 @@ class SensorDispatcher:
     def _run_all(self, sensors: list[Sensor], trigger: Event | Activity) -> None:
         if not sensors:
             return
-        # `cancel_futures=True` on exit ensures any still-pending submissions
-        # (e.g. a batch larger than max_parallelism with one sensor blocking)
-        # do NOT start once we've decided to bail. Already-running threads
-        # cannot be canceled — Python has no thread-kill primitive — so a
-        # genuinely runaway sensor will keep running until it returns; v0.2
-        # subprocess isolation is the proper fix (spec §3.6 #6).
+        # Pending-future cancellation: `ThreadPoolExecutor.__exit__` calls
+        # `shutdown(wait=True)` (no cancel_futures). Already-running sensors
+        # cannot be killed (CPython has no thread-kill primitive). If the batch
+        # timeout fires, we explicitly `future.cancel()` not-yet-started futures
+        # inside the `except FuturesTimeout` branch below — running futures
+        # still complete on their own time, and `__exit__` blocks until they do.
+        # v0.2 subprocess isolation (spec §3.6 #6) is the proper fix.
         with ThreadPoolExecutor(max_workers=self.max_parallelism) as pool:
             futures = {pool.submit(self._safe_run, s, trigger): s for s in sensors}
             pending = set(futures)
@@ -161,6 +172,10 @@ class SensorDispatcher:
                     sensor = futures[future]
                     try:
                         result = future.result()
+                    # Narrow Exception catch is intentional: KeyboardInterrupt
+                    # and SystemExit are BaseException-only subclasses that
+                    # propagate past this handler so operators can kill the
+                    # daemon (Ctrl-C, signal handlers, sys.exit).
                     except Exception as exc:
                         log.exception("sensor %s crashed", sensor.name)
                         self._emit_lifecycle(
