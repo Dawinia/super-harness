@@ -1,7 +1,18 @@
+"""super-harness CLI root group.
+
+Defines the top-level `super-harness` Click group and wires up all subcommands
+(init, change, status, state, event). Per `cli-command-surface` §2.1 global
+conventions (`--workspace`, `--json`, `--quiet`, `--verbose` flags).
+"""
+from __future__ import annotations
+
 import click
 
+from super_harness.cli.change import change_group
 from super_harness.cli.event import event_group
+from super_harness.cli.init import init_cmd
 from super_harness.cli.state import state_group
+from super_harness.cli.status import status_cmd
 from super_harness.version import __version__
 
 
@@ -48,3 +59,6 @@ def main(
 # no circular-import risk.
 main.add_command(state_group)
 main.add_command(event_group)
+main.add_command(init_cmd)
+main.add_command(change_group)
+main.add_command(status_cmd)

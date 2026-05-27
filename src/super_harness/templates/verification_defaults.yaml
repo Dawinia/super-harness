@@ -1,0 +1,16 @@
+layers:
+  baseline: { enabled: true }
+  framework_adapter: { enabled: true }
+  user_checks: { enabled: true }
+defaults:
+  timeout_seconds: 300
+  must_pass: true
+  capture: both
+  workdir: .
+  env: { CI: "1" }
+execution:
+  mode: parallel
+  max_parallelism: 4
+  fail_fast: false
+checks: []
+adapter_provided: []
