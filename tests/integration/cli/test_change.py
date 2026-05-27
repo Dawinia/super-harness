@@ -264,3 +264,68 @@ def test_change_resume_empty_scope_renders_none(tmp_path: Path):
     assert "(none)" in r.output
     # Defensive: empty dict literal must not leak into human output.
     assert "{}" not in r.output
+
+
+def test_change_resume_scope_with_newlines_escapes_safely(tmp_path: Path):
+    """Scope values containing newlines must not break the Markdown bullet structure.
+
+    Phase 3 `plan_ready` events populate `cs.scope` from agent-authored payload
+    (description, rationale, etc.). A multi-line value naively rendered as
+    `f"- {key}: {value}"` would physically break the bullet list:
+        - rationale: line1
+        line2                <- now a continuation, not a bullet
+    and corrupt any downstream Markdown parser (the inject_context consumer in
+    adapter-architecture §3.5). `_render_resume_markdown` defends by using
+    `repr(value)` so the newline becomes the literal escape `\\n` inside a
+    quoted Python string, preserving one-bullet-per-key.
+
+    Setup: start ch1 via CLI (so it exists in derived state + transitions table
+    is happy), then append a raw `plan_ready` event with a multi-line scope
+    value directly to events.jsonl (same pattern as
+    test_change_resume_recent_events_chronological_and_capped — bypasses
+    emit-time validation which we're not testing here).
+    """
+    _init(tmp_path)
+    runner = CliRunner()
+    runner.invoke(main, ["--workspace", str(tmp_path), "change", "start", "ch1"])
+
+    events_file = tmp_path / ".harness" / "events.jsonl"
+    plan_ready_event = json.dumps({
+        "event_id": "01H000000000000000000PLAN1",
+        "type": "plan_ready",
+        "change_id": "ch1",
+        "timestamp": "2026-05-27T12:00:00Z",
+        "actor": {"type": "agent", "identifier": "test-agent"},
+        "framework": "plain",
+        "payload": {
+            "scope": {
+                "rationale": "line1\nline2",
+                "files": ["a.py", "b.py"],
+            },
+            "tier_hint": "normal",
+        },
+    })
+    with events_file.open("a") as f:
+        f.write(plan_ready_event + "\n")
+
+    r = runner.invoke(
+        main, ["--workspace", str(tmp_path), "change", "resume", "ch1"]
+    )
+    assert r.exit_code == 0
+    # The bullet line for `rationale` must be exactly one line — the raw newline
+    # inside the value must NOT have been emitted into the output.
+    scope_section = r.output.split("## Scope", 1)[1]
+    rationale_lines = [ln for ln in scope_section.splitlines() if "rationale" in ln]
+    assert len(rationale_lines) == 1, (
+        f"rationale should occupy exactly one bullet line; got {rationale_lines!r}"
+    )
+    # The literal escape sequence `\n` (two characters: backslash + n) must
+    # appear inside the quoted repr — that's how repr() renders a real newline.
+    assert "\\n" in rationale_lines[0], (
+        f"expected repr-escaped newline in {rationale_lines[0]!r}"
+    )
+    # Defensive: a bare "line2" continuation line (the corruption symptom) must
+    # NOT exist as its own line in the scope section.
+    assert not any(
+        ln.strip() == "line2" for ln in scope_section.splitlines()
+    ), "multi-line scope value leaked as a continuation line — escaping regressed"

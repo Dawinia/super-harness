@@ -48,7 +48,7 @@ from super_harness.core.paths import (
 from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.reducer import derive_state
 from super_harness.core.slug import SlugError, validate_slug
-from super_harness.core.state import STATES
+from super_harness.core.state import STATES, ChangeState
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
 
@@ -271,7 +271,7 @@ def _event_to_dict(ev: Event) -> dict[str, Any]:
     return asdict(ev)
 
 
-def _render_resume_markdown(cs: Any, recent: list[Event]) -> str:
+def _render_resume_markdown(cs: ChangeState, recent: list[Event]) -> str:
     """Render the human-readable Markdown context dump.
 
     Sections (in order — matches adapter-architecture §3.5 inject_context
@@ -305,9 +305,13 @@ def _render_resume_markdown(cs: Any, recent: list[Event]) -> str:
     lines.append("## Scope")
     # cs.scope is `dict[str, Any]` per ChangeState — render keys as bullets so
     # the agent sees structured fields, not a repr-dumped Python dict literal.
+    # Values are rendered with `!r` (repr) so a Phase 3 agent-authored scope
+    # value containing newlines (e.g. multi-line rationale) renders as a quoted
+    # string literal like 'line1\nline2' instead of physically breaking the
+    # bullet list and corrupting downstream Markdown parsing.
     if cs.scope:
         for key, value in cs.scope.items():
-            lines.append(f"- {key}: {value}")
+            lines.append(f"- {key}: {value!r}")
     else:
         lines.append("(none)")
     lines.append("")
@@ -372,6 +376,7 @@ def resume(ctx: click.Context, slug: str) -> None:
                     "scope": cs.scope,
                     "recent_events": [_event_to_dict(ev) for ev in recent],
                     # v0.1 contract: always []. Phase 8+ wires sensor backlog.
+                    # TODO(phase-8): wire SensorBacklog.pending_for(slug)
                     "pending_sensors": [],
                 },
             )
