@@ -9,6 +9,11 @@ event logs.
 `read_state_yaml` is the inverse direction, returning a raw dict (no dataclass
 reconstruction in v0.1 — that's just `ChangeState(**inner_dict)` at the call
 site if needed).
+
+Supported filesystems (spec §3.9 #1): Linux ext4, macOS APFS. Atomicity here
+relies on same-filesystem `rename(2)` semantics; NFS / SMB / FUSE may not
+preserve the all-or-nothing window. Same caveat as `events.jsonl` O_APPEND —
+do not put `.harness/` on a network mount.
 """
 from __future__ import annotations
 
@@ -45,6 +50,11 @@ def write_state_yaml(
     `last_reduced_event_id` is the event_id of the last event the reducer
     consumed; used by daemon (Phase 2) to short-circuit when events.jsonl tail
     hasn't advanced past this point.
+
+    Non-deterministic on disk: `last_reduced_at` is wall-clock-stamped on every
+    call, so two writes of identical state produce byte-inequal files. Callers
+    comparing file contents must compare via `read_state_yaml` (semantic),
+    not raw bytes.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     body: dict[str, Any] = {
@@ -62,5 +72,9 @@ def write_state_yaml(
 def read_state_yaml(path: Path) -> dict[str, Any]:
     """Load state.yaml and return its parsed dict (empty dict for empty file)."""
     result = yaml.safe_load(path.read_text()) or {}
-    assert isinstance(result, dict), f"state.yaml root must be a mapping, got {type(result)}"
+    if not isinstance(result, dict):
+        raise ValueError(
+            f"state.yaml root must be a mapping, got {type(result).__name__}; "
+            f"run `super-harness state rebuild` to regenerate"
+        )
     return result

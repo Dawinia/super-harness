@@ -5,6 +5,8 @@ invariant 2 (Rebuildable: `derive_state(events) ↔ ChangeState.from_yaml`).
 """
 from pathlib import Path
 
+import pytest
+
 from super_harness.core.reducer import derive_state
 from super_harness.core.state import ChangeState
 from super_harness.core.state_yaml import read_state_yaml, write_state_yaml
@@ -62,3 +64,16 @@ def test_reducer_round_trip_via_state_yaml(tmp_path: Path) -> None:
     }
     assert reloaded["changes"]["c1"]["framework"] == "plain"
     assert reloaded["last_reduced_event_id"] == derived["c1"].last_event_id
+
+
+def test_read_rejects_non_mapping_root(tmp_path: Path) -> None:
+    """A corrupted state.yaml that's a list/scalar must raise ValueError, not AssertionError.
+
+    Rationale: `super-harness state verify` (Task 1.8) needs to catch this cleanly
+    and emit exit code 2 + actionable stderr. assert would crash, and is stripped
+    under python -O.
+    """
+    f = tmp_path / "state.yaml"
+    f.write_text("- this is a list\n- not a mapping\n")
+    with pytest.raises(ValueError, match="must be a mapping"):
+        read_state_yaml(f)
