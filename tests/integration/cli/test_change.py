@@ -146,7 +146,7 @@ def test_change_resume_rejects_invalid_slug(tmp_path: Path):
     ])
     assert r.exit_code == 2  # EXIT_VALIDATION
     # Verify it's the SLUG error path, not the "unknown change" path
-    assert "see cli-reference#slug-rules" in r.stderr
+    assert "cli-command-surface §2.3" in r.stderr
 
 
 def test_change_resume_unknown_slug(tmp_path: Path):

@@ -57,7 +57,7 @@ def gate_list(ctx: click.Context) -> None:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
         click.echo(
-            format_error(subcommand="gate list", message=str(e)),
+            format_error(subcommand="gate list", message=e.message, hint=e.hint),
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)

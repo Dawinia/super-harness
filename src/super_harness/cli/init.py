@@ -92,7 +92,7 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
             format_error(
                 subcommand="init",
                 message=f".harness/ already exists at {harness}",
-                hint="pass --force to overwrite",
+                hint="Pass `--force` to overwrite the existing directory.",
             ),
             err=True,
         )

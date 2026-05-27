@@ -13,9 +13,15 @@ the full CliRunner path including `--workspace`, `--json`, and exit codes.
 3. Reducer non-idempotency
    → covered by `tests/unit/core/test_reducer.py` (no CLI surface needed)
 4. event_counts contamination with unknown event types
-   → unreachable from CLI (parse_event_line rejects unknown types upstream;
-   the invariant check defends against a future reducer bug that bypasses
-   parsing, e.g. injecting synthetic events).
+   → unreachable from CLI today because `derive_state` filters unknown event
+   types out of `event_counts` before they're recorded (see the
+   `KNOWN_EVENT_TYPES` check in `core/reducer.py` around lines 95-99).
+   `parse_event_line` (core/events.py lines 78-80, 142-151) is intentionally
+   tolerant of unknown types per lifecycle-event-model spec §3.8.1 — the
+   parser does NOT reject them. The invariant check in `state verify` defends
+   against a hypothetical future reducer bug that bypasses that filter
+   (e.g. a refactor that drops the KNOWN_EVENT_TYPES gate or a synthetic
+   event injected past the reducer).
 """
 import json
 from pathlib import Path

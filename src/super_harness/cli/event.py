@@ -58,7 +58,7 @@ def event_log(
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
         click.echo(
-            format_error(subcommand="event log", message=str(e)),
+            format_error(subcommand="event log", message=e.message, hint=e.hint),
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)

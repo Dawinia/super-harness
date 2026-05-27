@@ -64,7 +64,7 @@ def state_rebuild(ctx: click.Context, dry_run: bool, verify_flag: bool) -> None:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
         click.echo(
-            format_error(subcommand="state rebuild", message=str(e)),
+            format_error(subcommand="state rebuild", message=e.message, hint=e.hint),
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
@@ -118,7 +118,7 @@ def state_verify(ctx: click.Context) -> None:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
         click.echo(
-            format_error(subcommand="state verify", message=str(e)),
+            format_error(subcommand="state verify", message=e.message, hint=e.hint),
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)

@@ -96,7 +96,7 @@ def start(ctx: click.Context, slug: str, description: str, framework: str) -> No
             format_error(
                 subcommand="change start",
                 message=str(e),
-                hint="see cli-reference#slug-rules",
+                hint="See cli-command-surface §2.3 for slug rules.",
             ),
             err=True,
         )
@@ -105,7 +105,7 @@ def start(ctx: click.Context, slug: str, description: str, framework: str) -> No
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
         click.echo(
-            format_error(subcommand="change start", message=str(e)),
+            format_error(subcommand="change start", message=e.message, hint=e.hint),
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
@@ -149,7 +149,7 @@ def abandon(ctx: click.Context, slug: str, reason: str) -> None:
             format_error(
                 subcommand="change abandon",
                 message=str(e),
-                hint="see cli-reference#slug-rules",
+                hint="See cli-command-surface §2.3 for slug rules.",
             ),
             err=True,
         )
@@ -158,7 +158,7 @@ def abandon(ctx: click.Context, slug: str, reason: str) -> None:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
         click.echo(
-            format_error(subcommand="change abandon", message=str(e)),
+            format_error(subcommand="change abandon", message=e.message, hint=e.hint),
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
@@ -212,7 +212,11 @@ def list_cmd(
             format_error(
                 subcommand="change list",
                 message="--active, --archived, --abandoned are mutually exclusive",
-                hint="pick one",
+                hint=(
+                    "Use `--active` to exclude terminal states, "
+                    "`--archived` for ARCHIVED only, or "
+                    "`--abandoned` for ABANDONED only."
+                ),
             ),
             err=True,
         )
@@ -221,7 +225,7 @@ def list_cmd(
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
         click.echo(
-            format_error(subcommand="change list", message=str(e)),
+            format_error(subcommand="change list", message=e.message, hint=e.hint),
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
@@ -382,7 +386,7 @@ def resume(ctx: click.Context, slug: str) -> None:
             format_error(
                 subcommand="change resume",
                 message=str(e),
-                hint="see cli-reference#slug-rules",
+                hint="See cli-command-surface §2.3 for slug rules.",
             ),
             err=True,
         )
@@ -391,17 +395,20 @@ def resume(ctx: click.Context, slug: str) -> None:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
         click.echo(
-            format_error(subcommand="change resume", message=str(e)),
+            format_error(subcommand="change resume", message=e.message, hint=e.hint),
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
     derived = derive_state(events_path(root))
     if slug not in derived:
+        # Wording aligned with `status <unknown>` (more precise — "unknown
+        # change slug" vs "unknown change") so the two identifier-query
+        # commands surface the same error shape.
         click.echo(
             format_error(
                 subcommand="change resume",
-                message=f"unknown change {slug!r}",
-                hint="run `super-harness change list` to see known slugs",
+                message=f"unknown change slug: {slug!r}",
+                hint="Run `super-harness change list` to see known changes.",
             ),
             err=True,
         )

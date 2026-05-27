@@ -67,8 +67,10 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
+        # Route remediation to format_error's `Hint:` line per the format
+        # contract (message stays one-line; remediation is a separate field).
         click.echo(
-            format_error(subcommand="status", message=str(e)),
+            format_error(subcommand="status", message=e.message, hint=e.hint),
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
