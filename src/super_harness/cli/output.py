@@ -21,6 +21,12 @@ from typing import Any, Literal
 
 from super_harness.version import __version__
 
+# Envelope-level Status. Note: deliberately 3 values (NOT 4 like
+# sensor-gate-architecture §AC-1's SensorResult.status). Sensor-level status
+# is a per-sensor verdict; envelope-level Status is the **rolled-up command
+# outcome**: did this CLI invocation succeed (pass) / fail / surface a
+# non-blocking warning. Informational sensor results roll up to "pass" or
+# "warning" at the envelope level, never surface as their own envelope status.
 Status = Literal["pass", "fail", "warning"]
 
 
