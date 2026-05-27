@@ -43,6 +43,7 @@ dev = [
   "pyfakefs>=5.4",
   "ruff>=0.4",
   "mypy>=1.10",
+  "types-PyYAML>=6.0",
 ]
 
 [project.scripts]
