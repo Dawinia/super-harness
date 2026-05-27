@@ -1,4 +1,4 @@
-"""`change` subgroup — declare / abandon / list lifecycle changes.
+"""`change` subgroup — declare / abandon / list / resume lifecycle changes.
 
 Per cli-command-surface §3.2:
 - `change start <slug>` — emits `intent_declared` (the very first event in any
@@ -10,12 +10,22 @@ Per cli-command-surface §3.2:
   prints per-change current_state. Supports `--state`, `--active`, `--archived`,
   `--abandoned` filters (mutually compatible — the `--active` shortcut excludes
   terminal states; the others positively select a state).
+- `change resume <slug>` — emits an agent-ready Markdown context dump (current
+  state + recent ~20 events + scope + pending sensors) consumed by Ralph Loop /
+  adapter `inject_context` (adapter-architecture §3.5). v0.1 `pending_sensors`
+  is always `[]` because no sensors are registered yet (Phase 3/5/8/11 wire
+  them); this is the documented v0.1 contract, not a bug.
 
 The `--framework` option on `change start` is a v0.1 no-op placeholder per the
 project-wide convention (matches `init --framework`, `init --setup-github`,
 `state rebuild --verify`, `event log --tail`): the value flows into the event
 record so future adapter selection logic (Phase 4) can read it from history,
 but no runtime adapter dispatch happens in v0.1.
+
+Helper functions for `resume` (`_tail_events_for_change`, `_event_to_dict`,
+`_render_resume_markdown`) live inline in this module — they total <60 lines
+and only one command consumes them. Per Phase 2 convention they get factored
+into a dedicated `cli/resume_renderer.py` only if they grow past ~80 lines.
 """
 from __future__ import annotations
 
@@ -23,12 +33,13 @@ import sys
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import click
 
 from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
-from super_harness.core.events import Actor, Event
+from super_harness.core.events import Actor, Event, EventSchemaError, parse_event_line
 from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
@@ -40,6 +51,12 @@ from super_harness.core.slug import SlugError, validate_slug
 from super_harness.core.state import STATES
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
+
+# v0.1 default recent-event window for `change resume`. The number 20 mirrors
+# adapter-architecture §3.5 `read_recent_events(change_id, limit=20)` so the
+# Markdown dump and the (future) AgentAdapter.inject_context payload show the
+# same tail length and the agent's context window is predictable.
+_RESUME_RECENT_EVENT_LIMIT = 20
 
 # TODO(post-v0.1): distinguish CLI invocations by user (getpass.getuser()) or
 # session id for multi-operator audit trails. v0.1 = single "cli" identifier
@@ -207,4 +224,158 @@ def list_cmd(
     else:
         for r in rows:
             click.echo(f"{r['change_id']}\t{r['current_state']}\t{r['last_event_at']}")
+    sys.exit(EXIT_OK)
+
+
+def _tail_events_for_change(events_file: Path, slug: str, limit: int) -> list[Event]:
+    """Return up to `limit` most-recent events for `slug`, chronological order.
+
+    "Chronological" here = events.jsonl append order (per lifecycle §3.8.3 the
+    append order IS causal order; timestamps are audit-only). So "oldest first"
+    is whatever was appended first.
+
+    Tolerance: skips malformed lines (same policy as the reducer per §3.8.1
+    layered-validation). A resume dump that omits a malformed line is preferable
+    to crashing the command.
+
+    v0.1 reads the whole file into memory and filters in Python. For expected
+    v0.1 log sizes (<10k events) this is well under 10ms. Phase 8 daemon can
+    optimize with a slug-indexed offset table if profiling shows it's needed.
+    """
+    if not events_file.exists():
+        return []
+    matched: list[Event] = []
+    for line in events_file.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            ev = parse_event_line(line)
+        except EventSchemaError:
+            # Reducer policy: warn + skip. Resume's caller is a human / agent
+            # context dump — silent skip is fine; the reducer-driven `status`
+            # already surfaces malformed lines via its own logging path.
+            continue
+        if ev.change_id == slug:
+            matched.append(ev)
+    # Append order = chronological; tail = last `limit`. Slice preserves order.
+    return matched[-limit:]
+
+
+def _event_to_dict(ev: Event) -> dict[str, Any]:
+    """Render an Event as a JSON-serializable dict for the --json envelope.
+
+    Uses dataclasses.asdict so nested Actor flattens correctly. Mirrors the
+    on-disk events.jsonl shape (the line we'd have written) so JSON consumers
+    can treat resume's recent_events identically to raw log lines.
+    """
+    return asdict(ev)
+
+
+def _render_resume_markdown(cs: Any, recent: list[Event]) -> str:
+    """Render the human-readable Markdown context dump.
+
+    Sections (in order — matches adapter-architecture §3.5 inject_context
+    template so the Markdown the CLI prints and the string an AgentAdapter
+    injects into a SessionStart prompt are visually consistent):
+
+      # change <slug>
+      **State / Last event / Framework** (one-line each)
+      ## Recent events    (bullet list; "(none)" placeholder when empty)
+      ## Scope            (bullet per key; "(none)" placeholder when {})
+      ## Pending sensors  (v0.1: always "(none)")
+    """
+    lines: list[str] = []
+    lines.append(f"# change {cs.change_id}")
+    lines.append("")
+    lines.append(f"**State:** {cs.current_state}")
+    last_type = cs.last_event_type or "(none)"
+    last_at = cs.last_event_at or "(none)"
+    lines.append(f"**Last event:** {last_type} @ {last_at}")
+    lines.append(f"**Framework:** {cs.framework}")
+    lines.append("")
+    lines.append("## Recent events")
+    if recent:
+        for ev in recent:
+            lines.append(
+                f"- {ev.type} @ {ev.timestamp} ({ev.actor.identifier})"
+            )
+    else:
+        lines.append("(none)")
+    lines.append("")
+    lines.append("## Scope")
+    # cs.scope is `dict[str, Any]` per ChangeState — render keys as bullets so
+    # the agent sees structured fields, not a repr-dumped Python dict literal.
+    if cs.scope:
+        for key, value in cs.scope.items():
+            lines.append(f"- {key}: {value}")
+    else:
+        lines.append("(none)")
+    lines.append("")
+    lines.append("## Pending sensors")
+    # v0.1 contract: no sensors registered yet (Phase 3/5/8/11 wire them).
+    # Placeholder makes the section's existence obvious so agents don't think
+    # the dump is truncated.
+    lines.append("(none)")
+    return "\n".join(lines)
+
+
+@change_group.command("resume")
+@click.argument("slug")
+@click.pass_context
+def resume(ctx: click.Context, slug: str) -> None:
+    """Emit an agent-ready context dump for resuming a change mid-flight.
+
+    Per cli-command-surface §2.3 / adapter-architecture §3.5 inject_context.
+    Output: Markdown summarizing current state + recent ~20 events + scope +
+    pending sensors. `--json` returns the same data as a structured envelope.
+
+    v0.1 caveats baked into the output:
+    - `pending_sensors` is always `[]` / `(none)` — no sensors registered yet.
+      Phase 3/5/8/11 will populate this from a sensor backlog.
+    - Recent events are tailed by reading events.jsonl in full (acceptable for
+      v0.1 log sizes; Phase 8 daemon may add a slug-indexed offset table).
+
+    Unknown-slug semantics deviate from `status`/`change list` (which return an
+    empty result + exit 0): resume's purpose is to dump context FOR THIS SLUG.
+    If the slug doesn't exist, there's no context to dump — surface that as a
+    user error (exit 2) rather than silently returning an empty markdown shell.
+    """
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as e:
+        click.echo(str(e), err=True)
+        sys.exit(EXIT_NO_CONFIG)
+    derived = derive_state(events_path(root))
+    if slug not in derived:
+        click.echo(
+            f"super-harness change resume: unknown change {slug!r}\n"
+            "  Hint: run `super-harness change list` to see known slugs",
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    cs = derived[slug]
+    recent = _tail_events_for_change(
+        events_path(root), slug, limit=_RESUME_RECENT_EVENT_LIMIT
+    )
+    if ctx.obj.get("json"):
+        click.echo(
+            json_envelope(
+                command="change resume",
+                status="pass",
+                exit_code=EXIT_OK,
+                data={
+                    "change_id": slug,
+                    "current_state": cs.current_state,
+                    "framework": cs.framework,
+                    "last_event_type": cs.last_event_type,
+                    "last_event_at": cs.last_event_at,
+                    "scope": cs.scope,
+                    "recent_events": [_event_to_dict(ev) for ev in recent],
+                    # v0.1 contract: always []. Phase 8+ wires sensor backlog.
+                    "pending_sensors": [],
+                },
+            )
+        )
+    else:
+        click.echo(_render_resume_markdown(cs, recent))
     sys.exit(EXIT_OK)

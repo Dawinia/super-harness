@@ -97,3 +97,170 @@ def test_change_list_rejects_conflicting_state_flags(tmp_path: Path):
     )
     assert r.exit_code == 2  # EXIT_VALIDATION
     assert "mutually exclusive" in r.stderr
+
+
+# -------------------- Task 2.5: `change resume` --------------------
+#
+# Coverage map:
+# - test_change_resume_text                — plan-prescribed: markdown contains
+#                                            slug + state literal "INTENT_DECLARED"
+# - test_change_resume_unknown_slug        — unknown slug → EXIT_VALIDATION + hint
+# - test_change_resume_no_harness          — no .harness/ → EXIT_NO_CONFIG (3)
+# - test_change_resume_json_envelope_shape — --json keys: change_id /
+#                                            current_state / recent_events /
+#                                            pending_sensors=[]
+# - test_change_resume_recent_events_chronological_and_capped
+#                                          — chronological (oldest→newest) +
+#                                            capped at 20 + filtered by slug
+# - test_change_resume_empty_scope_renders_none
+#                                          — scope=={} → markdown renders
+#                                            "(none)" placeholder, not "{}"
+
+
+def test_change_resume_text(tmp_path: Path):
+    """Plan-prescribed test (slug c1 → ch1 fix, matching Task 2.3 convention).
+
+    The plan's verbatim test uses slug "c1" which fails Task 2.2's min-length-3
+    slug validation. We use "ch1" — same fix Task 2.3 applied. Plan bug, not
+    a Task 2.5 deviation.
+    """
+    runner = CliRunner()
+    runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    runner.invoke(main, ["--workspace", str(tmp_path), "change", "start", "ch1"])
+    r = runner.invoke(main, ["--workspace", str(tmp_path), "change", "resume", "ch1"])
+    assert r.exit_code == 0
+    assert "INTENT_DECLARED" in r.output
+    assert "ch1" in r.output
+
+
+def test_change_resume_unknown_slug(tmp_path: Path):
+    """Unknown slug → exit 2 (validation) with an actionable error.
+
+    Different semantics from `status`/`change list` (which return empty + exit 0):
+    resume's purpose is to dump context FOR THIS SLUG. If the slug doesn't
+    exist, there's no context to dump — that's a user error, not an empty
+    query result.
+    """
+    _init(tmp_path)
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "change", "resume", "ch-missing"],
+    )
+    assert r.exit_code == 2
+    assert "ch-missing" in r.stderr
+
+
+def test_change_resume_no_harness(tmp_path: Path):
+    """No `.harness/` → HarnessNotInitialized → exit 3 (EXIT_NO_CONFIG)."""
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "change", "resume", "ch1"],
+    )
+    assert r.exit_code == 3
+
+
+def test_change_resume_json_envelope_shape(tmp_path: Path):
+    """`--json` returns the standard envelope with the documented context keys."""
+    _init(tmp_path)
+    runner = CliRunner()
+    runner.invoke(main, ["--workspace", str(tmp_path), "change", "start", "ch1"])
+    r = runner.invoke(
+        main,
+        ["--workspace", str(tmp_path), "--json", "change", "resume", "ch1"],
+    )
+    assert r.exit_code == 0
+    payload = json.loads(r.output)
+    assert payload["command"] == "change resume"
+    assert payload["status"] == "pass"
+    assert payload["exit_code"] == 0
+    assert payload["errors"] == []
+    data = payload["data"]
+    assert data["change_id"] == "ch1"
+    assert data["current_state"] == "INTENT_DECLARED"
+    # scope is dict (per Task 2.4 review finding); empty at INTENT_DECLARED.
+    assert data["scope"] == {}
+    # v0.1 contract: pending_sensors is always [] — Phase 8+ wires sensor backlog.
+    assert data["pending_sensors"] == []
+    # recent_events: list of event dicts for this slug, in chronological order.
+    assert isinstance(data["recent_events"], list)
+    assert len(data["recent_events"]) == 1
+    assert data["recent_events"][0]["type"] == "intent_declared"
+    assert data["recent_events"][0]["change_id"] == "ch1"
+
+
+def test_change_resume_recent_events_chronological_and_capped(tmp_path: Path):
+    """Recent events: filtered by slug, chronological (oldest→newest), max 20.
+
+    Strategy: write 25 raw events for slug "ch1" + 5 noise events for "other"
+    directly to events.jsonl (bypasses lifecycle validation — we're testing the
+    tailer, not the writer). Verify resume returns exactly 20 events, all for
+    "ch1", in append order.
+    """
+    _init(tmp_path)
+    runner = CliRunner()
+    # We need ch1 to exist in derived state so `resume ch1` doesn't 404. The
+    # cleanest way is to start it once via the CLI, then append raw events.
+    runner.invoke(main, ["--workspace", str(tmp_path), "change", "start", "ch1"])
+
+    events_file = tmp_path / ".harness" / "events.jsonl"
+    # Append 24 more "intent_redeclared" events for ch1 (legal repeat per
+    # transitions table) — we just need ANY known event for the tail count.
+    extra_lines = []
+    for i in range(24):
+        extra_lines.append(json.dumps({
+            "event_id": f"01H000000000000000000000{i:02d}",
+            "type": "intent_redeclared",
+            "change_id": "ch1",
+            "timestamp": f"2026-05-27T10:{i:02d}:00Z",
+            "actor": {"type": "human", "identifier": "test"},
+            "framework": "plain",
+            "payload": {"reason": f"redo-{i}"},
+        }))
+    # 5 noise events for a different change — must NOT appear in resume output.
+    for i in range(5):
+        extra_lines.append(json.dumps({
+            "event_id": f"01H000000000000000000099{i:01d}",
+            "type": "intent_declared",
+            "change_id": "other",
+            "timestamp": f"2026-05-27T11:{i:02d}:00Z",
+            "actor": {"type": "human", "identifier": "test"},
+            "framework": "plain",
+            "payload": {},
+        }))
+    with events_file.open("a") as f:
+        f.write("\n".join(extra_lines) + "\n")
+
+    r = runner.invoke(
+        main,
+        ["--workspace", str(tmp_path), "--json", "change", "resume", "ch1"],
+    )
+    assert r.exit_code == 0
+    recent = json.loads(r.output)["data"]["recent_events"]
+    # Capped at 20.
+    assert len(recent) == 20
+    # All for ch1 — no noise from "other".
+    assert all(e["change_id"] == "ch1" for e in recent)
+    # Chronological: oldest first. The 25 ch1 events were appended in order
+    # (intent_declared first, then redeclared 0..23). After tailing to 20,
+    # we expect redeclared 4..23 (oldest of the kept slice = "redo-4").
+    assert recent[0]["payload"]["reason"] == "redo-4"
+    assert recent[-1]["payload"]["reason"] == "redo-23"
+
+
+def test_change_resume_empty_scope_renders_none(tmp_path: Path):
+    """A change at INTENT_DECLARED has scope=={}; markdown renders '(none)'.
+
+    Guards against `repr(dict)` regression — empty dict must not appear as `{}`
+    in the human-facing text. Phase 3+ will populate scope from `plan_ready`.
+    """
+    _init(tmp_path)
+    runner = CliRunner()
+    runner.invoke(main, ["--workspace", str(tmp_path), "change", "start", "ch1"])
+    r = runner.invoke(
+        main, ["--workspace", str(tmp_path), "change", "resume", "ch1"]
+    )
+    assert r.exit_code == 0
+    assert "## Scope" in r.output
+    assert "(none)" in r.output
+    # Defensive: empty dict literal must not leak into human output.
+    assert "{}" not in r.output
