@@ -26,7 +26,7 @@ from pathlib import Path
 from super_harness.core._registry import load_components
 from super_harness.sensors import Sensor
 
-__all__ = ["list_builtins", "load_sensors", "register_builtin"]
+__all__ = ["get_builtin", "list_builtins", "load_sensors", "register_builtin"]
 
 # Sensor is abstract; mypy rejects passing it to `type[T]` parameters under
 # strict mode (error: type-abstract). We bind it once here so future call
@@ -59,6 +59,16 @@ def list_builtins() -> list[str]:
     dict — the mutation surface (`register_builtin`) stays controlled.
     """
     return sorted(_BUILTIN)
+
+
+def get_builtin(name: str) -> type[Sensor] | None:
+    """Return the registered built-in Sensor class for `name`, or None.
+
+    Read-only accessor used by `super-harness sensor list` (Phase 3.5 CLI)
+    to fetch `cls.version` for display. Returns None if no built-in is
+    registered under that name — callers must handle the missing case.
+    """
+    return _BUILTIN.get(name)
 
 
 def load_sensors(yaml_path: Path, *, builtin_only: bool = False) -> list[Sensor]:
