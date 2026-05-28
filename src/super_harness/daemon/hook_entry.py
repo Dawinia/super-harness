@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Literal
 
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import HarnessNotInitialized, find_harness_root
@@ -96,7 +97,7 @@ def _run_claude_code_shim() -> None:
     sys.exit(0)
 
 
-def _decide(tool: str, file: str | None) -> tuple[str, str]:
+def _decide(tool: str, file: str | None) -> tuple[Literal["allow", "block"], str]:
     """Shared decision core for both invocation modes.
 
     Resolves the workspace root (ALLOW if no .harness/ is found), resolves the
