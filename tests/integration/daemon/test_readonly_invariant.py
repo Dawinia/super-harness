@@ -5,27 +5,32 @@ The daemon process MUST NEVER open `.harness/events.jsonl` or
 The single-writer invariant lives in the reducer (state.yaml) and the
 event-emitter (events.jsonl); the daemon is reader-only.
 
-Strategy: monkeypatch `builtins.open` AND `io.open` with a tracking
-wrapper that records `(path, mode)` of every call, spin up DaemonServer
-IN-PROCESS (must be in-process — subprocess inherits unpatched
-interpreter), drive 50 `gate.pre_tool_use` queries, then assert no
-write-mode opens of the two protected paths.
+Strategy: install a process-global `open` audit hook (sys.addaudithook)
+that records `(path, mode)` of every open, spin up DaemonServer IN-PROCESS
+(must be in-process -- a subprocess daemon wouldn't carry this process's
+audit hook), drive 50 `gate.pre_tool_use` queries, then assert no
+write-mode opens of the two protected paths. The audit event fires at the C
+level for builtins.open / io.open / pathlib reads alike, so this works
+identically on Python 3.10-3.13 (runtime monkeypatching of io.open misses
+pathlib reads on 3.10, where pathlib caches io.open at import time).
 
 Notes on coverage limits:
-- This test catches `builtins.open` / `io.open` (Python-layer) violations.
+- This test catches Python-layer opens (builtins.open / io.open / pathlib).
   It does NOT catch `os.open()` (raw fd) violations or `os.write()` to
-  existing fds. A future `os.open(path, os.O_WRONLY)` would pass this test
-  vacuously; the canary below still passes (reads go via io.open). Filed
-  as a documented v0.2 gap (complementary os.open tracker).
-- The server runs in-process — coverage is "the daemon code paths
+  existing fds -- the `open` audit event reports mode=None for os.open, which
+  this tracker filters out. A future `os.open(path, os.O_WRONLY)` would pass
+  vacuously; the canary below still passes (reads go via pathlib). Filed as a
+  documented v0.2 gap (complementary os.open / audit-flags tracker).
+- The server runs in-process -- coverage is "the daemon code paths
   exercised by 50 gate.pre_tool_use queries on a healthy workspace".
 """
 from __future__ import annotations
 
-import io
 import socket
+import sys
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -112,30 +117,58 @@ def workspace(tmp_path: Path) -> Path:
     return tmp_path
 
 
+# --- open() tracking via a process-global audit hook -----------------------
+# We use sys.addaudithook (the `open` audit event) rather than monkeypatching
+# builtins.open / io.open. The audit event fires at the C level for EVERY open
+# -- builtins.open, io.open, AND pathlib.Path.read_text -- identically on Python
+# 3.10-3.13. Monkeypatching io.open does NOT work on 3.10: pathlib there caches
+# io.open into its internal `_accessor` at import time, so a runtime patch is
+# bypassed and the tracker observes 0 reads (the original cross-version bug).
+# Audit hooks are permanent (can't be removed), so install once + gate recording.
+_AUDIT_OPENS: list[tuple[str, str]] = []
+_AUDIT_RECORDING = False
+_AUDIT_HOOK_INSTALLED = False
+
+
+def _install_audit_hook_once() -> None:
+    global _AUDIT_HOOK_INSTALLED
+    if _AUDIT_HOOK_INSTALLED:
+        return
+
+    def _hook(event: str, args: tuple[object, ...]) -> None:
+        # `open` event args are (path, mode, flags). mode is a str for
+        # builtins/io/pathlib opens; None for os.open (raw fd) -- the latter is
+        # filtered out here (documented v0.2 gap, same as before).
+        if not _AUDIT_RECORDING or event != "open":
+            return
+        path, mode = args[0], args[1]
+        if path is not None and isinstance(mode, str):
+            _AUDIT_OPENS.append((str(path), mode))
+
+    sys.addaudithook(_hook)
+    _AUDIT_HOOK_INSTALLED = True
+
+
 @pytest.fixture
-def tracker(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
-    """Install an open() tracker BEFORE DaemonServer is constructed.
+def tracker() -> Iterator[list[tuple[str, str]]]:
+    """Record every `open` as (path, mode) via a process-global audit hook.
 
-    Patches BOTH builtins.open (direct open() calls) AND io.open (what
-    pathlib.Path.read_text/.open use — HotState's actual read path).
-    Monkeypatching only builtins.open misses pathlib reads because
-    pathlib references io.open via the io-module namespace, which the
-    builtins-namespace patch does not rebind.
+    The `open` audit event fires at the C level for builtins.open, io.open, and
+    pathlib reads alike -- works on Python 3.10-3.13 (runtime monkeypatching of
+    io.open misses pathlib reads on 3.10, where pathlib caches io.open at import
+    time). os.open (raw fd) is still NOT caught -- a documented v0.2 gap.
 
-    Returns a list that accumulates `(path_str, mode_str)` tuples.
-    Caller drives the daemon, then inspects the list at end of test.
+    Returns a list that accumulates `(path_str, mode_str)` tuples; the caller
+    drives the daemon, then inspects the list at end of test.
     """
-    opens: list[tuple[str, str]] = []
-    real_open = open  # original builtin (builtins.open is io.open — same object)
-
-    def tracking_open(file, mode="r", *args, **kwargs):  # type: ignore[no-untyped-def]
-        # Normalize path to str — daemon code may pass Path or str.
-        opens.append((str(file), mode))
-        return real_open(file, mode, *args, **kwargs)
-
-    monkeypatch.setattr("builtins.open", tracking_open)
-    monkeypatch.setattr(io, "open", tracking_open)
-    return opens
+    _install_audit_hook_once()
+    global _AUDIT_RECORDING
+    _AUDIT_OPENS.clear()
+    _AUDIT_RECORDING = True
+    try:
+        yield _AUDIT_OPENS
+    finally:
+        _AUDIT_RECORDING = False
 
 
 def test_daemon_never_opens_state_yaml_for_write(
@@ -168,7 +201,7 @@ def test_daemon_never_opens_events_jsonl_for_write(
 ) -> None:
     """AC-11 (events.jsonl half): no write-mode open() targeting events.jsonl.
 
-    Note: in v0.1 the daemon doesn't read events.jsonl at all — this
+    Note: in v0.1 the daemon doesn't read events.jsonl at all -- this
     test guards against a future regression where someone adds
     "daemon emits an event" code without going through the reducer.
     """
@@ -196,12 +229,12 @@ def test_daemon_never_opens_events_jsonl_for_write(
 def test_tracker_sanity_state_yaml_was_opened_for_read(
     workspace: Path, tracker: list[tuple[str, str]]
 ) -> None:
-    """Sanity check: the monkeypatch ACTUALLY observes daemon I/O.
+    """Sanity check: the audit hook ACTUALLY observes daemon I/O.
 
-    If this test fails it means our tracker is being bypassed (e.g.
-    daemon code switched to os.open / a C-level fd). The above two tests
-    would then pass vacuously. AC-11 protection ONLY holds if this canary
-    stays green.
+    If this test fails it means our tracker is being bypassed (e.g. daemon
+    code switched to os.open / a raw C-level fd that the `open` audit event
+    reports with mode=None). The above two tests would then pass vacuously.
+    AC-11 protection ONLY holds if this canary stays green.
     """
     server = DaemonServer(
         socket_path=workspace / ".harness" / "daemon.sock",
@@ -220,6 +253,6 @@ def test_tracker_sanity_state_yaml_was_opened_for_read(
         if p.endswith("state.yaml") and not _is_write_mode(m)
     ]
     assert state_reads, (
-        f"tracker observed 0 reads of state.yaml — monkeypatch likely "
+        f"tracker observed 0 reads of state.yaml -- monkeypatch likely "
         f"bypassed. All observed opens: {tracker[:20]}"
     )
