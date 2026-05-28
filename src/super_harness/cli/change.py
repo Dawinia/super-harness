@@ -408,6 +408,9 @@ def resume(ctx: click.Context, slug: str | None) -> None:
       resolved id has skewed out of derived state), print NOTHING and exit 0 —
       it does NOT trigger the explicit-slug unknown-slug exit-2 guard. This
       mirrors `ClaudeCodeAdapter.inject_context`'s empty-on-unknown contract.
+      Note: this no-active-change path emits EMPTY stdout (NOT a JSON envelope)
+      even under ``--json``, because its consumer — the Claude Code SessionStart
+      hook — runs plain `change resume` and wants empty output to inject nothing.
 
     v0.1 caveats baked into the output:
     - `pending_sensors` is always `[]` / `(none)` — no sensors registered yet.

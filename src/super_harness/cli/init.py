@@ -173,8 +173,10 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
     # or append our section (preserving any user content outside the markers),
     # then replace the framework placeholder with the plain framework block.
     # PlainAdapter is the single source of the plain block (no hardcoded text).
-    # Both injectors write atomically and are CRLF-safe. Idempotent: a re-render
-    # (e.g. --force) replaces the existing section rather than duplicating it.
+    # The injectors' atomic-write / CRLF-safety guarantees are documented in the
+    # `super_harness.engineering.agents_md` module docstring (single source of
+    # truth). Idempotent: a re-render (e.g. --force) replaces the existing section
+    # rather than duplicating it.
     agents_path = root / "AGENTS.md"
     # .harness/ is fully scaffolded above. An OSError (unwritable AGENTS.md / full
     # disk) or AgentsMdInjectionError (duplicate super-harness outer block) here

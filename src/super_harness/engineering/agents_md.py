@@ -34,8 +34,11 @@ callers pass a pre-wrapped block, so we accept it whole rather than re-wrap.)
 the §3.2 regexes assume ``\\n``. A Windows-authored AGENTS.md may be CRLF. We
 detect the file's dominant newline on read, normalize a working copy to ``\\n``
 for all matching + block construction, then on write convert back to ``\\r\\n``
-if that was dominant — so untouched regions round-trip byte-identical and the
-injected block matches the surrounding style. New files use ``\\n``.
+if that was dominant — so the injected block matches the surrounding style. For
+a file with UNIFORM line endings, untouched regions round-trip byte-identical.
+A file with MIXED line endings is NOT preserved verbatim: it is normalized to
+its dominant style (CRLF if ANY CRLF is present, else LF) — every line ending in
+the written file then matches that style. New files use ``\\n``.
 
 **Atomic writes**: every write goes through `_atomic_write`, which writes a
 sibling temp file then ``os.replace`` — no torn writes if interrupted.
@@ -226,6 +229,11 @@ def _inject_subsection(
     ``content`` is the full marker-wrapped block; ``name`` locates an existing
     block by name. ``no_agent_placeholder`` (agent only) adds the branch-2 anchor.
     Reads/writes go through the newline-preserving helpers.
+
+    Invariant: adapter block NAMES are assumed to be space-free slugs (e.g.
+    ``claude-code``, ``openspec``). The append-fallback / last-block-detection
+    regexes (``[^ ]+``) rely on this; only the by-name replace path is space-safe
+    via ``re.escape``.
     """
     existing, newline = _read_normalized(path)
     block = content.rstrip(_LF)
@@ -245,6 +253,10 @@ def _inject_subsection(
     else:
         # Append after the LAST same-kind block. The negative lookahead ensures
         # we match the final close marker; count=1 is belt-and-braces.
+        # The appended block inherits the file's existing trailing-newline state
+        # (we don't add one). In the real flow this is benign: subsection blocks
+        # always live inside the outer section that `inject_section` writes with a
+        # trailing newline, so a trailing newline is already present.
         append_pattern = (
             rf"(<!-- /super-harness {kind}: [^ ]+ -->)"
             rf"(?!.*<!-- /super-harness {kind}:)"
@@ -261,7 +273,11 @@ def _inject_subsection(
 
 
 def _is_last_agent_block(text: str, name: str) -> bool:
-    """Whether ``name``'s agent block is the only agent block in ``text``."""
+    """Whether ``name``'s agent block is the only agent block in ``text``.
+
+    The ``[^ ]+`` capture relies on the space-free-slug name invariant (see
+    `_inject_subsection`).
+    """
     names = re.findall(r"<!-- super-harness agent: ([^ ]+) -->", text)
     return names == [name]
 

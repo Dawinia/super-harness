@@ -265,6 +265,15 @@ def test_remove_agent_with_remaining_does_not_restore_placeholder(tmp_path: Path
     assert _NO_AGENT not in text
 
 
+def test_remove_subsection_invalid_kind_raises(tmp_path: Path) -> None:
+    """`remove_subsection` rejects a kind outside {framework, agent} (guard at
+    agents_md.py :169-170). Raised before any file access, so a nonexistent path
+    is fine here."""
+    path = tmp_path / "AGENTS.md"
+    with pytest.raises(ValueError, match="kind must be 'framework' or 'agent'"):
+        remove_subsection(path, "bogus", "plain")
+
+
 def test_remove_absent_file_is_noop(tmp_path: Path) -> None:
     path = tmp_path / "AGENTS.md"
     remove_subsection(path, "framework", "plain")
@@ -301,6 +310,36 @@ def test_crlf_file_injection_preserves_user_line_endings(tmp_path: Path) -> None
     assert b"\r\n" in raw
     assert b"\n" in raw
     # Every LF is part of a CRLF pair (no lone \n introduced anywhere).
+    assert raw.replace(b"\r\n", b"").count(b"\n") == 0
+
+
+def test_mixed_line_endings_normalize_to_dominant_crlf(tmp_path: Path) -> None:
+    """Pinned M1 contract: a file with MIXED line endings is NOT preserved
+    verbatim — it is normalized to its dominant style (CRLF if ANY CRLF present).
+
+    Here the seed mixes LF lines with a single CRLF (`a\\nb\\r\\nc\\n` shape), so
+    dominant detection picks CRLF and EVERY line ending in the written file
+    becomes CRLF (zero lone LFs remain). This documents the deliberate trade-off
+    in the module docstring's line-endings note."""
+    path = tmp_path / "AGENTS.md"
+    seed = _SEED_WITH_PLACEHOLDERS.replace("[AGENT_SECTION_AUTO_INSERTED]", _NO_AGENT)
+    # Introduce a single CRLF among otherwise-LF lines -> mixed endings.
+    mixed = seed.replace(
+        "[FRAMEWORK_SECTION_AUTO_INSERTED]\n",
+        "[FRAMEWORK_SECTION_AUTO_INSERTED]\r\n",
+        1,
+    )
+    assert b"\r\n" in mixed.encode("utf-8")  # genuinely mixed
+    assert mixed.encode("utf-8").replace(b"\r\n", b"").count(b"\n") > 0
+    path.write_bytes(mixed.encode("utf-8"))
+
+    inject_framework_subsection(path, "plain", _fw_block("plain"))
+
+    raw = path.read_bytes()
+    # (a) injection worked.
+    assert b"super-harness framework: plain" in raw
+    # (b) normalized to the dominant CRLF: every LF is now part of a CRLF pair.
+    assert b"\r\n" in raw
     assert raw.replace(b"\r\n", b"").count(b"\n") == 0
 
 
