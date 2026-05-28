@@ -36,10 +36,11 @@ def workspace(tmp_path: Path) -> Path:
 
 
 def _write_state(workspace: Path, change_id: str, current_state: str) -> None:
+    # Real reducer shape: `changes` map only, NO top-level active_change_id
+    # (the reducer never writes it; "active" is derived = first non-terminal).
     (workspace / ".harness" / "state.yaml").write_text(
         yaml.safe_dump(
-            {"active_change_id": change_id,
-             "changes": {change_id: {"change_id": change_id,
+            {"changes": {change_id: {"change_id": change_id,
                                      "current_state": current_state}}}
         )
     )
@@ -152,9 +153,10 @@ def test_hook_entry_exits_0_on_daemon_down_fail_safe(workspace: Path) -> None:
         _kill_daemon(workspace)
 
 
-def test_hook_entry_uses_active_change_id_from_state_yaml(workspace: Path) -> None:
-    """When env var unset, hook should resolve change_id from state.yaml's
-    `active_change_id` field."""
+def test_hook_entry_derives_active_change_from_state_yaml(workspace: Path) -> None:
+    """When env var unset, hook should derive the active change_id from
+    state.yaml's `changes` map (first non-terminal change), NOT a top-level
+    `active_change_id` field (which the reducer never writes)."""
     _write_state(workspace, "c1", "PLAN_APPROVED")
     _start_daemon(workspace)
     try:
@@ -168,5 +170,39 @@ def test_hook_entry_uses_active_change_id_from_state_yaml(workspace: Path) -> No
             timeout=5.0,
         )
         assert result.returncode == 0, result.stderr.decode()
+    finally:
+        _kill_daemon(workspace)
+
+
+def test_hook_entry_resolves_active_change_without_env(workspace: Path) -> None:
+    """No SUPER_HARNESS_CHANGE_ID → hook derives the active (first non-terminal)
+    change from state.yaml's `changes` map (reducer shape has NO active_change_id
+    field). A blocking state must actually block.
+
+    Regression guard: the hook previously read state.yaml::active_change_id, a
+    field the reducer never writes — so without the env var it resolved None and
+    the gate never auto-blocked (smoke caught it). This drives the real reducer
+    shape with no env var and asserts the block actually fires.
+    """
+    # Write REAL reducer shape: changes map only, NO active_change_id.
+    (workspace / ".harness" / "state.yaml").write_text(
+        yaml.safe_dump(
+            {"changes": {"c1": {"change_id": "c1",
+                                "current_state": "AWAITING_PLAN_REVIEW"}}}
+        )
+    )
+    _start_daemon(workspace)
+    try:
+        env = {k: v for k, v in os.environ.items()
+               if k != "SUPER_HARNESS_CHANGE_ID"}
+        result = subprocess.run(
+            ["super-harness-hook", "Edit", "src/foo.py"],
+            cwd=workspace,
+            capture_output=True,
+            env=env,
+            timeout=5.0,
+        )
+        assert result.returncode == 1, result.stdout + result.stderr  # BLOCK
+        assert b"AWAITING_PLAN_REVIEW" in result.stderr
     finally:
         _kill_daemon(workspace)

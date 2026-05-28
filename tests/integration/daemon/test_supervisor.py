@@ -46,10 +46,11 @@ def workspace(tmp_path: Path) -> Path:
 
 def _write_state(workspace: Path, change_id: str, current_state: str) -> None:
     state_path = workspace / ".harness" / "state.yaml"
+    # Real reducer shape: `changes` map only, NO top-level active_change_id
+    # (the reducer never writes it; "active" is derived = first non-terminal).
     state_path.write_text(
         yaml.safe_dump(
-            {"active_change_id": change_id,
-             "changes": {change_id: {"change_id": change_id,
+            {"changes": {change_id: {"change_id": change_id,
                                      "current_state": current_state}}}
         )
     )

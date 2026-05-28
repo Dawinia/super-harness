@@ -9,8 +9,9 @@ CLI shape (positional only, no flags — click-less):
     super-harness-hook <tool> [file]
         argv[1] = tool name (e.g. "Edit", "Write")
         argv[2] = file path (optional; some tools don't have a file argument)
-    env SUPER_HARNESS_CHANGE_ID  optional override; default reads
-                                  `active_change_id` from .harness/state.yaml
+    env SUPER_HARNESS_CHANGE_ID  optional override; default derives the active
+                                  (first non-terminal) change from the `changes`
+                                  map in .harness/state.yaml
 
 Exit codes:
     0  ALLOW (decision == "allow", or no .harness/ found, or daemon down + fail-safe)
@@ -39,7 +40,7 @@ def main() -> None:  # console_script entry
         # No super-harness in this workspace → not our concern; ALLOW transparently.
         sys.exit(0)
 
-    # Resolve change_id: env override > state.yaml active_change_id > None.
+    # Resolve change_id: env override > derived active change > None.
     import os
 
     change_id = os.environ.get("SUPER_HARNESS_CHANGE_ID")
@@ -60,7 +61,14 @@ def main() -> None:  # console_script entry
 
 
 def _read_active_change_id(root: Path) -> str | None:
-    """Read `.harness/state.yaml::active_change_id` without raising on absence.
+    """Resolve the active change_id from state.yaml's derived `changes` map.
+
+    v0.1 convention (mirrors `super-harness status`): the active change is the
+    first non-terminal change. state.yaml is reducer-generated and carries NO
+    top-level `active_change_id` field — "active" is a derived notion computed
+    at read time. Returns None if state.yaml is missing/unparseable or has no
+    non-terminal change. The env var SUPER_HARNESS_CHANGE_ID overrides this
+    (checked by the caller before this fallback runs).
 
     Intentionally NOT going through HotState — that's daemon-side. The hook
     entry-point talks to the daemon, so reading state.yaml here is only
@@ -75,8 +83,15 @@ def _read_active_change_id(root: Path) -> str | None:
         data = yaml.safe_load(state_path.read_text()) or {}
     except Exception:
         return None
-    val = data.get("active_change_id")
-    return str(val) if val else None
+    changes = data.get("changes")
+    if not isinstance(changes, dict):
+        return None
+    from super_harness.core.state import TERMINAL_STATES
+
+    for change_id, record in changes.items():
+        if isinstance(record, dict) and record.get("current_state") not in TERMINAL_STATES:
+            return str(change_id)
+    return None
 
 
 if __name__ == "__main__":  # pragma: no cover
