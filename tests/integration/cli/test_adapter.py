@@ -6,9 +6,12 @@ ADDITIVE — it coexists with ``test_adapter_install.py`` (the Phase-5 claude-co
 tests that must stay green); it does NOT re-assert that file's claude-code
 happy-path mechanics, only the NEW behaviour:
 
-- ``install plain`` (framework): adapters.yaml entry, no verification.yaml /
-  AGENTS.md side effects.
+- ``install plain`` (framework): adapters.yaml entry, no verification.yaml side
+  effect; AGENTS.md is NOT created when absent (install never creates a bare
+  AGENTS.md — that is `init`'s job).
 - ``install claude-code`` (agent): settings.json hook AND adapters.yaml entry.
+- AGENTS.md injection (AC-4 / F13): after `init`, installing an agent consumes
+  the no-agent anchor; uninstall restores it; round-trip re-install lands again.
 - ``install <unknown>``: EXIT_GENERIC (1), NOT click's exit 2; no adapters.yaml.
 - idempotent re-install: no duplicate entry.
 - ``install`` with no ``.harness/``: EXIT_NO_CONFIG (3).
@@ -79,7 +82,9 @@ def test_install_plain_writes_framework_entry_no_side_effects(tmp_path: Path) ->
             "enabled": True,
         }
     ]
-    # verification.yaml is NOT touched (empty-safe no-op), AGENTS.md not written.
+    # verification.yaml is NOT touched (empty-safe no-op). AGENTS.md is NOT
+    # created: this workspace never ran `init`, and install must never create a
+    # bare AGENTS.md mid-install (AC-4 / F13 — injection only into an existing file).
     assert not _verification_yaml(tmp_path).exists()
     assert not _agents_md(tmp_path).exists()
 
@@ -472,3 +477,190 @@ def test_list_no_filter_nothing_installed_shows_not_installed(tmp_path: Path) ->
     assert r.exit_code == 0, r.output
     assert "No adapters installed." in r.output
     assert "No adapters match the given filter." not in r.output
+
+
+# --- AGENTS.md injection / removal (AC-4 / F13) -------------------------------
+
+_NO_AGENT_ANCHOR = "<!-- super-harness no-agent-adapter-installed -->"
+_CLAUDE_BEGIN = "<!-- super-harness agent: claude-code -->"
+_CLAUDE_END = "<!-- /super-harness agent: claude-code -->"
+
+
+def _init(ws: Path) -> object:
+    """Run `super-harness init` so a real AGENTS.md (with the no-agent anchor) exists."""
+    return CliRunner().invoke(main, ["--workspace", str(ws), "init"])
+
+
+def _install_claude(ws: Path, monkeypatch: pytest.MonkeyPatch):
+    import shutil
+
+    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
+    return _run(ws, "install", "claude-code")
+
+
+def test_install_agent_injects_subsection_consuming_no_agent_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`init` → `install claude-code` injects the real agent block, consuming the anchor."""
+    init_result = _init(tmp_path)
+    assert init_result.exit_code == 0, init_result.output
+    # init leaves the no-agent anchor (no agent adapter installed yet).
+    assert _NO_AGENT_ANCHOR in _agents_md(tmp_path).read_text()
+
+    r = _install_claude(tmp_path, monkeypatch)
+    assert r.exit_code == 0, r.output
+
+    text = _agents_md(tmp_path).read_text()
+    # The real claude-code block is present and the anchor was consumed.
+    assert _CLAUDE_BEGIN in text
+    assert _CLAUDE_END in text
+    assert _NO_AGENT_ANCHOR not in text
+
+
+def test_reinstall_agent_replaces_block_in_place(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-installing claude-code leaves exactly one claude-code block (replace in place)."""
+    assert _init(tmp_path).exit_code == 0
+    assert _install_claude(tmp_path, monkeypatch).exit_code == 0
+    assert _install_claude(tmp_path, monkeypatch).exit_code == 0
+
+    text = _agents_md(tmp_path).read_text()
+    assert text.count(_CLAUDE_BEGIN) == 1
+    assert text.count(_CLAUDE_END) == 1
+
+
+def test_install_agent_absent_agents_md_not_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Install when AGENTS.md is ABSENT (no `init`) → succeeds, AGENTS.md still absent."""
+    (tmp_path / ".harness").mkdir()
+    assert not _agents_md(tmp_path).exists()
+
+    r = _install_claude(tmp_path, monkeypatch)
+
+    assert r.exit_code == 0, r.output
+    # install must never create a bare AGENTS.md.
+    assert not _agents_md(tmp_path).exists()
+
+
+def test_uninstall_agent_removes_block_restores_no_agent_anchor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Uninstalling the only agent removes its block AND restores the no-agent anchor."""
+    assert _init(tmp_path).exit_code == 0
+    assert _install_claude(tmp_path, monkeypatch).exit_code == 0
+    before = _agents_md(tmp_path).read_text()
+    assert _CLAUDE_BEGIN in before
+    # The plain framework block (written by init) is preserved across uninstall.
+    assert "super-harness framework: plain" in before
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--quiet", "adapter", "uninstall", "claude-code"],
+    )
+    assert r.exit_code == 0, r.output
+
+    text = _agents_md(tmp_path).read_text()
+    # claude-code block gone; no-agent anchor restored (last agent removed).
+    assert _CLAUDE_BEGIN not in text
+    assert _CLAUDE_END not in text
+    assert _NO_AGENT_ANCHOR in text
+    # Other content preserved: outer section markers + the plain framework block.
+    assert "super-harness section begin" in text
+    assert "super-harness framework: plain" in text
+
+
+def test_round_trip_install_uninstall_reinstall_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """init → install → uninstall → install ends with the claude-code block present.
+
+    Regression for the no-anchor hole: after uninstall restores the no-agent
+    anchor, the SECOND install must find it and re-inject (not silently no-op).
+    """
+    assert _init(tmp_path).exit_code == 0
+    assert _install_claude(tmp_path, monkeypatch).exit_code == 0
+
+    uninstall = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--quiet", "adapter", "uninstall", "claude-code"],
+    )
+    assert uninstall.exit_code == 0, uninstall.output
+
+    # Re-install: must land the block again via the restored no-agent anchor.
+    assert _install_claude(tmp_path, monkeypatch).exit_code == 0
+
+    text = _agents_md(tmp_path).read_text()
+    assert text.count(_CLAUDE_BEGIN) == 1
+    assert _NO_AGENT_ANCHOR not in text
+
+
+# --- I-1: AGENTS.md write failure on install/uninstall → clean error envelope -
+
+
+def test_install_agents_md_write_failure_exits_generic_with_format_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the AGENTS.md inject raises OSError mid-install, the command surfaces a
+    clean format_error (exit 1, no traceback) instead of a raw crash.
+
+    We force a portable OSError by replacing the AGENTS.md path with a DIRECTORY
+    after `init`: the injector's read (`AGENTS.md/`.read_text()) raises
+    IsADirectoryError (an OSError subclass) on every platform. The adapters.yaml
+    entry was already persisted (we assert it survived — re-install is the
+    idempotent recovery contract, no rollback)."""
+    import shutil
+
+    assert _init(tmp_path).exit_code == 0
+    # Replace the file AGENTS.md with a directory at the same path → any
+    # read/write through it raises OSError deterministically (cross-platform).
+    agents = _agents_md(tmp_path)
+    agents.unlink()
+    agents.mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
+
+    r = _run(tmp_path, "install", "claude-code")
+
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness adapter install:" in r.stderr, r.stderr
+    assert "failed to update AGENTS.md" in r.stderr, r.stderr
+    assert "Hint:" in r.stderr, r.stderr
+    # The yaml entry was recorded BEFORE the AGENTS.md write — it must survive so
+    # the idempotent re-install can recover (no rollback in v0.1).
+    assert any(e.get("name") == "claude-code" for e in _entries(tmp_path)), (
+        f"entry lost despite idempotent-retry contract; entries={_entries(tmp_path)}"
+    )
+
+
+def test_uninstall_agents_md_remove_failure_exits_generic_with_format_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If removing the AGENTS.md subsection raises OSError on uninstall, the
+    command surfaces a clean format_error (exit 1, no traceback).
+
+    We monkeypatch `remove_subsection` (as imported into the adapter module) to
+    raise OSError deterministically — replacing AGENTS.md with a directory would
+    fail the not-installed precheck path differently, so a targeted patch keeps
+    this test about the remove step specifically."""
+    assert _init(tmp_path).exit_code == 0
+    assert _install_claude(tmp_path, monkeypatch).exit_code == 0
+
+    import super_harness.cli.adapter as adapter_mod
+
+    def _raise_oserror(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(adapter_mod, "remove_subsection", _raise_oserror)
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--quiet", "adapter", "uninstall", "claude-code"],
+    )
+
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness adapter uninstall:" in r.stderr, r.stderr
+    assert "failed to remove the AGENTS.md subsection" in r.stderr, r.stderr
+    assert "disk full" in r.stderr, r.stderr

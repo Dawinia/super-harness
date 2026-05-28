@@ -2,9 +2,11 @@
 
 Covers the concrete Claude Code adapter contract:
 - `detect` — feature-file check (`.claude/` is a dir).
-- `install_hooks` — resolves the `super-harness-hook` binary via `shutil.which`,
-  registers a PreToolUse hook into `.claude/settings.json` (merge, no `.sh`,
-  no SessionStart — deferred to Phase 9), raises on a missing binary, idempotent.
+- `install_hooks` — resolves BOTH the `super-harness-hook` (PreToolUse) and
+  `super-harness` (SessionStart) binaries via `shutil.which`, registers a
+  PreToolUse + a SessionStart hook into `.claude/settings.json` (merge, no
+  `.sh`), raises on a missing binary BEFORE any write, idempotent, and rolls
+  back the settings.json snapshot if a merge fails mid-install.
 - `inject_context` — delegates to `super-harness change resume <id>`, returns
   stdout, tolerates empty / non-zero results without crashing.
 - `agents_md_subsection` — returns a marker-wrapped static markdown block.
@@ -28,6 +30,31 @@ from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
 _RESOLVED = "/abs/bin/super-harness-hook"
 _EXPECTED_COMMAND = f"{_RESOLVED} --agent claude-code"
 _MATCHER = "Edit|Write|MultiEdit|NotebookEdit"
+
+# `super-harness` (the CLI binary) resolves to a distinct abs path; the
+# SessionStart hook invokes `<abs super-harness> change resume` (no slug).
+_RESOLVED_CLI = "/abs/bin/super-harness"
+_EXPECTED_SESSION_COMMAND = f"{_RESOLVED_CLI} change resume"
+
+
+def _which_both(name: str) -> str | None:
+    """Resolve both binaries install_hooks needs (PreToolUse + SessionStart)."""
+    return {
+        "super-harness-hook": _RESOLVED,
+        "super-harness": _RESOLVED_CLI,
+    }.get(name)
+
+
+def _session_commands(settings: dict[str, object]) -> list[str]:
+    hooks = settings["hooks"]
+    assert isinstance(hooks, dict)
+    entries = hooks["SessionStart"]
+    assert isinstance(entries, list)
+    out: list[str] = []
+    for entry in entries:
+        for hook in entry.get("hooks", []):  # type: ignore[union-attr]
+            out.append(hook["command"])
+    return out
 
 _CANONICAL_CAPABILITY_KEYS = {
     "pre_tool_use_hook",
@@ -88,7 +115,7 @@ def test_install_hooks_writes_settings_entry(
 ) -> None:
     monkeypatch.setattr(
         "super_harness.adapters.agent.claude_code.shutil.which",
-        lambda _name: _RESOLVED,
+        _which_both,
     )
     ClaudeCodeAdapter().install_hooks(tmp_path)
 
@@ -97,15 +124,17 @@ def test_install_hooks_writes_settings_entry(
     settings = json.loads(settings_path.read_text())
     cmds = _commands(settings)
     assert cmds == [_EXPECTED_COMMAND]
-    # No SessionStart wiring in v0.1 (deferred to Phase 9).
-    assert "SessionStart" not in settings["hooks"]
-    # The matcher comes from the merge util's canonical set.
+    # SessionStart IS wired (Task 8): `<abs super-harness> change resume`.
+    assert _session_commands(settings) == [_EXPECTED_SESSION_COMMAND]
+    # SessionStart entry carries no tool matcher (fires on all session sources).
+    assert "matcher" not in settings["hooks"]["SessionStart"][0]
+    # The PreToolUse matcher comes from the merge util's canonical set.
     assert settings["hooks"]["PreToolUse"][0]["matcher"] == _MATCHER
     # No `.sh` script is written anywhere.
     assert glob.glob(str(tmp_path / "**" / "*.sh"), recursive=True) == []
 
 
-def test_install_hooks_missing_binary_raises(
+def test_install_hooks_missing_hook_binary_raises(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -114,6 +143,22 @@ def test_install_hooks_missing_binary_raises(
     )
     with pytest.raises(RuntimeError, match="super-harness-hook"):
         ClaudeCodeAdapter().install_hooks(tmp_path)
+    # Nothing written before the abort.
+    assert not (tmp_path / ".claude" / "settings.json").exists()
+
+
+def test_install_hooks_missing_cli_binary_raises_before_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`super-harness-hook` resolves but `super-harness` (CLI) does not → abort
+    BEFORE writing either hook (both binaries resolved up front)."""
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        lambda name: _RESOLVED if name == "super-harness-hook" else None,
+    )
+    with pytest.raises(RuntimeError, match="super-harness"):
+        ClaudeCodeAdapter().install_hooks(tmp_path)
+    assert not (tmp_path / ".claude" / "settings.json").exists()
 
 
 def test_install_hooks_idempotent(
@@ -121,7 +166,7 @@ def test_install_hooks_idempotent(
 ) -> None:
     monkeypatch.setattr(
         "super_harness.adapters.agent.claude_code.shutil.which",
-        lambda _name: _RESOLVED,
+        _which_both,
     )
     adapter = ClaudeCodeAdapter()
     adapter.install_hooks(tmp_path)
@@ -129,6 +174,69 @@ def test_install_hooks_idempotent(
 
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     assert _commands(settings).count(_EXPECTED_COMMAND) == 1
+    assert _session_commands(settings).count(_EXPECTED_SESSION_COMMAND) == 1
+
+
+def test_install_hooks_rolls_back_on_second_merge_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the SECOND merge raises mid-install, settings.json is restored to its
+    exact pre-install state (snapshot rollback), not left half-written.
+
+    Both binaries resolve (so we get past the up-front check). We force the
+    SessionStart merge to raise; the PreToolUse merge has already mutated the
+    file by then. Rollback must rewrite the original pre-install bytes.
+    """
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    pristine = json.dumps({"model": "claude-opus", "hooks": {}}, indent=2) + "\n"
+    settings_path.write_text(pristine)
+
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        _which_both,
+    )
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated SessionStart merge failure")
+
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.merge_session_start_hook",
+        boom,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated SessionStart"):
+        ClaudeCodeAdapter().install_hooks(tmp_path)
+
+    # Snapshot restored: byte-identical to the pre-install file.
+    assert settings_path.read_text() == pristine
+
+
+def test_install_hooks_rolls_back_to_absent_when_file_was_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If settings.json did not exist pre-install and a merge fails, rollback
+    DELETES the file (restores the 'absent' snapshot)."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    assert not settings_path.exists()
+
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        _which_both,
+    )
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated SessionStart merge failure")
+
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.merge_session_start_hook",
+        boom,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated SessionStart"):
+        ClaudeCodeAdapter().install_hooks(tmp_path)
+
+    assert not settings_path.exists()
 
 
 def test_inject_context_returns_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -174,22 +282,63 @@ def test_agents_md_subsection_has_markers() -> None:
     assert "super-harness status" in block
 
 
-def test_on_uninstall_restores_latest_backup(tmp_path: Path) -> None:
+def test_on_uninstall_restores_earliest_pristine_backup(tmp_path: Path) -> None:
+    """install_hooks runs TWO merges → TWO backups on a pre-existing file.
+
+    The EARLIEST (lowest ts) backup is the truly pristine file; the later one
+    already contains our PreToolUse entry. Uninstall must restore the earliest
+    so BOTH of our hooks are removed — restoring the newest would leave the
+    PreToolUse hook behind.
+    """
     settings_path = tmp_path / ".claude" / "settings.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(json.dumps({"hooks": {"PreToolUse": ["mutated"]}}))
-    original = {"model": "claude-opus", "hooks": {}}
-    # Two backups; the newer (higher ts) must win.
+    pristine = {"model": "claude-opus", "hooks": {}}
+    # ts=100: pristine (1st merge's backup). ts=200: pristine + our PreToolUse
+    # (2nd merge's backup). The earliest (100) must win.
     settings_path.with_name(
         "settings.json.super-harness-backup.100"
-    ).write_text(json.dumps({"model": "stale"}))
+    ).write_text(json.dumps(pristine))
     settings_path.with_name(
         "settings.json.super-harness-backup.200"
-    ).write_text(json.dumps(original))
+    ).write_text(
+        json.dumps(
+            {
+                "model": "claude-opus",
+                "hooks": {"PreToolUse": ["ours"]},
+            }
+        )
+    )
 
     ClaudeCodeAdapter().on_uninstall(tmp_path)
 
-    assert json.loads(settings_path.read_text()) == original
+    assert json.loads(settings_path.read_text()) == pristine
+
+
+def test_install_then_uninstall_round_trip_restores_pristine(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: install BOTH hooks on a pre-existing file, then uninstall —
+    the file is restored to its exact pristine pre-install content."""
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        _which_both,
+    )
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    pristine = {"model": "claude-opus", "permissions": {"allow": ["Bash(ls:*)"]}}
+    settings_path.write_text(json.dumps(pristine, indent=2))
+
+    adapter = ClaudeCodeAdapter()
+    adapter.install_hooks(tmp_path)
+    # Sanity: both hooks present after install.
+    settings = json.loads(settings_path.read_text())
+    assert _commands(settings) == [_EXPECTED_COMMAND]
+    assert _session_commands(settings) == [_EXPECTED_SESSION_COMMAND]
+
+    adapter.on_uninstall(tmp_path)
+
+    assert json.loads(settings_path.read_text()) == pristine
 
 
 def test_on_uninstall_no_backup_is_noop(tmp_path: Path) -> None:

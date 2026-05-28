@@ -11,11 +11,69 @@ from importlib.resources import files
 from pathlib import Path
 
 import click
+import yaml
 
+from super_harness.adapters.framework.plain import PlainAdapter
+from super_harness.adapters.registry import load_adapters
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK
+from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
+from super_harness.core.paths import adapters_yaml_path
+from super_harness.engineering.agents_md import (
+    AgentsMdInjectionError,
+    inject_agent_subsection,
+    inject_framework_subsection,
+    inject_section,
+)
+from super_harness.version import __version__
 
 _TEMPLATES = files("super_harness.templates")
+
+# The §2.2 outer-section template. The framework placeholder is kept literal
+# (inject_framework_subsection replaces it with the plain block on init); the
+# agent slot carries the no-agent anchor directly rather than the
+# [AGENT_SECTION_AUTO_INSERTED] literal — init knows there is no agent adapter
+# yet, and the anchor is what a later `adapter install <agent>` replaces. This
+# leaves NO [*_SECTION_AUTO_INSERTED] literal after init (§3.2 line 676).
+_AGENTS_MD_SECTION_TEMPLATE = """\
+<!-- super-harness section begin · v{version} · DO NOT EDIT MANUALLY -->
+## Super-harness conventions
+
+This project uses super-harness to ensure AI coding reliability.
+
+### Branch naming
+
+Branches MUST be named matching a registered super-harness change slug.
+Examples: `2026-05-26-add-l1-anchors` / `feat-mobile-auth-flow`
+
+If you use git directly: `git checkout -b <slug>`
+If you use a framework command (recommended): the framework auto-creates the branch.
+
+### PR creation
+
+Use your framework's native PR command:
+
+[FRAMEWORK_SECTION_AUTO_INSERTED]
+
+super-harness will automatically append a metadata block to your PR description
+between `<!-- super-harness:metadata -->` markers.
+**Do not modify content between those markers manually.**
+
+### Agent-specific guidance
+
+<!-- super-harness no-agent-adapter-installed -->
+
+### Before opening PR
+
+Ensure `super-harness verify` passes (tests / lint / build / anchor sentinels).
+If using a `done` skill, run `super-harness done <slug>` instead—it triggers
+verify and emits the lifecycle event automatically.
+
+### File scope
+
+When implementing a change, edit only files in the declared `scope.files`
+(see the plan artifact). Edits outside scope trigger drift warnings.
+
+<!-- super-harness section end -->"""
 
 
 def _source_paths_default() -> str:
@@ -38,6 +96,56 @@ def _verification_default() -> str:
             "'verification_defaults.yaml' missing. Reinstall super-harness."
         )
     return src.read_text()
+
+
+def _reinject_installed_adapters(root: Path, agents_path: Path) -> None:
+    """Re-inject every installed adapter's AGENTS.md subsection (loop closure).
+
+    Called right after the base section + plain framework block are written, so
+    a re-render (``--force`` or otherwise) restores the guidance for every
+    adapter still registered in ``.harness/adapters.yaml`` rather than leaving
+    only the no-agent anchor. On a fresh `init` (no adapters.yaml) `load_adapters`
+    returns ``([], [])`` → this is a no-op; so it is NOT gated on ``--force``.
+
+    Idempotent: the inject_* functions replace an already-present block in place
+    (by name), so re-running never duplicates a subsection.
+
+    Error split:
+      - ONLY the `load_adapters` call is wrapped defensively. A corrupt /
+        unloadable adapters.yaml is NON-FATAL here: the base section + plain
+        block + anchor are already a valid baseline, so we emit an advisory and
+        return rather than crash init. The catch tuple covers BOTH a
+        syntactically-broken file (`yaml.YAMLError`, raised by the unguarded
+        `yaml.safe_load` in `load_adapters`) AND a wrong-shape / unloadable
+        config (`ValueError` / `OSError` / `ImportError` / `AttributeError` /
+        `TypeError`) — `yaml.YAMLError` derives from `Exception`, NOT
+        `ValueError`, so it must be listed explicitly.
+      - The inject_* calls are deliberately OUTSIDE that catch: an OSError /
+        AgentsMdInjectionError they raise propagates to init's existing AGENTS.md
+        envelope (fail-loud), matching the base-section writes.
+    """
+    try:
+        frameworks, agents = load_adapters(adapters_yaml_path(root))
+    except (yaml.YAMLError, ValueError, OSError, ImportError, AttributeError, TypeError) as e:
+        click.echo(
+            "Note: couldn't re-inject installed adapters into AGENTS.md "
+            f"(adapters.yaml unreadable: {e}); re-run "
+            "`super-harness adapter install <name>` to restore their guidance.",
+            err=True,
+        )
+        return
+
+    for fw in frameworks:
+        if fw.name == "plain":
+            # The plain block was already injected by the caller (PlainAdapter
+            # is the single source of that block); re-injecting would be a
+            # redundant in-place replace.
+            continue
+        inject_framework_subsection(agents_path, fw.name, fw.agents_md_subsection())
+    for ag in agents:
+        # The first agent consumes the no-agent anchor (inject branch 2);
+        # subsequent agents append after the last agent block.
+        inject_agent_subsection(agents_path, ag.name, ag.agents_md_subsection())
 
 
 def _skeleton_files() -> dict[str, str]:
@@ -115,5 +223,44 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
         if path.exists() and not force:
             continue
         path.write_text(content)
+    # Wire the repo-root AGENTS.md "super-harness section" (§2.2 / §3.2): create
+    # or append our section (preserving any user content outside the markers),
+    # then replace the framework placeholder with the plain framework block.
+    # PlainAdapter is the single source of the plain block (no hardcoded text).
+    # The injectors' atomic-write / CRLF-safety guarantees are documented in the
+    # `super_harness.engineering.agents_md` module docstring (single source of
+    # truth). Idempotent: a re-render (e.g. --force) replaces the existing section
+    # rather than duplicating it.
+    agents_path = root / "AGENTS.md"
+    # .harness/ is fully scaffolded above. An OSError (unwritable AGENTS.md / full
+    # disk) or AgentsMdInjectionError (duplicate super-harness outer block) here
+    # must surface through format_error like the .harness-exists branch — never a
+    # raw traceback. `init --force` re-renders the section in place, so the
+    # recovery contract is "fix AGENTS.md, re-run init --force".
+    # A re-render (`--force`) rewrites the super-harness section back to the
+    # base template (the no-agent anchor) — but it then RE-INJECTS every adapter
+    # still registered in `.harness/adapters.yaml` via
+    # `_reinject_installed_adapters`, so installed agent/framework guidance is
+    # never lost (full `--force` loop closure). On a fresh init (no adapters.yaml)
+    # re-injection is a no-op, so the call is unconditional. The re-inject's
+    # inject_* calls share THIS try's AGENTS.md envelope (fail-loud); only the
+    # internal adapters.yaml load is non-fatal (advisory + skip) — see the helper.
+    try:
+        inject_section(agents_path, _AGENTS_MD_SECTION_TEMPLATE.format(version=__version__))
+        inject_framework_subsection(agents_path, "plain", PlainAdapter().agents_md_subsection())
+        _reinject_installed_adapters(root, agents_path)
+    except (OSError, AgentsMdInjectionError) as e:
+        click.echo(
+            format_error(
+                subcommand="init",
+                message=f"scaffolded .harness/ but failed to write AGENTS.md: {e}",
+                hint=(
+                    "Fix AGENTS.md (permissions / duplicate super-harness markers) "
+                    "and re-run `init --force`."
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
     click.echo(f"super-harness initialized at {harness}")
     sys.exit(EXIT_OK)

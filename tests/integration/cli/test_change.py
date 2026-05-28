@@ -345,3 +345,85 @@ def test_change_resume_scope_with_newlines_escapes_safely(tmp_path: Path):
     assert not any(
         ln.strip() == "line2" for ln in scope_section.splitlines()
     ), "multi-line scope value leaked as a continuation line — escaping regressed"
+
+
+# -------------------- Task 8: `change resume` no-arg active-change mode ------
+#
+# `change resume` with NO slug resolves the active change (first non-terminal
+# change per `core.active_change.read_active_change_id`). This powers the Claude
+# Code SessionStart hook (best-effort context injection). Semantics:
+# - active change present  → prints that change's dump (same as `resume <slug>`)
+# - no active change       → empty stdout + exit 0 (nothing to inject)
+# - explicit unknown slug  → STILL exit 2 (the existing guard survives)
+
+
+def test_change_resume_no_arg_prints_active_change(tmp_path: Path):
+    """No-slug `resume` dumps the active (first non-terminal) change."""
+    _init(tmp_path)
+    runner = CliRunner()
+    runner.invoke(main, ["--workspace", str(tmp_path), "change", "start", "ch1"])
+    r = runner.invoke(main, ["--workspace", str(tmp_path), "change", "resume"])
+    assert r.exit_code == 0
+    # Same markdown as `resume ch1`.
+    assert "# change ch1" in r.output
+    assert "INTENT_DECLARED" in r.output
+
+
+def test_change_resume_no_arg_no_active_change_is_empty(tmp_path: Path):
+    """No-slug `resume` with no active change → empty stdout + exit 0.
+
+    Best-effort context injection (matches inject_context's empty-on-unknown
+    contract): nothing to resume, so emit nothing rather than erroring.
+    """
+    _init(tmp_path)
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "change", "resume"])
+    assert r.exit_code == 0
+    assert r.output == ""
+
+
+def test_change_resume_no_arg_active_terminal_only_is_empty(tmp_path: Path):
+    """No-slug `resume` when the only change is terminal → empty + exit 0.
+
+    `read_active_change_id` returns None when every change is terminal
+    (ABANDONED here), so there is no active change to dump.
+    """
+    _init(tmp_path)
+    runner = CliRunner()
+    runner.invoke(main, ["--workspace", str(tmp_path), "change", "start", "ch1"])
+    runner.invoke(main, ["--workspace", str(tmp_path), "change", "abandon", "ch1"])
+    r = runner.invoke(main, ["--workspace", str(tmp_path), "change", "resume"])
+    assert r.exit_code == 0
+    assert r.output == ""
+
+
+def test_change_resume_no_arg_skew_does_not_trigger_exit_2(tmp_path: Path):
+    """If state.yaml names an active change absent from derived events (skew),
+    the no-arg path prints nothing + exits 0 — it must NOT fall through to the
+    explicit-slug unknown-slug exit-2 guard.
+
+    Setup: start ch1 (so state.yaml resolves ch1 active), then truncate
+    events.jsonl so derive_state no longer knows ch1. The no-arg resolution
+    still finds ch1 in state.yaml but it's missing from derived state.
+    """
+    _init(tmp_path)
+    runner = CliRunner()
+    runner.invoke(main, ["--workspace", str(tmp_path), "change", "start", "ch1"])
+    # Truncate events so derive_state() yields {} — state.yaml still names ch1.
+    (tmp_path / ".harness" / "events.jsonl").write_text("")
+    r = runner.invoke(main, ["--workspace", str(tmp_path), "change", "resume"])
+    assert r.exit_code == 0
+    assert r.output == ""
+
+
+def test_change_resume_explicit_unknown_slug_still_exits_2(tmp_path: Path):
+    """Regression: the explicit-slug unknown-slug guard survives the no-arg work.
+
+    Adding the no-arg mode must not weaken the explicit path: `resume <unknown>`
+    still surfaces a user error (exit 2), unlike the silent no-arg path.
+    """
+    _init(tmp_path)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "change", "resume", "ch-missing"]
+    )
+    assert r.exit_code == 2
+    assert "ch-missing" in r.stderr

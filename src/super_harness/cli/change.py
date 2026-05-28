@@ -40,6 +40,7 @@ import click
 from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
+from super_harness.core.active_change import read_active_change_id
 from super_harness.core.events import Actor, Event, EventSchemaError, parse_event_line
 from super_harness.core.paths import (
     HarnessNotInitialized,
@@ -354,66 +355,12 @@ def _render_resume_markdown(cs: ChangeState, recent: list[Event]) -> str:
     return "\n".join(lines)
 
 
-@change_group.command("resume")
-@click.argument("slug")
-@click.pass_context
-def resume(ctx: click.Context, slug: str) -> None:
-    """Emit an agent-ready context dump for resuming a change mid-flight.
+def _emit_resume(ctx: click.Context, root: Path, slug: str, cs: ChangeState) -> None:
+    """Render the resume dump for a resolved (slug, ChangeState) and print it.
 
-    Per cli-command-surface §2.3 / adapter-architecture §3.5 inject_context.
-    Output: Markdown summarizing current state + recent ~20 events + scope +
-    pending sensors. `--json` returns the same data as a structured envelope.
-
-    v0.1 caveats baked into the output:
-    - `pending_sensors` is always `[]` / `(none)` — no sensors registered yet.
-      Phase 3/5/8/11 will populate this from a sensor backlog.
-    - Recent events are tailed by reading events.jsonl in full (acceptable for
-      v0.1 log sizes; Phase 8 daemon may add a slug-indexed offset table).
-
-    Unknown-slug semantics deviate from `status`/`change list` (which return an
-    empty result + exit 0): resume's purpose is to dump context FOR THIS SLUG.
-    If the slug doesn't exist, there's no context to dump — surface that as a
-    user error (exit 2) rather than silently returning an empty markdown shell.
+    Shared by the explicit-slug path and the no-arg active-change path so the
+    two never drift. Honours the `--json` flag (structured envelope vs Markdown).
     """
-    # Symmetric with `change start` / `change abandon`: validate slug BEFORE
-    # find_harness_root so users get a fast, actionable error on a bad slug
-    # regardless of cwd, instead of falling through to the (less specific)
-    # "unknown change" error path below.
-    try:
-        validate_slug(slug)
-    except SlugError as e:
-        click.echo(
-            format_error(
-                subcommand="change resume",
-                message=str(e),
-                hint="See cli-command-surface §2.3 for slug rules.",
-            ),
-            err=True,
-        )
-        sys.exit(EXIT_VALIDATION)
-    try:
-        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
-    except HarnessNotInitialized as e:
-        click.echo(
-            format_error(subcommand="change resume", message=e.message, hint=e.hint),
-            err=True,
-        )
-        sys.exit(EXIT_NO_CONFIG)
-    derived = derive_state(events_path(root))
-    if slug not in derived:
-        # Wording aligned with `status <unknown>` (more precise — "unknown
-        # change slug" vs "unknown change") so the two identifier-query
-        # commands surface the same error shape.
-        click.echo(
-            format_error(
-                subcommand="change resume",
-                message=f"unknown change slug: {slug!r}",
-                hint="Run `super-harness change list` to see known changes.",
-            ),
-            err=True,
-        )
-        sys.exit(EXIT_VALIDATION)
-    cs = derived[slug]
     recent = _tail_events_for_change(
         events_path(root), slug, limit=_RESUME_RECENT_EVENT_LIMIT
     )
@@ -439,4 +386,98 @@ def resume(ctx: click.Context, slug: str) -> None:
         )
     else:
         click.echo(_render_resume_markdown(cs, recent))
+
+
+@change_group.command("resume")
+@click.argument("slug", required=False)
+@click.pass_context
+def resume(ctx: click.Context, slug: str | None) -> None:
+    """Emit an agent-ready context dump for resuming a change mid-flight.
+
+    Per cli-command-surface §2.3 / adapter-architecture §3.5 inject_context.
+    Output: Markdown summarizing current state + recent ~20 events + scope +
+    pending sensors. `--json` returns the same data as a structured envelope.
+
+    Two modes:
+    - **Explicit `<slug>`**: dump context for that change. An unknown slug is a
+      user error (exit 2) — see below.
+    - **No slug**: resolve the *active* change (first non-terminal change, via
+      `core.active_change.read_active_change_id`) and dump it. This powers the
+      Claude Code SessionStart hook, which can't know the change_id at install
+      time. Best-effort context injection: if there is no active change (or the
+      resolved id has skewed out of derived state), print NOTHING and exit 0 —
+      it does NOT trigger the explicit-slug unknown-slug exit-2 guard. This
+      mirrors `ClaudeCodeAdapter.inject_context`'s empty-on-unknown contract.
+      Note: this no-active-change path emits EMPTY stdout (NOT a JSON envelope)
+      even under ``--json``, because its consumer — the Claude Code SessionStart
+      hook — runs plain `change resume` and wants empty output to inject nothing.
+
+    v0.1 caveats baked into the output:
+    - `pending_sensors` is always `[]` / `(none)` — no sensors registered yet.
+      Phase 3/5/8/11 will populate this from a sensor backlog.
+    - Recent events are tailed by reading events.jsonl in full (acceptable for
+      v0.1 log sizes; Phase 8 daemon may add a slug-indexed offset table).
+
+    Explicit-slug unknown semantics deviate from `status`/`change list` (which
+    return an empty result + exit 0): resume's purpose is to dump context FOR
+    THIS SLUG. If the slug doesn't exist, there's no context to dump — surface
+    that as a user error (exit 2) rather than silently returning an empty shell.
+    """
+    # Symmetric with `change start` / `change abandon`: validate an explicit slug
+    # BEFORE find_harness_root so users get a fast, actionable error on a bad
+    # slug regardless of cwd. (No slug → skip; the no-arg path resolves a real,
+    # already-valid change id from state.yaml.)
+    if slug is not None:
+        try:
+            validate_slug(slug)
+        except SlugError as e:
+            click.echo(
+                format_error(
+                    subcommand="change resume",
+                    message=str(e),
+                    hint="See cli-command-surface §2.3 for slug rules.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as e:
+        click.echo(
+            format_error(subcommand="change resume", message=e.message, hint=e.hint),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
+
+    if slug is None:
+        # No-arg active-change mode (best-effort, used by SessionStart hook).
+        active = read_active_change_id(root)
+        if active is None:
+            # No active change → nothing to inject. Silent success.
+            sys.exit(EXIT_OK)
+        derived = derive_state(events_path(root))
+        cs = derived.get(active)
+        if cs is None:
+            # state.yaml named an active change that derived state no longer
+            # knows (state/events skew) — stay best-effort: print nothing,
+            # exit 0. MUST NOT fall through to the explicit-slug exit-2 guard.
+            sys.exit(EXIT_OK)
+        _emit_resume(ctx, root, active, cs)
+        sys.exit(EXIT_OK)
+
+    derived = derive_state(events_path(root))
+    if slug not in derived:
+        # Wording aligned with `status <unknown>` (more precise — "unknown
+        # change slug" vs "unknown change") so the two identifier-query
+        # commands surface the same error shape.
+        click.echo(
+            format_error(
+                subcommand="change resume",
+                message=f"unknown change slug: {slug!r}",
+                hint="Run `super-harness change list` to see known changes.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    _emit_resume(ctx, root, slug, derived[slug])
     sys.exit(EXIT_OK)

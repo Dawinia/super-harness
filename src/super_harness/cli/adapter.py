@@ -4,9 +4,12 @@ Generalizes the Phase-5 MINIMAL `adapter install claude-code` (a single pinned
 subcommand) into a registry-driven surface over BOTH framework and agent
 adapters (adapter-architecture §2.1/§2.2/§2.3):
 
-- ``install <name>``   — resolve a built-in adapter, run its install steps, and
-                         persist a ``.harness/adapters.yaml`` entry (§2.3).
-- ``uninstall <name>`` — full reverse: ``on_uninstall`` + drop the yaml entry.
+- ``install <name>``   — resolve a built-in adapter, run its install steps,
+                         persist a ``.harness/adapters.yaml`` entry (§2.3), and
+                         inject its AGENTS.md subsection (adapter-architecture
+                         AC-4 / F13 resolution).
+- ``uninstall <name>`` — full reverse: ``on_uninstall`` + drop the yaml entry +
+                         remove the AGENTS.md subsection (AC-4).
 - ``list``             — enumerate the INSTALLED set (adapters.yaml entries),
                          enriched from the built-in table.
 
@@ -24,9 +27,16 @@ unknown name to ``EXIT_GENERIC`` (1), the same path as the install RuntimeError.
 from Phase 5: ``ClaudeCodeAdapter.detect(root)`` is NOT a precondition;
 ``install_hooks`` mkdirs ``.claude/`` and we note its creation.
 
-Phase-6 deferrals (per plan / Out-of-scope):
-- AGENTS.md wiring is a TRUE no-op here (deferred to Phase 9) — we never write
-  AGENTS.md nor call ``agents_md_subsection()``.
+AGENTS.md wiring (adapter-architecture AC-4 / F13 resolution): after a clean
+install we inject the adapter's ``agents_md_subsection()`` into the repo-root
+``AGENTS.md`` (agent → ``inject_agent_subsection``; framework →
+``inject_framework_subsection``). If ``AGENTS.md`` is absent (the user never ran
+``init``) we skip silently — install never CREATES a bare AGENTS.md. On
+uninstall we ``remove_subsection`` as super-harness-owned generic cleanup (NOT
+inside ``on_uninstall``, per the ABC docstring); it is a no-op when AGENTS.md or
+the block is absent.
+
+Remaining Phase-6 deferrals (per plan / Out-of-scope):
 - ``verification.yaml`` merge is empty-safe: built-in adapters return ``[]`` in
   v0.1, so we touch nothing (no read, no write). The non-empty branch is kept
   minimal and tolerates an absent file.
@@ -52,6 +62,12 @@ from super_harness.core.paths import (
     adapters_yaml_path,
     find_harness_root,
 )
+from super_harness.engineering.agents_md import (
+    AgentsMdInjectionError,
+    inject_agent_subsection,
+    inject_framework_subsection,
+    remove_subsection,
+)
 
 # Leading comment written when CREATING adapters.yaml so users know the file is
 # tool-managed (mirrors state.yaml's AUTO-GENERATED header convention).
@@ -76,8 +92,8 @@ def adapter_install(ctx: click.Context, name: str) -> None:
     adapter = _resolve_builtin_or_exit(name, "adapter install")
     kind = "framework" if isinstance(adapter, FrameworkAdapter) else "agent"
 
-    # AGENTS.md: TRUE no-op (Phase 9). verification.yaml: empty-safe (built-ins
-    # return [] in v0.1 → nothing written); only the non-empty branch touches it.
+    # verification.yaml: empty-safe (built-ins return [] in v0.1 → nothing
+    # written); only the non-empty branch touches it.
     try:
         _merge_verification_checks(root, adapter)
     except yaml.YAMLError as e:
@@ -122,6 +138,38 @@ def adapter_install(ctx: click.Context, name: str) -> None:
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
+
+    # Inject the adapter's AGENTS.md subsection (AC-4 / F13). Skip silently when
+    # AGENTS.md is absent — install must never create a bare AGENTS.md (that's
+    # `init`'s job). The injectors replace an existing block / the init anchor in
+    # place, so re-install stays idempotent.
+    agents_path = root / "AGENTS.md"
+    if agents_path.exists():
+        subsection = adapter.agents_md_subsection()
+        # The adapters.yaml entry is already persisted above. An OSError
+        # (unwritable AGENTS.md / full disk) or AgentsMdInjectionError (duplicate
+        # super-harness outer block) here must surface through format_error like
+        # every other filesystem step — never a raw traceback. Re-install is
+        # idempotent (the injectors replace in place), so the recovery contract
+        # is "fix AGENTS.md, re-run install" — NO yaml-entry rollback in v0.1.
+        try:
+            if isinstance(adapter, AgentAdapter):
+                inject_agent_subsection(agents_path, adapter.name, subsection)
+            else:
+                inject_framework_subsection(agents_path, adapter.name, subsection)
+        except (OSError, AgentsMdInjectionError) as e:
+            click.echo(
+                format_error(
+                    subcommand="adapter install",
+                    message=f"adapter installed but failed to update AGENTS.md: {e}",
+                    hint=(
+                        "Fix AGENTS.md (file permissions / duplicate super-harness "
+                        "markers), then re-run `adapter install` (idempotent)."
+                    ),
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_GENERIC)
 
     if not ctx.obj.get("quiet"):
         if created_claude_dir:
@@ -221,6 +269,25 @@ def adapter_uninstall(ctx: click.Context, name: str) -> None:
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
+
+    # super-harness-owned generic cleanup (AC-4): remove the adapter's AGENTS.md
+    # subsection. NOT done inside on_uninstall — per the ABC docstring AGENTS.md
+    # cleanup is super-harness's responsibility, not the adapter's. No-op when
+    # AGENTS.md or the block is absent (removing the last agent restores the
+    # no-agent anchor so a later re-install still has somewhere to land).
+    kind = "framework" if isinstance(adapter, FrameworkAdapter) else "agent"
+    try:
+        remove_subsection(root / "AGENTS.md", kind, adapter.name)
+    except OSError as e:
+        click.echo(
+            format_error(
+                subcommand="adapter uninstall",
+                message=f"failed to remove the AGENTS.md subsection: {e}",
+                hint="Fix AGENTS.md file permissions and re-run `adapter uninstall`.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
 
     if not ctx.obj.get("quiet"):
         click.echo(f"Uninstalled {name} adapter.")

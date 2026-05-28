@@ -94,6 +94,10 @@ def load_adapters(
         suppressing the plain fallback — see `activate_with_fallback`).
 
     Raises:
+        yaml.YAMLError: the file is not syntactically valid YAML (raised by the
+            unguarded `yaml.safe_load` below). NOTE this derives from `Exception`,
+            NOT `ValueError`, so callers building a best-effort catch tuple must
+            list it explicitly alongside `ValueError`.
         ValueError: malformed schema (top key not a list, entry not a dict,
             missing/non-string `name`, unknown builtin, missing `path`/`class`
             on a custom entry, or a same-name conflict across the union of

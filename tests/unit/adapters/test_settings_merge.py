@@ -14,10 +14,16 @@ from pathlib import Path
 
 import pytest
 
-from super_harness.adapters.agent._settings_merge import merge_pre_tool_use_hook
+from super_harness.adapters.agent._settings_merge import (
+    merge_pre_tool_use_hook,
+    merge_session_start_hook,
+)
 
 _COMMAND = "/abs/bin/super-harness-hook --agent claude-code"
 _MATCHER = "Edit|Write|MultiEdit|NotebookEdit"
+
+# SessionStart command: the user-facing CLI (no slug → active change).
+_SS_COMMAND = "/abs/bin/super-harness change resume"
 
 
 def _pre_tool_use(settings: dict[str, object]) -> list[dict[str, object]]:
@@ -224,3 +230,151 @@ def test_pristine_backup_preserved_across_changes(tmp_path: Path) -> None:
     assert backed == pristine
     backed_cmds = _commands(_pre_tool_use(backed))
     assert all("--agent claude-code" not in c for c in backed_cmds)
+
+
+# -------------------- SessionStart merge (Task 8) --------------------
+#
+# Symmetric with the PreToolUse merge: backup-on-change, replace-not-accumulate
+# (idempotent), collision-proof backup naming, preserve unrelated config. The
+# SessionStart entry shape drops the tool matcher (per Claude Code's
+# SessionStart schema — matcher is a session-source matcher, optional; omitting
+# it fires on all session starts). "Ours" is identified by the `change resume`
+# command substring.
+
+
+def _session_start(settings: dict[str, object]) -> list[dict[str, object]]:
+    hooks = settings["hooks"]
+    assert isinstance(hooks, dict)
+    entries = hooks["SessionStart"]
+    assert isinstance(entries, list)
+    return entries
+
+
+def test_session_start_absent_file_creates_entry_no_matcher(tmp_path: Path) -> None:
+    settings_path = tmp_path / ".claude" / "settings.json"
+    assert not settings_path.exists()
+
+    merge_session_start_hook(settings_path, command=_SS_COMMAND)
+
+    settings = json.loads(settings_path.read_text())
+    entries = _session_start(settings)
+    assert len(entries) == 1
+    # No tool matcher on SessionStart (fires on all session sources).
+    assert "matcher" not in entries[0]
+    assert _SS_COMMAND in _commands(entries)
+
+    backups = glob.glob(str(settings_path) + ".super-harness-backup.*")
+    assert backups == []
+
+
+def test_session_start_preserves_unrelated_hooks(tmp_path: Path) -> None:
+    """Preserve other hook types AND an unrelated user SessionStart hook."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    user_session_start = {
+        "matcher": "startup",
+        "hooks": [{"type": "command", "command": "user-greet.sh"}],
+    }
+    original = {
+        "model": "claude-opus",
+        "hooks": {
+            "PreToolUse": [
+                {
+                    "matcher": "Bash",
+                    "hooks": [{"type": "command", "command": "user-bash-guard"}],
+                }
+            ],
+            "SessionStart": [user_session_start],
+        },
+    }
+    settings_path.write_text(json.dumps(original, indent=2))
+
+    merge_session_start_hook(settings_path, command=_SS_COMMAND)
+
+    settings = json.loads(settings_path.read_text())
+    # Top-level + other hook types untouched.
+    assert settings["model"] == "claude-opus"
+    assert settings["hooks"]["PreToolUse"] == original["hooks"]["PreToolUse"]
+    # The user's unrelated SessionStart hook survives, ours is appended.
+    cmds = _commands(_session_start(settings))
+    assert "user-greet.sh" in cmds
+    assert _SS_COMMAND in cmds
+
+    backups = glob.glob(str(settings_path) + ".super-harness-backup.*")
+    assert len(backups) == 1
+    assert json.loads(Path(backups[0]).read_text()) == original
+
+
+def test_session_start_idempotent_no_duplicate(tmp_path: Path) -> None:
+    settings_path = tmp_path / ".claude" / "settings.json"
+
+    merge_session_start_hook(settings_path, command=_SS_COMMAND)
+    merge_session_start_hook(settings_path, command=_SS_COMMAND)
+
+    settings = json.loads(settings_path.read_text())
+    cmds = _commands(_session_start(settings))
+    assert cmds.count(_SS_COMMAND) == 1
+
+
+def test_session_start_binary_relocation_replaces_stale_entry(tmp_path: Path) -> None:
+    """A relocated binary REPLACES our prior SessionStart entry (dedupe by the
+    `change resume` marker, not the full path) — unrelated user hooks survive."""
+    old = "/old/bin/super-harness change resume"
+    new = "/new/bin/super-harness change resume"
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    original = {
+        "hooks": {
+            "SessionStart": [
+                {
+                    "matcher": "startup",
+                    "hooks": [{"type": "command", "command": "user-greet.sh"}],
+                }
+            ]
+        }
+    }
+    settings_path.write_text(json.dumps(original, indent=2))
+
+    merge_session_start_hook(settings_path, command=old)
+    merge_session_start_hook(settings_path, command=new)
+
+    settings = json.loads(settings_path.read_text())
+    cmds = _commands(_session_start(settings))
+    sh_cmds = [c for c in cmds if "change resume" in c]
+    assert sh_cmds == [new]
+    assert "user-greet.sh" in cmds
+
+
+def test_session_start_corrupt_not_a_list_raises(tmp_path: Path) -> None:
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({"hooks": {"SessionStart": {"oops": 1}}}))
+
+    with pytest.raises(ValueError, match="SessionStart"):
+        merge_session_start_hook(settings_path, command=_SS_COMMAND)
+
+
+def test_session_start_idempotent_reinstall_writes_no_new_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeat install with the same command changes nothing — no new backup."""
+    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(json.dumps({"other": "key"}, indent=2))
+
+    clock = iter([1000, 2000, 3000, 4000])
+    monkeypatch.setattr(
+        "super_harness.adapters.agent._settings_merge.time.time_ns",
+        lambda: next(clock),
+    )
+
+    merge_session_start_hook(settings_path, command=_SS_COMMAND)
+
+    pattern = str(settings_path) + ".super-harness-backup.*"
+    backups_before = sorted(glob.glob(pattern))
+    bytes_before = settings_path.read_bytes()
+
+    merge_session_start_hook(settings_path, command=_SS_COMMAND)
+
+    assert sorted(glob.glob(pattern)) == backups_before
+    assert settings_path.read_bytes() == bytes_before
