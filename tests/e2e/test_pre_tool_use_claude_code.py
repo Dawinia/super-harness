@@ -32,6 +32,7 @@ precisely because of the upstream Edit-deny caveat above).
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import time
 from collections.abc import Callable
@@ -127,7 +128,7 @@ def test_pre_tool_use_blocks_then_allows(tmp_path: Path) -> None:
         # Invoke the EXACT registered command with the Claude-Code JSON payload
         # on stdin, from inside the workspace so the hook walks up to .harness/.
         return subprocess.run(
-            cmd.split(),
+            shlex.split(cmd),
             input=_PAYLOAD,
             text=True,
             capture_output=True,
