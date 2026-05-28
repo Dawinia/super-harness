@@ -16,16 +16,15 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import signal
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
-import yaml
 
 from super_harness.daemon import supervisor
 from super_harness.daemon._uds_path import resolve_socket_path
+from tests.integration.daemon.conftest import kill_daemon, write_state
 
 
 def _has_daemon_binary() -> bool:
@@ -44,57 +43,9 @@ def workspace(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _write_state(workspace: Path, change_id: str, current_state: str) -> None:
-    state_path = workspace / ".harness" / "state.yaml"
-    # Real reducer shape: `changes` map only, NO top-level active_change_id
-    # (the reducer never writes it; "active" is derived = first non-terminal).
-    state_path.write_text(
-        yaml.safe_dump(
-            {"changes": {change_id: {"change_id": change_id,
-                                     "current_state": current_state}}}
-        )
-    )
-
-
 def _today_log(workspace: Path) -> Path:
     date = datetime.now(timezone.utc).date().isoformat()
     return workspace / ".harness" / "operation-logs" / f"daemon-fallback-{date}.log"
-
-
-def _kill_daemon_if_running(workspace: Path) -> None:
-    pid_file = workspace / ".harness" / "daemon.pid"
-    # Hot-path tests fire-and-forget a real daemon that may still be
-    # double-forking when this teardown runs (PID file absent), or the file may
-    # hold a stale DEAD pid from a prior daemon while a freshly-spawned one is
-    # still booting (the appends-not-overwrites test spawns two). Poll until the
-    # file names a LIVE process, then SIGTERM it — otherwise we kill a corpse
-    # and leave an orphan (cwd=/, survives workspace cleanup, holds the fallback
-    # socket forever). The daemon normally registers in <1s.
-    deadline = time.monotonic() + 2.0
-    pid: int | None = None
-    while time.monotonic() < deadline:
-        if pid_file.exists():
-            try:
-                candidate = int(pid_file.read_text().strip())
-                os.kill(candidate, 0)  # liveness probe; raises if dead
-                pid = candidate
-                break
-            except (ValueError, ProcessLookupError, OSError):
-                pass
-        time.sleep(0.05)
-    if pid is None:
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            try:
-                os.kill(pid, 0)
-                time.sleep(0.05)
-            except ProcessLookupError:
-                break
-    except (ValueError, ProcessLookupError):
-        pass
 
 
 def test_gate_pre_tool_use_returns_immediately_when_daemon_down(
@@ -105,7 +56,7 @@ def test_gate_pre_tool_use_returns_immediately_when_daemon_down(
     The function must NOT block on daemon spawn — Popen is fire-and-forget,
     audit line write is the only mandatory side effect.
     """
-    _write_state(workspace, "c1", "PLAN_APPROVED")
+    write_state(workspace, "c1", "PLAN_APPROVED")
     t0 = time.perf_counter()
     decision, reason = supervisor.gate_pre_tool_use(
         workspace, tool="Edit", file="src/foo.py", change_id="c1"
@@ -119,7 +70,7 @@ def test_gate_pre_tool_use_returns_immediately_when_daemon_down(
             f"gate_pre_tool_use took {elapsed_ms:.1f}ms; AC-2 budget is <50ms"
         )
     finally:
-        _kill_daemon_if_running(workspace)
+        kill_daemon(workspace)
 
 
 def test_gate_pre_tool_use_writes_audit_log_on_fallback(workspace: Path) -> None:
@@ -140,7 +91,7 @@ def test_gate_pre_tool_use_writes_audit_log_on_fallback(workspace: Path) -> None
         assert "ts" in record
         assert "reason" in record
     finally:
-        _kill_daemon_if_running(workspace)
+        kill_daemon(workspace)
 
 
 def test_audit_log_appends_not_overwrites(workspace: Path) -> None:
@@ -151,7 +102,7 @@ def test_audit_log_appends_not_overwrites(workspace: Path) -> None:
             workspace, tool="Edit", file="a.py", change_id="c1"
         )
         # Force daemon down for second call too — kill anything we may have spawned.
-        _kill_daemon_if_running(workspace)
+        kill_daemon(workspace)
         sock = resolve_socket_path(workspace)
         if sock.exists():
             sock.unlink()
@@ -163,7 +114,7 @@ def test_audit_log_appends_not_overwrites(workspace: Path) -> None:
         assert json.loads(lines[0])["params"]["file"] == "a.py"
         assert json.loads(lines[1])["params"]["file"] == "b.py"
     finally:
-        _kill_daemon_if_running(workspace)
+        kill_daemon(workspace)
 
 
 def test_gate_pre_tool_use_respawns_on_version_mismatch(
@@ -213,7 +164,7 @@ def test_gate_pre_tool_use_respawns_on_version_mismatch(
     pid_file = workspace / ".harness" / "daemon.pid"
     pid_file.write_text("99999\n")
 
-    _write_state(workspace, "c1", "PLAN_APPROVED")
+    write_state(workspace, "c1", "PLAN_APPROVED")
     decision, reason = supervisor.gate_pre_tool_use(
         workspace, tool="Edit", file="src/foo.py", change_id="c1"
     )
@@ -251,7 +202,7 @@ def test_ensure_running_blocks_until_socket_appears(workspace: Path) -> None:
         # Sanity: process is alive.
         os.kill(pid, 0)
     finally:
-        _kill_daemon_if_running(workspace)
+        kill_daemon(workspace)
 
 
 def test_ensure_running_returns_existing_pid_when_already_running(
@@ -262,7 +213,7 @@ def test_ensure_running_returns_existing_pid_when_already_running(
         pid2 = supervisor.ensure_running(workspace, wait_seconds=5.0)
         assert pid1 == pid2
     finally:
-        _kill_daemon_if_running(workspace)
+        kill_daemon(workspace)
 
 
 def test_gate_pre_tool_use_uses_daemon_when_running(workspace: Path) -> None:
@@ -272,7 +223,7 @@ def test_gate_pre_tool_use_uses_daemon_when_running(workspace: Path) -> None:
     reason matches the server's PLAN_APPROVED reason (not the supervisor's
     "daemon starting; first call permissive" fallback string).
     """
-    _write_state(workspace, "c1", "PLAN_APPROVED")
+    write_state(workspace, "c1", "PLAN_APPROVED")
     try:
         supervisor.ensure_running(workspace, wait_seconds=5.0)
         decision, reason = supervisor.gate_pre_tool_use(
@@ -284,11 +235,11 @@ def test_gate_pre_tool_use_uses_daemon_when_running(workspace: Path) -> None:
         # And the fallback audit log was NOT touched.
         assert not _today_log(workspace).exists()
     finally:
-        _kill_daemon_if_running(workspace)
+        kill_daemon(workspace)
 
 
 def test_gate_pre_tool_use_blocks_when_daemon_says_block(workspace: Path) -> None:
-    _write_state(workspace, "c1", "AWAITING_PLAN_REVIEW")
+    write_state(workspace, "c1", "AWAITING_PLAN_REVIEW")
     try:
         supervisor.ensure_running(workspace, wait_seconds=5.0)
         decision, reason = supervisor.gate_pre_tool_use(
@@ -297,4 +248,4 @@ def test_gate_pre_tool_use_blocks_when_daemon_says_block(workspace: Path) -> Non
         assert decision == "block"
         assert "AWAITING_PLAN_REVIEW" in reason
     finally:
-        _kill_daemon_if_running(workspace)
+        kill_daemon(workspace)
