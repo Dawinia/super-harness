@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from super_harness.daemon.protocol import (
+    MAX_REQUEST_BYTES,
     GateQueryRequest,
     ProtocolError,
     decode_response,
@@ -80,7 +81,11 @@ def query(
             raise DaemonUnreachable(f"send failed: {e}") from e
 
         try:
-            line = s.makefile("rb").readline()
+            # Cap the read symmetrically with the server's UC-8 defense: a
+            # buggy daemon emitting a runaway line must not stall the hot-path
+            # hook or balloon memory. decode_response rejects anything that
+            # actually reaches MAX_REQUEST_BYTES + 1.
+            line = s.makefile("rb").readline(MAX_REQUEST_BYTES + 1)
         except TimeoutError as e:
             raise DaemonTimeout(f"recv timeout: {socket_path}") from e
         except OSError as e:

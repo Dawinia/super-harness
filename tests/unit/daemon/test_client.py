@@ -88,7 +88,10 @@ class _EchoServer:
             if self._delay:
                 time.sleep(self._delay)
             resp_bytes = self._handler(req)
-            conn.sendall(resp_bytes)
+            try:
+                conn.sendall(resp_bytes)
+            except BrokenPipeError:
+                pass  # client timed out and closed first — expected in slow-daemon test
         finally:
             conn.close()
             self._sock.close()
