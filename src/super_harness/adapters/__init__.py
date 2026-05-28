@@ -5,15 +5,22 @@ runtime (Claude Code / Cursor / Codex / Aider) to super-harness — it installs
 hooks for deterministic gate enforcement and injects context for cross-session
 continuity (Ralph Loop).
 
+Per adapter-architecture §2.1: a FrameworkAdapter bridges a spec-driven
+framework (OpenSpec / Spec Kit / Superpowers / Plain) to super-harness —
+observes framework artifacts, emits lifecycle events, and contributes
+verification checks.
+
 Public surface:
 - AgentAdapter (ABC) — subclass to support a new agent runtime
+- FrameworkAdapter (ABC) — subclass to support a new spec framework
+- WorkspaceContext — dataclass for workspace metadata
 
-v0.1 ships only the ABC here. The concrete ClaudeCodeAdapter, the adapter
-registry, and the `adapter install` CLI come in later tasks.
+v0.1 ships only the ABCs here. Concrete adapters, the adapter registry, and
+the `adapter install` CLI come in later tasks.
 
-Concrete adapters must declare `capabilities` with the v0.1 canonical 8 keys
-(adapters do not invent their own; v0.2 adds a reserved `x_<vendor>_*` prefix
-for extensions — see adapter-architecture §2.2):
+Concrete AgentAdapter subclasses must declare `capabilities` with the v0.1
+canonical 8 keys (adapters do not invent their own; v0.2 adds a reserved
+`x_<vendor>_*` prefix for extensions — see adapter-architecture §2.2):
     pre_tool_use_hook    # agent tool-call pre hook (real-time deterministic gate)
     post_tool_use_hook   # agent tool-call post hook (result inspection)
     session_start_hook   # session-start context injection
@@ -25,7 +32,7 @@ for extensions — see adapter-architecture §2.2):
 
 See adapter-architecture spec §2.2 for the full contract.
 
-API stability: **experimental** (v0.1). The AgentAdapter interface may change in
+API stability: **experimental** (v0.1). The adapter interfaces may change in
 v0.2 without backwards compatibility. Pin to v0.1 if depending on this API.
 """
 
@@ -33,12 +40,33 @@ from __future__ import annotations
 
 import inspect
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
+
+from super_harness.core.events import Event
 
 __all__ = [
     "AgentAdapter",
+    "FrameworkAdapter",
+    "WorkspaceContext",
 ]
+
+
+@dataclass
+class WorkspaceContext:
+    """Workspace metadata passed to FrameworkAdapter operations.
+
+    Fields:
+        workspace_root: absolute path to the workspace root directory
+        git_branch: current git branch name, or None if not a git repo / detached HEAD
+        active_change_id: slug of the currently active change, or None if none
+    """
+
+    workspace_root: Path
+    git_branch: str | None
+    active_change_id: str | None  # current active change slug
 
 
 class AgentAdapter(ABC):
@@ -115,5 +143,82 @@ class AgentAdapter(ABC):
         super-harness handles generic cleanup (removing the AGENTS.md subsection
         / verification.yaml injection); adapters only override this for special
         cleanup (e.g. removing a hook entry from `.claude/settings.json`).
+        """
+        pass
+
+
+class FrameworkAdapter(ABC):
+    """Bridge to a spec-driven framework (OpenSpec / Spec Kit / Superpowers / Plain).
+
+    Adapter observes framework artifacts -> emits lifecycle events; contributes
+    verification checks to .harness/verification.yaml.adapter_provided.
+    See adapter-architecture spec §2.1 for the full contract.
+    Subclasses must define `name` (non-empty) and `version` (not the default
+    "0.0.0").
+    """
+
+    name: ClassVar[str] = ""
+    version: ClassVar[str] = "0.0.0"
+    # When True the dispatcher force-activates this adapter only when all
+    # non-fallback adapters' detect() return False (e.g. the "plain" adapter).
+    is_fallback: ClassVar[bool] = False
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if inspect.isabstract(cls):
+            return
+        if not cls.name:
+            raise TypeError(
+                f"{cls.__name__} must define a non-empty `name` class attribute"
+            )
+        if not cls.version or cls.version == "0.0.0":
+            raise TypeError(
+                f"{cls.__name__} must define `version` (not the default '0.0.0')"
+            )
+
+    @abstractmethod
+    def detect(self, workspace: Path) -> bool:
+        """Detect whether `workspace` uses this framework.
+
+        Typically a feature-file check (e.g. `.super-harness/` or `spec/` exists).
+        """
+        ...
+
+    @abstractmethod
+    def observe(self, workspace: Path) -> Iterator[Event]:
+        """Observe framework artifacts in `workspace` and yield lifecycle events.
+
+        Called by the daemon to collect events that should be appended to
+        events.jsonl. Implementations should yield only new/unseen events.
+        """
+        ...
+
+    @abstractmethod
+    def get_state(self, change_id: str) -> dict[str, Any] | None:
+        """Return current framework state for `change_id`, or None if unknown.
+
+        The returned dict is stored as `Event.framework_state` on emitted events.
+        """
+        ...
+
+    @abstractmethod
+    def verification_checks(self) -> list[dict[str, Any]]:
+        """Return adapter-provided verification checks for verification.yaml.
+
+        Each dict represents one check entry contributed to
+        .harness/verification.yaml.adapter_provided.
+        """
+        ...
+
+    @abstractmethod
+    def agents_md_subsection(self) -> str:
+        """Return framework-specific instructions for the AGENTS.md subsection."""
+        ...
+
+    def on_uninstall(self, workspace: Path) -> None:  # noqa: B027
+        """Clean up framework-specific artifacts from `workspace` (default = no-op).
+
+        Intentionally a non-abstract no-op (per adapter-architecture §2.1):
+        adapters opt in to extra cleanup by overriding; not overriding is valid.
         """
         pass
