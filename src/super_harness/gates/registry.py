@@ -26,6 +26,7 @@ from pathlib import Path
 
 from super_harness.core._registry import load_components
 from super_harness.gates import Gate
+from super_harness.gates.pre_tool_use import PreToolUseGate
 
 __all__ = ["get_builtin", "list_builtins", "load_gates", "register_builtin"]
 
@@ -103,3 +104,6 @@ def load_gates(yaml_path: Path, *, builtin_only: bool = False) -> list[Gate]:
         builtin=_BUILTIN,
         builtin_only=builtin_only,
     )
+
+
+register_builtin("pre-tool-use", PreToolUseGate)

@@ -70,10 +70,27 @@ def test_list_when_no_harness(tmp_path: Path, isolated_registry: None) -> None:
     assert "No .harness/" in r.stderr or "No .harness/" in r.output
 
 
-def test_list_empty_registry(harness_workspace: Path, isolated_registry: None) -> None:
+def test_list_empty_registry(
+    harness_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Use a genuinely empty builtin table — the `isolated_registry` fixture
+    # snapshot-copies `_BUILTIN`, which now ships the `pre-tool-use` builtin,
+    # so an empty-message assertion needs the table cleared outright.
+    monkeypatch.setattr(gates_registry, "_BUILTIN", {})
     r = CliRunner().invoke(main, ["--workspace", str(harness_workspace), "gate", "list"])
     assert r.exit_code == EXIT_OK
     assert "No gates registered" in r.output
+
+
+def test_list_includes_pre_tool_use_builtin(
+    harness_workspace: Path, isolated_registry: None
+) -> None:
+    # The `pre-tool-use` gate is registered at import time (registry.py
+    # bottom), so `gate list` must surface it as a built-in row.
+    r = CliRunner().invoke(main, ["--workspace", str(harness_workspace), "gate", "list"])
+    assert r.exit_code == EXIT_OK
+    assert "pre-tool-use" in r.output
+    assert "built-in" in r.output
 
 
 def test_list_builtin_only(harness_workspace: Path, isolated_registry: None) -> None:
