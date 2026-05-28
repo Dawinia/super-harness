@@ -22,6 +22,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import HarnessNotInitialized, find_harness_root
 
 
@@ -61,37 +62,14 @@ def main() -> None:  # console_script entry
 
 
 def _read_active_change_id(root: Path) -> str | None:
-    """Resolve the active change_id from state.yaml's derived `changes` map.
+    """Thin delegating alias for `core.active_change.read_active_change_id`.
 
-    v0.1 convention (mirrors `super-harness status`): the active change is the
-    first non-terminal change. state.yaml is reducer-generated and carries NO
-    top-level `active_change_id` field — "active" is a derived notion computed
-    at read time. Returns None if state.yaml is missing/unparseable or has no
-    non-terminal change. The env var SUPER_HARNESS_CHANGE_ID overrides this
-    (checked by the caller before this fallback runs).
-
-    Intentionally NOT going through HotState — that's daemon-side. The hook
-    entry-point talks to the daemon, so reading state.yaml here is only
-    needed when the supervisor needs a change_id to pass in the request.
+    Kept as a live callable (the hook's state-resolution is exercised through
+    this name by `tests/integration/daemon/test_hook_entry.py`). The shared
+    logic now lives in `core.active_change` so the `gate check` CLI resolves
+    the same active change.
     """
-    state_path = root / ".harness" / "state.yaml"
-    if not state_path.exists():
-        return None
-    try:
-        import yaml
-
-        data = yaml.safe_load(state_path.read_text()) or {}
-    except Exception:
-        return None
-    changes = data.get("changes")
-    if not isinstance(changes, dict):
-        return None
-    from super_harness.core.state import TERMINAL_STATES
-
-    for change_id, record in changes.items():
-        if isinstance(record, dict) and record.get("current_state") not in TERMINAL_STATES:
-            return str(change_id)
-    return None
+    return read_active_change_id(root)
 
 
 if __name__ == "__main__":  # pragma: no cover

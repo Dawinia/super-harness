@@ -33,15 +33,27 @@ from typing import Any
 import click
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
+from super_harness.cli.exit_codes import (
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+    EXIT_VALIDATION,
+)
 from super_harness.cli.output import json_envelope
 from super_harness.core._registry import read_plugin_paths
+from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import (
     HarnessNotInitialized,
     find_harness_root,
     gates_yaml_path,
 )
+from super_harness.daemon import supervisor
 from super_harness.gates.registry import get_builtin, list_builtins, load_gates
+
+# The four cold-path gate names. They belong to the RATIFIED `gate check`
+# command surface (cli-command-surface §gate-check lists all 5 names) but are
+# not wired in v0.1 — they land with Phase 12/13.
+_COLD_PATH = {"pre-commit", "pre-push", "pr-open", "pr-merge"}
 
 
 @click.group("gate")
@@ -95,6 +107,64 @@ def gate_list(ctx: click.Context) -> None:
     else:
         _render_human_table(rows, kind="gates")
     sys.exit(EXIT_OK)
+
+
+@gate_group.command("check")
+@click.argument(
+    "gate_name",
+    type=click.Choice(
+        ["pre-tool-use", "pre-commit", "pre-push", "pr-open", "pr-merge"]
+    ),
+)
+@click.option("--tool")
+@click.option("--file")
+@click.option("--change-id")
+@click.option("--pr", type=int)
+@click.pass_context
+def gate_check(
+    ctx: click.Context,
+    gate_name: str,
+    tool: str | None,
+    file: str | None,
+    change_id: str | None,
+    pr: int | None,
+) -> None:
+    """Check a gate decision (`pre-tool-use` delegates to the daemon).
+
+    Manual/CI/debug entry to the pre-tool-use gate — NOT the hot path (that's
+    the click-less `super-harness-hook` binary). The four cold-path gate names
+    (`pre-commit`, `pre-push`, `pr-open`, `pr-merge`) are part of the ratified
+    command surface but are not yet wired in v0.1 (Phase 12/13).
+    """
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as e:
+        click.echo(
+            format_error(subcommand="gate check", message=e.message, hint=e.hint),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
+
+    if gate_name in _COLD_PATH:
+        click.echo(
+            format_error(
+                subcommand="gate check",
+                message=(
+                    f"gate '{gate_name}' not yet implemented in v0.1 "
+                    "(cold-path gates land with Phase 12/13)"
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    cid = change_id or read_active_change_id(root)
+    decision, reason = supervisor.gate_pre_tool_use(
+        root, tool=tool or "", file=file, change_id=cid
+    )
+    if not ctx.obj.get("quiet"):
+        click.echo(f"{decision}: {reason}")
+    sys.exit(EXIT_OK if decision == "allow" else EXIT_VALIDATION)
 
 
 def _collect_gate_rows(yaml_path: Path) -> list[dict[str, Any]]:
