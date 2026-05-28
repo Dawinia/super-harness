@@ -1,18 +1,20 @@
 """Reference ``AgentAdapter`` for Claude Code (adapter-architecture §3.5).
 
 This is the canonical adapter super-harness ships in v0.1. It bridges Claude
-Code's runtime to the harness by registering a **PreToolUse** hook directly into
-``.claude/settings.json`` — the hook ``command`` points at the
-``super-harness-hook`` binary (no ``.sh`` wrapper; input parsing lives inside
-that binary, see sensor-gate §3.2.1 + daemon §3.5).
+Code's runtime to the harness by registering two hooks directly into
+``.claude/settings.json``:
+
+- a **PreToolUse** hook whose ``command`` points at the ``super-harness-hook``
+  binary (no ``.sh`` wrapper; input parsing lives inside that binary, see
+  sensor-gate §3.2.1 + daemon §3.5), and
+- a **SessionStart** hook whose ``command`` is ``<super-harness> change resume``
+  (no slug → active change): Claude Code injects its stdout as session context.
 
 Scope deltas baked in per spec §3.5:
 - **DELTA 2026-05-28 (Phase 5)**: no ``.sh`` script is written — the hook
   ``command`` is the resolved binary path directly.
-- **SessionStart is DEFERRED to Phase 9**: this adapter wires PreToolUse ONLY.
-  SessionStart context injection needs ``change resume`` to grow a no-arg
-  "resolve active change" mode (it currently requires a ``<slug>``), which
-  lands with the AGENTS.md injection work in Phase 9.
+- **SessionStart wired (Phase 7)**: powered by ``change resume``'s no-arg
+  "resolve active change" mode (``core.active_change.read_active_change_id``).
 
 The actual AGENTS.md injection and registry/CLI wiring live in later tasks; this
 module only provides the adapter class itself.
@@ -28,7 +30,10 @@ from pathlib import Path
 from typing import ClassVar
 
 from super_harness.adapters import AgentAdapter
-from super_harness.adapters.agent._settings_merge import merge_pre_tool_use_hook
+from super_harness.adapters.agent._settings_merge import (
+    merge_pre_tool_use_hook,
+    merge_session_start_hook,
+)
 
 __all__ = [
     "ClaudeCodeAdapter",
@@ -72,7 +77,7 @@ class ClaudeCodeAdapter(AgentAdapter):
     capabilities: ClassVar[dict[str, bool]] = {
         "pre_tool_use_hook": True,  # Claude Code PreToolUse hook
         "post_tool_use_hook": True,  # Claude Code PostToolUse hook
-        "session_start_hook": True,  # capability exists; wiring deferred (Phase 9)
+        "session_start_hook": True,  # Claude Code SessionStart hook (Phase 7)
         "session_end_hook": False,  # Claude Code has no explicit session-end hook
         "pre_commit_hook": False,  # commit is user-driven git, not an agent hook
         "rules_file_injection": True,  # CLAUDE.md / AGENTS.md
@@ -85,33 +90,73 @@ class ClaudeCodeAdapter(AgentAdapter):
         return (workspace / ".claude").is_dir()
 
     def install_hooks(self, workspace: Path) -> None:
-        """Register the super-harness PreToolUse hook in ``.claude/settings.json``.
+        """Register the super-harness PreToolUse + SessionStart hooks.
 
-        Resolves the ``super-harness-hook`` binary to an absolute path and merges
-        a PreToolUse entry whose ``command`` is ``<abs> --agent claude-code`` into
-        the existing settings (no clobber, backed up first, idempotent — see
-        ``merge_pre_tool_use_hook``).
+        Resolves BOTH binaries to absolute paths UP FRONT (so a missing binary
+        aborts before any write), then merges two entries into
+        ``.claude/settings.json`` (no clobber, idempotent — see
+        ``merge_pre_tool_use_hook`` / ``merge_session_start_hook``):
 
-        Per spec §3.5 this writes NO ``.sh`` script and does NOT wire SessionStart
-        (deferred to Phase 9): PreToolUse only.
+        - **PreToolUse**: ``command`` = ``<abs super-harness-hook> --agent
+          claude-code`` (deterministic gate enforcement).
+        - **SessionStart**: ``command`` = ``<abs super-harness> change resume``
+          (no slug → active change); Claude Code injects its stdout as context.
+
+        Per spec §3.5 this writes NO ``.sh`` script.
+
+        Registering TWO hooks widens the partial-write window, so the settings
+        file is snapshotted ONCE before both merges; if either merge raises, the
+        snapshot is restored (original bytes rewritten, or the file deleted if it
+        was absent) and the error re-raised (spec §3.5 step 3 rollback / OI-9).
+        The per-merge backups preserve the *user's* prior content; this snapshot
+        is the install *transaction* boundary, a distinct concern.
 
         Raises:
-            RuntimeError: if ``super-harness-hook`` is not resolvable on PATH
-                (a broken install the user must fix by reinstalling).
+            RuntimeError: if ``super-harness-hook`` or ``super-harness`` is not
+                resolvable on PATH (a broken install the user must fix by
+                reinstalling) — raised BEFORE any write.
         """
-        resolved = shutil.which(_HOOK_BINARY)
-        if resolved is None:
+        resolved_hook = shutil.which(_HOOK_BINARY)
+        if resolved_hook is None:
             raise RuntimeError(
                 f"{_HOOK_BINARY} not found on PATH; reinstall super-harness "
                 f"(e.g. `pipx reinstall super-harness`) so the gate hook binary "
                 f"is available before installing the Claude Code adapter."
             )
-        command = f"{resolved} --agent claude-code"
-        merge_pre_tool_use_hook(
-            workspace / ".claude" / "settings.json", command=command
-        )
-        # NOTE: SessionStart is intentionally NOT wired here — deferred to Phase 9
-        # (needs `change resume` no-arg active-change resolution + AGENTS.md work).
+        resolved_cli = shutil.which(_CLI_BINARY)
+        if resolved_cli is None:
+            raise RuntimeError(
+                f"{_CLI_BINARY} not found on PATH; reinstall super-harness "
+                f"(e.g. `pipx reinstall super-harness`) so the CLI binary is "
+                f"available before installing the Claude Code adapter."
+            )
+
+        settings_path = workspace / ".claude" / "settings.json"
+        pre_tool_use_command = f"{resolved_hook} --agent claude-code"
+        # No-arg `change resume` → resume the active change at session start.
+        session_start_command = f"{resolved_cli} change resume"
+
+        # Snapshot the install transaction boundary: capture the file's exact
+        # pre-install content, or that it was absent. Restored on ANY failure.
+        snapshot: str | None = settings_path.read_text() if settings_path.exists() else None
+        try:
+            merge_pre_tool_use_hook(settings_path, command=pre_tool_use_command)
+            merge_session_start_hook(settings_path, command=session_start_command)
+        except BaseException:
+            self._restore_snapshot(settings_path, snapshot)
+            raise
+
+    @staticmethod
+    def _restore_snapshot(settings_path: Path, snapshot: str | None) -> None:
+        """Restore ``settings_path`` to its pre-install state (snapshot rollback).
+
+        ``snapshot is None`` means the file did not exist pre-install → delete
+        whatever a partial merge wrote. Otherwise rewrite the original bytes.
+        """
+        if snapshot is None:
+            settings_path.unlink(missing_ok=True)
+        else:
+            settings_path.write_text(snapshot)
 
     def inject_context(self, change_id: str) -> str:
         """Return the ``change resume`` context dump for ``change_id``.
@@ -138,14 +183,21 @@ class ClaudeCodeAdapter(AgentAdapter):
         return _AGENTS_MD_SUBSECTION
 
     def on_uninstall(self, workspace: Path) -> None:
-        """Best-effort restore of the most recent settings.json backup.
+        """Best-effort restore of the EARLIEST settings.json backup (pristine).
 
-        ``merge_pre_tool_use_hook`` backs the user's file up to
-        ``settings.json.super-harness-backup.<unix-ts>`` before each write. On
-        uninstall we restore the newest such backup (highest timestamp) to undo
-        our hook entry. If no backup exists we leave the file untouched — a
-        minimal, documented best-effort suitable for v0.1 (clean per-entry
-        removal is a Phase 9+ refinement).
+        Each merge backs the file up to ``settings.json.super-harness-backup.
+        <time_ns>`` before its write. ``install_hooks`` runs TWO merges, so a
+        single install on a pre-existing file writes TWO backups: the FIRST
+        (lowest ts) captures the truly pristine file; the SECOND captures
+        pristine + our PreToolUse entry. To undo BOTH of our hooks we must
+        restore the EARLIEST backup — restoring the newest would leave our
+        PreToolUse entry behind. (Idempotent re-installs write no backup, and a
+        binary relocation only adds *newer* backups, so the earliest backup
+        stays pristine across re-installs.)
+
+        If no backup exists we leave the file untouched — a minimal, documented
+        best-effort suitable for v0.1 (clean per-entry removal is a Phase 9+
+        refinement).
         """
         settings_path = workspace / ".claude" / "settings.json"
         backups = sorted(
@@ -154,7 +206,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         )
         if not backups:
             return
-        settings_path.write_text(backups[-1].read_text())
+        settings_path.write_text(backups[0].read_text())
 
 
 def _backup_sort_key(path: Path) -> int:
