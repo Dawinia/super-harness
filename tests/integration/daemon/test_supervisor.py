@@ -62,20 +62,38 @@ def _today_log(workspace: Path) -> Path:
 
 def _kill_daemon_if_running(workspace: Path) -> None:
     pid_file = workspace / ".harness" / "daemon.pid"
-    if pid_file.exists():
-        try:
-            pid = int(pid_file.read_text().strip())
-            os.kill(pid, signal.SIGTERM)
-            # wait up to 2s
-            deadline = time.monotonic() + 2.0
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(pid, 0)
-                    time.sleep(0.05)
-                except ProcessLookupError:
-                    break
-        except (ValueError, ProcessLookupError):
-            pass
+    # Hot-path tests fire-and-forget a real daemon that may still be
+    # double-forking when this teardown runs (PID file absent), or the file may
+    # hold a stale DEAD pid from a prior daemon while a freshly-spawned one is
+    # still booting (the appends-not-overwrites test spawns two). Poll until the
+    # file names a LIVE process, then SIGTERM it — otherwise we kill a corpse
+    # and leave an orphan (cwd=/, survives workspace cleanup, holds the fallback
+    # socket forever). The daemon normally registers in <1s.
+    deadline = time.monotonic() + 2.0
+    pid: int | None = None
+    while time.monotonic() < deadline:
+        if pid_file.exists():
+            try:
+                candidate = int(pid_file.read_text().strip())
+                os.kill(candidate, 0)  # liveness probe; raises if dead
+                pid = candidate
+                break
+            except (ValueError, ProcessLookupError, OSError):
+                pass
+        time.sleep(0.05)
+    if pid is None:
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.05)
+            except ProcessLookupError:
+                break
+    except (ValueError, ProcessLookupError):
+        pass
 
 
 def test_gate_pre_tool_use_returns_immediately_when_daemon_down(

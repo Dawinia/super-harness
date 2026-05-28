@@ -44,6 +44,8 @@ def _sock_path(workspace_root: Path) -> Path:
 
 
 def _pid_path(workspace_root: Path) -> Path:
+    # No fallback: the PID file path has no sun_path length limit (unlike the
+    # socket, which _sock_path resolves via _uds_path.resolve_socket_path).
     return workspace_root / ".harness" / "daemon.pid"
 
 
@@ -65,9 +67,10 @@ def _write_fallback_audit_log(
 ) -> None:
     """Append one JSON line to the daily fallback audit log (AC-10).
 
-    Uses `os.write` on an `O_APPEND` fd: per POSIX, writes <= PIPE_BUF
-    (typically 4096 bytes; a JSON line here is < 512 bytes) on an O_APPEND
-    fd are atomic, so concurrent supervisors won't interleave bytes.
+    Uses `os.write` on an `O_APPEND` fd: POSIX requires the seek-to-end + write
+    under O_APPEND to be atomic per write() call for regular files (regardless
+    of size — the PIPE_BUF bound applies only to pipes/FIFOs), so concurrent
+    supervisors won't interleave bytes.
     """
     record = {
         "ts": datetime.now(timezone.utc).isoformat(),
@@ -160,6 +163,15 @@ def gate_pre_tool_use(
     try:
         resp = query(sock, method="gate.pre_tool_use", params=params, timeout=0.2)
     except (DaemonUnreachable, DaemonTimeout) as exc:
+        # v0.2 GAP (tracked): a real protocol-version bump lands HERE, not in
+        # the 400-envelope branch below. decode_response version-gates the
+        # error envelope itself (protocol.py), so a stale daemon's 400 reply
+        # is undecodable by the newer client → ProtocolVersionMismatch →
+        # DaemonUnreachable → this branch. That means the elaborate
+        # SIGTERM-before-respawn logic below is unreachable in a real upgrade,
+        # and this branch does a naive spawn (no SIGTERM) — the very respawn
+        # loop UC-6 was meant to prevent. Harmless in v0.1 (only one protocol
+        # version exists); must be resolved before v0.2 bumps PROTOCOL_VERSION.
         reason = f"daemon starting; first call permissive ({exc})"
         _spawn_daemon_fire_and_forget(workspace_root)
         _write_fallback_audit_log(
