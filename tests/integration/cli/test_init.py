@@ -159,3 +159,25 @@ def test_init_does_not_write_agents_md_on_error_path(tmp_path: Path):
     r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
     assert r.exit_code == 3
     assert not (tmp_path / "AGENTS.md").exists()
+
+
+def test_init_agents_md_write_failure_exits_generic_with_format_error(tmp_path: Path):
+    """If the AGENTS.md write raises OSError, init surfaces a clean format_error
+    (exit 1, no traceback) instead of a raw crash.
+
+    We force a portable OSError by pre-creating a DIRECTORY at the AGENTS.md path:
+    `inject_section`'s read (`AGENTS.md/`.read_text()) raises IsADirectoryError
+    (an OSError subclass) on every platform. .harness/ has already been scaffolded
+    by this point, so the message must reflect that and that `--force` re-runs."""
+    # Pre-create AGENTS.md as a directory so the injector's read/write fails.
+    (tmp_path / "AGENTS.md").mkdir()
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness init:" in r.stderr, r.stderr
+    assert "failed to write AGENTS.md" in r.stderr, r.stderr
+    assert "Hint:" in r.stderr, r.stderr
+    # .harness/ was scaffolded before the AGENTS.md write — it must survive so the
+    # `--force` re-run is the documented recovery.
+    assert (tmp_path / ".harness").is_dir()

@@ -594,3 +594,73 @@ def test_round_trip_install_uninstall_reinstall_agent(
     text = _agents_md(tmp_path).read_text()
     assert text.count(_CLAUDE_BEGIN) == 1
     assert _NO_AGENT_ANCHOR not in text
+
+
+# --- I-1: AGENTS.md write failure on install/uninstall → clean error envelope -
+
+
+def test_install_agents_md_write_failure_exits_generic_with_format_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the AGENTS.md inject raises OSError mid-install, the command surfaces a
+    clean format_error (exit 1, no traceback) instead of a raw crash.
+
+    We force a portable OSError by replacing the AGENTS.md path with a DIRECTORY
+    after `init`: the injector's read (`AGENTS.md/`.read_text()) raises
+    IsADirectoryError (an OSError subclass) on every platform. The adapters.yaml
+    entry was already persisted (we assert it survived — re-install is the
+    idempotent recovery contract, no rollback)."""
+    import shutil
+
+    assert _init(tmp_path).exit_code == 0
+    # Replace the file AGENTS.md with a directory at the same path → any
+    # read/write through it raises OSError deterministically (cross-platform).
+    agents = _agents_md(tmp_path)
+    agents.unlink()
+    agents.mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
+
+    r = _run(tmp_path, "install", "claude-code")
+
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness adapter install:" in r.stderr, r.stderr
+    assert "failed to update AGENTS.md" in r.stderr, r.stderr
+    assert "Hint:" in r.stderr, r.stderr
+    # The yaml entry was recorded BEFORE the AGENTS.md write — it must survive so
+    # the idempotent re-install can recover (no rollback in v0.1).
+    assert any(e.get("name") == "claude-code" for e in _entries(tmp_path)), (
+        f"entry lost despite idempotent-retry contract; entries={_entries(tmp_path)}"
+    )
+
+
+def test_uninstall_agents_md_remove_failure_exits_generic_with_format_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If removing the AGENTS.md subsection raises OSError on uninstall, the
+    command surfaces a clean format_error (exit 1, no traceback).
+
+    We monkeypatch `remove_subsection` (as imported into the adapter module) to
+    raise OSError deterministically — replacing AGENTS.md with a directory would
+    fail the not-installed precheck path differently, so a targeted patch keeps
+    this test about the remove step specifically."""
+    assert _init(tmp_path).exit_code == 0
+    assert _install_claude(tmp_path, monkeypatch).exit_code == 0
+
+    import super_harness.cli.adapter as adapter_mod
+
+    def _raise_oserror(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(adapter_mod, "remove_subsection", _raise_oserror)
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--quiet", "adapter", "uninstall", "claude-code"],
+    )
+
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness adapter uninstall:" in r.stderr, r.stderr
+    assert "failed to remove the AGENTS.md subsection" in r.stderr, r.stderr
+    assert "disk full" in r.stderr, r.stderr

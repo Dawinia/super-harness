@@ -14,8 +14,9 @@ import click
 
 from super_harness.adapters.framework.plain import PlainAdapter
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK
+from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.engineering.agents_md import (
+    AgentsMdInjectionError,
     inject_framework_subsection,
     inject_section,
 )
@@ -175,7 +176,26 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
     # Both injectors write atomically and are CRLF-safe. Idempotent: a re-render
     # (e.g. --force) replaces the existing section rather than duplicating it.
     agents_path = root / "AGENTS.md"
-    inject_section(agents_path, _AGENTS_MD_SECTION_TEMPLATE.format(version=__version__))
-    inject_framework_subsection(agents_path, "plain", PlainAdapter().agents_md_subsection())
+    # .harness/ is fully scaffolded above. An OSError (unwritable AGENTS.md / full
+    # disk) or AgentsMdInjectionError (duplicate super-harness outer block) here
+    # must surface through format_error like the .harness-exists branch — never a
+    # raw traceback. `init --force` re-renders the section in place, so the
+    # recovery contract is "fix AGENTS.md, re-run init --force".
+    try:
+        inject_section(agents_path, _AGENTS_MD_SECTION_TEMPLATE.format(version=__version__))
+        inject_framework_subsection(agents_path, "plain", PlainAdapter().agents_md_subsection())
+    except (OSError, AgentsMdInjectionError) as e:
+        click.echo(
+            format_error(
+                subcommand="init",
+                message=f"scaffolded .harness/ but failed to write AGENTS.md: {e}",
+                hint=(
+                    "Fix AGENTS.md (permissions / duplicate super-harness markers) "
+                    "and re-run `init --force`."
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
     click.echo(f"super-harness initialized at {harness}")
     sys.exit(EXIT_OK)

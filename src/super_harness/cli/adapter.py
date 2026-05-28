@@ -63,6 +63,7 @@ from super_harness.core.paths import (
     find_harness_root,
 )
 from super_harness.engineering.agents_md import (
+    AgentsMdInjectionError,
     inject_agent_subsection,
     inject_framework_subsection,
     remove_subsection,
@@ -145,10 +146,30 @@ def adapter_install(ctx: click.Context, name: str) -> None:
     agents_path = root / "AGENTS.md"
     if agents_path.exists():
         subsection = adapter.agents_md_subsection()
-        if isinstance(adapter, AgentAdapter):
-            inject_agent_subsection(agents_path, adapter.name, subsection)
-        else:
-            inject_framework_subsection(agents_path, adapter.name, subsection)
+        # The adapters.yaml entry is already persisted above. An OSError
+        # (unwritable AGENTS.md / full disk) or AgentsMdInjectionError (duplicate
+        # super-harness outer block) here must surface through format_error like
+        # every other filesystem step — never a raw traceback. Re-install is
+        # idempotent (the injectors replace in place), so the recovery contract
+        # is "fix AGENTS.md, re-run install" — NO yaml-entry rollback in v0.1.
+        try:
+            if isinstance(adapter, AgentAdapter):
+                inject_agent_subsection(agents_path, adapter.name, subsection)
+            else:
+                inject_framework_subsection(agents_path, adapter.name, subsection)
+        except (OSError, AgentsMdInjectionError) as e:
+            click.echo(
+                format_error(
+                    subcommand="adapter install",
+                    message=f"adapter installed but failed to update AGENTS.md: {e}",
+                    hint=(
+                        "Fix AGENTS.md (file permissions / duplicate super-harness "
+                        "markers), then re-run `adapter install` (idempotent)."
+                    ),
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_GENERIC)
 
     if not ctx.obj.get("quiet"):
         if created_claude_dir:
@@ -255,7 +276,18 @@ def adapter_uninstall(ctx: click.Context, name: str) -> None:
     # AGENTS.md or the block is absent (removing the last agent restores the
     # no-agent anchor so a later re-install still has somewhere to land).
     kind = "framework" if isinstance(adapter, FrameworkAdapter) else "agent"
-    remove_subsection(root / "AGENTS.md", kind, adapter.name)
+    try:
+        remove_subsection(root / "AGENTS.md", kind, adapter.name)
+    except OSError as e:
+        click.echo(
+            format_error(
+                subcommand="adapter uninstall",
+                message=f"failed to remove the AGENTS.md subsection: {e}",
+                hint="Fix AGENTS.md file permissions and re-run `adapter uninstall`.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
 
     if not ctx.obj.get("quiet"):
         click.echo(f"Uninstalled {name} adapter.")
