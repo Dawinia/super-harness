@@ -11,6 +11,16 @@ jobs:
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13"]
         os: [ubuntu-latest, macos-latest]
+        # macOS runners bill at ~10x Linux minutes. Most failures are either
+        # version-specific (covered by the full Linux matrix) or platform-
+        # specific (surface at the version extremes). So macOS tests only the
+        # two ends — 3.10 (min supported) + 3.13 (latest) — skipping the
+        # redundant middle versions. Linux keeps full version coverage.
+        exclude:
+          - os: macos-latest
+            python: "3.11"
+          - os: macos-latest
+            python: "3.12"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
