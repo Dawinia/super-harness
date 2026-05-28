@@ -10,11 +10,17 @@ pair. The daemon does NOT invent gate policy — it only executes the table.
 """
 from __future__ import annotations
 
+import argparse
+import fcntl
 import hashlib
+import json
 import logging
 import os
+import signal
 import socket
+import sys
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -30,12 +36,75 @@ from super_harness.daemon.protocol import (
     encode_response,
 )
 
-__all__ = ["DaemonServer"]
+__all__ = ["DaemonServer", "daemonize", "main"]
 
 _log = logging.getLogger(__name__)
 
 # sockaddr_un.sun_path limits: Linux 108, macOS 104. Use the tighter bound.
 _UDS_PATH_MAX: int = 104
+
+
+# -- JSON-lines logging per spec §3.6 -------------------------------------
+
+_LOGRECORD_STANDARD = frozenset({
+    "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+    "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+    "created", "msecs", "relativeCreated", "thread", "threadName",
+    "processName", "process", "message", "asctime",
+    # Python 3.12+ added `taskName` for asyncio task name on each LogRecord.
+    # Include here so it's filtered out of the JSON-extras payload (otherwise
+    # every line would carry a redundant `"taskName": null` for sync code).
+    "taskName",
+})
+
+
+class _JsonLineFormatter(logging.Formatter):
+    """Emit one JSON object per log record, with stable schema for AI parsing.
+
+    Schema (always present): ts (UTC ISO 8601), level, name, msg.
+    Optional: exc (formatted traceback), plus any JSON-serializable extras
+    passed via `logger.info(..., extra={...})` (e.g. method, change_id, pid).
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict[str, object] = {
+            "ts": datetime.now(tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "name": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            payload["exc"] = self.formatException(record.exc_info)
+        # Promote `extra=` kwargs to top-level keys so AI grep/jq is easy.
+        for k, v in record.__dict__.items():
+            if k in _LOGRECORD_STANDARD or k.startswith("_"):
+                continue
+            try:
+                json.dumps(v)  # only include JSON-serializable extras
+                payload[k] = v
+            except (TypeError, ValueError):
+                payload[k] = repr(v)
+        return json.dumps(payload, ensure_ascii=False)
+
+
+def _configure_logging(log_path: Path) -> None:
+    """Wire root `super_harness.daemon` logger to JSON-lines file handler.
+
+    Per spec §3.6: logs are for AI self-diagnosis, NOT human ops, so the
+    format is machine-readable (one JSON object per line) and the file
+    sits at `.harness/daemon.log` (alongside state.yaml). No rotation
+    in v0.1 — daemon lifetime is bounded by user session (deferred).
+    """
+    handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    handler.setFormatter(_JsonLineFormatter())
+    root = logging.getLogger("super_harness.daemon")
+    root.setLevel(logging.INFO)
+    # Avoid duplicate handlers if main() is called twice in the same process
+    # (defensive — daemonize() should prevent this, but tests may call
+    # _configure_logging directly).
+    if not any(isinstance(h, logging.FileHandler) for h in root.handlers):
+        root.addHandler(handler)
+    root.propagate = False
 
 
 class DaemonServer:
@@ -161,28 +230,28 @@ class DaemonServer:
         ended within cap" from "cap exceeded mid-line" (see UC-8).
         """
         try:
-            rf = conn.makefile("rb")
-            while True:
-                line = rf.readline(MAX_REQUEST_BYTES + 1)
-                if not line:
-                    break  # EOF
-                if len(line) > MAX_REQUEST_BYTES:
-                    # Reject without parse attempt (UC-8). Close the
-                    # connection — the client is misbehaving and any
-                    # remaining bytes on the socket cannot be reliably
-                    # framed (we may be mid-line).
-                    response = encode_response(GateQueryResponse(
-                        id=None,
-                        result=None,
-                        error={"code": 400,
-                               "message": f"request exceeds {MAX_REQUEST_BYTES} bytes"},
-                    ))
-                    try:
-                        conn.sendall(response)
-                    except BrokenPipeError:
-                        pass
-                    break
-                self._handle_line(conn, line)
+            with conn.makefile("rb") as rf:
+                while True:
+                    line = rf.readline(MAX_REQUEST_BYTES + 1)
+                    if not line:
+                        break  # EOF
+                    if len(line) > MAX_REQUEST_BYTES:
+                        # Reject without parse attempt (UC-8). Close the
+                        # connection — the client is misbehaving and any
+                        # remaining bytes on the socket cannot be reliably
+                        # framed (we may be mid-line).
+                        response = encode_response(GateQueryResponse(
+                            id=None,
+                            result=None,
+                            error={"code": 400,
+                                   "message": f"request exceeds {MAX_REQUEST_BYTES} bytes"},
+                        ))
+                        try:
+                            conn.sendall(response)
+                        except BrokenPipeError:
+                            pass
+                        break
+                    self._handle_line(conn, line)
         except BrokenPipeError:
             _log.warning("client closed connection mid-reply")  # UC-9
         except Exception:
@@ -239,7 +308,7 @@ class DaemonServer:
             # was issued. No change_id supplied = no policy to apply.
             _log.info(
                 "gate.pre_tool_use: no change_id; allowing",
-                extra={"reason": "no_change_id", "tool": params.get("tool"),
+                extra={"log_reason": "no_change_id", "tool": params.get("tool"),
                        "file": params.get("file")},
             )
             return GateQueryResponse(
@@ -256,7 +325,7 @@ class DaemonServer:
             # so an AI debugger can correlate with state.yaml contents.
             _log.info(
                 "gate.pre_tool_use: no record for change_id; allowing",
-                extra={"change_id": change_id, "reason": "no_record",
+                extra={"change_id": change_id, "log_reason": "no_record",
                        "tool": params.get("tool"), "file": params.get("file")},
             )
             return GateQueryResponse(
@@ -281,3 +350,164 @@ class DaemonServer:
             conn.sendall(encode_response(resp))
         except BrokenPipeError:
             _log.warning("client closed before reply could be written")  # UC-9
+
+
+# -- Signal handlers ------------------------------------------------------
+
+def _install_signal_handlers(server: DaemonServer) -> None:
+    """Install SIGTERM (graceful shutdown), SIGINT, SIGPIPE handlers.
+
+    AC-8: SIGTERM → server.shutdown() → accept loop exits → socket file
+    unlink in `finally`, all within the 2-second budget.
+
+    SIGPIPE → SIG_IGN: a client crash mid-write produces EPIPE on the
+    daemon's next `sendall`, which the per-connection thread already
+    catches as `BrokenPipeError` (UC-9). Without `SIG_IGN`, Python's
+    default disposition for SIGPIPE *may* terminate the daemon process
+    on `write()` (interpreter version-dependent). Ignoring is the
+    canonical daemon idiom (Stevens APUE §10.13).
+    """
+    signal.signal(signal.SIGTERM, lambda *_: server.shutdown())
+    signal.signal(signal.SIGINT, lambda *_: server.shutdown())  # Ctrl-C if foreground
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+
+
+# -- POSIX double-fork daemonize per spec §3.3 + Stevens APUE §13.3 -------
+
+def daemonize(pid_path: Path, log_path: Path) -> None:
+    """Self-daemonize via POSIX double-fork.
+
+    Invariants enforced (in order):
+    - Spec §3.9 #9: assert `threading.active_count() == 1` before any fork.
+      POSIX fork() in a multi-threaded process is undefined behavior;
+      mutexes held by non-forking threads remain locked forever in the
+      child. This assertion makes the contract loud rather than letting
+      the daemon silently deadlock.
+    - Stevens APUE §13.3 conventions:
+        - `os.umask(0)` after setsid — clear inherited umask so app sets
+          explicit file permissions (e.g. socket = 0o600 in serve_forever).
+        - `os.chdir("/")` after second fork — daemon must not pin the
+          user's cwd (would block unmount of a workspace volume).
+        - Close stdio fds and redirect to /dev/null + log file.
+    - PID file holds an exclusive `fcntl.flock(LOCK_EX | LOCK_NB)` for
+      the lifetime of the process (auto-released by kernel on death).
+      Lost-race losers exit 1 silently — supervisor-side deduplication
+      (UC-5 / AC-4).
+
+    This function does NOT return in the original or first-child process —
+    each calls `os._exit(0)`. Only the final grandchild returns; that
+    grandchild IS the daemon and continues into `main()`.
+    """
+    # Spec §3.9 #9: single-thread invariant
+    assert threading.active_count() == 1, (
+        f"daemonize() called with {threading.active_count()} live threads; "
+        "POSIX fork in a multi-threaded process is undefined behavior. "
+        "Must run before any thread is spawned (no atexit handlers either)."
+    )
+
+    # First fork: parent exits → child is orphaned + reparented to init,
+    # making it eligible to become a session leader (setsid).
+    if os.fork() != 0:
+        os._exit(0)
+
+    os.setsid()
+    os.umask(0)  # APUE: explicit permissions, no inherited mask
+
+    # Second fork: prevents the daemon from re-acquiring a controlling
+    # terminal (only a session leader can acquire one; we just made the
+    # first child a session leader, so we fork again to demote ourselves).
+    if os.fork() != 0:
+        os._exit(0)
+
+    os.chdir("/")  # APUE: don't pin user's cwd
+
+    # Redirect stdio: stdin=/dev/null, stdout/stderr=log file. This MUST
+    # happen before the next `print`/`sys.std{out,err}.write` call or the
+    # daemon would write to the terminal that's about to be detached.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    logfd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.dup2(devnull, 0)
+    os.dup2(logfd, 1)
+    os.dup2(logfd, 2)
+    os.close(devnull)
+    os.close(logfd)
+
+    # PID file flock: single-instance enforcement (AC-4 / UC-5).
+    pid_fd = os.open(str(pid_path), os.O_WRONLY | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(pid_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        # Another daemon won the race. Exit 1 silently — supervisor treats
+        # losers as no-ops (only one survivor per workspace).
+        sys.exit(1)
+    os.ftruncate(pid_fd, 0)
+    os.write(pid_fd, f"{os.getpid()}\n".encode())
+    # KEEP pid_fd OPEN for life of process. The flock auto-releases on
+    # process death (kernel-enforced); closing the fd would release it
+    # immediately, defeating single-instance enforcement.
+
+
+# -- Entry-point ----------------------------------------------------------
+
+def main() -> int:
+    """`super-harness-daemon` entry-point per pyproject.toml [project.scripts].
+
+    Argparse-only (NO click) to keep cold-start lean. Click pulls in ~12ms
+    of import cost; the daemon launcher already pays double-fork + Python
+    interpreter startup, so any savings on import-time helps the
+    supervisor's "spawn → socket appears" budget (UC-2).
+
+    Exit codes:
+        0  daemon exited cleanly (SIGTERM)
+        1  daemon main loop crashed (or PID flock loser)
+        3  no .harness/ at --workspace (EXIT_NO_CONFIG)
+    """
+    parser = argparse.ArgumentParser(prog="super-harness-daemon")
+    parser.add_argument("--workspace", default=".", type=Path)
+    args = parser.parse_args()
+
+    workspace = args.workspace.resolve()
+    harness_dir = workspace / ".harness"
+    if not harness_dir.exists():
+        print(
+            f"super-harness-daemon: no .harness/ directory at {workspace}",
+            file=sys.stderr,
+        )
+        return 3  # EXIT_NO_CONFIG per cli-command-surface §2.3.X
+
+    pid_path = harness_dir / "daemon.pid"
+    log_path = harness_dir / "daemon.log"
+    socket_path = harness_dir / "daemon.sock"
+    state_path = harness_dir / "state.yaml"
+    events_path = harness_dir / "events.jsonl"
+
+    # Self-daemonize. Does NOT return in the original/first-child processes;
+    # only the grandchild continues past this call.
+    daemonize(pid_path, log_path)
+
+    # We are now the daemon. Configure structured logging BEFORE any
+    # log call so the first record is JSON-formatted.
+    _configure_logging(log_path)
+    log = logging.getLogger("super_harness.daemon")
+    log.info(
+        "super-harness-daemon starting",
+        extra={"workspace": str(workspace), "pid": os.getpid()},
+    )
+
+    server = DaemonServer(
+        socket_path=socket_path,
+        state_path=state_path,
+        events_path=events_path,
+    )
+    _install_signal_handlers(server)
+
+    try:
+        server.serve_forever()
+    except Exception:
+        log.exception("daemon main loop crashed")
+        return 1
+
+    log.info("super-harness-daemon stopped cleanly")
+    return 0
