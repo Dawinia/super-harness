@@ -6,7 +6,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from super_harness.adapters import AgentAdapter, FrameworkAdapter, WorkspaceContext
+from super_harness.adapters import AgentAdapter, FrameworkAdapter
 from super_harness.core.events import Event
 
 
@@ -258,26 +258,12 @@ def test_framework_adapter_is_fallback_can_be_true() -> None:
 
 
 # ---------------------------------------------------------------------------
-# WorkspaceContext tests
+# WorkspaceContext re-export test
 # ---------------------------------------------------------------------------
 
 
-def test_workspace_context_holds_fields() -> None:
-    ctx = WorkspaceContext(
-        workspace_root=Path("/repo"),
-        git_branch="main",
-        active_change_id="feat-123",
-    )
-    assert ctx.workspace_root == Path("/repo")
-    assert ctx.git_branch == "main"
-    assert ctx.active_change_id == "feat-123"
+def test_workspace_context_is_reexported_from_sensors() -> None:
+    from super_harness.adapters import WorkspaceContext as AdapterWC
+    from super_harness.sensors import WorkspaceContext as SensorWC
 
-
-def test_workspace_context_optional_fields_can_be_none() -> None:
-    ctx = WorkspaceContext(
-        workspace_root=Path("/repo"),
-        git_branch=None,
-        active_change_id=None,
-    )
-    assert ctx.git_branch is None
-    assert ctx.active_change_id is None
+    assert AdapterWC is SensorWC

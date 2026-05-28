@@ -1,4 +1,4 @@
-"""Agent adapter base architecture for super-harness.
+"""Adapter base architecture for super-harness.
 
 Per adapter-architecture §2.2: an AgentAdapter bridges an AI coding agent
 runtime (Claude Code / Cursor / Codex / Aider) to super-harness — it installs
@@ -13,7 +13,7 @@ verification checks.
 Public surface:
 - AgentAdapter (ABC) — subclass to support a new agent runtime
 - FrameworkAdapter (ABC) — subclass to support a new spec framework
-- WorkspaceContext — dataclass for workspace metadata
+- WorkspaceContext — re-exported from super_harness.sensors (single source of truth)
 
 v0.1 ships only the ABCs here. Concrete adapters, the adapter registry, and
 the `adapter install` CLI come in later tasks.
@@ -41,32 +41,17 @@ from __future__ import annotations
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
 from super_harness.core.events import Event
+from super_harness.sensors import WorkspaceContext
 
 __all__ = [
     "AgentAdapter",
     "FrameworkAdapter",
     "WorkspaceContext",
 ]
-
-
-@dataclass
-class WorkspaceContext:
-    """Workspace metadata passed to FrameworkAdapter operations.
-
-    Fields:
-        workspace_root: absolute path to the workspace root directory
-        git_branch: current git branch name, or None if not a git repo / detached HEAD
-        active_change_id: slug of the currently active change, or None if none
-    """
-
-    workspace_root: Path
-    git_branch: str | None
-    active_change_id: str | None  # current active change slug
 
 
 class AgentAdapter(ABC):
