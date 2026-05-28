@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 
-from super_harness.adapters import AgentAdapter
+from super_harness.adapters import AgentAdapter, FrameworkAdapter
+from super_harness.core.events import Event
 
 
 class _MinimalAdapter(AgentAdapter):
@@ -119,3 +121,149 @@ def test_capabilities_canonical_keys() -> None:
         "subprocess_execution",
     }
     assert set(a.capabilities) == expected
+
+
+# ---------------------------------------------------------------------------
+# FrameworkAdapter tests
+# ---------------------------------------------------------------------------
+
+
+class _MinimalFrameworkAdapter(FrameworkAdapter):
+    name: ClassVar[str] = "minimal-framework"
+    version: ClassVar[str] = "0.1.0"
+
+    def detect(self, workspace: Path) -> bool:
+        return False
+
+    def observe(self, workspace: Path) -> Iterator[Event]:
+        return iter([])
+
+    def get_state(self, change_id: str) -> dict[str, Any] | None:
+        return None
+
+    def verification_checks(self) -> list[dict[str, Any]]:
+        return []
+
+    def agents_md_subsection(self) -> str:
+        return ""
+
+
+def test_framework_adapter_is_abstract() -> None:
+    with pytest.raises(TypeError):
+        FrameworkAdapter()  # type: ignore[abstract]
+
+
+def test_framework_adapter_subclass_missing_abstractmethods_not_instantiable() -> None:
+    class _Incomplete(FrameworkAdapter):
+        name: ClassVar[str] = "incomplete-framework"
+        version: ClassVar[str] = "0.1.0"
+
+        def detect(self, workspace: Path) -> bool:  # missing the other 4
+            return False
+
+    with pytest.raises(TypeError):
+        _Incomplete()  # type: ignore[abstract]
+
+
+def test_framework_adapter_subclass_must_define_name() -> None:
+    with pytest.raises(TypeError, match="name"):
+
+        class _Bad(FrameworkAdapter):
+            version: ClassVar[str] = "0.1.0"
+
+            def detect(self, workspace: Path) -> bool:
+                return False
+
+            def observe(self, workspace: Path) -> Iterator[Event]:
+                return iter([])
+
+            def get_state(self, change_id: str) -> dict[str, Any] | None:
+                return None
+
+            def verification_checks(self) -> list[dict[str, Any]]:
+                return []
+
+            def agents_md_subsection(self) -> str:
+                return ""
+
+
+def test_framework_adapter_subclass_must_define_version() -> None:
+    with pytest.raises(TypeError, match="version"):
+
+        class _Bad2(FrameworkAdapter):
+            name: ClassVar[str] = "bad-framework"
+            # version defaults to "0.0.0" — should fail
+
+            def detect(self, workspace: Path) -> bool:
+                return False
+
+            def observe(self, workspace: Path) -> Iterator[Event]:
+                return iter([])
+
+            def get_state(self, change_id: str) -> dict[str, Any] | None:
+                return None
+
+            def verification_checks(self) -> list[dict[str, Any]]:
+                return []
+
+            def agents_md_subsection(self) -> str:
+                return ""
+
+
+def test_framework_adapter_valid_subclass_instantiable() -> None:
+    f = _MinimalFrameworkAdapter()
+    assert f.name == "minimal-framework"
+    assert f.version == "0.1.0"
+    assert f.detect(Path(".")) is False
+    assert list(f.observe(Path("."))) == []
+    assert f.get_state("c1") is None
+    assert f.verification_checks() == []
+    assert f.agents_md_subsection() == ""
+
+
+def test_framework_adapter_on_uninstall_default_is_noop() -> None:
+    f = _MinimalFrameworkAdapter()
+    assert f.on_uninstall(Path(".")) is None
+
+
+def test_framework_adapter_is_fallback_defaults_false() -> None:
+    assert _MinimalFrameworkAdapter.is_fallback is False
+    f = _MinimalFrameworkAdapter()
+    assert f.is_fallback is False
+
+
+def test_framework_adapter_is_fallback_can_be_true() -> None:
+    class _FallbackAdapter(FrameworkAdapter):
+        name: ClassVar[str] = "plain"
+        version: ClassVar[str] = "0.1.0"
+        is_fallback: ClassVar[bool] = True
+
+        def detect(self, workspace: Path) -> bool:
+            return True
+
+        def observe(self, workspace: Path) -> Iterator[Event]:
+            return iter([])
+
+        def get_state(self, change_id: str) -> dict[str, Any] | None:
+            return None
+
+        def verification_checks(self) -> list[dict[str, Any]]:
+            return []
+
+        def agents_md_subsection(self) -> str:
+            return ""
+
+    f = _FallbackAdapter()
+    assert f.is_fallback is True
+
+
+# ---------------------------------------------------------------------------
+# WorkspaceContext re-export test
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_context_is_reexported_from_sensors() -> None:
+    from super_harness.adapters import WorkspaceContext as AdapterWC
+    from super_harness.sensors import WorkspaceContext as SensorWC
+
+    assert AdapterWC is SensorWC

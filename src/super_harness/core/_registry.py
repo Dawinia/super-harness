@@ -34,13 +34,13 @@ v0.2 boundary may breaking-change the plugin interface.
 
 from __future__ import annotations
 
-import importlib.util
 import logging
-import sys
 from pathlib import Path
 from typing import ClassVar, Protocol, TypeVar, runtime_checkable
 
 import yaml
+
+from super_harness.core._plugin_loader import load_class_from_path
 
 __all__ = ["RegistryComponent", "load_components", "read_plugin_paths"]
 
@@ -222,31 +222,23 @@ def _load_plugin(
             f"{yaml_path}: plugin {sid!r} path {str(spec_path)!r} does not exist"
         )
 
-    # Plugin module name; persists in sys.modules after exec_module.
+    # The import-spec dance (sys.modules eviction → load → exec → attribute
+    # lookup → base-class check) lives in `load_class_from_path` so the
+    # sensors/gates loader and the adapters loader stay in lockstep.
+    #
     # v0.1 limitation: same-sid plugins in one yaml — or repeated load_*()
     # calls on the same yaml within one process (Phase 3.5 CLI tests will
-    # trigger this) — silently shadow earlier registrations. We explicitly
-    # pop the stale entry below so each load re-exec's the file and yields
-    # fresh class objects (cleaner semantics for tests + CLI list commands).
-    # Sandboxing + reload-on-mtime are deferred to v0.2 (sensor-gate-architecture
-    # spec §3.6 #6).
-    module_name = f"super_harness_user.{sid}"
-    sys.modules.pop(module_name, None)
-    module_spec = importlib.util.spec_from_file_location(module_name, spec_path)
-    if module_spec is None or module_spec.loader is None:
-        raise ImportError(f"{yaml_path}: cannot load plugin spec for {sid!r} from {spec_path}")
-    mod = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(mod)
-
-    if not hasattr(mod, raw_class):
-        raise AttributeError(
-            f"{yaml_path}: plugin {sid!r} module {spec_path} has no attribute {raw_class!r}"
-        )
-    cls = getattr(mod, raw_class)
-    if not (isinstance(cls, type) and issubclass(cls, base_class)):
-        raise TypeError(
-            f"{yaml_path}: plugin class {raw_class!r} in {spec_path} is "
-            f"not a {base_class.__name__} subclass"
-        )
+    # trigger this) — silently shadow earlier registrations. The module_name
+    # key eviction inside `load_class_from_path` re-exec's the file each call,
+    # yielding fresh class objects (cleaner semantics for tests + CLI list
+    # commands). Sandboxing + reload-on-mtime are deferred to v0.2
+    # (sensor-gate-architecture spec §3.6 #6).
+    cls = load_class_from_path(
+        spec_path,
+        raw_class,
+        base_class,
+        module_name=f"super_harness_user.{sid}",
+        error_label=f"{yaml_path}: plugin {sid!r}",
+    )
 
     components.append(cls())

@@ -96,3 +96,13 @@ def gates_yaml_path(root: Path) -> Path:
     (`super-harness gate list`) reads this to enumerate plugin entries.
     """
     return root / ".harness" / "gates.yaml"
+
+
+def adapters_yaml_path(root: Path) -> Path:
+    """`.harness/adapters.yaml` — adapter registry config (adapter-architecture §2.3).
+
+    Optional file: absent → only built-in adapters are available. Lists both
+    framework and agent adapters (the §2.3 list-of-dicts shape) for the
+    `super-harness adapter` CLI to enumerate.
+    """
+    return root / ".harness" / "adapters.yaml"
