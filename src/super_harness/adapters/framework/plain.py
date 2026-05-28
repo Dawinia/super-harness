@@ -1,9 +1,10 @@
 """PlainAdapter — fallback FrameworkAdapter for workspaces with no spec framework."""
+
 from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from super_harness.adapters import FrameworkAdapter
 from super_harness.core.events import Event
@@ -17,9 +18,9 @@ class PlainAdapter(FrameworkAdapter):
     False — it is never auto-detected, only force-activated.
     """
 
-    name = "plain"
-    version = "0.1.0"
-    is_fallback = True
+    name: ClassVar[str] = "plain"
+    version: ClassVar[str] = "0.1.0"
+    is_fallback: ClassVar[bool] = True
 
     def detect(self, workspace: Path) -> bool:
         return False  # dispatcher's fallback logic activates this when nothing else matches
