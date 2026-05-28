@@ -16,8 +16,10 @@ Scope deltas baked in per spec §3.5:
 - **SessionStart wired (Phase 7)**: powered by ``change resume``'s no-arg
   "resolve active change" mode (``core.active_change.read_active_change_id``).
 
-The actual AGENTS.md injection and registry/CLI wiring live in later tasks; this
-module only provides the adapter class itself.
+This module only returns the AGENTS.md subsection CONTENT
+(``agents_md_subsection``); the actual injection is wired in ``cli/init.py``
+(outer section + no-agent anchor) and ``cli/adapter.py`` (install injects the
+subsection / uninstall removes it).
 
 API stability: **experimental** (v0.1).
 """
@@ -46,9 +48,9 @@ _HOOK_BINARY = "super-harness-hook"
 # The user-facing entry point `inject_context` shells out to for `change resume`.
 _CLI_BINARY = "super-harness"
 
-# Static AGENTS.md subsection content (Phase 9 does the actual injection; this
-# method only returns the string). Wrapped in markers so the future injector can
-# locate + replace this block idempotently.
+# Static AGENTS.md subsection content (this module returns the string; the
+# injection is wired in cli/init.py + cli/adapter.py). Wrapped in markers so the
+# injector can locate + replace this block idempotently.
 _AGENTS_MD_BEGIN = "<!-- super-harness agent: claude-code -->"
 _AGENTS_MD_END = "<!-- /super-harness agent: claude-code -->"
 _AGENTS_MD_SUBSECTION = f"""{_AGENTS_MD_BEGIN}
@@ -165,6 +167,10 @@ class ClaudeCodeAdapter(AgentAdapter):
         stdout. A non-zero exit or empty stdout (e.g. unknown slug) yields ``""``
         rather than raising — context injection is best-effort.
         """
+        # Intentionally shells out to the BARE `super-harness` name (runtime PATH),
+        # not the shutil.which-resolved absolute path the SessionStart hook pins at
+        # install time. This is a best-effort programmatic call, never the gate
+        # path, so it doesn't need the install-time pinned absolute path.
         result = subprocess.run(
             [_CLI_BINARY, "change", "resume", change_id],
             capture_output=True,
@@ -176,9 +182,10 @@ class ClaudeCodeAdapter(AgentAdapter):
     def agents_md_subsection(self) -> str:
         """Return the marker-wrapped AGENTS.md subsection for Claude Code.
 
-        Content-only (per spec §3.5 the actual AGENTS.md injection is Phase 9):
-        teaches the agent that a PreToolUse gate is enforced and how to recover
-        from a block (`super-harness status` + `change resume`).
+        Content-only: the actual injection is wired in ``cli/init.py`` (outer
+        section + anchor) and ``cli/adapter.py`` (install injects this / uninstall
+        removes it). The text teaches the agent that a PreToolUse gate is enforced
+        and how to recover from a block (`super-harness status` + `change resume`).
         """
         return _AGENTS_MD_SUBSECTION
 

@@ -1,10 +1,16 @@
+import json
+import shutil
 from pathlib import Path
 
+import pytest
+import yaml
 from click.testing import CliRunner
 
 from super_harness.adapters.framework.plain import PlainAdapter
 from super_harness.cli import main
 from super_harness.version import __version__
+
+_FAKE_HOOK = "/usr/local/bin/super-harness-hook"
 
 
 def test_init_creates_harness_dir(tmp_path: Path):
@@ -181,3 +187,72 @@ def test_init_agents_md_write_failure_exits_generic_with_format_error(tmp_path: 
     # .harness/ was scaffolded before the AGENTS.md write — it must survive so the
     # `--force` re-run is the documented recovery.
     assert (tmp_path / ".harness").is_dir()
+
+
+def test_init_force_warns_when_adapter_installed_but_only_resets_agents_md(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """`init` → `adapter install claude-code` → `init --force` re-renders the
+    AGENTS.md super-harness section back to defaults (dropping the claude-code
+    agent block / restoring the no-agent anchor) AND emits a non-fatal advisory,
+    while the adapters.yaml entry + the settings.json hooks stay intact.
+
+    The reset is by-design for v0.1 (a future `sync` re-renders preserving
+    installed adapters); this test guards that the footgun is no longer SILENT.
+
+    `adapter install claude-code` resolves `super-harness-hook` via
+    ``shutil.which``; we monkeypatch it to a fake absolute path so the real
+    binary need not be on PATH — matching the pattern in
+    ``tests/integration/cli/test_adapter.py``.
+    """
+    runner = CliRunner()
+    no_agent_anchor = "<!-- super-harness no-agent-adapter-installed -->"
+    claude_begin = "<!-- super-harness agent: claude-code -->"
+
+    # init → real AGENTS.md (with the no-agent anchor) exists.
+    assert runner.invoke(main, ["--workspace", str(tmp_path), "init"]).exit_code == 0
+
+    # install claude-code → consumes the anchor, injects the agent block, and
+    # records the adapter + settings.json hooks.
+    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
+    install = runner.invoke(
+        main, ["--workspace", str(tmp_path), "adapter", "install", "claude-code"]
+    )
+    assert install.exit_code == 0, install.output
+    agents = tmp_path / "AGENTS.md"
+    assert claude_begin in agents.read_text()
+    assert no_agent_anchor not in agents.read_text()
+
+    # init --force → re-renders the section back to defaults.
+    forced = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
+    assert forced.exit_code == 0, forced.output
+
+    # 1) AGENTS.md reset: claude-code block gone, no-agent anchor back.
+    text = agents.read_text()
+    assert claude_begin not in text
+    assert no_agent_anchor in text
+
+    # 2) adapters.yaml STILL lists claude-code.
+    adapters = yaml.safe_load((tmp_path / ".harness" / "adapters.yaml").read_text())
+    names = [e.get("name") for e in (adapters.get("adapters") or [])]
+    assert "claude-code" in names, f"claude-code dropped from adapters.yaml: {adapters}"
+
+    # 2b) settings.json STILL has our PreToolUse + SessionStart hooks.
+    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    pre_commands = [
+        h["command"]
+        for entry in settings["hooks"]["PreToolUse"]
+        for h in entry["hooks"]
+    ]
+    assert pre_commands == [f"{_FAKE_HOOK} --agent claude-code"]
+    session_commands = [
+        h["command"]
+        for entry in settings["hooks"]["SessionStart"]
+        for h in entry["hooks"]
+    ]
+    assert session_commands == [f"{_FAKE_HOOK} change resume"]
+
+    # 3) the `init --force` run emitted the advisory (names the reset + recovery).
+    combined = forced.stderr + forced.output
+    assert "was reset" in combined, combined
+    assert "claude-code" in combined, combined

@@ -11,10 +11,12 @@ from importlib.resources import files
 from pathlib import Path
 
 import click
+import yaml
 
 from super_harness.adapters.framework.plain import PlainAdapter
 from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
+from super_harness.core.paths import adapters_yaml_path
 from super_harness.engineering.agents_md import (
     AgentsMdInjectionError,
     inject_framework_subsection,
@@ -92,6 +94,36 @@ def _verification_default() -> str:
             "'verification_defaults.yaml' missing. Reinstall super-harness."
         )
     return src.read_text()
+
+
+def _installed_adapter_names(root: Path) -> list[str]:
+    """Best-effort list of installed adapter names from `.harness/adapters.yaml`.
+
+    Read minimally + defensively for the `--force` advisory notice only — this
+    must NEVER crash init. On any problem (file absent/empty, corrupt YAML, odd
+    shape, or an unreadable file) we return ``[]`` and the caller skips the
+    notice. We deliberately read adapters.yaml directly rather than coupling to
+    cli/adapter.py (which carries the heavier install/uninstall machinery).
+    """
+    path = adapters_yaml_path(root)
+    if not path.exists():
+        return []
+    try:
+        loaded = yaml.safe_load(path.read_text())
+    except (OSError, yaml.YAMLError):
+        return []
+    if not isinstance(loaded, dict):
+        return []
+    entries = loaded.get("adapters")
+    if not isinstance(entries, list):
+        return []
+    names: list[str] = []
+    for entry in entries:
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+    return names
 
 
 def _skeleton_files() -> dict[str, str]:
@@ -199,5 +231,24 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
             err=True,
         )
         sys.exit(EXIT_GENERIC)
+    # `--force` re-renders the super-harness AGENTS.md section back to defaults
+    # (the no-agent anchor), silently dropping any installed agent adapter's
+    # subsection — while `.harness/adapters.yaml` and `.claude/settings.json`
+    # still register that adapter (the gate hook stays live). That is by-design
+    # for v0.1 (`--force` re-renders; a future `super-harness sync` will
+    # re-render PRESERVING installed adapters), but it is a silent footgun, so
+    # emit a NON-FATAL advisory naming the reset + the recovery. Only on
+    # `--force` AND with ≥1 installed adapter; a first-time init stays silent.
+    if force:
+        installed = _installed_adapter_names(root)
+        if installed:
+            names = ", ".join(installed)
+            click.echo(
+                f"Note: re-rendered the super-harness AGENTS.md section to "
+                f"defaults; guidance for installed adapter(s) {names} was reset. "
+                f"Re-run `super-harness adapter install {installed[0]}` to "
+                f"restore it (a future `super-harness sync` will automate this).",
+                err=True,
+            )
     click.echo(f"super-harness initialized at {harness}")
     sys.exit(EXIT_OK)
