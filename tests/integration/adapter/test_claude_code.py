@@ -25,7 +25,10 @@ the AGENTS.md anchor → real block in ONE CLI flow, and idempotency of all thre
 
 ⚠ This test SPAWNS the ``super-harness`` / ``super-harness-hook`` entry-point
 binaries by NAME (it does NOT mock ``shutil.which``), so it requires the project
-``.venv/bin`` to be on ``PATH`` — see the module skip below.
+``.venv/bin`` to be on ``PATH``. Like the ``tests/e2e/`` binary-spawning suites
+it is FAIL-LOUD: if the binaries are not on PATH the resolving assertions below
+FAIL with an actionable message rather than silently skipping (a false-green
+risk for this ship guard) — run pytest with ``.venv/bin`` on PATH.
 """
 from __future__ import annotations
 
@@ -33,25 +36,36 @@ import json
 import shutil
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from super_harness.cli import main
 
-# These binaries must resolve on PATH for the adapter's real install to register
-# the absolute-path hook commands. If they don't (e.g. running pytest without
-# `.venv/bin` on PATH), skip the whole module rather than fail spuriously.
-_HOOK_BIN = shutil.which("super-harness-hook")
-_CLI_BIN = shutil.which("super-harness")
-pytestmark = pytest.mark.skipif(
-    _HOOK_BIN is None or _CLI_BIN is None,
-    reason="requires super-harness / super-harness-hook entry points on PATH "
-    "(run with `.venv/bin` on PATH)",
-)
 
-# Resolved exact commands the adapter writes (path-from-PATH + stable suffix).
-_EXPECTED_PRE_TOOL_USE = f"{_HOOK_BIN} --agent claude-code"
-_EXPECTED_SESSION_START = f"{_CLI_BIN} change resume"
+def _expected_pre_tool_use() -> str:
+    """The exact PreToolUse command the adapter writes (resolved hook binary).
+
+    FAIL-LOUD (matching ``tests/e2e/``): if the entry point is not on PATH the
+    assertion fails with an actionable message instead of skipping — a silent
+    skip here would be a false-green for this reference-adapter ship guard.
+    """
+    hook_bin = shutil.which("super-harness-hook")
+    assert hook_bin is not None, (
+        "super-harness-hook not on PATH — run pytest with `.venv/bin` on PATH"
+    )
+    return f"{hook_bin} --agent claude-code"
+
+
+def _expected_session_start() -> str:
+    """The exact SessionStart command the adapter writes (resolved CLI binary).
+
+    FAIL-LOUD (matching ``tests/e2e/``): if the entry point is not on PATH the
+    assertion fails with an actionable message instead of skipping.
+    """
+    cli_bin = shutil.which("super-harness")
+    assert cli_bin is not None, (
+        "super-harness not on PATH — run pytest with `.venv/bin` on PATH"
+    )
+    return f"{cli_bin} change resume"
 
 # AGENTS.md markers (must match engineering/agents_md + the adapter block).
 _NO_AGENT_ANCHOR = "<!-- super-harness no-agent-adapter-installed -->"
@@ -152,10 +166,12 @@ def test_init_then_install_lands_hooks_backup_and_agents_md(tmp_path: Path) -> N
     assert install_result.exit_code == 0, install_result.output
 
     # 4a. BOTH hooks registered with the resolved-binary commands.
+    expected_pre_tool_use = _expected_pre_tool_use()
+    expected_session_start = _expected_session_start()
     pre_tool_use = _hook_commands(tmp_path, "PreToolUse")
     session_start = _hook_commands(tmp_path, "SessionStart")
-    assert _EXPECTED_PRE_TOOL_USE in pre_tool_use
-    assert _EXPECTED_SESSION_START in session_start
+    assert expected_pre_tool_use in pre_tool_use
+    assert expected_session_start in session_start
     # The SessionStart entry carries no tool matcher (fires on all session sources).
     settings = json.loads(_settings_path(tmp_path).read_text())
     assert "matcher" not in settings["hooks"]["SessionStart"][0]
@@ -184,8 +200,8 @@ def test_init_then_install_lands_hooks_backup_and_agents_md(tmp_path: Path) -> N
     # 4d. Idempotency: a SECOND install leaves exactly one of each.
     second = _install(tmp_path)
     assert second.exit_code == 0, second.output
-    assert _hook_commands(tmp_path, "PreToolUse").count(_EXPECTED_PRE_TOOL_USE) == 1
-    assert _hook_commands(tmp_path, "SessionStart").count(_EXPECTED_SESSION_START) == 1
+    assert _hook_commands(tmp_path, "PreToolUse").count(expected_pre_tool_use) == 1
+    assert _hook_commands(tmp_path, "SessionStart").count(expected_session_start) == 1
     # The user's hook is still the only OTHER PreToolUse command (not duplicated).
     assert _hook_commands(tmp_path, "PreToolUse").count(_USER_HOOK_COMMAND) == 1
     agents_again = _agents_md(tmp_path).read_text()
@@ -208,8 +224,8 @@ def test_init_install_uninstall_restores_pristine_settings_and_anchor(
     assert _init(tmp_path).exit_code == 0
     assert _install(tmp_path).exit_code == 0
     # Sanity: our hooks were registered before uninstall.
-    assert _EXPECTED_PRE_TOOL_USE in _hook_commands(tmp_path, "PreToolUse")
-    assert _EXPECTED_SESSION_START in _hook_commands(tmp_path, "SessionStart")
+    assert _expected_pre_tool_use() in _hook_commands(tmp_path, "PreToolUse")
+    assert _expected_session_start() in _hook_commands(tmp_path, "SessionStart")
 
     uninstall_result = _uninstall(tmp_path)
     assert uninstall_result.exit_code == 0, uninstall_result.output
