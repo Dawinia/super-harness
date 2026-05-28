@@ -23,6 +23,7 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from super_harness.cli import main
@@ -46,7 +47,7 @@ def _pre_tool_use_commands(ws: Path) -> list[str]:
 
 
 def test_install_creates_pre_tool_use_hook(
-    tmp_path: Path, monkeypatch: object
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Fresh `.harness/` workspace (no `.claude/`) → exit 0, hook registered.
 
@@ -55,8 +56,7 @@ def test_install_creates_pre_tool_use_hook(
     creates settings.json from empty config.
     """
     (tmp_path / ".harness").mkdir()
-    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)  # type: ignore[attr-defined]
-
+    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
     r = CliRunner().invoke(
         main,
         ["--workspace", str(tmp_path), "adapter", "install", "claude-code"],
@@ -67,11 +67,10 @@ def test_install_creates_pre_tool_use_hook(
     assert _pre_tool_use_commands(tmp_path) == [_EXPECTED_COMMAND]
 
 
-def test_install_is_idempotent(tmp_path: Path, monkeypatch: object) -> None:
+def test_install_is_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Second run → exit 0 and still exactly one entry (leans on merge dedupe)."""
     (tmp_path / ".harness").mkdir()
-    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)  # type: ignore[attr-defined]
-
+    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
     first = CliRunner().invoke(
         main, ["--workspace", str(tmp_path), "adapter", "install", "claude-code"]
     )
@@ -85,12 +84,11 @@ def test_install_is_idempotent(tmp_path: Path, monkeypatch: object) -> None:
 
 
 def test_install_binary_not_on_path_exits_1(
-    tmp_path: Path, monkeypatch: object
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`which` → None → EXIT_GENERIC (1) with a clear message, not a traceback."""
     (tmp_path / ".harness").mkdir()
-    monkeypatch.setattr(shutil, "which", lambda _name: None)  # type: ignore[attr-defined]
-
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
     r = CliRunner().invoke(
         main,
         ["--workspace", str(tmp_path), "adapter", "install", "claude-code"],
@@ -104,10 +102,9 @@ def test_install_binary_not_on_path_exits_1(
     assert not _settings(tmp_path).exists()
 
 
-def test_install_no_harness_exits_3(tmp_path: Path, monkeypatch: object) -> None:
+def test_install_no_harness_exits_3(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No `.harness/` → HarnessNotInitialized → EXIT_NO_CONFIG (3)."""
-    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)  # type: ignore[attr-defined]
-
+    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
     r = CliRunner().invoke(
         main,
         ["--workspace", str(tmp_path), "adapter", "install", "claude-code"],
