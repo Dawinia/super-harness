@@ -43,7 +43,7 @@ import click
 import yaml
 
 from super_harness.adapters import AgentAdapter, FrameworkAdapter
-from super_harness.adapters.registry import get_builtin
+from super_harness.adapters.registry import get_builtin, list_builtins
 from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.cli.output import json_envelope
@@ -78,7 +78,18 @@ def adapter_install(ctx: click.Context, name: str) -> None:
 
     # AGENTS.md: TRUE no-op (Phase 9). verification.yaml: empty-safe (built-ins
     # return [] in v0.1 → nothing written); only the non-empty branch touches it.
-    _merge_verification_checks(root, adapter)
+    try:
+        _merge_verification_checks(root, adapter)
+    except yaml.YAMLError as e:
+        click.echo(
+            format_error(
+                subcommand="adapter install",
+                message=f"verification.yaml is corrupt or unreadable: {e}",
+                hint="Fix or remove .harness/verification.yaml and retry.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
 
     # Agent adapters install hooks BEFORE we persist the yaml so a failed
     # install_hooks never leaves a stale adapters.yaml entry behind.
@@ -99,7 +110,18 @@ def adapter_install(ctx: click.Context, name: str) -> None:
             )
             sys.exit(EXIT_GENERIC)
 
-    _persist_install_entry(root, name=name, kind=kind, version=adapter.version)
+    try:
+        _persist_install_entry(root, name=name, kind=kind, version=adapter.version)
+    except yaml.YAMLError as e:
+        click.echo(
+            format_error(
+                subcommand="adapter install",
+                message=f"adapters.yaml is corrupt or unreadable: {e}",
+                hint="Fix or remove .harness/adapters.yaml and retry.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
 
     if not ctx.obj.get("quiet"):
         if created_claude_dir:
@@ -125,7 +147,18 @@ def adapter_uninstall(ctx: click.Context, name: str) -> None:
     adapter = _resolve_builtin_or_exit(name, "adapter uninstall")
 
     # Not installed → clear message, EXIT_GENERIC (don't crash).
-    entries = _read_adapter_entries(adapters_yaml_path(root))
+    try:
+        entries = _read_adapter_entries(adapters_yaml_path(root))
+    except yaml.YAMLError as e:
+        click.echo(
+            format_error(
+                subcommand="adapter uninstall",
+                message=f"adapters.yaml is corrupt or unreadable: {e}",
+                hint="Fix or remove .harness/adapters.yaml and retry.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
     if not any(e.get("name") == name for e in entries):
         click.echo(
             format_error(
@@ -149,8 +182,30 @@ def adapter_uninstall(ctx: click.Context, name: str) -> None:
     # then prune any verification.yaml.adapter_provided rows it contributed
     # (no-op in v0.1 — none were added — and guarded on file-absent).
     adapter.on_uninstall(root)
-    _remove_install_entry(root, name=name)
-    _remove_verification_checks(root, adapter)
+    try:
+        _remove_install_entry(root, name=name)
+    except yaml.YAMLError as e:
+        click.echo(
+            format_error(
+                subcommand="adapter uninstall",
+                message=f"adapters.yaml is corrupt or unreadable: {e}",
+                hint="Fix or remove .harness/adapters.yaml and retry.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
+    try:
+        _remove_verification_checks(root, adapter)
+    except yaml.YAMLError as e:
+        click.echo(
+            format_error(
+                subcommand="adapter uninstall",
+                message=f"verification.yaml is corrupt or unreadable: {e}",
+                hint="Fix or remove .harness/verification.yaml and retry.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
 
     if not ctx.obj.get("quiet"):
         click.echo(f"Uninstalled {name} adapter.")
@@ -175,7 +230,18 @@ def adapter_list(
     """List INSTALLED adapters (adapters.yaml entries), enriched from built-ins."""
     root = _resolve_root(ctx, "adapter list")
 
-    rows = _collect_adapter_rows(adapters_yaml_path(root))
+    try:
+        rows = _collect_adapter_rows(adapters_yaml_path(root))
+    except yaml.YAMLError as e:
+        click.echo(
+            format_error(
+                subcommand="adapter list",
+                message=f"adapters.yaml is corrupt or unreadable: {e}",
+                hint="Fix or remove .harness/adapters.yaml and retry.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
     if type_filter is not None:
         rows = [r for r in rows if r["type"] == type_filter]
     if enabled_only:
@@ -225,7 +291,10 @@ def _resolve_builtin_or_exit(
             format_error(
                 subcommand=subcommand,
                 message=f"unknown adapter {name!r}",
-                hint="Use `adapter list` or see the built-in adapters: claude-code, plain.",
+                hint=(
+                    f"Use `adapter list` or see the built-in adapters: "
+                    f"{', '.join(list_builtins())}."
+                ),
             ),
             err=True,
         )
@@ -291,25 +360,42 @@ def _remove_verification_checks(
     path.write_text(yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False))
 
 
-def _read_adapter_entries(path: Path) -> list[dict[str, Any]]:
-    """Return the list of adapter entries from adapters.yaml ([] if absent/empty)."""
+def _read_adapter_cfg(path: Path) -> dict[str, Any]:
+    """Return the full parsed mapping from adapters.yaml ({} if absent/empty).
+
+    Raises:
+        yaml.YAMLError: if the file exists but contains invalid YAML (callers
+            must catch this and surface it via ``format_error``).
+    """
     if not path.exists():
-        return []
-    cfg = yaml.safe_load(path.read_text()) or {}
-    if not isinstance(cfg, dict):
-        return []
+        return {}
+    # NOTE: yaml.YAMLError propagates — callers catch it.
+    loaded = yaml.safe_load(path.read_text())
+    if not isinstance(loaded, dict):
+        return {}
+    return loaded
+
+
+def _read_adapter_entries(path: Path) -> list[dict[str, Any]]:
+    """Return the list of adapter entries from adapters.yaml ([] if absent/empty).
+
+    Raises:
+        yaml.YAMLError: propagated from ``_read_adapter_cfg`` on corrupt YAML.
+    """
+    cfg = _read_adapter_cfg(path)
     entries = cfg.get("adapters") or []
     if not isinstance(entries, list):
         return []
     return [e for e in entries if isinstance(e, dict)]
 
 
-def _write_adapter_entries(path: Path, entries: list[dict[str, Any]]) -> None:
-    """Write entries back to adapters.yaml (lazily creating the file + header)."""
+def _write_adapter_cfg(path: Path, cfg: dict[str, Any]) -> None:
+    """Write the full config mapping back to adapters.yaml (preserving top-level keys).
+
+    Lazily creates parent directories and prepends the AUTO-MANAGED header.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    body = yaml.safe_dump(
-        {"adapters": entries}, sort_keys=False, default_flow_style=False
-    )
+    body = yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False)
     path.write_text(_ADAPTERS_YAML_HEADER + body)
 
 
@@ -319,10 +405,15 @@ def _persist_install_entry(
     """Write/update the §2.3 adapters.yaml entry — idempotent update-in-place.
 
     Re-installing rewrites the existing same-name entry rather than appending a
-    duplicate; the file is created lazily if absent.
+    duplicate; the file is created lazily if absent. Preserves all other
+    top-level keys already present in adapters.yaml.
     """
     path = adapters_yaml_path(root)
-    entries = _read_adapter_entries(path)
+    cfg = _read_adapter_cfg(path)
+    entries: list[dict[str, Any]] = cfg.get("adapters") or []
+    if not isinstance(entries, list):
+        entries = []
+    entries = [e for e in entries if isinstance(e, dict)]
     new_entry: dict[str, Any] = {
         "name": name,
         "type": kind,
@@ -336,15 +427,23 @@ def _persist_install_entry(
             break
     else:
         entries.append(new_entry)
-    _write_adapter_entries(path, entries)
+    cfg["adapters"] = entries
+    _write_adapter_cfg(path, cfg)
 
 
 def _remove_install_entry(root: Path, *, name: str) -> None:
-    """Drop the adapters.yaml entry for `name` (leaving ``adapters: []`` if empty)."""
+    """Drop the adapters.yaml entry for `name` (leaving ``adapters: []`` if empty).
+
+    Preserves all other top-level keys already present in adapters.yaml.
+    """
     path = adapters_yaml_path(root)
-    entries = _read_adapter_entries(path)
-    remaining = [e for e in entries if e.get("name") != name]
-    _write_adapter_entries(path, remaining)
+    cfg = _read_adapter_cfg(path)
+    entries: list[dict[str, Any]] = cfg.get("adapters") or []
+    if not isinstance(entries, list):
+        entries = []
+    entries = [e for e in entries if isinstance(e, dict)]
+    cfg["adapters"] = [e for e in entries if e.get("name") != name]
+    _write_adapter_cfg(path, cfg)
 
 
 def _collect_adapter_rows(path: Path) -> list[dict[str, Any]]:

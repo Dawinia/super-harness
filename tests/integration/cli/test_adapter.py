@@ -330,3 +330,70 @@ def test_list_no_harness_exits_no_config(tmp_path: Path) -> None:
     """`list` with no `.harness/` → EXIT_NO_CONFIG (3)."""
     r = _run(tmp_path, "list")
     assert r.exit_code == 3, r.output
+
+
+# --- robustness (corrupt yaml, unknown uninstall, key preservation) ----------
+
+
+def test_corrupt_adapters_yaml_list_exits_no_config_with_format_error(
+    tmp_path: Path,
+) -> None:
+    """A corrupt adapters.yaml → `list` exits EXIT_NO_CONFIG (3) with a
+    ``format_error``-shaped message on stderr, NOT a raw traceback."""
+    (tmp_path / ".harness").mkdir()
+    _adapters_yaml(tmp_path).write_text(":\n  - [unclosed")
+
+    r = _run(tmp_path, "list")
+
+    assert r.exit_code == 3, r.output
+    assert "super-harness adapter list:" in r.stderr
+    assert "corrupt" in r.stderr
+    assert "Traceback" not in r.stderr
+
+
+def test_corrupt_adapters_yaml_install_exits_no_config_with_format_error(
+    tmp_path: Path,
+) -> None:
+    """A corrupt adapters.yaml → `install` exits EXIT_NO_CONFIG (3) with a
+    ``format_error``-shaped message on stderr, NOT a raw traceback."""
+    (tmp_path / ".harness").mkdir()
+    _adapters_yaml(tmp_path).write_text(":\n  - [unclosed")
+
+    r = _run(tmp_path, "install", "plain")
+
+    assert r.exit_code == 3, r.output
+    assert "super-harness adapter install:" in r.stderr
+    assert "corrupt" in r.stderr
+    assert "Traceback" not in r.stderr
+
+
+def test_uninstall_unknown_name_errors_clearly(tmp_path: Path) -> None:
+    """`uninstall <unknown-name>` → EXIT_GENERIC (1) with a clear error message."""
+    (tmp_path / ".harness").mkdir()
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--quiet", "adapter", "uninstall", "no-such-adapter"],
+    )
+
+    assert r.exit_code == 1, r.output
+    assert "super-harness adapter uninstall:" in r.stderr
+    assert "unknown adapter" in r.stderr
+    assert "Traceback" not in r.stderr
+
+
+def test_adapters_yaml_preserves_top_level_keys(tmp_path: Path) -> None:
+    """install preserves unrelated top-level keys in adapters.yaml (no silent drop)."""
+    (tmp_path / ".harness").mkdir()
+    # Write an adapters.yaml that already has an extra top-level key.
+    _adapters_yaml(tmp_path).write_text(
+        "schema_version: 1\nadapters: []\n"
+    )
+
+    r = _run(tmp_path, "install", "plain")
+
+    assert r.exit_code == 0, r.output
+    data = yaml.safe_load(_adapters_yaml(tmp_path).read_text())
+    assert data.get("schema_version") == 1, (
+        "Top-level key 'schema_version' was dropped by the round-trip write"
+    )
+    assert len(data.get("adapters", [])) == 1
