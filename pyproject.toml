@@ -40,6 +40,7 @@ Issues = "https://github.com/Dawinia/super-harness/issues"
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
+  "pytest-rerunfailures>=14.0",
   "pyfakefs>=5.4",
   "ruff>=0.4",
   "mypy>=1.10",
@@ -48,6 +49,8 @@ dev = [
 
 [project.scripts]
 super-harness = "super_harness.cli:main"
+super-harness-daemon = "super_harness.daemon.server:main"
+super-harness-hook = "super_harness.daemon.hook_entry:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/super_harness"]
