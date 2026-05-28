@@ -146,7 +146,8 @@ def test_socket_permissions_0o600(workspace: Path) -> None:
 
 
 def test_brokenpipe_on_client_crash_doesnt_kill_daemon(workspace: Path) -> None:
-    """UC-9: client closes connection before reading reply → daemon survives."""
+    """UC-9 / AC-5: client closes connection before reading reply → daemon
+    survives and the per-connection thread closes cleanly (no zombie connection)."""
     _write_state(workspace / ".harness" / "state.yaml", "c1", "PLAN_APPROVED")
     server = _make_server(workspace)
     _start_server(server)

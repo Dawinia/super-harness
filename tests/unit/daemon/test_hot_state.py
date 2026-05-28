@@ -26,6 +26,9 @@ def test_loads_on_first_get(tmp_path: Path) -> None:
 
 
 def test_reloads_on_mtime_change(tmp_path: Path) -> None:
+    """AC-3: an mtime advance triggers an inline reload (no polling thread), so
+    the next get_change() sees the new state — the HotState mechanism behind the
+    daemon reflecting the latest state.yaml within the 50ms budget."""
     state_path = tmp_path / "state.yaml"
     _write_state(state_path, "c1", "INTENT_DECLARED")
     hs = HotState(state_path)
