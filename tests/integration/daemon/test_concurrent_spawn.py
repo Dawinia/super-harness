@@ -12,7 +12,6 @@ they both attempt `fcntl.flock(LOCK_EX | LOCK_NB)` simultaneously.
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 import signal
@@ -24,8 +23,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-# Tighter of Linux 108 / macOS 104 (mirrors DaemonServer._UDS_PATH_MAX).
-_UDS_PATH_MAX = 104
+from super_harness.daemon._uds_path import resolve_socket_path
 
 
 def _has_daemon_binary() -> bool:
@@ -36,20 +34,6 @@ pytestmark = pytest.mark.skipif(
     not _has_daemon_binary(),
     reason="super-harness-daemon not installed; run `pip install -e .`",
 )
-
-
-def _resolve_socket_path(workspace: Path) -> Path:
-    """Mirrors DaemonServer §3.6 #8 sun_path fallback (see test_daemonize.py)."""
-    natural = workspace / ".harness" / "daemon.sock"
-    if len(str(natural).encode("utf-8")) <= _UDS_PATH_MAX:
-        return natural
-    workspace_hash = hashlib.sha256(
-        str(workspace.resolve()).encode("utf-8")
-    ).hexdigest()[:16]
-    return (
-        Path(os.environ.get("TMPDIR", "/tmp"))
-        / f"super-harness-{workspace_hash}.sock"
-    )
 
 
 def _setup_workspace(tmp_path: Path) -> Path:
@@ -116,7 +100,7 @@ def test_two_concurrent_daemons_only_one_wins(tmp_path: Path) -> None:
 
     # The winning daemon should have a single PID file + bound socket.
     pid_file = workspace / ".harness" / "daemon.pid"
-    sock_file = _resolve_socket_path(workspace)
+    sock_file = resolve_socket_path(workspace)
     # Wait up to 5s for the winner to bind.
     deadline = time.time() + 5.0
     while time.time() < deadline:

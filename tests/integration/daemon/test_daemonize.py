@@ -13,7 +13,6 @@ log file is JSON-lines, SIGTERM cleans up within 2 seconds.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import signal
@@ -25,38 +24,12 @@ from pathlib import Path
 import pytest
 import yaml
 
+from super_harness.daemon._uds_path import resolve_socket_path
 from super_harness.daemon.protocol import (
     GateQueryRequest,
     decode_response,
     encode_request,
 )
-
-# Tighter of Linux 108 / macOS 104 (mirrors DaemonServer._UDS_PATH_MAX).
-_UDS_PATH_MAX = 104
-
-
-def _resolve_socket_path(workspace: Path) -> Path:
-    """Return the socket path the daemon will actually bind.
-
-    Mirrors DaemonServer's §3.6 #8 fallback logic: if the natural
-    `<workspace>/.harness/daemon.sock` path exceeds the AF_UNIX
-    sun_path limit (104 bytes on macOS, 108 on Linux), the daemon
-    falls back to `$TMPDIR/super-harness-<sha256(workspace)>.sock`.
-
-    pytest's `tmp_path` on macOS often exceeds the limit (it lives
-    under `/private/var/folders/...`), so this resolver is necessary
-    for the tests to know where the daemon actually listens.
-    """
-    natural = workspace / ".harness" / "daemon.sock"
-    if len(str(natural).encode("utf-8")) <= _UDS_PATH_MAX:
-        return natural
-    workspace_hash = hashlib.sha256(
-        str(workspace.resolve()).encode("utf-8")
-    ).hexdigest()[:16]
-    return (
-        Path(os.environ.get("TMPDIR", "/tmp"))
-        / f"super-harness-{workspace_hash}.sock"
-    )
 
 
 def _wait_for_socket(socket_path: Path, timeout: float = 5.0) -> bool:
@@ -118,7 +91,7 @@ def test_super_harness_daemon_binary_starts_and_responds(tmp_path: Path) -> None
         # <2s on any reasonable machine).
         proc.wait(timeout=2.0)
         assert proc.returncode == 0
-        socket_path = _resolve_socket_path(workspace)
+        socket_path = resolve_socket_path(workspace)
         assert _wait_for_socket(socket_path), "daemon did not bind socket within 5s"
         # PID file should exist with the daemonized PID (NOT the launcher's PID
         # — the launcher exited; only the double-forked grandchild remains).
@@ -153,7 +126,7 @@ def test_sigterm_triggers_clean_shutdown_under_2s(tmp_path: Path) -> None:
         close_fds=True,
     ).wait(timeout=2.0)
 
-    socket_path = _resolve_socket_path(workspace)
+    socket_path = resolve_socket_path(workspace)
     pid_file = workspace / ".harness" / "daemon.pid"
     assert _wait_for_socket(socket_path)
     daemon_pid = int(pid_file.read_text().strip())
@@ -193,7 +166,7 @@ def test_daemon_log_file_is_json_lines(tmp_path: Path) -> None:
         close_fds=True,
     )
     proc.wait(timeout=2.0)
-    socket_path = _resolve_socket_path(workspace)
+    socket_path = resolve_socket_path(workspace)
     assert _wait_for_socket(socket_path)
 
     # Issue at least one query to ensure a log record is emitted.

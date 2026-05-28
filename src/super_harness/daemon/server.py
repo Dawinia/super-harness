@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import hashlib
 import json
 import logging
 import os
@@ -24,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, ClassVar
 
+from super_harness.daemon._uds_path import UDS_PATH_MAX, resolve_socket_path
 from super_harness.daemon.hot_state import HotState
 from super_harness.daemon.protocol import (
     MAX_REQUEST_BYTES,
@@ -39,9 +39,6 @@ from super_harness.daemon.protocol import (
 __all__ = ["DaemonServer", "daemonize", "main"]
 
 _log = logging.getLogger(__name__)
-
-# sockaddr_un.sun_path limits: Linux 108, macOS 104. Use the tighter bound.
-_UDS_PATH_MAX: int = 104
 
 
 # -- JSON-lines logging per spec §3.6 -------------------------------------
@@ -139,26 +136,23 @@ class DaemonServer:
         events_path: Path,
         max_parallelism: int = 4,
     ) -> None:
-        # §3.6 #8: if requested socket_path exceeds UDS sun_path limit, fall back
-        # to $TMPDIR/super-harness-<sha256(workspace)>.sock. Clients use the same
-        # algorithm to discover the fallback path (supervisor implementation in
-        # Task 4.4).
-        if len(str(socket_path).encode("utf-8")) > _UDS_PATH_MAX:
+        # §3.6 #8 path-length fallback now lives in _uds_path.resolve_socket_path.
+        # Caller passes the requested socket_path (typically <workspace>/.harness/daemon.sock);
+        # we derive workspace_root and let the shared helper apply the same algorithm
+        # that the client/supervisor/hook use to discover the socket. Keep the length
+        # check + warning log here because the helper is silent (it's used by clients
+        # too, where a warning is inappropriate); the daemon-side fall-back is the
+        # only place that warrants an audit log line.
+        if len(str(socket_path).encode("utf-8")) > UDS_PATH_MAX:
             workspace_root = socket_path.parent.parent  # strip /.harness/daemon.sock
-            workspace_hash = hashlib.sha256(
-                str(workspace_root.resolve()).encode("utf-8")
-            ).hexdigest()[:16]
-            fallback = (
-                Path(os.environ.get("TMPDIR", "/tmp"))
-                / f"super-harness-{workspace_hash}.sock"
-            )
+            resolved = resolve_socket_path(workspace_root)
             _log.warning(
                 "socket path %s exceeds UDS limit (%d bytes); falling back to %s",
                 socket_path,
-                _UDS_PATH_MAX,
-                fallback,
+                UDS_PATH_MAX,
+                resolved,
             )
-            socket_path = fallback
+            socket_path = resolved
 
         self.socket_path: Path = socket_path
         self.state_path: Path = state_path
