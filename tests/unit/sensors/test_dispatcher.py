@@ -170,6 +170,12 @@ class _BadEmit(Sensor):
         return SensorResult(status="pass", summary="bad", emit_events=[ev])
 
 
+# Records each sensor's check() start time so the parallel test can assert
+# concurrent start (overhead-independent) rather than an absolute wall-clock
+# bound (fragile on slow CI — dispatcher fixed overhead can swamp the sleep).
+_PARALLEL_STARTS: list[float] = []
+
+
 class _ParallelTwoA(Sensor):
     name: ClassVar[str] = "par-a"
     version: ClassVar[str] = "0.1.0"
@@ -177,6 +183,7 @@ class _ParallelTwoA(Sensor):
     determinism: ClassVar[Determinism] = "computational"
 
     def check(self, trigger, ctx):  # type: ignore[no-untyped-def]
+        _PARALLEL_STARTS.append(time.monotonic())
         time.sleep(0.1)
         return SensorResult(status="pass", summary="a")
 
@@ -188,6 +195,7 @@ class _ParallelTwoB(Sensor):
     determinism: ClassVar[Determinism] = "computational"
 
     def check(self, trigger, ctx):  # type: ignore[no-untyped-def]
+        _PARALLEL_STARTS.append(time.monotonic())
         time.sleep(0.1)
         return SensorResult(status="pass", summary="b")
 
@@ -236,18 +244,31 @@ def test_dispatcher_emits_sensor_timeout_exceeded(tmp_path: Path) -> None:
 
 
 def test_dispatcher_runs_sensors_in_parallel(tmp_path: Path) -> None:
-    """Two sleep(0.1) sensors finish in ~0.1s (parallel), not ~0.2s (serial)."""
+    """Two sleep(0.1) sensors start concurrently (parallel), not 0.1s apart (serial).
+
+    Asserts the gap between the two sensors' check() start times — a concurrency
+    signal that is independent of total wall-clock and the dispatcher's fixed
+    overhead. An absolute elapsed-time bound is fragile on slow CI runners, where
+    dispatcher overhead can swamp the 0.1s parallel-vs-serial difference (a 0.1s
+    sleep parallel run was observed at ~0.24s on a loaded macOS CI box).
+    """
+    _PARALLEL_STARTS.clear()
     writer = EventWriter(tmp_path / "events.jsonl")
     d = SensorDispatcher(
         [_ParallelTwoA(), _ParallelTwoB()],
         writer=writer,
         context=WorkspaceContext(workspace_root=tmp_path),
     )
-    t0 = time.monotonic()
     d.on_event_emit(_mk_event())
-    elapsed = time.monotonic() - t0
-    # Generous bound: parallel should be well under 0.18s; serial would be ≥0.2s.
-    assert elapsed < 0.18, f"expected parallel <0.18s, got {elapsed:.3f}s"
+    assert len(_PARALLEL_STARTS) == 2, f"expected 2 sensor starts, got {_PARALLEL_STARTS}"
+    start_gap = abs(_PARALLEL_STARTS[1] - _PARALLEL_STARTS[0])
+    # Parallel: both threads pick up their task near-simultaneously (gap ~ms).
+    # Serial: the 2nd sensor would start only after the 1st's 0.1s sleep (gap ≥0.1s).
+    # 0.05s cleanly separates the two regardless of CI slowness / dispatcher overhead.
+    assert start_gap < 0.05, (
+        f"sensors started {start_gap:.3f}s apart; expected near-concurrent start "
+        f"(parallel). A ≥0.1s gap means serial execution."
+    )
 
 
 def test_dispatcher_emits_extension_events_from_sensor_result(tmp_path: Path) -> None:
