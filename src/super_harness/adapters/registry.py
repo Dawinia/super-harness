@@ -155,6 +155,8 @@ def _resolve_builtin(
 ) -> None:
     cls = _BUILTIN.get(name)
     if cls is None:
+        # Unlike sensors/gates (which warn+skip unknown names), an unresolvable
+        # adapter in the auto-managed adapters.yaml signals real corruption — fail hard.
         raise ValueError(
             f"{yaml_path}: unknown built-in adapter {name!r}; known: {list_builtins()}"
         )

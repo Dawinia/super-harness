@@ -75,6 +75,20 @@ def test_load_missing_file_returns_empty(tmp_path: Path) -> None:
     assert agents == []
 
 
+def test_load_rejects_non_list_adapters_value(tmp_path: Path) -> None:
+    yml = tmp_path / "adapters.yaml"
+    yml.write_text(yaml.safe_dump({"adapters": "oops"}))
+    with pytest.raises(ValueError, match="must be a list"):
+        load_adapters(yml)
+
+
+def test_load_rejects_non_dict_entry(tmp_path: Path) -> None:
+    yml = tmp_path / "adapters.yaml"
+    yml.write_text(yaml.safe_dump({"adapters": ["bare-string"]}))
+    with pytest.raises(ValueError, match="must be a dict"):
+        load_adapters(yml)
+
+
 def test_load_builtins_split_into_framework_and_agent(tmp_path: Path) -> None:
     yml = tmp_path / "adapters.yaml"
     yml.write_text(
@@ -197,6 +211,24 @@ def test_custom_missing_path_raises(tmp_path: Path) -> None:
         load_adapters(yml)
 
 
+def test_custom_missing_class_raises(tmp_path: Path) -> None:
+    mod = tmp_path / "my_framework.py"
+    mod.write_text(_CUSTOM_FRAMEWORK_SRC)
+    yml = tmp_path / "adapters.yaml"
+    yml.write_text(
+        yaml.safe_dump(
+            {
+                "adapters": [
+                    {"name": "x", "type": "framework", "builtin": False,
+                     "path": str(mod)},
+                ]
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="missing required string 'class'"):
+        load_adapters(yml)
+
+
 def test_custom_nonexistent_path_raises(tmp_path: Path) -> None:
     yml = tmp_path / "adapters.yaml"
     yml.write_text(
@@ -279,6 +311,10 @@ def test_duplicate_yaml_name_raises(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Fallback activation
 # ---------------------------------------------------------------------------
+
+
+def test_activate_with_empty_frameworks_returns_empty(tmp_path: Path) -> None:
+    assert activate_with_fallback([], tmp_path) == []
 
 
 def test_fallback_active_when_nothing_detects(tmp_path: Path) -> None:
