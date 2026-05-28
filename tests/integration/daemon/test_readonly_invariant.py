@@ -28,13 +28,10 @@ from __future__ import annotations
 
 import socket
 import sys
-import threading
-import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-import yaml
 
 from super_harness.daemon.protocol import (
     GateQueryRequest,
@@ -42,6 +39,7 @@ from super_harness.daemon.protocol import (
     encode_request,
 )
 from super_harness.daemon.server import DaemonServer
+from tests.integration.daemon.conftest import start_server, write_state
 
 # Modes that imply WRITE access per Python docs:
 # 'w' truncate-write, 'a' append, 'x' exclusive-create, '+' read-AND-write
@@ -50,39 +48,6 @@ _WRITE_MODE_CHARS = frozenset("wax+")
 
 def _is_write_mode(mode: str) -> bool:
     return any(ch in _WRITE_MODE_CHARS for ch in mode)
-
-
-def _write_state(workspace: Path, change_id: str, current_state: str) -> None:
-    state_path = workspace / ".harness" / "state.yaml"
-    # Real reducer shape: `changes` map only, NO top-level active_change_id
-    # (the reducer never writes it; "active" is derived = first non-terminal).
-    state_path.write_text(
-        yaml.safe_dump(
-            {
-                "changes": {
-                    change_id: {
-                        "change_id": change_id,
-                        "current_state": current_state,
-                    }
-                },
-            }
-        )
-    )
-
-
-def _start_server(server: DaemonServer) -> threading.Thread:
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-                probe.settimeout(0.05)
-                probe.connect(str(server.socket_path))
-            return t
-        except (FileNotFoundError, ConnectionRefusedError, OSError):
-            time.sleep(0.01)
-    raise RuntimeError(f"daemon socket never accepted at {server.socket_path}")
 
 
 def _drive_n_queries(socket_path: Path, n: int) -> None:
@@ -113,7 +78,7 @@ def _drive_n_queries(socket_path: Path, n: int) -> None:
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
     (tmp_path / ".harness").mkdir()
-    _write_state(tmp_path, "c1", "PLAN_APPROVED")
+    write_state(tmp_path, "c1", "PLAN_APPROVED")
     return tmp_path
 
 
@@ -180,7 +145,7 @@ def test_daemon_never_opens_state_yaml_for_write(
         state_path=workspace / ".harness" / "state.yaml",
         events_path=workspace / ".harness" / "events.jsonl",
     )
-    _start_server(server)
+    start_server(server)
     try:
         _drive_n_queries(server.socket_path, n=50)
     finally:
@@ -210,7 +175,7 @@ def test_daemon_never_opens_events_jsonl_for_write(
         state_path=workspace / ".harness" / "state.yaml",
         events_path=workspace / ".harness" / "events.jsonl",
     )
-    _start_server(server)
+    start_server(server)
     try:
         _drive_n_queries(server.socket_path, n=50)
     finally:
@@ -241,7 +206,7 @@ def test_tracker_sanity_state_yaml_was_opened_for_read(
         state_path=workspace / ".harness" / "state.yaml",
         events_path=workspace / ".harness" / "events.jsonl",
     )
-    _start_server(server)
+    start_server(server)
     try:
         _drive_n_queries(server.socket_path, n=5)
     finally:

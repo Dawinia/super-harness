@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import os
 import shutil
-import signal
 import subprocess
-import time
 from pathlib import Path
 
 import pytest
 import yaml
+
+from tests.integration.daemon.conftest import kill_daemon, write_state
 
 
 def _has_hook_binary() -> bool:
@@ -35,51 +35,6 @@ def workspace(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _write_state(workspace: Path, change_id: str, current_state: str) -> None:
-    # Real reducer shape: `changes` map only, NO top-level active_change_id
-    # (the reducer never writes it; "active" is derived = first non-terminal).
-    (workspace / ".harness" / "state.yaml").write_text(
-        yaml.safe_dump(
-            {"changes": {change_id: {"change_id": change_id,
-                                     "current_state": current_state}}}
-        )
-    )
-
-
-def _kill_daemon(workspace: Path) -> None:
-    pid_file = workspace / ".harness" / "daemon.pid"
-    # A fire-and-forget daemon (the daemon-down fail-safe test spawns one via
-    # the hook) may still be double-forking when teardown runs, or the PID file
-    # may hold a stale dead pid. Poll until it names a LIVE process, then
-    # SIGTERM — otherwise we leave an immortal orphan (cwd=/, holds the fallback
-    # socket). The daemon normally registers in <1s.
-    deadline = time.monotonic() + 2.0
-    pid: int | None = None
-    while time.monotonic() < deadline:
-        if pid_file.exists():
-            try:
-                candidate = int(pid_file.read_text().strip())
-                os.kill(candidate, 0)  # liveness probe; raises if dead
-                pid = candidate
-                break
-            except (ValueError, ProcessLookupError, OSError):
-                pass
-        time.sleep(0.05)
-    if pid is None:
-        return
-    try:
-        os.kill(pid, signal.SIGTERM)
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            try:
-                os.kill(pid, 0)
-                time.sleep(0.05)
-            except ProcessLookupError:
-                break
-    except (ValueError, ProcessLookupError):
-        pass
-
-
 def _start_daemon(workspace: Path) -> None:
     """Use the supervisor to ensure daemon is up (foreground / blocking)."""
     from super_harness.daemon import supervisor
@@ -87,7 +42,7 @@ def _start_daemon(workspace: Path) -> None:
 
 
 def test_hook_entry_exits_0_on_allow(workspace: Path) -> None:
-    _write_state(workspace, "c1", "PLAN_APPROVED")
+    write_state(workspace, "c1", "PLAN_APPROVED")
     _start_daemon(workspace)
     try:
         env = {**os.environ, "SUPER_HARNESS_CHANGE_ID": "c1"}
@@ -100,11 +55,11 @@ def test_hook_entry_exits_0_on_allow(workspace: Path) -> None:
         )
         assert result.returncode == 0, result.stderr.decode()
     finally:
-        _kill_daemon(workspace)
+        kill_daemon(workspace)
 
 
 def test_hook_entry_exits_1_on_block(workspace: Path) -> None:
-    _write_state(workspace, "c1", "AWAITING_PLAN_REVIEW")
+    write_state(workspace, "c1", "AWAITING_PLAN_REVIEW")
     _start_daemon(workspace)
     try:
         env = {**os.environ, "SUPER_HARNESS_CHANGE_ID": "c1"}
@@ -118,7 +73,7 @@ def test_hook_entry_exits_1_on_block(workspace: Path) -> None:
         assert result.returncode == 1
         assert b"AWAITING_PLAN_REVIEW" in result.stderr
     finally:
-        _kill_daemon(workspace)
+        kill_daemon(workspace)
 
 
 def test_hook_entry_exits_0_when_no_harness(tmp_path: Path) -> None:
@@ -135,7 +90,7 @@ def test_hook_entry_exits_0_when_no_harness(tmp_path: Path) -> None:
 
 def test_hook_entry_exits_0_on_daemon_down_fail_safe(workspace: Path) -> None:
     """AC-2: daemon down → fail-safe ALLOW (exit 0) + stderr warn."""
-    _write_state(workspace, "c1", "PLAN_APPROVED")
+    write_state(workspace, "c1", "PLAN_APPROVED")
     # Deliberately do NOT start the daemon.
     try:
         env = {**os.environ, "SUPER_HARNESS_CHANGE_ID": "c1"}
@@ -150,14 +105,14 @@ def test_hook_entry_exits_0_on_daemon_down_fail_safe(workspace: Path) -> None:
         # Optional: stderr mentions fail-safe / daemon. Not strictly enforced
         # to avoid coupling test to copy.
     finally:
-        _kill_daemon(workspace)
+        kill_daemon(workspace)
 
 
 def test_hook_entry_derives_active_change_from_state_yaml(workspace: Path) -> None:
     """When env var unset, hook should derive the active change_id from
     state.yaml's `changes` map (first non-terminal change), NOT a top-level
     `active_change_id` field (which the reducer never writes)."""
-    _write_state(workspace, "c1", "PLAN_APPROVED")
+    write_state(workspace, "c1", "PLAN_APPROVED")
     _start_daemon(workspace)
     try:
         env = {k: v for k, v in os.environ.items()
@@ -171,7 +126,7 @@ def test_hook_entry_derives_active_change_from_state_yaml(workspace: Path) -> No
         )
         assert result.returncode == 0, result.stderr.decode()
     finally:
-        _kill_daemon(workspace)
+        kill_daemon(workspace)
 
 
 def test_hook_entry_resolves_active_change_without_env(workspace: Path) -> None:
@@ -205,4 +160,30 @@ def test_hook_entry_resolves_active_change_without_env(workspace: Path) -> None:
         assert result.returncode == 1, result.stdout + result.stderr  # BLOCK
         assert b"AWAITING_PLAN_REVIEW" in result.stderr
     finally:
-        _kill_daemon(workspace)
+        kill_daemon(workspace)
+
+
+def test_hook_entry_exits_0_on_empty_argv() -> None:
+    """No tool argument -> exit 0 (permissive; hook must not block on a call
+    shape it doesn't understand). No .harness / daemon needed — main() exits
+    before find_harness_root when argv is empty."""
+    result = subprocess.run(
+        ["super-harness-hook"], capture_output=True, timeout=5.0,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+
+
+def test_hook_entry_handles_tool_with_no_file_arg(workspace: Path) -> None:
+    """A tool with no file argument (e.g. Bash) -> file=None flows through to
+    the gate without crashing. PLAN_APPROVED -> allow (exit 0)."""
+    write_state(workspace, "c1", "PLAN_APPROVED")
+    _start_daemon(workspace)
+    try:
+        env = {**os.environ, "SUPER_HARNESS_CHANGE_ID": "c1"}
+        result = subprocess.run(
+            ["super-harness-hook", "Bash"],  # tool only, NO file arg
+            cwd=workspace, capture_output=True, env=env, timeout=5.0,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+    finally:
+        kill_daemon(workspace)
