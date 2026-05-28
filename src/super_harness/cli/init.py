@@ -11,6 +11,7 @@ from importlib.resources import files
 from pathlib import Path
 
 import click
+import yaml
 
 from super_harness.adapters.framework.plain import PlainAdapter
 from super_harness.adapters.registry import load_adapters
@@ -113,14 +114,19 @@ def _reinject_installed_adapters(root: Path, agents_path: Path) -> None:
       - ONLY the `load_adapters` call is wrapped defensively. A corrupt /
         unloadable adapters.yaml is NON-FATAL here: the base section + plain
         block + anchor are already a valid baseline, so we emit an advisory and
-        return rather than crash init.
+        return rather than crash init. The catch tuple covers BOTH a
+        syntactically-broken file (`yaml.YAMLError`, raised by the unguarded
+        `yaml.safe_load` in `load_adapters`) AND a wrong-shape / unloadable
+        config (`ValueError` / `OSError` / `ImportError` / `AttributeError` /
+        `TypeError`) — `yaml.YAMLError` derives from `Exception`, NOT
+        `ValueError`, so it must be listed explicitly.
       - The inject_* calls are deliberately OUTSIDE that catch: an OSError /
         AgentsMdInjectionError they raise propagates to init's existing AGENTS.md
         envelope (fail-loud), matching the base-section writes.
     """
     try:
         frameworks, agents = load_adapters(adapters_yaml_path(root))
-    except (ValueError, OSError, ImportError, AttributeError, TypeError) as e:
+    except (yaml.YAMLError, ValueError, OSError, ImportError, AttributeError, TypeError) as e:
         click.echo(
             "Note: couldn't re-inject installed adapters into AGENTS.md "
             f"(adapters.yaml unreadable: {e}); re-run "

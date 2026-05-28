@@ -260,21 +260,39 @@ def test_init_force_reinjects_installed_adapters(
     assert "was reset" not in combined, combined
 
 
+@pytest.mark.parametrize(
+    "bad_yaml",
+    [
+        # wrong-shape but valid YAML → `load_adapters` raises ValueError.
+        "adapters: not-a-list\n",
+        # syntactically broken YAML → `yaml.safe_load` raises yaml.YAMLError.
+        "{ this is: not: valid: yaml\n",
+        ":\n  - [unclosed\n",
+    ],
+    ids=["wrong-shape-valueerror", "broken-flow-mapping-yamlerror", "unclosed-seq-yamlerror"],
+)
 def test_init_force_corrupt_adapters_yaml_emits_advisory_and_exits_ok(
     tmp_path: Path,
+    bad_yaml: str,
 ):
     """A corrupt `.harness/adapters.yaml` makes `init --force` re-injection a
     NON-FATAL advisory (couldn't re-inject) + still exit 0 with a valid base
-    AGENTS.md section (the outer section + plain block + no-agent anchor)."""
+    AGENTS.md section (the outer section + plain block + no-agent anchor).
+
+    Covers BOTH failure families: a wrong-shape (valid YAML, `ValueError`) and
+    a syntactically-broken file (`yaml.YAMLError`) — both must route to the
+    same best-effort advisory, never a raw traceback."""
     runner = CliRunner()
     assert runner.invoke(main, ["--workspace", str(tmp_path), "init"]).exit_code == 0
 
-    # Make adapters.yaml structurally invalid so `load_adapters` raises ValueError.
-    (tmp_path / ".harness" / "adapters.yaml").write_text("adapters: not-a-list\n")
+    (tmp_path / ".harness" / "adapters.yaml").write_text(bad_yaml)
 
     forced = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
     assert forced.exit_code == 0, forced.output
     assert "couldn't re-inject installed adapters" in forced.stderr, forced.stderr
+    # Never a raw traceback for either failure family.
+    combined = forced.stderr + forced.output
+    assert "Traceback" not in combined, combined
 
     # Base AGENTS.md section is still valid (init did not crash on the bad yaml).
     text = (tmp_path / "AGENTS.md").read_text()
