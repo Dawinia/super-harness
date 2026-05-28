@@ -35,6 +35,7 @@ from super_harness.daemon.protocol import (
     decode_request,
     encode_response,
 )
+from super_harness.gates.decisions import PRE_TOOL_USE_DECISIONS
 
 __all__ = ["DaemonServer", "daemonize", "main"]
 
@@ -110,23 +111,13 @@ class DaemonServer:
     Per lifecycle-event-model §3.7 Gate 矩阵.
     """
 
-    # 11-state decision table from lifecycle-event-model §3.7.
-    _PRE_TOOL_USE_DECISIONS: ClassVar[dict[str, tuple[str, str]]] = {
-        "INTENT_DECLARED": ("block", "INTENT_DECLARED: plan not drafted yet"),
-        "AWAITING_PLAN_REVIEW": ("block", "AWAITING_PLAN_REVIEW: plan review in progress"),
-        "PLAN_REJECTED": ("block", "PLAN_REJECTED: awaiting plan revision"),
-        "PLAN_APPROVED": ("allow", "PLAN_APPROVED: implementation may proceed"),
-        "IMPLEMENTATION_IN_PROGRESS": ("allow", "IMPLEMENTATION_IN_PROGRESS"),
-        "AWAITING_CODE_REVIEW": ("block", "AWAITING_CODE_REVIEW: frozen pending review"),
-        "CODE_REVIEW_REJECTED": (
-            "allow",
-            "CODE_REVIEW_REJECTED: edits permitted to fix review feedback",
-        ),
-        "READY_TO_MERGE": ("block", "READY_TO_MERGE: ready for merge, no further edits"),
-        "MERGED": ("block", "MERGED: L1 update pending"),
-        "ARCHIVED": ("block", "ARCHIVED: terminal state"),
-        "ABANDONED": ("block", "ABANDONED: terminal state"),
-    }
+    # 11-state decision table from lifecycle-event-model §3.7. The literal now
+    # lives in `super_harness.gates.decisions` (single source of truth, shared
+    # with PreToolUseGate); this alias keeps the historical attribute name so
+    # the dispatch site below is unchanged.
+    _PRE_TOOL_USE_DECISIONS: ClassVar[dict[str, tuple[str, str]]] = (
+        PRE_TOOL_USE_DECISIONS
+    )
 
     def __init__(
         self,

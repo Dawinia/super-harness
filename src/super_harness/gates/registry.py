@@ -103,3 +103,8 @@ def load_gates(yaml_path: Path, *, builtin_only: bool = False) -> list[Gate]:
         builtin=_BUILTIN,
         builtin_only=builtin_only,
     )
+
+
+from super_harness.gates.pre_tool_use import PreToolUseGate  # noqa: E402
+
+register_builtin("pre-tool-use", PreToolUseGate)
