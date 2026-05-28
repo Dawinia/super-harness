@@ -189,16 +189,14 @@ def test_init_agents_md_write_failure_exits_generic_with_format_error(tmp_path: 
     assert (tmp_path / ".harness").is_dir()
 
 
-def test_init_force_warns_when_adapter_installed_but_only_resets_agents_md(
+def test_init_force_reinjects_installed_adapters(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """`init` → `adapter install claude-code` → `init --force` re-renders the
-    AGENTS.md super-harness section back to defaults (dropping the claude-code
-    agent block / restoring the no-agent anchor) AND emits a non-fatal advisory,
-    while the adapters.yaml entry + the settings.json hooks stay intact.
-
-    The reset is by-design for v0.1 (a future `sync` re-renders preserving
-    installed adapters); this test guards that the footgun is no longer SILENT.
+    AGENTS.md super-harness section AND re-injects every installed adapter's
+    subsection, so a re-render never loses adapter guidance (full --force loop
+    closure). The adapters.yaml entry + the settings.json hooks stay intact and
+    are NOT touched by init.
 
     `adapter install claude-code` resolves `super-harness-hook` via
     ``shutil.which``; we monkeypatch it to a fake absolute path so the real
@@ -223,21 +221,26 @@ def test_init_force_warns_when_adapter_installed_but_only_resets_agents_md(
     assert claude_begin in agents.read_text()
     assert no_agent_anchor not in agents.read_text()
 
-    # init --force → re-renders the section back to defaults.
+    # init --force → re-renders the section AND re-injects installed adapters.
     forced = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
     assert forced.exit_code == 0, forced.output
 
-    # 1) AGENTS.md reset: claude-code block gone, no-agent anchor back.
+    # 1) AGENTS.md preserved the claude-code agent block (re-injected, NOT reset
+    #    to the no-agent anchor); exactly ONE block (no duplicate); the outer
+    #    section + plain framework block are present.
     text = agents.read_text()
-    assert claude_begin not in text
-    assert no_agent_anchor in text
+    assert claude_begin in text
+    assert text.count(claude_begin) == 1
+    assert no_agent_anchor not in text
+    assert "<!-- super-harness section begin " in text
+    assert text.count("<!-- super-harness framework: plain -->") == 1
 
-    # 2) adapters.yaml STILL lists claude-code.
+    # 2) adapters.yaml STILL lists claude-code (init never touches it).
     adapters = yaml.safe_load((tmp_path / ".harness" / "adapters.yaml").read_text())
     names = [e.get("name") for e in (adapters.get("adapters") or [])]
     assert "claude-code" in names, f"claude-code dropped from adapters.yaml: {adapters}"
 
-    # 2b) settings.json STILL has our PreToolUse + SessionStart hooks.
+    # 2b) settings.json STILL has our PreToolUse + SessionStart hooks (unchanged).
     settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
     pre_commands = [
         h["command"]
@@ -252,7 +255,41 @@ def test_init_force_warns_when_adapter_installed_but_only_resets_agents_md(
     ]
     assert session_commands == [f"{_FAKE_HOOK} change resume"]
 
-    # 3) the `init --force` run emitted the advisory (names the reset + recovery).
+    # 3) the `init --force` run did NOT emit the old "was reset" advisory.
     combined = forced.stderr + forced.output
-    assert "was reset" in combined, combined
-    assert "claude-code" in combined, combined
+    assert "was reset" not in combined, combined
+
+
+def test_init_force_corrupt_adapters_yaml_emits_advisory_and_exits_ok(
+    tmp_path: Path,
+):
+    """A corrupt `.harness/adapters.yaml` makes `init --force` re-injection a
+    NON-FATAL advisory (couldn't re-inject) + still exit 0 with a valid base
+    AGENTS.md section (the outer section + plain block + no-agent anchor)."""
+    runner = CliRunner()
+    assert runner.invoke(main, ["--workspace", str(tmp_path), "init"]).exit_code == 0
+
+    # Make adapters.yaml structurally invalid so `load_adapters` raises ValueError.
+    (tmp_path / ".harness" / "adapters.yaml").write_text("adapters: not-a-list\n")
+
+    forced = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
+    assert forced.exit_code == 0, forced.output
+    assert "couldn't re-inject installed adapters" in forced.stderr, forced.stderr
+
+    # Base AGENTS.md section is still valid (init did not crash on the bad yaml).
+    text = (tmp_path / "AGENTS.md").read_text()
+    assert "<!-- super-harness section begin " in text
+    assert text.count("<!-- super-harness framework: plain -->") == 1
+    assert "<!-- super-harness no-agent-adapter-installed -->" in text
+
+
+def test_init_fresh_does_not_reinject_or_warn(tmp_path: Path):
+    """Fresh init (no adapters.yaml): re-injection is a no-op (load_adapters
+    returns ([],[])) and emits no advisory — the no-agent anchor stays put."""
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert r.exit_code == 0
+    assert "couldn't re-inject" not in r.stderr
+    assert "was reset" not in r.stderr
+    text = (tmp_path / "AGENTS.md").read_text()
+    assert "<!-- super-harness no-agent-adapter-installed -->" in text
+    assert "<!-- super-harness agent:" not in text

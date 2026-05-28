@@ -11,14 +11,15 @@ from importlib.resources import files
 from pathlib import Path
 
 import click
-import yaml
 
 from super_harness.adapters.framework.plain import PlainAdapter
+from super_harness.adapters.registry import load_adapters
 from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.core.paths import adapters_yaml_path
 from super_harness.engineering.agents_md import (
     AgentsMdInjectionError,
+    inject_agent_subsection,
     inject_framework_subsection,
     inject_section,
 )
@@ -96,34 +97,49 @@ def _verification_default() -> str:
     return src.read_text()
 
 
-def _installed_adapter_names(root: Path) -> list[str]:
-    """Best-effort list of installed adapter names from `.harness/adapters.yaml`.
+def _reinject_installed_adapters(root: Path, agents_path: Path) -> None:
+    """Re-inject every installed adapter's AGENTS.md subsection (loop closure).
 
-    Read minimally + defensively for the `--force` advisory notice only — this
-    must NEVER crash init. On any problem (file absent/empty, corrupt YAML, odd
-    shape, or an unreadable file) we return ``[]`` and the caller skips the
-    notice. We deliberately read adapters.yaml directly rather than coupling to
-    cli/adapter.py (which carries the heavier install/uninstall machinery).
+    Called right after the base section + plain framework block are written, so
+    a re-render (``--force`` or otherwise) restores the guidance for every
+    adapter still registered in ``.harness/adapters.yaml`` rather than leaving
+    only the no-agent anchor. On a fresh `init` (no adapters.yaml) `load_adapters`
+    returns ``([], [])`` → this is a no-op; so it is NOT gated on ``--force``.
+
+    Idempotent: the inject_* functions replace an already-present block in place
+    (by name), so re-running never duplicates a subsection.
+
+    Error split:
+      - ONLY the `load_adapters` call is wrapped defensively. A corrupt /
+        unloadable adapters.yaml is NON-FATAL here: the base section + plain
+        block + anchor are already a valid baseline, so we emit an advisory and
+        return rather than crash init.
+      - The inject_* calls are deliberately OUTSIDE that catch: an OSError /
+        AgentsMdInjectionError they raise propagates to init's existing AGENTS.md
+        envelope (fail-loud), matching the base-section writes.
     """
-    path = adapters_yaml_path(root)
-    if not path.exists():
-        return []
     try:
-        loaded = yaml.safe_load(path.read_text())
-    except (OSError, yaml.YAMLError):
-        return []
-    if not isinstance(loaded, dict):
-        return []
-    entries = loaded.get("adapters")
-    if not isinstance(entries, list):
-        return []
-    names: list[str] = []
-    for entry in entries:
-        if isinstance(entry, dict):
-            name = entry.get("name")
-            if isinstance(name, str) and name:
-                names.append(name)
-    return names
+        frameworks, agents = load_adapters(adapters_yaml_path(root))
+    except (ValueError, OSError, ImportError, AttributeError, TypeError) as e:
+        click.echo(
+            "Note: couldn't re-inject installed adapters into AGENTS.md "
+            f"(adapters.yaml unreadable: {e}); re-run "
+            "`super-harness adapter install <name>` to restore their guidance.",
+            err=True,
+        )
+        return
+
+    for fw in frameworks:
+        if fw.name == "plain":
+            # The plain block was already injected by the caller (PlainAdapter
+            # is the single source of that block); re-injecting would be a
+            # redundant in-place replace.
+            continue
+        inject_framework_subsection(agents_path, fw.name, fw.agents_md_subsection())
+    for ag in agents:
+        # The first agent consumes the no-agent anchor (inject branch 2);
+        # subsequent agents append after the last agent block.
+        inject_agent_subsection(agents_path, ag.name, ag.agents_md_subsection())
 
 
 def _skeleton_files() -> dict[str, str]:
@@ -215,9 +231,18 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
     # must surface through format_error like the .harness-exists branch — never a
     # raw traceback. `init --force` re-renders the section in place, so the
     # recovery contract is "fix AGENTS.md, re-run init --force".
+    # A re-render (`--force`) rewrites the super-harness section back to the
+    # base template (the no-agent anchor) — but it then RE-INJECTS every adapter
+    # still registered in `.harness/adapters.yaml` via
+    # `_reinject_installed_adapters`, so installed agent/framework guidance is
+    # never lost (full `--force` loop closure). On a fresh init (no adapters.yaml)
+    # re-injection is a no-op, so the call is unconditional. The re-inject's
+    # inject_* calls share THIS try's AGENTS.md envelope (fail-loud); only the
+    # internal adapters.yaml load is non-fatal (advisory + skip) — see the helper.
     try:
         inject_section(agents_path, _AGENTS_MD_SECTION_TEMPLATE.format(version=__version__))
         inject_framework_subsection(agents_path, "plain", PlainAdapter().agents_md_subsection())
+        _reinject_installed_adapters(root, agents_path)
     except (OSError, AgentsMdInjectionError) as e:
         click.echo(
             format_error(
@@ -231,24 +256,5 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
             err=True,
         )
         sys.exit(EXIT_GENERIC)
-    # `--force` re-renders the super-harness AGENTS.md section back to defaults
-    # (the no-agent anchor), silently dropping any installed agent adapter's
-    # subsection — while `.harness/adapters.yaml` and `.claude/settings.json`
-    # still register that adapter (the gate hook stays live). That is by-design
-    # for v0.1 (`--force` re-renders; a future `super-harness sync` will
-    # re-render PRESERVING installed adapters), but it is a silent footgun, so
-    # emit a NON-FATAL advisory naming the reset + the recovery. Only on
-    # `--force` AND with ≥1 installed adapter; a first-time init stays silent.
-    if force:
-        installed = _installed_adapter_names(root)
-        if installed:
-            names = ", ".join(installed)
-            click.echo(
-                f"Note: re-rendered the super-harness AGENTS.md section to "
-                f"defaults; guidance for installed adapter(s) {names} was reset. "
-                f"Re-run `super-harness adapter install {installed[0]}` to "
-                f"restore it (a future `super-harness sync` will automate this).",
-                err=True,
-            )
     click.echo(f"super-harness initialized at {harness}")
     sys.exit(EXIT_OK)
