@@ -15,6 +15,8 @@ import json
 import os
 import shutil
 import signal
+import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -150,3 +152,40 @@ def test_daemon_stop_returns_1_when_not_running(workspace: Path) -> None:
         cli_main, ["--workspace", str(workspace), "daemon", "stop"]
     )
     assert result.exit_code == 1
+
+
+def _dead_pid() -> int:
+    """A PID guaranteed dead: spawn a trivial child and reap it."""
+    proc = subprocess.Popen([sys.executable, "-c", ""])
+    proc.wait()
+    return proc.pid
+
+
+def test_daemon_status_reports_stale_pid(workspace: Path) -> None:
+    """PID file present but process dead → stale_pid=True, running=False, exit 1."""
+    dead = _dead_pid()
+    (workspace / ".harness" / "daemon.pid").write_text(f"{dead}\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main, ["--json", "--workspace", str(workspace), "daemon", "status"]
+    )
+    assert result.exit_code == 1, result.output
+    data = json.loads(result.output)["data"]
+    assert data["running"] is False
+    assert data["stale_pid"] is True
+    assert data["pid"] == dead
+
+
+def test_daemon_stop_cleans_up_stale_pid(workspace: Path) -> None:
+    """Stale PID file (dead process) → stop unlinks socket + PID file, exit 1."""
+    dead = _dead_pid()
+    pid_file = workspace / ".harness" / "daemon.pid"
+    pid_file.write_text(f"{dead}\n")
+    sock = resolve_socket_path(workspace)
+    sock.parent.mkdir(parents=True, exist_ok=True)
+    sock.write_text("")  # leftover socket file from the dead daemon
+    runner = CliRunner()
+    result = runner.invoke(cli_main, ["--workspace", str(workspace), "daemon", "stop"])
+    assert result.exit_code == 1, result.output
+    assert not pid_file.exists()
+    assert not sock.exists()

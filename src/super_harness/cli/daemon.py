@@ -104,9 +104,10 @@ def stop(ctx: click.Context) -> None:
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
-        # Process already dead — clean up stale files.
-        if sock_path.exists():
-            sock_path.unlink()
+        # Process already dead — clean up stale files. Both unlinks use
+        # missing_ok so two concurrent `daemon stop` against the same stale
+        # daemon don't crash the loser with FileNotFoundError.
+        sock_path.unlink(missing_ok=True)
         pid_path.unlink(missing_ok=True)
         click.echo("not running", err=True)
         sys.exit(EXIT_GENERIC)
