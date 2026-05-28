@@ -88,3 +88,32 @@ def test_frozen_dataclasses() -> None:
 def test_protocol_version_constant() -> None:
     assert PROTOCOL_VERSION == "1"
     assert MAX_REQUEST_BYTES == 1_048_576
+
+
+def test_decode_response_allows_cross_version_error_envelope() -> None:
+    """UC-6: a stale daemon's error envelope is stamped with ITS version;
+    the client must still decode it (to read the 400 and trigger respawn).
+    Error envelopes are NOT version-gated."""
+    raw = json.dumps({
+        "version": "9.9.9",  # stale daemon's version, != our PROTOCOL_VERSION
+        "id": None,
+        "result": None,
+        "error": {"code": 400, "message": "ProtocolVersionMismatch: got '1', want '9.9.9'"},
+    }).encode() + b"\n"
+    resp = decode_response(raw)  # must NOT raise
+    assert resp.error == {"code": 400,
+                          "message": "ProtocolVersionMismatch: got '1', want '9.9.9'"}
+    assert resp.result is None
+
+
+def test_decode_response_still_gates_success_on_version() -> None:
+    """Success (result-bearing) responses ARE still version-gated: a daemon
+    returning a result on a different protocol version can't be trusted."""
+    raw = json.dumps({
+        "version": "9.9.9",
+        "id": "x",
+        "result": {"decision": "allow", "reason": "PLAN_APPROVED"},
+        "error": None,
+    }).encode() + b"\n"
+    with pytest.raises(ProtocolVersionMismatch):
+        decode_response(raw)

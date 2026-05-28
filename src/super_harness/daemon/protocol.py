@@ -123,13 +123,20 @@ def decode_response(line: bytes) -> GateQueryResponse:
         raise ProtocolError(f"malformed response: {exc}") from exc
     if not isinstance(obj, dict):
         raise ProtocolError(f"response must be a JSON object, got {type(obj).__name__}")
-    version = obj.get("version")
-    if version != PROTOCOL_VERSION:
-        raise ProtocolVersionMismatch(
-            f"got version={version!r}, want {PROTOCOL_VERSION!r}"
-        )
+    error = obj.get("error")
+    # Per daemon-architecture §UC-6: a stale, version-mismatched daemon returns
+    # an error envelope stamped with ITS protocol version; the client/supervisor
+    # MUST be able to read that error to trigger stop+restart. Error envelopes
+    # are therefore decodable regardless of version — only success (result-
+    # bearing) responses are version-gated.
+    if error is None:
+        version = obj.get("version")
+        if version != PROTOCOL_VERSION:
+            raise ProtocolVersionMismatch(
+                f"got version={version!r}, want {PROTOCOL_VERSION!r}"
+            )
     return GateQueryResponse(
         id=obj.get("id"),
         result=obj.get("result"),
-        error=obj.get("error"),
+        error=error,
     )

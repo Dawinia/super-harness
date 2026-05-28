@@ -9,6 +9,7 @@ from server) are returned as part of the response dict — the supervisor (Layer
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import socket
 import threading
@@ -168,3 +169,25 @@ def test_query_propagates_ProtocolError_in_response(tmp_path: Path) -> None:
     resp = query(sock_path, method="gate.pre_tool_use", params={})
     assert resp["result"] is None
     assert resp["error"] == {"code": 400, "message": "ProtocolVersionMismatch"}
+
+
+def test_query_returns_cross_version_error_envelope(tmp_path: Path) -> None:
+    """UC-6 end-to-end at the client layer: when a stale daemon returns a
+    version-mismatch 400 stamped with ITS version, query() RETURNS the error
+    envelope (does not raise DaemonUnreachable), so the supervisor can act."""
+    def _stale_version_error_handler(req: Any) -> bytes:
+        return (json.dumps({
+            "version": "9.9.9",
+            "id": req.id,
+            "result": None,
+            "error": {"code": 400,
+                      "message": "ProtocolVersionMismatch: got '1', want '9.9.9'"},
+        }) + "\n").encode()
+
+    sock_path = _short_sock_path(tmp_path, "xver.sock")
+    server = _EchoServer(sock_path, _stale_version_error_handler)
+    server.start()
+    resp = query(sock_path, method="gate.pre_tool_use", params={})
+    assert resp["result"] is None
+    assert resp["error"]["code"] == 400
+    assert "version" in resp["error"]["message"].lower()
