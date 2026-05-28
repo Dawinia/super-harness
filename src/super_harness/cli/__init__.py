@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import click
 
+from super_harness.cli.adapter import adapter_group
 from super_harness.cli.change import change_group
 from super_harness.cli.daemon import daemon_group
 from super_harness.cli.event import event_group
@@ -68,3 +69,4 @@ main.add_command(status_cmd)
 main.add_command(sensor_group)
 main.add_command(gate_group)
 main.add_command(daemon_group)
+main.add_command(adapter_group)
