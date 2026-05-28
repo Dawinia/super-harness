@@ -181,7 +181,22 @@ def adapter_uninstall(ctx: click.Context, name: str) -> None:
     # remove their hooks; framework default is no-op), then drop the yaml entry,
     # then prune any verification.yaml.adapter_provided rows it contributed
     # (no-op in v0.1 — none were added — and guarded on file-absent).
-    adapter.on_uninstall(root)
+    #
+    # on_uninstall failure (e.g. PermissionError on .claude/settings.json) aborts
+    # the uninstall entirely — the yaml entry is NOT removed so `list` still shows
+    # the adapter and the user can retry after fixing the underlying issue.
+    try:
+        adapter.on_uninstall(root)
+    except OSError as e:
+        click.echo(
+            format_error(
+                subcommand="adapter uninstall",
+                message=f"failed to clean up {name!r} adapter hooks: {e}",
+                hint="Fix the file permissions and re-run `adapter uninstall`.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
     try:
         _remove_install_entry(root, name=name)
     except yaml.YAMLError as e:
@@ -242,6 +257,7 @@ def adapter_list(
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
+    filtered = type_filter is not None or enabled_only
     if type_filter is not None:
         rows = [r for r in rows if r["type"] == type_filter]
     if enabled_only:
@@ -257,7 +273,7 @@ def adapter_list(
             )
         )
     else:
-        _render_human_table(rows)
+        _render_human_table(rows, filtered=filtered)
     sys.exit(EXIT_OK)
 
 
@@ -498,10 +514,23 @@ def _capabilities_summary(capabilities: dict[str, bool] | None) -> str:
     return ", ".join(enabled) if enabled else "-"
 
 
-def _render_human_table(rows: list[dict[str, Any]]) -> None:
-    """Print an aligned NAME/TYPE/SOURCE/VERSION/ENABLED/CAPABILITIES table."""
+def _render_human_table(
+    rows: list[dict[str, Any]], *, filtered: bool = False
+) -> None:
+    """Print an aligned NAME/TYPE/SOURCE/VERSION/ENABLED/CAPABILITIES table.
+
+    Args:
+        rows: display rows (already filtered by the caller).
+        filtered: True when a ``--type`` or ``--enabled-only`` filter was
+            active.  Changes the empty-set message so it doesn't mislead the
+            user into thinking nothing is installed when adapters exist but
+            none match the active filter.
+    """
     if not rows:
-        click.echo("No adapters installed.")
+        if filtered:
+            click.echo("No adapters match the given filter.")
+        else:
+            click.echo("No adapters installed.")
         return
 
     display: list[dict[str, str]] = []

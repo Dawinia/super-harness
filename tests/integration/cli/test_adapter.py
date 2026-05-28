@@ -280,7 +280,7 @@ def test_list_type_filter(
 
 
 def test_list_enabled_only_filter(tmp_path: Path) -> None:
-    """`--enabled-only` drops a manually-disabled entry."""
+    """`--enabled-only` drops a manually-disabled entry; filter-aware empty message."""
     (tmp_path / ".harness").mkdir()
     _run(tmp_path, "install", "plain")
     # Manually flip the entry to disabled to exercise the filter.
@@ -291,7 +291,9 @@ def test_list_enabled_only_filter(tmp_path: Path) -> None:
 
     r = _run(tmp_path, "list", "--enabled-only")
     assert r.exit_code == 0, r.output
-    assert "No adapters installed." in r.output
+    # Adapters ARE installed; the filter just matched none — message is filter-aware.
+    assert "No adapters match the given filter." in r.output
+    assert "No adapters installed." not in r.output
 
 
 def test_list_json_envelope(
@@ -397,3 +399,76 @@ def test_adapters_yaml_preserves_top_level_keys(tmp_path: Path) -> None:
         "Top-level key 'schema_version' was dropped by the round-trip write"
     )
     assert len(data.get("adapters", [])) == 1
+
+
+# --- new Fix-1: on_uninstall OSError is caught, registration preserved --------
+
+
+def test_uninstall_on_uninstall_oserror_exits_generic_registration_intact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """on_uninstall raising OSError → exit 1, no traceback, format_error on stderr,
+    and the adapters.yaml entry is STILL present (registration intact on failure)."""
+    import shutil
+
+    (tmp_path / ".harness").mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
+    # Install claude-code so it's registered.
+    install_result = _run(tmp_path, "install", "claude-code")
+    assert install_result.exit_code == 0, install_result.output
+    assert len(_entries(tmp_path)) == 1
+
+    # Monkeypatch on_uninstall to raise OSError deterministically (no chmod needed).
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
+    def _raise_oserror(self: ClaudeCodeAdapter, root: object) -> None:
+        raise OSError("boom")
+
+    monkeypatch.setattr(ClaudeCodeAdapter, "on_uninstall", _raise_oserror)
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--quiet", "adapter", "uninstall", "claude-code"],
+    )
+
+    # Exit code must be EXIT_GENERIC (1), not 0.
+    assert r.exit_code == 1, r.output
+    # No raw traceback must escape.
+    assert "Traceback" not in r.stderr, r.stderr
+    # A format_error-shaped message must be present on stderr.
+    assert "super-harness adapter uninstall:" in r.stderr, r.stderr
+    assert "failed to clean up" in r.stderr, r.stderr
+    assert "boom" in r.stderr, r.stderr
+    # Registration must be intact — entry still in adapters.yaml.
+    entries = _entries(tmp_path)
+    assert any(e.get("name") == "claude-code" for e in entries), (
+        f"claude-code entry was removed despite on_uninstall failure; entries={entries}"
+    )
+
+
+# --- new Fix-2: filter-aware empty message ------------------------------------
+
+
+def test_list_type_filter_empty_shows_filter_message_not_not_installed(
+    tmp_path: Path,
+) -> None:
+    """`list --type agent` when only `plain` (framework) is installed shows the
+    filter-aware empty message, not the misleading 'No adapters installed.'"""
+    (tmp_path / ".harness").mkdir()
+    _run(tmp_path, "install", "plain")
+
+    r = _run(tmp_path, "list", "--type", "agent")
+
+    assert r.exit_code == 0, r.output
+    assert "No adapters match the given filter." in r.output
+    assert "No adapters installed." not in r.output
+
+
+def test_list_no_filter_nothing_installed_shows_not_installed(tmp_path: Path) -> None:
+    """With no filter and nothing installed, the message is 'No adapters installed.'"""
+    (tmp_path / ".harness").mkdir()
+    r = _run(tmp_path, "list")
+
+    assert r.exit_code == 0, r.output
+    assert "No adapters installed." in r.output
+    assert "No adapters match the given filter." not in r.output
