@@ -187,3 +187,119 @@ def test_hook_entry_handles_tool_with_no_file_arg(workspace: Path) -> None:
         assert result.returncode == 0, result.stderr.decode()
     finally:
         kill_daemon(workspace)
+
+
+# ---------------------------------------------------------------------------
+# `--agent claude-code` shim mode (Task 5.3)
+#
+# Claude Code PreToolUse hooks deliver input as JSON on STDIN (not argv) and
+# treat exit 2 = block (stderr → model), exit 1 = NON-blocking error (tool
+# proceeds!). So the shim must read stdin JSON and exit 2 on block — never 1.
+# The decision core is shared with positional mode; only input parsing + the
+# block exit-code (2 vs 1) differ.
+# ---------------------------------------------------------------------------
+
+
+def test_claude_code_shim_exits_2_on_block(workspace: Path) -> None:
+    """Claude Code shim: blocking state → exit 2 (NOT 1), reason on stderr."""
+    write_state(workspace, "c1", "AWAITING_PLAN_REVIEW")
+    _start_daemon(workspace)
+    try:
+        env = {**os.environ, "SUPER_HARNESS_CHANGE_ID": "c1"}
+        stdin = '{"tool_name":"Edit","tool_input":{"file_path":"a.py"}}'
+        result = subprocess.run(
+            ["super-harness-hook", "--agent", "claude-code"],
+            cwd=workspace,
+            capture_output=True,
+            env=env,
+            input=stdin.encode(),
+            timeout=5.0,
+        )
+        assert result.returncode == 2, result.stderr.decode()
+        assert b"AWAITING_PLAN_REVIEW" in result.stderr
+    finally:
+        kill_daemon(workspace)
+
+
+def test_claude_code_shim_exits_0_on_allow(workspace: Path) -> None:
+    """Claude Code shim: allowing state → exit 0."""
+    write_state(workspace, "c1", "PLAN_APPROVED")
+    _start_daemon(workspace)
+    try:
+        env = {**os.environ, "SUPER_HARNESS_CHANGE_ID": "c1"}
+        stdin = '{"tool_name":"Edit","tool_input":{"file_path":"a.py"}}'
+        result = subprocess.run(
+            ["super-harness-hook", "--agent", "claude-code"],
+            cwd=workspace,
+            capture_output=True,
+            env=env,
+            input=stdin.encode(),
+            timeout=5.0,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+    finally:
+        kill_daemon(workspace)
+
+
+def test_claude_code_shim_fail_open_on_daemon_down(workspace: Path) -> None:
+    """Claude Code shim: daemon down → fail-open ALLOW (exit 0), never block.
+
+    A would-be blocking state must still surface as exit 0 here because the
+    supervisor fail-open ALLOWs when the daemon is unreachable. Exit 2 on a
+    daemon-down path would be a fail-closed regression."""
+    write_state(workspace, "c1", "AWAITING_PLAN_REVIEW")
+    # Deliberately do NOT start the daemon.
+    try:
+        env = {**os.environ, "SUPER_HARNESS_CHANGE_ID": "c1"}
+        stdin = '{"tool_name":"Edit","tool_input":{"file_path":"a.py"}}'
+        result = subprocess.run(
+            ["super-harness-hook", "--agent", "claude-code"],
+            cwd=workspace,
+            capture_output=True,
+            env=env,
+            input=stdin.encode(),
+            timeout=5.0,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+    finally:
+        kill_daemon(workspace)
+
+
+def test_claude_code_shim_fail_open_on_malformed_stdin(workspace: Path) -> None:
+    """Claude Code shim: malformed stdin JSON → fail-open ALLOW (exit 0).
+
+    No daemon needed — main() bails out before touching the workspace when the
+    stdin payload can't be parsed."""
+    result = subprocess.run(
+        ["super-harness-hook", "--agent", "claude-code"],
+        cwd=workspace,
+        capture_output=True,
+        input=b"not json{",
+        timeout=5.0,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+
+
+def test_claude_code_shim_fail_open_on_no_harness(tmp_path: Path) -> None:
+    """Claude Code shim: no .harness/ on walk-up → exit 0 (Axiom 1)."""
+    stdin = '{"tool_name":"Edit","tool_input":{"file_path":"a.py"}}'
+    result = subprocess.run(
+        ["super-harness-hook", "--agent", "claude-code"],
+        cwd=tmp_path,
+        capture_output=True,
+        input=stdin.encode(),
+        timeout=5.0,
+    )
+    assert result.returncode == 0, result.stderr.decode()
+
+
+def test_unknown_agent_fails_open(tmp_path: Path) -> None:
+    """An --agent we don't understand → fail-open ALLOW (exit 0), never block."""
+    result = subprocess.run(
+        ["super-harness-hook", "--agent", "nonsense-agent"],
+        cwd=tmp_path,
+        capture_output=True,
+        input=b"{}",
+        timeout=5.0,
+    )
+    assert result.returncode == 0, result.stderr.decode()
