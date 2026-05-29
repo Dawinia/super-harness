@@ -278,12 +278,18 @@ def adapter_uninstall(ctx: click.Context, name: str) -> None:
     kind = "framework" if isinstance(adapter, FrameworkAdapter) else "agent"
     try:
         remove_subsection(root / "AGENTS.md", kind, adapter.name)
-    except OSError as e:
+    except (OSError, AgentsMdInjectionError) as e:
+        # AgentsMdInjectionError covers a non-UTF-8 / unbalanced-marker AGENTS.md
+        # (the agents_md read layer raises the domain error) — surface it cleanly
+        # like the install path, never a raw traceback.
         click.echo(
             format_error(
                 subcommand="adapter uninstall",
                 message=f"failed to remove the AGENTS.md subsection: {e}",
-                hint="Fix AGENTS.md file permissions and re-run `adapter uninstall`.",
+                hint=(
+                    "Fix AGENTS.md (file permissions / encoding / duplicate "
+                    "super-harness markers) and re-run `adapter uninstall`."
+                ),
             ),
             err=True,
         )

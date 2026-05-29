@@ -360,6 +360,27 @@ def test_sync_does_not_touch_harness_dir(
     assert after == before
 
 
+def test_sync_orphan_begin_marker_no_data_loss(tmp_path: Path) -> None:
+    """An AGENTS.md with an orphan `section begin` (no matching end) → sync fails
+    LOUD (exit 1, "unbalanced" message, no traceback) and leaves the file BYTE-
+    identical, rather than appending a second section that a later sync would
+    splice across — silently eating the trapped user content."""
+    (tmp_path / ".harness").mkdir()
+    original = (
+        "# My project\n\n"
+        "<!-- super-harness section begin · v0.0.1 · DO NOT EDIT MANUALLY -->\n"
+        "IMPORTANT user notes that must survive\n"
+    )
+    _agents_md(tmp_path).write_text(original)
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "sync", "--yes"])
+    assert r.exit_code == 1, r.output
+    assert "unbalanced" in r.stderr
+    assert "Traceback" not in r.stderr
+    # No data loss: file untouched, user notes intact.
+    assert _agents_md(tmp_path).read_text() == original
+
+
 def test_sync_unreadable_agents_md_surfaces_clean_error(tmp_path: Path) -> None:
     """An UNREADABLE AGENTS.md (a directory) on the PROMPT path (no --quiet/--yes,
     so the section_present read runs before any envelope) surfaces through

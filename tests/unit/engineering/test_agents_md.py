@@ -383,6 +383,31 @@ def test_section_present_file_without_section_is_false(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def test_inject_section_orphan_begin_marker_raises(tmp_path: Path) -> None:
+    """A lone `section begin` with NO matching `section end` is an ambiguous,
+    data-loss-prone state → raise (NOT append a second section). File untouched."""
+    path = tmp_path / "AGENTS.md"
+    original = (
+        "# My project\n\n"
+        "<!-- super-harness section begin · v0.0.1 · DO NOT EDIT MANUALLY -->\n"
+        "user notes that must survive\n"
+    )
+    path.write_text(original)
+    with pytest.raises(AgentsMdInjectionError, match="unbalanced"):
+        inject_section(path, "whatever")
+    assert path.read_text() == original  # untouched on raise
+
+
+def test_inject_section_orphan_end_marker_raises(tmp_path: Path) -> None:
+    """A lone `section end` with no matching begin is equally ambiguous → raise."""
+    path = tmp_path / "AGENTS.md"
+    original = "# My project\n\n<!-- super-harness section end -->\nstuff\n"
+    path.write_text(original)
+    with pytest.raises(AgentsMdInjectionError, match="unbalanced"):
+        inject_section(path, "whatever")
+    assert path.read_text() == original
+
+
 def test_inject_section_non_utf8_raises_domain_error(tmp_path: Path) -> None:
     """A non-UTF-8 AGENTS.md raises AgentsMdInjectionError (the module domain
     error), NOT a raw UnicodeDecodeError — so callers' existing

@@ -100,6 +100,15 @@ def inject_section(path: Path, content: str) -> None:
     - Exactly one existing section block → replace it (``count=1``).
     - No existing block → append after the existing content (blank-line separated).
     - More than one existing block → raise `AgentsMdInjectionError`.
+    - Unbalanced markers (a ``section begin`` without its matching ``section
+      end``, or vice-versa) → raise `AgentsMdInjectionError`. This is a
+      DATA-LOSS guard: a lone orphan begin marker (user truncation / dropped
+      end on a merge) would otherwise (a) not be seen as a block → append a
+      second section, then (b) on the next run the lazy ``begin .*? end`` span
+      from the orphan begin to the new section's end would be replaced wholesale,
+      silently deleting the user content trapped between them (violating §3.2 /
+      AC-2 "content outside begin/end is never changed"). Fail loud instead,
+      mirroring the multi-block raise.
 
     The file's dominant newline style is preserved (see module docstring).
     """
@@ -110,6 +119,19 @@ def inject_section(path: Path, content: str) -> None:
 
     existing, newline = _read_normalized(path)
     blocks = _SECTION_PATTERN.findall(existing)
+
+    # Marker-balance guard (must precede the splice): every begin needs a matching
+    # end and a complete block. A mismatch (orphan begin/end, interleaved markers)
+    # is an ambiguous state we refuse to splice into — see the data-loss note above.
+    begin_count = existing.count(_SECTION_BEGIN_PREFIX)
+    end_count = existing.count(_SECTION_END)
+    if begin_count != end_count or begin_count != len(blocks):
+        raise AgentsMdInjectionError(
+            f"{path} has unbalanced super-harness section markers "
+            f"({begin_count} begin, {end_count} end, {len(blocks)} complete "
+            f"block(s)); manual cleanup required — every 'section begin' needs a "
+            f"matching 'section end' and exactly one complete block is expected."
+        )
 
     if len(blocks) > 1:
         raise AgentsMdInjectionError(
