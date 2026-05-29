@@ -21,10 +21,13 @@ from super_harness.engineering.verification_config import (
     Execution,
     InterpolationError,
     Layers,
+    VerificationCheckConflict,
     VerificationConfig,
     VerificationConfigError,
     interpolate,
     load_verification_config,
+    merge_adapter_provided,
+    merge_adapter_provided_list,
 )
 
 # The canonical empty shape shipped by `init`. The loader MUST parse this.
@@ -617,3 +620,117 @@ def test_non_string_env_key_raises(tmp_path: Path) -> None:
     p = _write(tmp_path, yaml.safe_dump({"defaults": {"env": {1: "x"}}}))
     with pytest.raises(VerificationConfigError):
         load_verification_config(p)
+
+
+# --------------------------------------------------------------------------- #
+# merge_adapter_provided_list — pure merge core (Task 10.5)
+# --------------------------------------------------------------------------- #
+
+
+def _check(id_: str, provided_by: str, command: str = "run it") -> dict:
+    return {"id": id_, "command": command, "must_pass": True, "provided_by": provided_by}
+
+
+def test_merge_list_new_id_appends() -> None:
+    """A check whose id is absent from `existing` is appended (order preserved)."""
+    existing = [_check("a", "adapter-a")]
+    out = merge_adapter_provided_list(existing, [_check("b", "adapter-b")])
+    assert [c["id"] for c in out] == ["a", "b"]
+
+
+def test_merge_list_same_id_same_provided_by_replaces_in_place_no_dup() -> None:
+    """Same id + same provided_by → replace in place (fixes duplicate accumulation)."""
+    existing = [_check("openspec-validate", "openspec-adapter", command="old")]
+    out = merge_adapter_provided_list(
+        existing, [_check("openspec-validate", "openspec-adapter", command="new")]
+    )
+    # Exactly ONE row (not two) and it carries the NEW command (replaced in place).
+    assert len(out) == 1
+    assert out[0]["command"] == "new"
+
+
+def test_merge_list_same_id_different_provided_by_raises_conflict() -> None:
+    """Same id + different provided_by → VerificationCheckConflict (OI-3 reject)."""
+    existing = [_check("shared-id", "adapter-a")]
+    with pytest.raises(VerificationCheckConflict) as exc:
+        merge_adapter_provided_list(existing, [_check("shared-id", "adapter-b")])
+    # The message names the id + both provided_by values.
+    msg = str(exc.value)
+    assert "shared-id" in msg
+    assert "adapter-a" in msg
+    assert "adapter-b" in msg
+
+
+def test_merge_check_conflict_is_a_value_error() -> None:
+    """VerificationCheckConflict subclasses ValueError (→ CLI EXIT_VALIDATION)."""
+    assert issubclass(VerificationCheckConflict, ValueError)
+    assert issubclass(VerificationCheckConflict, VerificationConfigError)
+
+
+def test_merge_list_empty_existing_safe() -> None:
+    """Merging into an empty `existing` just yields the new checks."""
+    out = merge_adapter_provided_list([], [_check("a", "adapter-a")])
+    assert [c["id"] for c in out] == ["a"]
+
+
+def test_merge_list_does_not_mutate_input() -> None:
+    """The pure core returns a NEW list — it does not mutate `existing` in place."""
+    existing = [_check("a", "adapter-a")]
+    merge_adapter_provided_list(existing, [_check("b", "adapter-b")])
+    assert [c["id"] for c in existing] == ["a"]
+
+
+def test_merge_file_absent_creates_with_checks(tmp_path: Path) -> None:
+    """An absent file is treated as empty config; non-empty checks create it."""
+    p = tmp_path / ".harness" / "verification.yaml"
+    assert not p.exists()
+    merge_adapter_provided(p, [_check("openspec-validate", "openspec-adapter")])
+    data = yaml.safe_load(p.read_text())
+    assert [c["id"] for c in data["adapter_provided"]] == ["openspec-validate"]
+
+
+def test_merge_file_empty_checks_is_true_noop(tmp_path: Path) -> None:
+    """Empty `checks` → no read, no write (absent file stays absent)."""
+    p = tmp_path / ".harness" / "verification.yaml"
+    merge_adapter_provided(p, [])
+    assert not p.exists()
+
+
+def test_merge_file_preserves_other_top_level_keys(tmp_path: Path) -> None:
+    """Round-trip preserves unrelated top-level keys + existing user `checks`."""
+    p = _write(
+        tmp_path,
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "checks": [{"id": "tests", "command": "npm test"}],
+                "adapter_provided": [],
+            }
+        ),
+    )
+    merge_adapter_provided(p, [_check("openspec-validate", "openspec-adapter")])
+    data = yaml.safe_load(p.read_text())
+    assert data["schema_version"] == 1
+    assert data["checks"][0]["id"] == "tests"
+    assert [c["id"] for c in data["adapter_provided"]] == ["openspec-validate"]
+
+
+def test_merge_file_reinstall_idempotent_single_row(tmp_path: Path) -> None:
+    """Merging the SAME check twice → exactly one row (duplicate-accumulation fix)."""
+    p = tmp_path / ".harness" / "verification.yaml"
+    merge_adapter_provided(p, [_check("openspec-validate", "openspec-adapter")])
+    merge_adapter_provided(p, [_check("openspec-validate", "openspec-adapter")])
+    data = yaml.safe_load(p.read_text())
+    assert len(data["adapter_provided"]) == 1
+
+
+def test_merge_file_conflict_raises(tmp_path: Path) -> None:
+    """File-level merge surfaces VerificationCheckConflict on a colliding id."""
+    p = _write(
+        tmp_path,
+        yaml.safe_dump(
+            {"adapter_provided": [_check("openspec-validate", "someone-else")]}
+        ),
+    )
+    with pytest.raises(VerificationCheckConflict):
+        merge_adapter_provided(p, [_check("openspec-validate", "openspec-adapter")])

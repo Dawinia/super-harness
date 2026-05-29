@@ -18,10 +18,11 @@ group (cli/gate.py): walk up for ``.harness/`` and map
 ``HarnessNotInitialized`` → ``EXIT_NO_CONFIG``; error output goes through
 ``format_error`` on stderr.
 
-Free-form ``name`` (NOT a ``click.Choice``): the install exit set is ``0/1/3/5``
-(cli-command-surface) — ``2`` is excluded, but click auto-emits exit 2 on a bad
-``Choice``. We therefore do the registry membership check ourselves and map an
-unknown name to ``EXIT_GENERIC`` (1), the same path as the install RuntimeError.
+Free-form ``name`` (NOT a ``click.Choice``): we do the registry membership
+check ourselves and map an unknown name to ``EXIT_GENERIC`` (1) rather than
+click's auto-emitted exit 2 (which a ``click.Choice`` would fire for an
+unrecognised token). The install exit set intentionally includes ``2`` for the
+OI-3 conflict case (see the ``verification.yaml`` merge paragraph below).
 
 `.claude/`-absent decision (option (a) — install in a fresh repo) is preserved
 from Phase 5: ``ClaudeCodeAdapter.detect(root)`` is NOT a precondition;
@@ -36,12 +37,18 @@ uninstall we ``remove_subsection`` as super-harness-owned generic cleanup (NOT
 inside ``on_uninstall``, per the ABC docstring); it is a no-op when AGENTS.md or
 the block is absent.
 
-Remaining Phase-6 deferrals (per plan / Out-of-scope):
-- ``verification.yaml`` merge is empty-safe: built-in adapters return ``[]`` in
-  v0.1, so we touch nothing (no read, no write). The non-empty branch is kept
-  minimal and tolerates an absent file.
+``verification.yaml`` merge (Phase-10): still empty-safe — agents + framework
+built-ins that contribute no checks touch nothing (no read, no write). The
+non-empty branch (openspec's ``openspec-validate`` in v0.1) routes through the
+SHARED ``engineering.verification_config.merge_adapter_provided`` so it keys on
+check ``id``: a re-install REPLACES the adapter's own row in place (idempotent —
+no duplicate accumulation), while a collision with a DIFFERENT adapter's row is
+the OI-3 reject (``VerificationCheckConflict`` → EXIT_VALIDATION / exit 2). The
+install exit set therefore now intentionally includes ``2`` for that one case.
+
+Remaining deferral:
 - No ``adapters.yaml`` file locking (so the surface's ``5``/EXIT_CONCURRENCY is
-  never emitted in Phase 6).
+  never emitted in v0.1).
 """
 from __future__ import annotations
 
@@ -55,18 +62,30 @@ import yaml
 from super_harness.adapters import AgentAdapter, FrameworkAdapter
 from super_harness.adapters.registry import get_builtin, list_builtins
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
+from super_harness.cli.exit_codes import (
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+    EXIT_VALIDATION,
+)
 from super_harness.cli.output import json_envelope
 from super_harness.core.paths import (
     HarnessNotInitialized,
     adapters_yaml_path,
+    events_path,
     find_harness_root,
 )
+from super_harness.core.post_emit import refresh_state_after_emit
+from super_harness.core.writer import EmitPreconditionError, EventWriter
 from super_harness.engineering.agents_md import (
     AgentsMdInjectionError,
     inject_agent_subsection,
     inject_framework_subsection,
     remove_subsection,
+)
+from super_harness.engineering.verification_config import (
+    VerificationCheckConflict,
+    merge_adapter_provided,
 )
 
 # Leading comment written when CREATING adapters.yaml so users know the file is
@@ -92,11 +111,21 @@ def adapter_install(ctx: click.Context, name: str) -> None:
     adapter = _resolve_builtin_or_exit(name, "adapter install")
     kind = "framework" if isinstance(adapter, FrameworkAdapter) else "agent"
 
-    # verification.yaml: empty-safe (built-ins return [] in v0.1 → nothing
-    # written); only the non-empty branch touches it.
+    # verification.yaml: empty-safe (agents + the v0.1 framework built-ins that
+    # contribute no checks write nothing). The merge keys on check `id`: a re-
+    # install REPLACES the adapter's own row in place (idempotent — no duplicate
+    # accumulation), while a collision with a DIFFERENT adapter's row is the OI-3
+    # reject (VerificationCheckConflict → EXIT_VALIDATION / exit 2, which the
+    # install exit set now intentionally includes for this case).
     try:
         _merge_verification_checks(root, adapter)
-    except yaml.YAMLError as e:
+    except VerificationCheckConflict as e:
+        click.echo(
+            format_error(subcommand="adapter install", message=str(e)),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
         click.echo(
             format_error(
                 subcommand="adapter install",
@@ -185,6 +214,83 @@ def adapter_install(ctx: click.Context, name: str) -> None:
     sys.exit(EXIT_OK)
 
 
+@adapter_group.command("scan-once")
+@click.argument("name")
+@click.pass_context
+def adapter_scan_once(ctx: click.Context, name: str) -> None:
+    """Run ONE synchronous observe() pass over <name>'s watch dir, emitting events.
+
+    The manual / offline fallback for the daemon watcher (Task 10.6) and the
+    primary integration-test driver: a single read-only scan that emits a
+    lifecycle event for every UNSEEN artifact the FrameworkAdapter observes.
+
+    Only FrameworkAdapters define ``observe`` — an AgentAdapter has none, so
+    passing one is a user error (EXIT_GENERIC). Each yielded event is emitted +
+    state-refreshed in yielded order (the adapter yields ``intent_declared``
+    before ``plan_ready`` so the plan_ready precondition is satisfied). A
+    precondition violation on emit (e.g. a malformed change with ``tasks.md`` but
+    no ``proposal.md``) surfaces as EXIT_VALIDATION naming the failing event —
+    never a raw traceback. Zero new events is a valid no-op (exit 0).
+    """
+    root = _resolve_root(ctx, "adapter scan-once")
+
+    adapter = _resolve_builtin_or_exit(name, "adapter scan-once")
+    # observe() is FrameworkAdapter-only; an AgentAdapter has nothing to scan.
+    if not isinstance(adapter, FrameworkAdapter):
+        click.echo(
+            format_error(
+                subcommand="adapter scan-once",
+                message=(
+                    f"adapter {name!r} is an agent adapter and has no observe(); "
+                    f"scan-once works only on framework adapters"
+                ),
+                hint="Use a framework adapter (e.g. `openspec`) with scan-once.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    # MIRROR cli/change.py's emit pattern: one EventWriter over events_path(root),
+    # emit each event then refresh_state_after_emit so state.yaml never lags. We
+    # emit in YIELDED order (observe yields intent_declared before plan_ready, so
+    # the plan_ready emit-time precondition — a preceding intent_declared — holds).
+    writer = EventWriter(events_path(root))
+    emitted = 0
+    for ev in adapter.observe(root):
+        try:
+            writer.emit(ev)
+        except EmitPreconditionError as e:
+            # A precondition violation mid-loop (e.g. a lone plan_ready) must not
+            # escape as a traceback or tear state. We've already emitted +
+            # refreshed `emitted` events; report which change/event failed and
+            # exit cleanly — the already-emitted events stay (each was refreshed).
+            click.echo(
+                format_error(
+                    subcommand="adapter scan-once",
+                    message=(
+                        f"emit failed for change {ev.change_id!r} "
+                        f"event {ev.type!r}: {e}"
+                    ),
+                    hint=(
+                        "Fix the offending change (e.g. an openspec change with "
+                        "tasks.md but no proposal.md) and re-run scan-once."
+                    ),
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
+        # B-3 wiring: keep state.yaml current after every emit (mirrors change.py).
+        refresh_state_after_emit(root)
+        emitted += 1
+
+    if not ctx.obj.get("quiet"):
+        click.echo(
+            f"scan-once {name}: emitted {emitted} "
+            f"event{'' if emitted == 1 else 's'}."
+        )
+    sys.exit(EXIT_OK)
+
+
 @adapter_group.command("uninstall")
 @click.argument("name")
 @click.pass_context
@@ -259,7 +365,7 @@ def adapter_uninstall(ctx: click.Context, name: str) -> None:
         sys.exit(EXIT_NO_CONFIG)
     try:
         _remove_verification_checks(root, adapter)
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
         click.echo(
             format_error(
                 subcommand="adapter uninstall",
@@ -399,28 +505,25 @@ def _merge_verification_checks(
     Only FrameworkAdapter declares ``verification_checks``; agents have none. If
     the adapter contributes no checks (plain & claude-code in v0.1) this is a
     TRUE no-op — no read, no write — so a bare ``.harness/`` with no
-    verification.yaml (Phase-5 test fixture) is never touched. Only the non-empty
-    branch reads/writes, and it tolerates an absent file.
+    verification.yaml (Phase-5 test fixture) is never touched.
+
+    The actual read→merge→write is the SHARED ``merge_adapter_provided`` (also
+    used by ``verification register``), so the OI-3 conflict-reject + idempotent
+    replace-in-place semantics can never drift between the two surfaces. Each
+    check dict carries its own ``provided_by`` (from ``verification_checks()``).
+
+    Raises:
+        yaml.YAMLError: verification.yaml exists but is corrupt (caller maps to
+            EXIT_NO_CONFIG).
+        VerificationCheckConflict: a check id collides with a row owned by a
+            different ``provided_by`` (caller maps to EXIT_VALIDATION).
     """
     if not isinstance(adapter, FrameworkAdapter):
         return
     checks = adapter.verification_checks()
     if not checks:
         return
-
-    path = root / ".harness" / "verification.yaml"
-    cfg: dict[str, Any] = {}
-    if path.exists():
-        loaded = yaml.safe_load(path.read_text()) or {}
-        if isinstance(loaded, dict):
-            cfg = loaded
-    provided = cfg.get("adapter_provided")
-    if not isinstance(provided, list):
-        provided = []
-    provided.extend(checks)
-    cfg["adapter_provided"] = provided
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
+    merge_adapter_provided(root / ".harness" / "verification.yaml", checks)
 
 
 def _remove_verification_checks(
@@ -428,8 +531,10 @@ def _remove_verification_checks(
 ) -> None:
     """Remove this adapter's contributed verification.yaml.adapter_provided rows.
 
-    No-op in v0.1 (built-ins contribute none) and guarded on file-absent. Only
-    framework adapters can have contributed checks.
+    Prunes by ``(provided_by, id)`` match — NOT exact-dict-match — so AC-5 holds:
+    uninstall removes the adapter's own rows even if other fields (command,
+    must_pass, …) drifted since install. Guarded on file-absent; only framework
+    adapters can have contributed checks.
     """
     if not isinstance(adapter, FrameworkAdapter):
         return
@@ -445,7 +550,21 @@ def _remove_verification_checks(
     provided = loaded.get("adapter_provided")
     if not isinstance(provided, list):
         return
-    loaded["adapter_provided"] = [c for c in provided if c not in checks]
+    # The adapter owns the (provided_by, id) pairs it contributes. Drop exactly
+    # those rows; leave every other adapter's + user's rows untouched.
+    owned = {
+        (c.get("provided_by"), c.get("id"))
+        for c in checks
+        if isinstance(c, dict)
+    }
+    loaded["adapter_provided"] = [
+        row
+        for row in provided
+        if not (
+            isinstance(row, dict)
+            and (row.get("provided_by"), row.get("id")) in owned
+        )
+    ]
     path.write_text(yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False))
 
 

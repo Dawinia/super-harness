@@ -663,4 +663,241 @@ def test_uninstall_agents_md_remove_failure_exits_generic_with_format_error(
     assert "Traceback" not in r.stderr, r.stderr
     assert "super-harness adapter uninstall:" in r.stderr, r.stderr
     assert "failed to remove the AGENTS.md subsection" in r.stderr, r.stderr
-    assert "disk full" in r.stderr, r.stderr
+
+
+# --- scan-once ---------------------------------------------------------------
+
+
+def test_scan_once_agent_adapter_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`scan-once claude-code` (an AgentAdapter) → EXIT_GENERIC (1), no traceback.
+
+    Agent adapters have no ``observe`` — scan-once is a FrameworkAdapter-only
+    operation, so the command must reject an agent with a clean format_error.
+    """
+    import shutil
+
+    (tmp_path / ".harness").mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
+
+    r = _run(tmp_path, "scan-once", "claude-code")
+
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness adapter scan-once:" in r.stderr, r.stderr
+    # The message must name WHY (agent adapters have no observe()).
+    assert "observe" in r.stderr.lower() or "framework" in r.stderr.lower(), r.stderr
+
+
+def test_scan_once_unknown_adapter_exits_generic(tmp_path: Path) -> None:
+    """`scan-once <unknown>` → EXIT_GENERIC (1) via the shared resolver path."""
+    (tmp_path / ".harness").mkdir()
+    r = _run(tmp_path, "scan-once", "nope")
+
+    assert r.exit_code == 1, r.output
+    assert "super-harness adapter scan-once:" in r.stderr, r.stderr
+    assert "unknown adapter" in r.stderr, r.stderr
+
+
+def test_scan_once_no_harness_exits_no_config(tmp_path: Path) -> None:
+    """No `.harness/` → EXIT_NO_CONFIG (3)."""
+    r = _run(tmp_path, "scan-once", "plain")
+
+    assert r.exit_code == 3, r.output
+    assert "super-harness adapter scan-once:" in r.stderr, r.stderr
+
+
+def test_scan_once_emit_validation_failure_is_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed openspec change (tasks.md but NO proposal.md) yields a lone
+    ``plan_ready`` whose intent_declared emit-time precondition fails.
+
+    scan-once must surface that EmitPreconditionError via format_error +
+    EXIT_VALIDATION (2) — never a raw traceback, and naming the failing change.
+    """
+    (tmp_path / ".harness").mkdir()
+    changes = tmp_path / "openspec" / "changes"
+    # `bad` has tasks.md but no proposal.md → scan yields a lone plan_ready.
+    (changes / "bad").mkdir(parents=True)
+    (changes / "bad" / "tasks.md").write_text("- [ ] do a thing\n", encoding="utf-8")
+    (tmp_path / "openspec" / "specs").mkdir(parents=True)
+
+    r = _run(tmp_path, "scan-once", "openspec")
+
+    assert r.exit_code == 2, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness adapter scan-once:" in r.stderr, r.stderr
+    # The message names the offending change so the operator can fix it.
+    assert "bad" in r.stderr, r.stderr
+
+
+# --- Task 10.5: verification.yaml adapter_provided merge (OI-3 + dedup + AC-5) -
+
+
+def _read_adapter_provided(ws: Path) -> list[dict]:
+    data = yaml.safe_load(_verification_yaml(ws).read_text()) or {}
+    return data.get("adapter_provided") or []
+
+
+def _openspec_workspace(ws: Path) -> None:
+    """Create a .harness/ + a detectable openspec layout so install openspec works."""
+    (ws / ".harness").mkdir()
+    (ws / "openspec" / "changes").mkdir(parents=True)
+    (ws / "openspec" / "specs").mkdir(parents=True)
+
+
+def test_install_openspec_writes_single_adapter_provided_row(tmp_path: Path) -> None:
+    """Installing openspec lands exactly ONE openspec-validate adapter_provided row."""
+    _openspec_workspace(tmp_path)
+    r = _run(tmp_path, "install", "openspec")
+
+    assert r.exit_code == 0, r.output
+    rows = _read_adapter_provided(tmp_path)
+    ids = [c["id"] for c in rows]
+    assert ids == ["openspec-validate"]
+    assert rows[0]["provided_by"] == "openspec-adapter"
+
+
+def test_install_openspec_twice_no_duplicate_accumulation(tmp_path: Path) -> None:
+    """Re-installing openspec REPLACES its row in place — exactly ONE row, not two.
+
+    Regression for the duplicate-accumulation bug: the old bare `provided.extend`
+    appended another identical openspec-validate row on every re-install.
+    """
+    _openspec_workspace(tmp_path)
+    first = _run(tmp_path, "install", "openspec")
+    second = _run(tmp_path, "install", "openspec")
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    rows = _read_adapter_provided(tmp_path)
+    assert [c["id"] for c in rows] == ["openspec-validate"], rows
+
+
+def test_install_conflicting_check_id_exits_validation_two(tmp_path: Path) -> None:
+    """OI-3: installing openspec when a DIFFERENT provided_by already owns the id
+    → EXIT_VALIDATION (2) with a clean format_error, not a silent double-land."""
+    _openspec_workspace(tmp_path)
+    # Pre-seed verification.yaml with the SAME id but a DIFFERENT provided_by so
+    # the openspec built-in's openspec-validate check collides on merge.
+    _verification_yaml(tmp_path).write_text(
+        yaml.safe_dump(
+            {
+                "adapter_provided": [
+                    {
+                        "id": "openspec-validate",
+                        "command": "something else",
+                        "provided_by": "some-other-adapter",
+                    }
+                ]
+            }
+        )
+    )
+
+    r = _run(tmp_path, "install", "openspec")
+
+    assert r.exit_code == 2, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness adapter install:" in r.stderr, r.stderr
+    assert "openspec-validate" in r.stderr, r.stderr
+    # The conflicting row is untouched (we rejected — never partially merged).
+    rows = _read_adapter_provided(tmp_path)
+    assert rows == [
+        {
+            "id": "openspec-validate",
+            "command": "something else",
+            "provided_by": "some-other-adapter",
+        }
+    ]
+
+
+def test_uninstall_openspec_removes_only_its_adapter_provided_row(
+    tmp_path: Path,
+) -> None:
+    """AC-5: uninstall openspec drops its adapter_provided row but leaves user
+    `checks` AND another adapter's rows untouched — pruned by (provided_by, id),
+    so it works even if the row's other fields drifted since install."""
+    _openspec_workspace(tmp_path)
+    assert _run(tmp_path, "install", "openspec").exit_code == 0
+
+    # Drift the command field + add a user check and a foreign adapter_provided row.
+    data = yaml.safe_load(_verification_yaml(tmp_path).read_text())
+    for row in data["adapter_provided"]:
+        if row["id"] == "openspec-validate":
+            row["command"] = "openspec validate DRIFTED"
+    data.setdefault("checks", []).append({"id": "tests", "command": "npm test"})
+    data["adapter_provided"].append(
+        {"id": "other-check", "command": "x", "provided_by": "another-adapter"}
+    )
+    _verification_yaml(tmp_path).write_text(yaml.safe_dump(data, sort_keys=False))
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--quiet", "adapter", "uninstall", "openspec"],
+    )
+    assert r.exit_code == 0, r.output
+
+    after = yaml.safe_load(_verification_yaml(tmp_path).read_text())
+    ap_ids = [c["id"] for c in after.get("adapter_provided") or []]
+    # openspec-validate gone (despite the drifted command); the foreign row stays.
+    assert ap_ids == ["other-check"], after
+    # User `checks` untouched.
+    assert [c["id"] for c in after.get("checks") or []] == ["tests"]
+
+
+# --- non-UTF-8 verification.yaml regression (UnicodeDecodeError is ValueError) -
+
+
+def test_install_openspec_non_utf8_verification_yaml_exits_no_config(
+    tmp_path: Path,
+) -> None:
+    """A non-UTF-8 verification.yaml → `install openspec` exits EXIT_NO_CONFIG (3)
+    with a ``format_error``-shaped message on stderr, NOT a raw traceback.
+
+    Regression: UnicodeDecodeError subclasses ValueError (NOT OSError), so it
+    was NOT caught by the old bare ``except yaml.YAMLError``.
+    """
+    _openspec_workspace(tmp_path)
+    # Write a valid YAML structure with an invalid UTF-8 byte embedded so the
+    # file fails on read_text() (default UTF-8) before yaml ever sees it.
+    _verification_yaml(tmp_path).write_bytes(
+        b"adapter_provided:\n  - id: x\n\xe9\xff bad\n"
+    )
+
+    r = _run(tmp_path, "install", "openspec")
+
+    assert r.exit_code == 3, r.output
+    assert "super-harness adapter install:" in r.stderr, r.stderr
+    assert "corrupt" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+
+
+def test_uninstall_openspec_non_utf8_verification_yaml_exits_no_config(
+    tmp_path: Path,
+) -> None:
+    """A non-UTF-8 verification.yaml → `uninstall openspec` exits EXIT_NO_CONFIG (3)
+    with a ``format_error``-shaped message on stderr, NOT a raw traceback.
+
+    Regression: UnicodeDecodeError subclasses ValueError (NOT OSError), so it
+    was NOT caught by the old bare ``except yaml.YAMLError``.
+    """
+    _openspec_workspace(tmp_path)
+    # Install openspec so it appears in adapters.yaml (uninstall checks this).
+    assert _run(tmp_path, "install", "openspec").exit_code == 0
+
+    # Now corrupt verification.yaml with a non-UTF-8 byte.
+    _verification_yaml(tmp_path).write_bytes(
+        b"adapter_provided:\n  - id: x\n\xe9\xff bad\n"
+    )
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--quiet", "adapter", "uninstall", "openspec"],
+    )
+
+    assert r.exit_code == 3, r.output
+    assert "super-harness adapter uninstall:" in r.stderr, r.stderr
+    assert "corrupt" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr

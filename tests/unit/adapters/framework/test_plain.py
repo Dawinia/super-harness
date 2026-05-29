@@ -54,3 +54,8 @@ def test_name_and_version() -> None:
 
 def test_on_uninstall_default_noop(tmp_path: Path) -> None:
     assert PlainAdapter().on_uninstall(tmp_path) is None
+
+
+def test_watch_paths_inherits_empty_default(tmp_path: Path) -> None:
+    # PlainAdapter does not override watch_paths -> inherits the ABC's [] default.
+    assert PlainAdapter().watch_paths(tmp_path) == []
