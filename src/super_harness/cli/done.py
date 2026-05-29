@@ -15,8 +15,9 @@ prerequisite (emit_validation §_HARD_PREREQ_EVENTS). `done` then emits
 `--skip-verify` bypasses the dispatcher entirely: `done` emits a synthetic
 `verification_passed` (payload `{skipped: true}`) FIRST, then
 `implementation_complete`. Both go through the STRICT writer (never
-`skip_validation`), so a change that has not reached IMPLEMENTATION_IN_PROGRESS
-correctly surfaces an `EmitPreconditionError` → EXIT_VALIDATION.
+`skip_validation`). A pre-flight gate (below) rejects any change that is not
+IMPLEMENTATION_IN_PROGRESS before either path emits anything, so the strict
+writer's `EmitPreconditionError` is only a defensive backstop.
 
 Every CLI-issued `writer.emit(...)` here is followed by
 `refresh_state_after_emit(root)` (B-3 wiring) so state.yaml never lags.
@@ -28,10 +29,11 @@ payload as `pr_url` when present.
 
 Exit codes (cli-command-surface §2.2):
 - 0 — verified (or --skip-verify) + implementation_complete emitted.
-- 2 — verification failed (no implementation_complete) OR an EmitPreconditionError
-  (e.g. the change is not in IMPLEMENTATION_IN_PROGRESS) OR a config validation
-  error (syntax-corrupt / wrong-shape / bad-placeholder verification.yaml)
-  surfaced by the default-path pre-load before dispatch.
+- 2 — the change is not IMPLEMENTATION_IN_PROGRESS (pre-flight state gate, before
+  any verification runs or any event is written) OR verification failed (no
+  implementation_complete) OR a config validation error (syntax-corrupt /
+  wrong-shape / bad-placeholder verification.yaml) surfaced by the default-path
+  pre-load before dispatch.
 - 3 — `.harness/verification.yaml` missing.
 - 5 — concurrency conflict (reserved; not raised by v0.1 in practice).
 - 1 — the sensor crashed / timed out (no verdict came back).
@@ -63,6 +65,7 @@ from super_harness.core.paths import (
     verification_yaml_path,
 )
 from super_harness.core.post_emit import refresh_state_after_emit
+from super_harness.core.reducer import derive_state
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
 from super_harness.engineering.verification_config import load_verification_config
@@ -79,6 +82,12 @@ _DISPATCHER_PARALLELISM = 1
 def _utc_now_iso() -> str:
     """ISO 8601 UTC with trailing `Z` (matches lifecycle-event-model §2)."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _current_state(root: Path, slug: str) -> str | None:
+    """Current derived state for `slug`, or None if the change has no events."""
+    cs = derive_state(events_path(root)).get(slug)
+    return cs.current_state if cs else None
 
 
 @click.command("done")
@@ -123,6 +132,31 @@ def done_cmd(
                 subcommand="done",
                 message="no change specified and no active change found",
                 hint="Pass a `<slug>` or run `super-harness change start <slug>` first.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+
+    # `done` only completes a change that is already IMPLEMENTATION_IN_PROGRESS.
+    # Gate this BEFORE running verification or emitting anything: otherwise a
+    # `done` run too early would leave an orphan verification_passed in the
+    # append-only stream (the dispatcher / synthetic emit lands as a legal
+    # self-loop on the earlier state, and only the later implementation_complete
+    # is rejected). Fail fast and write nothing.
+    current = _current_state(root, resolved)
+    if current != "IMPLEMENTATION_IN_PROGRESS":
+        click.echo(
+            format_error(
+                subcommand="done",
+                message=(
+                    f"change {resolved!r} is "
+                    f"{current or 'unknown (no such change)'}, "
+                    "not IMPLEMENTATION_IN_PROGRESS"
+                ),
+                hint=(
+                    "`done` completes an in-progress change; start implementation "
+                    "first, or check the slug with `super-harness status`."
+                ),
             ),
             err=True,
         )
@@ -245,11 +279,10 @@ def _done_skip_verify(
 ) -> None:
     """`--skip-verify` path: synthetic verification_passed, then complete.
 
-    Both emits go through the STRICT writer (never skip_validation). A change
-    that has not reached IMPLEMENTATION_IN_PROGRESS cannot accept a
-    verification_passed (it is informational but still rejected as a first /
-    illegal-context event), surfacing as EmitPreconditionError → EXIT_VALIDATION
-    — which is the correct behavior.
+    Both emits go through the STRICT writer (never skip_validation). The caller's
+    pre-flight gate has already rejected any change that is not
+    IMPLEMENTATION_IN_PROGRESS, so the strict writer here is a defensive backstop
+    (an EmitPreconditionError would still surface as EXIT_VALIDATION).
     """
     vp = Event(
         event_id=new_event_id(),

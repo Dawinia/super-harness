@@ -168,9 +168,9 @@ def test_done_skip_verify(tmp_path: Path) -> None:
 
 
 def test_done_wrong_state_exit_2(tmp_path: Path) -> None:
-    # Change only at INTENT_DECLARED — implementation_complete is illegal there,
-    # and (default path) verification_passed is informational so it lands, but
-    # implementation_complete's transition is rejected → EmitPreconditionError.
+    # Change only at INTENT_DECLARED — the pre-flight state gate rejects `done`
+    # BEFORE running verification or emitting anything, so NO orphan
+    # verification_passed lands (the stream stays exactly [intent_declared]).
     (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".harness" / "verification.yaml").write_text(_PASS_YAML)
     _emit(tmp_path, "my-change", "intent_declared")
@@ -179,12 +179,15 @@ def test_done_wrong_state_exit_2(tmp_path: Path) -> None:
         main, ["--workspace", str(tmp_path), "done", "my-change"]
     )
     assert r.exit_code == EXIT_VALIDATION, r.output
-    assert "implementation_complete" not in _event_types(tmp_path)
+    assert "not IMPLEMENTATION_IN_PROGRESS" in r.output
+    # The gate wrote nothing new — no orphan verification_passed, no complete.
+    assert _event_types(tmp_path) == ["intent_declared"]
 
 
 def test_done_skip_verify_wrong_state_exit_2(tmp_path: Path) -> None:
-    # --skip-verify on a change with NO prior state: the synthetic
-    # verification_passed is illegal as a first event → EmitPreconditionError.
+    # --skip-verify on a change with NO prior state ("ghost"): the pre-flight
+    # state gate rejects it (current state is None) before any emit — so no
+    # synthetic verification_passed is even attempted.
     (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".harness" / "verification.yaml").write_text(_PASS_YAML)
     r = CliRunner().invoke(
@@ -192,8 +195,31 @@ def test_done_skip_verify_wrong_state_exit_2(tmp_path: Path) -> None:
         ["--workspace", str(tmp_path), "done", "ghost", "--skip-verify"],
     )
     assert r.exit_code == EXIT_VALIDATION, r.output
-    # Nothing landed (the very first emit was rejected).
+    assert "not IMPLEMENTATION_IN_PROGRESS" in r.output
+    # Nothing landed (gated before the writer was even constructed).
     assert not events_path(tmp_path).exists() or _event_types(tmp_path) == []
+
+
+def test_done_too_early_plan_approved_no_orphan_vp(tmp_path: Path) -> None:
+    # Reviewer's reproduction: `done` on a PLAN_APPROVED change. There,
+    # verification_passed is a LEGAL self-loop, so pre-fix it would land as an
+    # orphan before implementation_complete was rejected. The pre-flight gate
+    # blocks it: exit 2, stream unchanged (no orphan verification_passed).
+    (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".harness" / "verification.yaml").write_text(_PASS_YAML)
+    for evt in ("intent_declared", "plan_ready", "plan_approved"):
+        _emit(tmp_path, "my-change", evt)
+    refresh_state_after_emit(tmp_path)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "done", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "verification_passed" not in _event_types(tmp_path)
+    assert _event_types(tmp_path) == [
+        "intent_declared",
+        "plan_ready",
+        "plan_approved",
+    ]
 
 
 def test_done_no_harness_exit_3(tmp_path: Path) -> None:
