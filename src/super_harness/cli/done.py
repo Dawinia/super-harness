@@ -116,9 +116,11 @@ def done_cmd(
         )
         sys.exit(EXIT_NO_CONFIG)
 
-    # TODO(phase 12): resolve slug from --pr (the gh wrapper lands then). For
-    # now --pr never participates in slug resolution; it only feeds the
-    # implementation_complete payload below.
+    # TODO(phase 13): resolve slug from --pr. PR→slug resolution needs the
+    # metadata block the Phase-13 PR-decorator injects (v0.1 PRs carry none), so
+    # `resolve_change_from_pr` (now in cli/pr.py) can only be wired usefully once
+    # that decorator runs. For now --pr never participates in slug resolution; it
+    # only feeds the implementation_complete payload below.
     resolved = slug or read_active_change_id(root)
     if resolved is None:
         click.echo(
