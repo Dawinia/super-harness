@@ -256,6 +256,43 @@ def create_pr(
         raise GhError("gh CLI not found on PATH") from exc
 
 
+def enable_repo_merge_settings() -> None:
+    """Enable repo-level auto-merge + squash-merge via ``gh api`` (spec §3.1).
+
+    Runs two PATCH calls against the current repo's settings::
+
+        gh api -X PATCH /repos/{owner}/{repo} -f allow_auto_merge=true
+        gh api -X PATCH /repos/{owner}/{repo} -f allow_squash_merge=true
+
+    The ``{owner}`` / ``{repo}`` tokens are **gh's own placeholders** — gh
+    resolves them from the current directory's default git remote, so we pass
+    them literally (do NOT hand-resolve via ``gh repo view``).
+
+    Pure module contract: this helper raises :class:`GhError` on any failure
+    (non-admin token, no remote, non-GitHub remote — all surface the same) and
+    captures subprocess output so a best-effort caller can archive the command +
+    stderr to an operation-log. It does NOT write logs or emit events itself.
+
+    Raises
+    ------
+    GhError
+        On subprocess failure or missing ``gh`` binary. The error message
+        carries the captured stderr so the caller can persist it.
+    """
+    for flag in ("allow_auto_merge=true", "allow_squash_merge=true"):
+        args = ["gh", "api", "-X", "PATCH", "/repos/{owner}/{repo}", "-f", flag]
+        try:
+            subprocess.run(args, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            raise GhError(
+                f"gh api -X PATCH /repos/{{owner}}/{{repo}} -f {flag} failed "
+                f"(exit {exc.returncode}): {stderr}"
+            ) from exc
+        except FileNotFoundError as exc:
+            raise GhError("gh CLI not found on PATH") from exc
+
+
 def merge_pr_auto_squash(pr_number: int, delete_branch: bool = True) -> None:
     """Auto-squash-merge a pull request.
 

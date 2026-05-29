@@ -22,6 +22,7 @@ from super_harness.engineering.gh import (
     check_gh,
     create_pr,
     edit_pr_body,
+    enable_repo_merge_settings,
     merge_pr_auto_squash,
     view_pr,
 )
@@ -398,3 +399,46 @@ class TestMergePrAutoSquash:
             mock_run.side_effect = FileNotFoundError()
             with pytest.raises(GhError):
                 merge_pr_auto_squash(1)
+
+
+# ---------------------------------------------------------------------------
+# enable_repo_merge_settings (§3.1 repo-settings auto-enable)
+# ---------------------------------------------------------------------------
+
+
+class TestEnableRepoMergeSettings:
+    def test_runs_both_patch_calls_with_gh_placeholders(self) -> None:
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.return_value = _completed()
+            enable_repo_merge_settings()
+        # two PATCH calls — auto-merge then squash — with gh's own {owner}/{repo}
+        # placeholders passed literally (gh resolves them from the git remote).
+        argvs = [call.args[0] for call in mock_run.call_args_list]
+        assert len(argvs) == 2, argvs
+        assert argvs[0] == [
+            "gh", "api", "-X", "PATCH", "/repos/{owner}/{repo}",
+            "-f", "allow_auto_merge=true",
+        ]
+        assert argvs[1] == [
+            "gh", "api", "-X", "PATCH", "/repos/{owner}/{repo}",
+            "-f", "allow_squash_merge=true",
+        ]
+
+    def test_called_process_error_raises_gh_error(self) -> None:
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.side_effect = _cpe()
+            with pytest.raises(GhError):
+                enable_repo_merge_settings()
+
+    def test_file_not_found_raises_gh_error(self) -> None:
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.side_effect = FileNotFoundError()
+            with pytest.raises(GhError):
+                enable_repo_merge_settings()
+
+    def test_captures_output_so_caller_can_log_stderr(self) -> None:
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.return_value = _completed()
+            enable_repo_merge_settings()
+        # capture_output so a best-effort caller can write stderr to an op-log.
+        assert mock_run.call_args.kwargs.get("capture_output") is True

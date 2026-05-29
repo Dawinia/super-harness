@@ -69,11 +69,12 @@ def test_init_refuses_when_partial_harness_exists(tmp_path: Path):
 
 
 def test_init_accepts_noop_flags_silently(tmp_path: Path):
-    """v0.1: --setup-github / --framework are accepted but produce no runtime notice.
+    """v0.1: --framework is accepted but produces no runtime notice.
 
-    Help text carries the placeholder caveat (Phase 4 / Phase 11 will wire these).
+    Help text carries the placeholder caveat (Phase 4 will wire --framework).
     Locks in the Phase 1 convention so a future regression that re-introduces
-    a runtime stderr notice would be caught.
+    a runtime stderr notice would be caught. (--setup-github is now wired in
+    Phase 12 — its behavior is covered by test_init_setup_github.py.)
     """
     runner = CliRunner()
     r = runner.invoke(
@@ -82,7 +83,6 @@ def test_init_accepts_noop_flags_silently(tmp_path: Path):
             "--workspace",
             str(tmp_path),
             "init",
-            "--setup-github",
             "--framework",
             "openspec",
         ],
