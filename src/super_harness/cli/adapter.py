@@ -36,12 +36,18 @@ uninstall we ``remove_subsection`` as super-harness-owned generic cleanup (NOT
 inside ``on_uninstall``, per the ABC docstring); it is a no-op when AGENTS.md or
 the block is absent.
 
-Remaining Phase-6 deferrals (per plan / Out-of-scope):
-- ``verification.yaml`` merge is empty-safe: built-in adapters return ``[]`` in
-  v0.1, so we touch nothing (no read, no write). The non-empty branch is kept
-  minimal and tolerates an absent file.
+``verification.yaml`` merge (Phase-10): still empty-safe — agents + framework
+built-ins that contribute no checks touch nothing (no read, no write). The
+non-empty branch (openspec's ``openspec-validate`` in v0.1) routes through the
+SHARED ``engineering.verification_config.merge_adapter_provided`` so it keys on
+check ``id``: a re-install REPLACES the adapter's own row in place (idempotent —
+no duplicate accumulation), while a collision with a DIFFERENT adapter's row is
+the OI-3 reject (``VerificationCheckConflict`` → EXIT_VALIDATION / exit 2). The
+install exit set therefore now intentionally includes ``2`` for that one case.
+
+Remaining deferral:
 - No ``adapters.yaml`` file locking (so the surface's ``5``/EXIT_CONCURRENCY is
-  never emitted in Phase 6).
+  never emitted in v0.1).
 """
 from __future__ import annotations
 
@@ -76,6 +82,10 @@ from super_harness.engineering.agents_md import (
     inject_framework_subsection,
     remove_subsection,
 )
+from super_harness.engineering.verification_config import (
+    VerificationCheckConflict,
+    merge_adapter_provided,
+)
 
 # Leading comment written when CREATING adapters.yaml so users know the file is
 # tool-managed (mirrors state.yaml's AUTO-GENERATED header convention).
@@ -100,10 +110,20 @@ def adapter_install(ctx: click.Context, name: str) -> None:
     adapter = _resolve_builtin_or_exit(name, "adapter install")
     kind = "framework" if isinstance(adapter, FrameworkAdapter) else "agent"
 
-    # verification.yaml: empty-safe (built-ins return [] in v0.1 → nothing
-    # written); only the non-empty branch touches it.
+    # verification.yaml: empty-safe (agents + the v0.1 framework built-ins that
+    # contribute no checks write nothing). The merge keys on check `id`: a re-
+    # install REPLACES the adapter's own row in place (idempotent — no duplicate
+    # accumulation), while a collision with a DIFFERENT adapter's row is the OI-3
+    # reject (VerificationCheckConflict → EXIT_VALIDATION / exit 2, which the
+    # install exit set now intentionally includes for this case).
     try:
         _merge_verification_checks(root, adapter)
+    except VerificationCheckConflict as e:
+        click.echo(
+            format_error(subcommand="adapter install", message=str(e)),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
     except yaml.YAMLError as e:
         click.echo(
             format_error(
@@ -484,28 +504,25 @@ def _merge_verification_checks(
     Only FrameworkAdapter declares ``verification_checks``; agents have none. If
     the adapter contributes no checks (plain & claude-code in v0.1) this is a
     TRUE no-op — no read, no write — so a bare ``.harness/`` with no
-    verification.yaml (Phase-5 test fixture) is never touched. Only the non-empty
-    branch reads/writes, and it tolerates an absent file.
+    verification.yaml (Phase-5 test fixture) is never touched.
+
+    The actual read→merge→write is the SHARED ``merge_adapter_provided`` (also
+    used by ``verification register``), so the OI-3 conflict-reject + idempotent
+    replace-in-place semantics can never drift between the two surfaces. Each
+    check dict carries its own ``provided_by`` (from ``verification_checks()``).
+
+    Raises:
+        yaml.YAMLError: verification.yaml exists but is corrupt (caller maps to
+            EXIT_NO_CONFIG).
+        VerificationCheckConflict: a check id collides with a row owned by a
+            different ``provided_by`` (caller maps to EXIT_VALIDATION).
     """
     if not isinstance(adapter, FrameworkAdapter):
         return
     checks = adapter.verification_checks()
     if not checks:
         return
-
-    path = root / ".harness" / "verification.yaml"
-    cfg: dict[str, Any] = {}
-    if path.exists():
-        loaded = yaml.safe_load(path.read_text()) or {}
-        if isinstance(loaded, dict):
-            cfg = loaded
-    provided = cfg.get("adapter_provided")
-    if not isinstance(provided, list):
-        provided = []
-    provided.extend(checks)
-    cfg["adapter_provided"] = provided
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
+    merge_adapter_provided(root / ".harness" / "verification.yaml", checks)
 
 
 def _remove_verification_checks(
@@ -513,8 +530,10 @@ def _remove_verification_checks(
 ) -> None:
     """Remove this adapter's contributed verification.yaml.adapter_provided rows.
 
-    No-op in v0.1 (built-ins contribute none) and guarded on file-absent. Only
-    framework adapters can have contributed checks.
+    Prunes by ``(provided_by, id)`` match — NOT exact-dict-match — so AC-5 holds:
+    uninstall removes the adapter's own rows even if other fields (command,
+    must_pass, …) drifted since install. Guarded on file-absent; only framework
+    adapters can have contributed checks.
     """
     if not isinstance(adapter, FrameworkAdapter):
         return
@@ -530,7 +549,21 @@ def _remove_verification_checks(
     provided = loaded.get("adapter_provided")
     if not isinstance(provided, list):
         return
-    loaded["adapter_provided"] = [c for c in provided if c not in checks]
+    # The adapter owns the (provided_by, id) pairs it contributes. Drop exactly
+    # those rows; leave every other adapter's + user's rows untouched.
+    owned = {
+        (c.get("provided_by"), c.get("id"))
+        for c in checks
+        if isinstance(c, dict)
+    }
+    loaded["adapter_provided"] = [
+        row
+        for row in provided
+        if not (
+            isinstance(row, dict)
+            and (row.get("provided_by"), row.get("id")) in owned
+        )
+    ]
     path.write_text(yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False))
 
 

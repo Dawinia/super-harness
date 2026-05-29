@@ -19,6 +19,7 @@ from super_harness.cli.sensor import sensor_group
 from super_harness.cli.state import state_group
 from super_harness.cli.status import status_cmd
 from super_harness.cli.sync import sync_cmd
+from super_harness.cli.verification import verification_group
 from super_harness.cli.verify import verify_cmd
 from super_harness.version import __version__
 
@@ -76,3 +77,4 @@ main.add_command(adapter_group)
 main.add_command(verify_cmd)
 main.add_command(done_cmd)
 main.add_command(sync_cmd)
+main.add_command(verification_group)

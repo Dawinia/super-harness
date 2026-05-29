@@ -83,10 +83,13 @@ __all__ = [
     "Execution",
     "InterpolationError",
     "Layers",
+    "VerificationCheckConflict",
     "VerificationConfig",
     "VerificationConfigError",
     "interpolate",
     "load_verification_config",
+    "merge_adapter_provided",
+    "merge_adapter_provided_list",
 ]
 
 _CAPTURE_VALUES = ("stdout", "stderr", "both", "none")
@@ -138,6 +141,22 @@ class InterpolationError(VerificationConfigError):
     A focused subclass of `VerificationConfigError` (hence still a `ValueError`,
     so the CLI maps it to EXIT_VALIDATION) — distinct only so callers can tell a
     bad placeholder apart from a wrong-shape schema error if they wish.
+    """
+
+
+class VerificationCheckConflict(VerificationConfigError):
+    """Two adapters contribute an `adapter_provided` check with the SAME `id`.
+
+    Raised by `merge_adapter_provided_list` (and its file-I/O wrapper
+    `merge_adapter_provided`) when an incoming check shares its `id` with an
+    EXISTING row owned by a DIFFERENT `provided_by` — the OI-3 conflict-reject
+    case. Same-id + same-`provided_by` is NOT a conflict (it is an idempotent
+    re-register / re-install → REPLACE in place).
+
+    A focused subclass of `VerificationConfigError` (hence still a `ValueError`),
+    so the shared CLI convention `ValueError → EXIT_VALIDATION` maps it to exit 2
+    on BOTH the `adapter install` and `verification register` paths with zero
+    per-caller branching.
     """
 
 
@@ -266,6 +285,98 @@ def load_verification_config(path: Path) -> VerificationConfig:
         checks=checks,
         adapter_provided=adapter_provided,
     )
+
+
+# --------------------------------------------------------------------------- #
+# adapter_provided merge (shared by `adapter install` + `verification register`)
+# --------------------------------------------------------------------------- #
+
+
+def merge_adapter_provided_list(
+    existing: list[dict[str, Any]], new: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Merge `new` adapter-check dicts into `existing`, keyed on check `id`.
+
+    Pure, directly unit-testable core of the shared merge — it operates on RAW
+    dicts (NOT parsed `CheckSpec`s) so it matches the shipped install path and
+    preserves file fidelity when the file-I/O wrapper round-trips it. Both
+    `adapter install` and `verification register` funnel through here so the
+    OI-3 conflict-reject rule can never drift between the two surfaces.
+
+    Each incoming check carries its own `provided_by` (the install path gets it
+    from `adapter.verification_checks()`; the register path stamps it from the
+    `<adapter-name>` arg). Merge semantics, applied per incoming check, keyed on
+    `id`:
+
+    - existing row with the same `id` + the SAME `provided_by` → REPLACE in
+      place (idempotent re-register / re-install — fixes the duplicate-
+      accumulation bug where re-installing appended another identical row).
+    - existing row with the same `id` + a DIFFERENT `provided_by` → raise
+      `VerificationCheckConflict` (naming the id + both `provided_by` values).
+    - no existing row with that `id` → append (preserving order).
+
+    Returns a NEW list (the input `existing` is not mutated in place); callers
+    that read→merge→write get a clean value to write back.
+    """
+    # Shallow-copy so we never mutate the caller's list object; the dict
+    # elements are shared by reference (we only replace/append whole dicts).
+    merged: list[dict[str, Any]] = list(existing)
+    for check in new:
+        incoming_id = check.get("id")
+        incoming_by = check.get("provided_by")
+        for idx, row in enumerate(merged):
+            if not isinstance(row, dict) or row.get("id") != incoming_id:
+                continue
+            existing_by = row.get("provided_by")
+            if existing_by != incoming_by:
+                raise VerificationCheckConflict(
+                    f"verification check id {incoming_id!r} is already provided by "
+                    f"{existing_by!r}; refusing to let {incoming_by!r} override it"
+                )
+            # Same id + same provided_by → idempotent replace in place.
+            merged[idx] = check
+            break
+        else:
+            # No existing row with this id → append.
+            merged.append(check)
+    return merged
+
+
+def merge_adapter_provided(path: Path, checks: list[dict[str, Any]]) -> None:
+    """Read→merge→write `checks` into a verification.yaml's `adapter_provided`.
+
+    The file-I/O wrapper used by BOTH `adapter install` and `verification
+    register`. Empty-safe + absent-file-tolerant exactly like the install path
+    it replaces: an empty `checks` is a true no-op (no read, no write), and an
+    absent file is treated as an empty config (the file + its parent dir are
+    created lazily only when there is something to write). Preserves all other
+    top-level keys already present in the file (no silent drop).
+
+    Raises:
+        yaml.YAMLError: `path` exists but is syntactically invalid YAML
+            (propagated unwrapped from `yaml.safe_load`; callers map it to
+            EXIT_NO_CONFIG, matching the shipped install/uninstall convention).
+        VerificationCheckConflict: an incoming check collides with an existing
+            row owned by a different `provided_by` (OI-3 reject; a `ValueError`
+            → CLI maps it to EXIT_VALIDATION / exit 2).
+    """
+    if not checks:
+        return
+
+    cfg: dict[str, Any] = {}
+    if path.exists():
+        # yaml.YAMLError propagates — callers catch + surface it.
+        loaded = yaml.safe_load(path.read_text()) or {}
+        if isinstance(loaded, dict):
+            cfg = loaded
+    existing = cfg.get("adapter_provided")
+    if not isinstance(existing, list):
+        existing = []
+    existing = [row for row in existing if isinstance(row, dict)]
+
+    cfg["adapter_provided"] = merge_adapter_provided_list(existing, checks)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
 
 
 # --------------------------------------------------------------------------- #

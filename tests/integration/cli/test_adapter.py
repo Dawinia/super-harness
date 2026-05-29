@@ -731,3 +731,117 @@ def test_scan_once_emit_validation_failure_is_clean(
     assert "super-harness adapter scan-once:" in r.stderr, r.stderr
     # The message names the offending change so the operator can fix it.
     assert "bad" in r.stderr, r.stderr
+
+
+# --- Task 10.5: verification.yaml adapter_provided merge (OI-3 + dedup + AC-5) -
+
+
+def _read_adapter_provided(ws: Path) -> list[dict]:
+    data = yaml.safe_load(_verification_yaml(ws).read_text()) or {}
+    return data.get("adapter_provided") or []
+
+
+def _openspec_workspace(ws: Path) -> None:
+    """Create a .harness/ + a detectable openspec layout so install openspec works."""
+    (ws / ".harness").mkdir()
+    (ws / "openspec" / "changes").mkdir(parents=True)
+    (ws / "openspec" / "specs").mkdir(parents=True)
+
+
+def test_install_openspec_writes_single_adapter_provided_row(tmp_path: Path) -> None:
+    """Installing openspec lands exactly ONE openspec-validate adapter_provided row."""
+    _openspec_workspace(tmp_path)
+    r = _run(tmp_path, "install", "openspec")
+
+    assert r.exit_code == 0, r.output
+    rows = _read_adapter_provided(tmp_path)
+    ids = [c["id"] for c in rows]
+    assert ids == ["openspec-validate"]
+    assert rows[0]["provided_by"] == "openspec-adapter"
+
+
+def test_install_openspec_twice_no_duplicate_accumulation(tmp_path: Path) -> None:
+    """Re-installing openspec REPLACES its row in place — exactly ONE row, not two.
+
+    Regression for the duplicate-accumulation bug: the old bare `provided.extend`
+    appended another identical openspec-validate row on every re-install.
+    """
+    _openspec_workspace(tmp_path)
+    first = _run(tmp_path, "install", "openspec")
+    second = _run(tmp_path, "install", "openspec")
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    rows = _read_adapter_provided(tmp_path)
+    assert [c["id"] for c in rows] == ["openspec-validate"], rows
+
+
+def test_install_conflicting_check_id_exits_validation_two(tmp_path: Path) -> None:
+    """OI-3: installing openspec when a DIFFERENT provided_by already owns the id
+    → EXIT_VALIDATION (2) with a clean format_error, not a silent double-land."""
+    _openspec_workspace(tmp_path)
+    # Pre-seed verification.yaml with the SAME id but a DIFFERENT provided_by so
+    # the openspec built-in's openspec-validate check collides on merge.
+    _verification_yaml(tmp_path).write_text(
+        yaml.safe_dump(
+            {
+                "adapter_provided": [
+                    {
+                        "id": "openspec-validate",
+                        "command": "something else",
+                        "provided_by": "some-other-adapter",
+                    }
+                ]
+            }
+        )
+    )
+
+    r = _run(tmp_path, "install", "openspec")
+
+    assert r.exit_code == 2, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness adapter install:" in r.stderr, r.stderr
+    assert "openspec-validate" in r.stderr, r.stderr
+    # The conflicting row is untouched (we rejected — never partially merged).
+    rows = _read_adapter_provided(tmp_path)
+    assert rows == [
+        {
+            "id": "openspec-validate",
+            "command": "something else",
+            "provided_by": "some-other-adapter",
+        }
+    ]
+
+
+def test_uninstall_openspec_removes_only_its_adapter_provided_row(
+    tmp_path: Path,
+) -> None:
+    """AC-5: uninstall openspec drops its adapter_provided row but leaves user
+    `checks` AND another adapter's rows untouched — pruned by (provided_by, id),
+    so it works even if the row's other fields drifted since install."""
+    _openspec_workspace(tmp_path)
+    assert _run(tmp_path, "install", "openspec").exit_code == 0
+
+    # Drift the command field + add a user check and a foreign adapter_provided row.
+    data = yaml.safe_load(_verification_yaml(tmp_path).read_text())
+    for row in data["adapter_provided"]:
+        if row["id"] == "openspec-validate":
+            row["command"] = "openspec validate DRIFTED"
+    data.setdefault("checks", []).append({"id": "tests", "command": "npm test"})
+    data["adapter_provided"].append(
+        {"id": "other-check", "command": "x", "provided_by": "another-adapter"}
+    )
+    _verification_yaml(tmp_path).write_text(yaml.safe_dump(data, sort_keys=False))
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--quiet", "adapter", "uninstall", "openspec"],
+    )
+    assert r.exit_code == 0, r.output
+
+    after = yaml.safe_load(_verification_yaml(tmp_path).read_text())
+    ap_ids = [c["id"] for c in after.get("adapter_provided") or []]
+    # openspec-validate gone (despite the drifted command); the foreign row stays.
+    assert ap_ids == ["other-check"], after
+    # User `checks` untouched.
+    assert [c["id"] for c in after.get("checks") or []] == ["tests"]
