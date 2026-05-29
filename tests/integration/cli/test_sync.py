@@ -316,6 +316,68 @@ def test_sync_adapter_beats_agents_md_flag(
 
 
 # --------------------------------------------------------------------------- #
+# robustness: duplicate section, .harness/ isolation, CRLF
+# --------------------------------------------------------------------------- #
+
+
+def test_sync_duplicate_section_surfaces_clean_error(tmp_path: Path) -> None:
+    """Two super-harness outer blocks → the underlying AgentsMdInjectionError is
+    surfaced through the envelope (exit 1, "manual cleanup" message, NO traceback,
+    file left untouched). `--yes` skips the prompt so we reach the render."""
+    (tmp_path / ".harness").mkdir()
+    block = (
+        "<!-- super-harness section begin · v0.0.1 · DO NOT EDIT MANUALLY -->\n"
+        "old\n"
+        "<!-- super-harness section end -->\n"
+    )
+    doubled = block + "\n" + block
+    _agents_md(tmp_path).write_text(doubled)
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "sync", "--yes"])
+    assert r.exit_code == 1, r.output
+    assert "manual cleanup" in r.stderr
+    assert "Traceback" not in r.stderr
+    # inject_section raises before writing → file unchanged.
+    assert _agents_md(tmp_path).read_text() == doubled
+
+
+def test_sync_does_not_touch_harness_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """sync re-renders AGENTS.md only — every file under `.harness/` is byte-identical
+    before and after (the re-render-without-reinit guarantee vs `init --force`)."""
+    runner = CliRunner()
+    assert _init(runner, tmp_path).exit_code == 0
+    assert _install_claude(runner, tmp_path, monkeypatch).exit_code == 0
+
+    harness = tmp_path / ".harness"
+    before = {p: p.read_bytes() for p in harness.rglob("*") if p.is_file()}
+
+    r = runner.invoke(main, ["--workspace", str(tmp_path), "--quiet", "sync"])
+    assert r.exit_code == 0, r.output
+
+    after = {p: p.read_bytes() for p in harness.rglob("*") if p.is_file()}
+    assert after == before
+
+
+def test_sync_preserves_crlf_line_endings(tmp_path: Path) -> None:
+    """A CRLF-authored AGENTS.md stays CRLF after sync (no churn of line endings;
+    the version stamp is still re-rendered)."""
+    runner = CliRunner()
+    assert _init(runner, tmp_path).exit_code == 0
+    path = _agents_md(tmp_path)
+    path.write_bytes(path.read_text().replace("\n", "\r\n").encode("utf-8"))
+
+    r = runner.invoke(main, ["--workspace", str(tmp_path), "--quiet", "sync"])
+    assert r.exit_code == 0, r.output
+    raw = path.read_bytes()
+    assert b"\r\n" in raw
+    # No lone LF was introduced (every LF is part of a CRLF).
+    assert raw.replace(b"\r\n", b"").count(b"\n") == 0
+    assert _VERSION_STAMP.encode("utf-8") in raw.replace(b"\r\n", b"\n")
+
+
+# --------------------------------------------------------------------------- #
 # full lifecycle
 # --------------------------------------------------------------------------- #
 

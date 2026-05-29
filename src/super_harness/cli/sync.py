@@ -179,6 +179,9 @@ def _sync_adapter(
     # the element type to the shared `ABC` base (mypy joins the two adapter ABCs),
     # which then has no `.name` / `.agents_md_subsection`.
     installed: list[FrameworkAdapter | AgentAdapter] = [*frameworks, *agents]
+    # `load_adapters` skips `enabled: false` entries, so a disabled-but-listed
+    # adapter is reported as "not installed" here (it has no live subsection to
+    # re-render). This differs from `adapter uninstall`, which reads the raw yaml.
     adapter = next((a for a in installed if a.name == name), None)
     if adapter is None:
         click.echo(
