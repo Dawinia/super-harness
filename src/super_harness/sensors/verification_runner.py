@@ -519,11 +519,17 @@ def _baseline_scope_vs_plan(
 def _covered_by_scope(changed_file: str, declared_files: list[str]) -> bool:
     """True if `changed_file` is covered by any declared scope entry.
 
-    v0.1 matching: exact path equality OR prefix (`startswith`) — a declared
-    directory entry like `src/foo/` (or `src/foo`) covers everything under it.
+    v0.1 matching is SEGMENT-AWARE: exact path equality OR a prefix that lands on
+    a path boundary. A declared directory entry like `src/foo/` (or `src/foo`)
+    covers everything under it (`src/foo/x.py`) but NOT a sibling that merely
+    shares the textual prefix (`src/foobar.py`) — avoiding the naive-`startswith`
+    false-negative where real out-of-scope drift would be missed.
     """
     for entry in declared_files:
-        if changed_file == entry or changed_file.startswith(entry):
+        if changed_file == entry:
+            return True
+        prefix = entry if entry.endswith("/") else entry + "/"
+        if changed_file.startswith(prefix):
             return True
     return False
 
@@ -549,6 +555,10 @@ def baseline_check_tasks(
     `tier` — so the `run_checks` scheduler's fail-fast logic sees the correct
     flag before it ever calls `run`. Each `CheckTask.run` is a zero-arg closure;
     per-baseline values are bound via default args to dodge late-binding.
+
+    `cfg` is accepted (but not read) for call-site uniformity with
+    `_config_check_task` and future use (e.g. a future per-repo base-branch
+    setting feeding the scope baseline); keep it for signature stability.
 
     `change_id` comes from `variables["CHANGE_ID"]` (set by `build_variables`).
     `only_ids` filtering happens both here (skip building skipped baselines) and

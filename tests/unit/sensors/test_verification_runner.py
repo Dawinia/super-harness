@@ -31,6 +31,7 @@ from super_harness.sensors.verification_runner import (
     _baseline_lifecycle_ordering,
     _baseline_must_pass_anchor,
     _baseline_scope_vs_plan,
+    _covered_by_scope,
     baseline_check_tasks,
     build_variables,
     collect_checks,
@@ -1027,6 +1028,20 @@ def test_baseline_scope_git_unavailable_passes_with_note(tmp_path: Path) -> None
     assert res.must_pass is False
     assert res.output_path is not None
     assert "skipped" in Path(res.output_path).read_text()
+
+
+def test_covered_by_scope_prefix_is_segment_aware() -> None:
+    # A declared entry `src/foo` (no trailing slash) is treated as a directory:
+    # it covers everything UNDER it on a path boundary...
+    assert _covered_by_scope("src/foo/x.py", ["src/foo"]) is True
+    # ...but NOT a sibling that merely shares the textual prefix (the naive
+    # `startswith` false-negative this guards against).
+    assert _covered_by_scope("src/foobar.py", ["src/foo"]) is False
+    # Exact file-path equality still matches.
+    assert _covered_by_scope("src/foo.py", ["src/foo.py"]) is True
+    # Trailing-slash directory entry behaves identically on the boundary.
+    assert _covered_by_scope("src/foo/x.py", ["src/foo/"]) is True
+    assert _covered_by_scope("src/foobar.py", ["src/foo/"]) is False
 
 
 # --- baseline_check_tasks wiring / only_ids ---------------------------------
