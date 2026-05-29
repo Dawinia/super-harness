@@ -55,13 +55,21 @@ import yaml
 from super_harness.adapters import AgentAdapter, FrameworkAdapter
 from super_harness.adapters.registry import get_builtin, list_builtins
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
+from super_harness.cli.exit_codes import (
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+    EXIT_VALIDATION,
+)
 from super_harness.cli.output import json_envelope
 from super_harness.core.paths import (
     HarnessNotInitialized,
     adapters_yaml_path,
+    events_path,
     find_harness_root,
 )
+from super_harness.core.post_emit import refresh_state_after_emit
+from super_harness.core.writer import EmitPreconditionError, EventWriter
 from super_harness.engineering.agents_md import (
     AgentsMdInjectionError,
     inject_agent_subsection,
@@ -181,6 +189,83 @@ def adapter_install(ctx: click.Context, name: str) -> None:
         click.echo(
             f"Installed {name} adapter ({kind}): {detail}; "
             f"recorded in .harness/adapters.yaml."
+        )
+    sys.exit(EXIT_OK)
+
+
+@adapter_group.command("scan-once")
+@click.argument("name")
+@click.pass_context
+def adapter_scan_once(ctx: click.Context, name: str) -> None:
+    """Run ONE synchronous observe() pass over <name>'s watch dir, emitting events.
+
+    The manual / offline fallback for the daemon watcher (Task 10.6) and the
+    primary integration-test driver: a single read-only scan that emits a
+    lifecycle event for every UNSEEN artifact the FrameworkAdapter observes.
+
+    Only FrameworkAdapters define ``observe`` — an AgentAdapter has none, so
+    passing one is a user error (EXIT_GENERIC). Each yielded event is emitted +
+    state-refreshed in yielded order (the adapter yields ``intent_declared``
+    before ``plan_ready`` so the plan_ready precondition is satisfied). A
+    precondition violation on emit (e.g. a malformed change with ``tasks.md`` but
+    no ``proposal.md``) surfaces as EXIT_VALIDATION naming the failing event —
+    never a raw traceback. Zero new events is a valid no-op (exit 0).
+    """
+    root = _resolve_root(ctx, "adapter scan-once")
+
+    adapter = _resolve_builtin_or_exit(name, "adapter scan-once")
+    # observe() is FrameworkAdapter-only; an AgentAdapter has nothing to scan.
+    if not isinstance(adapter, FrameworkAdapter):
+        click.echo(
+            format_error(
+                subcommand="adapter scan-once",
+                message=(
+                    f"adapter {name!r} is an agent adapter and has no observe(); "
+                    f"scan-once works only on framework adapters"
+                ),
+                hint="Use a framework adapter (e.g. `openspec`) with scan-once.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    # MIRROR cli/change.py's emit pattern: one EventWriter over events_path(root),
+    # emit each event then refresh_state_after_emit so state.yaml never lags. We
+    # emit in YIELDED order (observe yields intent_declared before plan_ready, so
+    # the plan_ready emit-time precondition — a preceding intent_declared — holds).
+    writer = EventWriter(events_path(root))
+    emitted = 0
+    for ev in adapter.observe(root):
+        try:
+            writer.emit(ev)
+        except EmitPreconditionError as e:
+            # A precondition violation mid-loop (e.g. a lone plan_ready) must not
+            # escape as a traceback or tear state. We've already emitted +
+            # refreshed `emitted` events; report which change/event failed and
+            # exit cleanly — the already-emitted events stay (each was refreshed).
+            click.echo(
+                format_error(
+                    subcommand="adapter scan-once",
+                    message=(
+                        f"emit failed for change {ev.change_id!r} "
+                        f"event {ev.type!r}: {e}"
+                    ),
+                    hint=(
+                        "Fix the offending change (e.g. an openspec change with "
+                        "tasks.md but no proposal.md) and re-run scan-once."
+                    ),
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
+        # B-3 wiring: keep state.yaml current after every emit (mirrors change.py).
+        refresh_state_after_emit(root)
+        emitted += 1
+
+    if not ctx.obj.get("quiet"):
+        click.echo(
+            f"scan-once {name}: emitted {emitted} "
+            f"event{'' if emitted == 1 else 's'}."
         )
     sys.exit(EXIT_OK)
 

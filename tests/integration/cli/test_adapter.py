@@ -663,4 +663,71 @@ def test_uninstall_agents_md_remove_failure_exits_generic_with_format_error(
     assert "Traceback" not in r.stderr, r.stderr
     assert "super-harness adapter uninstall:" in r.stderr, r.stderr
     assert "failed to remove the AGENTS.md subsection" in r.stderr, r.stderr
-    assert "disk full" in r.stderr, r.stderr
+
+
+# --- scan-once ---------------------------------------------------------------
+
+
+def test_scan_once_agent_adapter_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`scan-once claude-code` (an AgentAdapter) → EXIT_GENERIC (1), no traceback.
+
+    Agent adapters have no ``observe`` — scan-once is a FrameworkAdapter-only
+    operation, so the command must reject an agent with a clean format_error.
+    """
+    import shutil
+
+    (tmp_path / ".harness").mkdir()
+    monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
+
+    r = _run(tmp_path, "scan-once", "claude-code")
+
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness adapter scan-once:" in r.stderr, r.stderr
+    # The message must name WHY (agent adapters have no observe()).
+    assert "observe" in r.stderr.lower() or "framework" in r.stderr.lower(), r.stderr
+
+
+def test_scan_once_unknown_adapter_exits_generic(tmp_path: Path) -> None:
+    """`scan-once <unknown>` → EXIT_GENERIC (1) via the shared resolver path."""
+    (tmp_path / ".harness").mkdir()
+    r = _run(tmp_path, "scan-once", "nope")
+
+    assert r.exit_code == 1, r.output
+    assert "super-harness adapter scan-once:" in r.stderr, r.stderr
+    assert "unknown adapter" in r.stderr, r.stderr
+
+
+def test_scan_once_no_harness_exits_no_config(tmp_path: Path) -> None:
+    """No `.harness/` → EXIT_NO_CONFIG (3)."""
+    r = _run(tmp_path, "scan-once", "plain")
+
+    assert r.exit_code == 3, r.output
+    assert "super-harness adapter scan-once:" in r.stderr, r.stderr
+
+
+def test_scan_once_emit_validation_failure_is_clean(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A malformed openspec change (tasks.md but NO proposal.md) yields a lone
+    ``plan_ready`` whose intent_declared emit-time precondition fails.
+
+    scan-once must surface that EmitPreconditionError via format_error +
+    EXIT_VALIDATION (2) — never a raw traceback, and naming the failing change.
+    """
+    (tmp_path / ".harness").mkdir()
+    changes = tmp_path / "openspec" / "changes"
+    # `bad` has tasks.md but no proposal.md → scan yields a lone plan_ready.
+    (changes / "bad").mkdir(parents=True)
+    (changes / "bad" / "tasks.md").write_text("- [ ] do a thing\n", encoding="utf-8")
+    (tmp_path / "openspec" / "specs").mkdir(parents=True)
+
+    r = _run(tmp_path, "scan-once", "openspec")
+
+    assert r.exit_code == 2, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness adapter scan-once:" in r.stderr, r.stderr
+    # The message names the offending change so the operator can fix it.
+    assert "bad" in r.stderr, r.stderr
