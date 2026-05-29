@@ -20,6 +20,7 @@ from super_harness.sensors.verification_runner import (
     CheckResult,
     CheckTask,
     VerificationRunner,
+    _all_pass_must,
     build_variables,
     collect_checks,
     make_verification_event,
@@ -224,6 +225,35 @@ def test_archive_dir_created_when_missing(tmp_path: Path) -> None:
         variables={},
     )
     assert (archive / "c.stdout").exists()
+
+
+def test_run_check_env_replaces_not_layers(tmp_path: Path) -> None:
+    # ENV-REPLACEMENT contract: subprocess.run(env=...) REPLACES the child
+    # environment, it does NOT layer on top of os.environ. A sentinel var that
+    # lives in os.environ but is ABSENT from the passed `env` must be invisible
+    # to the child. (We keep PATH in `env` so `echo` still resolves.)
+    archive = tmp_path / "arch"
+    sentinel = "SUPER_HARNESS_ENV_REPLACE_SENTINEL"
+    os.environ[sentinel] = "leaked"
+    try:
+        # The f-string `${sentinel}` is a PYTHON field → expands to a bare,
+        # UNBRACED `$SUPER_HARNESS_...` shell var. interpolate() only touches
+        # BRACED `${NAME}` placeholders, so it leaves this untouched and the
+        # SHELL expands it — which is exactly what we want to probe. printf %s
+        # emits the value verbatim with no trailing newline (and, unlike
+        # `echo -n`, behaves consistently across /bin/sh variants).
+        res = run_check(
+            _spec(command=f'printf "%s" "${sentinel}"', capture="stdout"),
+            workdir=tmp_path,
+            env={"PATH": os.environ["PATH"]},  # sentinel deliberately omitted
+            archive_dir=archive,
+            variables={},
+        )
+    finally:
+        del os.environ[sentinel]
+    assert res.status == "pass"
+    # The sentinel expands to empty in the child → archived output is empty.
+    assert (archive / "c.stdout").read_text() == ""
 
 
 def test_check_result_is_frozen() -> None:
@@ -472,6 +502,33 @@ def test_run_checks_fail_fast_parallel_drops_remaining_results() -> None:
     # With max_workers=1 the futures resolve in submission order; `a` fails
     # (must_pass), so b/c results are dropped (cancelled / not collected).
     assert [r.id for r in results] == ["a"]
+
+
+def test_run_checks_fail_fast_parallel_verdict_safety_with_real_concurrency() -> None:
+    # VERDICT-SAFETY invariant: with REAL concurrency (max_workers >= 4) and an
+    # early must_pass FAILURE, the best-effort/nondeterministic cancellation must
+    # never flip the verdict. The failing must_pass check must always be present
+    # in the collected results so `all_pass_must` stays False. We do NOT assert
+    # an exact `checks_run` — how many of the others slip through is timing-
+    # dependent BY DESIGN (see run_checks' best-effort note).
+    tasks = [
+        _task("fails-early", status="fail"),  # must_pass failure, submitted first
+        _task("b", status="pass"),
+        _task("c", status="pass"),
+        _task("d", status="pass"),
+        _task("e", status="pass"),
+        _task("f", status="pass"),
+    ]
+    results = run_checks(tasks, mode="parallel", max_workers=4, fail_fast=True)
+
+    # The failing must_pass check is always collected (it is what triggers abort).
+    ids = {r.id for r in results}
+    assert "fails-early" in ids
+    # Verdict is driven solely by must_pass results → must be `failed`.
+    assert _all_pass_must(results) is False
+    must_pass_failed = [r for r in results if r.must_pass and r.status != "pass"]
+    verdict = "passed" if not must_pass_failed else "failed"
+    assert verdict == "failed"
 
 
 # --- verify_data_block (FROZEN keys) ---------------------------------------

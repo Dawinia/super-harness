@@ -309,6 +309,13 @@ def _config_check_task(
     resolved = (context.workspace_root / spec.workdir).resolve()
     merged_env = {**os.environ, **cfg.defaults.env, **spec.env}
 
+    # The default args snapshot this iteration's values to dodge late-binding.
+    # `spec`/`workdir`/`env` are per-task-fresh, but `archive` and `variables`
+    # are the SAME objects shared across every task in a `collect_checks` pass
+    # — they MUST be treated read-only here (interpolate/run_check only read
+    # them; never mutate them in `_run`). Not MappingProxyType so the
+    # `dict[str, str]` annotations stay honest; the read-only-ness is by
+    # contract, not enforced.
     def _run(
         spec: CheckSpec = spec,
         workdir: Path = resolved,
@@ -391,6 +398,8 @@ def collect_checks(
 
     if only_ids is not None:
         wanted = set(only_ids)
+        # TODO(task 8.7/CLI): warn/error when an only_ids entry matched no check
+        # — a typo'd `--check name` should not silently run 0 checks (poor UX).
         tasks = [t for t in tasks if t.id in wanted]
 
     return tasks
@@ -410,12 +419,18 @@ def run_checks(
         - `mode == "sequential"` → tasks run in order on the calling thread.
 
     Fail-fast (`fail_fast=True`): once the FIRST *must_pass* check FAILS (status
-    != "pass"), remaining work is abandoned — in sequential mode the loop breaks;
-    in parallel mode not-yet-started futures are cancelled (mirroring
-    `SensorDispatcher._run_all`'s `future.cancel()` stance — running futures
-    cannot be killed in CPython and complete on their own, but their results are
-    dropped). Results are returned in task-submission order for determinism,
-    regardless of completion order.
+    != "pass"), remaining work is abandoned. In SEQUENTIAL mode the loop simply
+    breaks, so no further check runs. In PARALLEL mode the cancellation is
+    BEST-EFFORT: futures are collected in submission order, so by the time a
+    must_pass failure is observed most pending futures have already started (or
+    finished) and `future.cancel()` is a no-op for them — it only truly cancels
+    the BACKLOG beyond `max_workers` (i.e. tasks still queued, never started).
+    For tasks already running/done, fail-fast in parallel mode primarily
+    SUPPRESSES REPORTING of their results rather than saving subprocess work.
+    This mirrors `SensorDispatcher._run_all`'s `future.cancel()` stance: running
+    futures cannot be killed in CPython and complete on their own, but their
+    results are dropped. Results are returned in task-submission order for
+    determinism, regardless of completion order.
 
     Args:
         tasks: The runnable units (already filtered by `collect_checks`).
@@ -424,7 +439,10 @@ def run_checks(
         fail_fast: Abort remaining checks after a must_pass failure (`execution.fail_fast`).
 
     Returns:
-        One `CheckResult` per task that actually ran, in submission order.
+        One `CheckResult` per task whose result was collected, in submission
+        order. Under parallel + fail_fast this may be FEWER than the number of
+        tasks that actually executed (already-run-but-dropped checks aren't
+        returned); see the best-effort note above.
     """
     if not tasks:
         return []
@@ -439,7 +457,9 @@ def run_checks(
         return results
 
     # Parallel. Submit all, collect in submission order, and on a must_pass
-    # failure cancel any not-yet-started futures (running ones are abandoned).
+    # failure best-effort-cancel any not-yet-started futures. Only the backlog
+    # beyond max_workers is ever truly cancelled; futures already running/done
+    # complete on their own and we simply drop (stop collecting) their results.
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(task.run) for task in tasks]
         parallel_results: list[CheckResult] = []
@@ -464,6 +484,15 @@ def write_summary_json(
 
     Writes ONLY `archive/summary.json` (no separate verdict.json). The file
     carries the run verdict, run metadata, and one row per check.
+
+    Caveat: under parallel + fail_fast, `checks_run` is a LOWER BOUND — checks
+    that already completed but whose results were dropped on a must_pass failure
+    are NOT counted (see `run_checks`), not a count of every check that executed.
+    The verdict is unaffected (the failing must_pass check is always collected).
+
+    Note: the summary's `generated_at` is a WRITE-time timestamp (when this
+    function runs, i.e. after all checks finish). It differs from the archive
+    directory's `ts` component (the run-START time) by the run duration.
 
     Args:
         archive: The per-run archive dir (`verification_results_dir(...)`).
@@ -501,6 +530,12 @@ def verify_data_block(
     Returned verbatim as `SensorResult.details`. Keys are a frozen contract —
     do NOT add/rename/reorder downstream-visible keys.
 
+    Caveat: under parallel + fail_fast, `checks_run` is a LOWER BOUND — checks
+    that already completed but whose results were dropped on a must_pass failure
+    are NOT counted (see `run_checks`). It is not a count of every check that
+    executed. The VERDICT is unaffected: the failing must_pass check that
+    triggered the abort is always collected, so `all_pass_must` stays correct.
+
     Returns:
         `{change_id, all_pass_must, checks_run, results[...], summary_path}` where
         each result row is `{id, status, exit_code, duration_ms, must_pass,
@@ -526,7 +561,7 @@ def verify_data_block(
 
 
 def make_verification_event(
-    evt_type: str,
+    evt_type: Literal["verification_passed", "verification_failed"],
     change_id: str,
     results: list[CheckResult],
     archive: Path,
@@ -656,7 +691,9 @@ class VerificationRunner(Sensor):
         verdict = "passed" if not must_pass_failed else "failed"
         write_summary_json(archive, results, verdict)
 
-        evt_type = "verification_passed" if verdict == "passed" else "verification_failed"
+        evt_type: Literal["verification_passed", "verification_failed"] = (
+            "verification_passed" if verdict == "passed" else "verification_failed"
+        )
         status: SensorStatus = "pass" if verdict == "passed" else "fail"
         return SensorResult(
             status=status,
