@@ -146,6 +146,19 @@ def test_scan_skips_archive_dir(tmp_path: Path) -> None:
     assert scan_changes(tmp_path, seen=set()) == []
 
 
+def test_scan_changes_skips_the_archive_dir_itself(tmp_path: Path) -> None:
+    # Degenerate layout: proposal.md lands DIRECTLY inside changes/archive/
+    # (i.e. changes/archive/proposal.md, not changes/archive/<slug>/proposal.md).
+    # The `name == "archive"` guard in scan_changes is the only thing that
+    # prevents a spurious intent_declared with change_id == "archive".
+    # This test exercises that guard directly — removing it causes a failure.
+    archive_dir = tmp_path / "openspec" / "changes" / "archive"
+    archive_dir.mkdir(parents=True)
+    (archive_dir / "proposal.md").write_text("# Stray proposal\n")
+    events = scan_changes(tmp_path, seen=set())
+    assert not any(e.change_id == "archive" for e in events)
+
+
 def test_scan_dedup_skips_already_seen(tmp_path: Path) -> None:
     _make_change(
         tmp_path, "add-widget", proposal="# Add widget\n", tasks="- [ ] step\n"
