@@ -200,6 +200,17 @@ class FrameworkAdapter(ABC):
         """Return framework-specific instructions for the AGENTS.md subsection."""
         ...
 
+    def watch_paths(self, workspace: Path) -> list[Path]:
+        """Return filesystem paths the daemon should watch for live observe().
+
+        Additive non-abstract default = `[]` (no live watch): adapters opt into
+        filesystem watching by overriding. The plain fallback inherits the empty
+        default unchanged. Framework adapters that observe on-disk artifacts (e.g.
+        OpenSpec watches `openspec/changes/`) override this so the daemon knows
+        which directories to subscribe to before calling `observe`.
+        """
+        return []
+
     def on_uninstall(self, workspace: Path) -> None:  # noqa: B027
         """Clean up framework-specific artifacts from `workspace` (default = no-op).
 

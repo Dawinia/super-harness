@@ -226,6 +226,12 @@ def test_framework_adapter_on_uninstall_default_is_noop() -> None:
     assert f.on_uninstall(Path(".")) is None
 
 
+def test_framework_adapter_watch_paths_default_empty() -> None:
+    # Additive non-abstract default: no live watch unless a subclass overrides.
+    f = _MinimalFrameworkAdapter()
+    assert f.watch_paths(Path(".")) == []
+
+
 def test_framework_adapter_is_fallback_defaults_false() -> None:
     assert _MinimalFrameworkAdapter.is_fallback is False
     f = _MinimalFrameworkAdapter()
