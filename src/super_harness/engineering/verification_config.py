@@ -64,6 +64,7 @@ API stability: **experimental** (v0.1).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -71,12 +72,15 @@ from typing import Any
 import yaml
 
 __all__ = [
+    "INTERPOLATION_ALLOWLIST",
     "CheckSpec",
     "Defaults",
     "Execution",
+    "InterpolationError",
     "Layers",
     "VerificationConfig",
     "VerificationConfigError",
+    "interpolate",
     "load_verification_config",
 ]
 
@@ -86,6 +90,7 @@ _MODE_VALUES = ("parallel", "sequential")
 # Built-in defaults applied when a block / key is absent from the yaml. These
 # mirror the shipped `verification_defaults.yaml` template so a minimal or empty
 # config behaves identically to the canonical one.
+_DEFAULT_LAYER_ENABLED = True
 _DEFAULT_TIMEOUT_SECONDS = 300
 _DEFAULT_MUST_PASS = True
 _DEFAULT_CAPTURE = "both"
@@ -93,6 +98,22 @@ _DEFAULT_WORKDIR = "."
 _DEFAULT_MAX_PARALLELISM = 4
 _DEFAULT_MODE = "parallel"
 _DEFAULT_FAIL_FAST = False
+
+# Variable-interpolation allowlist for check `command` strings (engineering-
+# integration §2.3 / OI-6). The gate is on the placeholder NAME, not its value:
+# all four names are always *accepted* (an allowlisted-but-empty value
+# substitutes to `""`); only a non-allowlisted name (`${PR_URL}`,
+# `${COMMIT_SHA}`, …) raises. `${SLUG}` and `${CHANGE_ID}` are aliases of the
+# same change id. PR-context variables are deliberately excluded so user yaml
+# cannot reference untrusted PR content (those checks belong in CI).
+INTERPOLATION_ALLOWLIST: frozenset[str] = frozenset(
+    {"SLUG", "CHANGE_ID", "SPEC_PATH", "PLAN_PATH"}
+)
+
+# Matches a `${NAME}` placeholder where NAME is a Python-style identifier. A
+# bare `$`, an unbraced `$NAME`, or empty `${}` is NOT a placeholder and is
+# left untouched.
+_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 class VerificationConfigError(ValueError):
@@ -103,6 +124,15 @@ class VerificationConfigError(ValueError):
     is deliberately distinct from `yaml.YAMLError` (syntax corruption, which
     subclasses `Exception` not `ValueError`) and from `FileNotFoundError`
     (missing file → EXIT_NO_CONFIG).
+    """
+
+
+class InterpolationError(VerificationConfigError):
+    """A check `command` references a `${NAME}` placeholder outside the allowlist.
+
+    A focused subclass of `VerificationConfigError` (hence still a `ValueError`,
+    so the CLI maps it to EXIT_VALIDATION) — distinct only so callers can tell a
+    bad placeholder apart from a wrong-shape schema error if they wish.
     """
 
 
@@ -145,7 +175,9 @@ class CheckSpec:
     """A single verification check, with scalar defaults already resolved.
 
     `provided_by` is set only for `adapter_provided` entries (the adapter id
-    that contributed the check); it is `None` for user `checks`.
+    that contributed the check); it is `None` for user `checks`. The loader
+    rejects a `provided_by` key on a user `checks` entry (it is adapter-injected
+    metadata only).
 
     `env` is the per-check env dict exactly as written in the yaml — NOT merged
     with `defaults.env` (see module docstring).
@@ -229,17 +261,70 @@ def load_verification_config(path: Path) -> VerificationConfig:
 
 
 # --------------------------------------------------------------------------- #
+# Variable interpolation
+# --------------------------------------------------------------------------- #
+
+
+def interpolate(command: str, variables: dict[str, str]) -> str:
+    """Substitute allowlisted `${NAME}` placeholders in a check `command`.
+
+    Pure function. Recognizes only `${NAME}` tokens where `NAME` is a Python-
+    style identifier; a bare `$`, an unbraced `$NAME`, or empty `${}` is left
+    untouched.
+
+    The allowlist gate is on the placeholder NAME, not its value:
+
+    - `NAME` in `INTERPOLATION_ALLOWLIST` → replaced with
+      `variables.get(NAME, "")`. An allowlisted-but-missing/empty value
+      substitutes to `""` and does NOT raise. (In v0.1 `${SPEC_PATH}` /
+      `${PLAN_PATH}` are always empty, so they reduce to `""`.)
+    - `NAME` not in the allowlist (`${PR_URL}`, `${COMMIT_SHA}`, …) → raises
+      `InterpolationError` (a `ValueError` subclass → CLI maps to
+      EXIT_VALIDATION) naming the offending placeholder.
+
+    All occurrences of each placeholder are replaced.
+
+    Args:
+        command: The raw check command string from `verification.yaml`.
+        variables: The resolved interpolation variables (built by a later task,
+            with `SPEC_PATH`/`PLAN_PATH` hardcoded empty in v0.1).
+
+    Returns:
+        The command with allowlisted placeholders substituted.
+
+    Raises:
+        InterpolationError: a `${NAME}` placeholder is outside the allowlist.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in INTERPOLATION_ALLOWLIST:
+            raise InterpolationError(
+                f"unknown interpolation placeholder ${{{name}}} in command "
+                f"{command!r}; allowed: "
+                f"{sorted('${' + n + '}' for n in INTERPOLATION_ALLOWLIST)}"
+            )
+        return variables.get(name, "")
+
+    return _PLACEHOLDER_RE.sub(_replace, command)
+
+
+# --------------------------------------------------------------------------- #
 # Block parsers
 # --------------------------------------------------------------------------- #
 
 
 def _parse_layers(block: dict[str, Any]) -> Layers:
+    # Use the module-level _DEFAULT_LAYER_ENABLED constant rather than the
+    # dataclass class-attr defaults (Layers.baseline, …): the constant is robust
+    # if a field ever switches to field(default_factory=...), matching the other
+    # block parsers' use of _DEFAULT_* constants.
     return Layers(
-        baseline=_layer_enabled(block, "baseline", Layers.baseline),
+        baseline=_layer_enabled(block, "baseline", _DEFAULT_LAYER_ENABLED),
         framework_adapter=_layer_enabled(
-            block, "framework_adapter", Layers.framework_adapter
+            block, "framework_adapter", _DEFAULT_LAYER_ENABLED
         ),
-        user_checks=_layer_enabled(block, "user_checks", Layers.user_checks),
+        user_checks=_layer_enabled(block, "user_checks", _DEFAULT_LAYER_ENABLED),
     )
 
 
@@ -322,11 +407,21 @@ def _parse_check_entry(
         )
 
     provided_by = entry.get("provided_by")
-    if provided_by is not None and not isinstance(provided_by, str):
-        raise VerificationConfigError(
-            f"{path}: check {check_id!r} 'provided_by' must be a string, "
-            f"got {type(provided_by).__name__}"
-        )
+    if provided_by is not None:
+        # `provided_by` is adapter-injected metadata: it is meaningful only in
+        # the adapter_provided layer. Reject it on user `checks` so a stray key
+        # is a loud error rather than silently accepted (spec §2.3 frames it as
+        # adapter-only).
+        if layer != "adapter_provided":
+            raise VerificationConfigError(
+                f"{path}: check {check_id!r} in {layer!r} may not set "
+                f"'provided_by' (it is for adapter_provided entries only)"
+            )
+        if not isinstance(provided_by, str):
+            raise VerificationConfigError(
+                f"{path}: check {check_id!r} 'provided_by' must be a string, "
+                f"got {type(provided_by).__name__}"
+            )
 
     field_ctx = f"check {check_id!r}"
     return CheckSpec(

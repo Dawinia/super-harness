@@ -15,12 +15,15 @@ import pytest
 import yaml
 
 from super_harness.engineering.verification_config import (
+    INTERPOLATION_ALLOWLIST,
     CheckSpec,
     Defaults,
     Execution,
+    InterpolationError,
     Layers,
     VerificationConfig,
     VerificationConfigError,
+    interpolate,
     load_verification_config,
 )
 
@@ -423,3 +426,133 @@ def test_missing_file_is_not_value_error(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError) as exc_info:
         load_verification_config(p)
     assert not isinstance(exc_info.value, VerificationConfigError)
+
+
+# --------------------------------------------------------------------------- #
+# Variable interpolation (allowlist) — Phase 8 task 2
+# --------------------------------------------------------------------------- #
+
+
+def test_interpolate_allowlist_is_the_four_v01_names() -> None:
+    """The v0.1 allowlist is exactly SLUG / CHANGE_ID / SPEC_PATH / PLAN_PATH."""
+    assert INTERPOLATION_ALLOWLIST == frozenset(
+        {"SLUG", "CHANGE_ID", "SPEC_PATH", "PLAN_PATH"}
+    )
+
+
+def test_interpolate_substitutes_all_four_allowlisted_names() -> None:
+    variables = {
+        "SLUG": "add-login",
+        "CHANGE_ID": "add-login",
+        "SPEC_PATH": "specs/add-login.md",
+        "PLAN_PATH": "plans/add-login.md",
+    }
+    command = (
+        "validate --change ${SLUG} --id ${CHANGE_ID} "
+        "--spec ${SPEC_PATH} --plan ${PLAN_PATH}"
+    )
+    assert interpolate(command, variables) == (
+        "validate --change add-login --id add-login "
+        "--spec specs/add-login.md --plan plans/add-login.md"
+    )
+
+
+def test_interpolate_replaces_all_occurrences_of_a_name() -> None:
+    out = interpolate("${SLUG}-${SLUG}-${SLUG}", {"SLUG": "x"})
+    assert out == "x-x-x"
+
+
+def test_interpolate_unknown_placeholder_raises_interpolation_error() -> None:
+    with pytest.raises(InterpolationError) as exc_info:
+        interpolate("deploy ${PR_URL}", {"SLUG": "x"})
+    # The message should name the offending placeholder.
+    assert "PR_URL" in str(exc_info.value)
+
+
+def test_interpolate_unknown_placeholder_is_value_error_subclass() -> None:
+    """InterpolationError must map to EXIT_VALIDATION via the ValueError catch."""
+    with pytest.raises(ValueError):
+        interpolate("deploy ${COMMIT_SHA}", {})
+    with pytest.raises(VerificationConfigError):
+        interpolate("deploy ${COMMIT_SHA}", {})
+
+
+def test_interpolation_error_is_value_error_subclass() -> None:
+    assert issubclass(InterpolationError, ValueError)
+    assert issubclass(InterpolationError, VerificationConfigError)
+
+
+def test_interpolate_allowlisted_but_missing_value_becomes_empty_string() -> None:
+    """SPEC_PATH/PLAN_PATH are always empty in v0.1 — allowlisted, no raise."""
+    assert interpolate("openspec validate ${SPEC_PATH}", {}) == "openspec validate "
+
+
+def test_interpolate_allowlisted_explicit_empty_value_becomes_empty_string() -> None:
+    out = interpolate("a ${PLAN_PATH} b", {"PLAN_PATH": ""})
+    assert out == "a  b"
+
+
+def test_interpolate_leaves_bare_dollar_and_unbraced_names_untouched() -> None:
+    # Only `${...}` is a placeholder; `$FOO` and a lone `$` are literal text.
+    assert interpolate("echo $FOO and $ and ${SLUG}", {"SLUG": "x"}) == (
+        "echo $FOO and $ and x"
+    )
+
+
+def test_interpolate_no_placeholders_returns_command_verbatim() -> None:
+    assert interpolate("npm test --watch=false", {"SLUG": "x"}) == (
+        "npm test --watch=false"
+    )
+
+
+def test_interpolate_empty_braces_left_untouched() -> None:
+    # `${}` has no valid NAME (regex requires an identifier) so it is literal.
+    assert interpolate("a ${} b", {}) == "a ${} b"
+
+
+# --------------------------------------------------------------------------- #
+# Carryover nits from Task 8.1 code review
+# --------------------------------------------------------------------------- #
+
+
+def test_provided_by_rejected_on_user_checks(tmp_path: Path) -> None:
+    """nit 2: `provided_by` is adapter-injected only; reject it on user checks."""
+    p = _write(
+        tmp_path,
+        yaml.safe_dump(
+            {"checks": [{"id": "t", "command": "x", "provided_by": "some-adapter"}]}
+        ),
+    )
+    with pytest.raises(VerificationConfigError):
+        load_verification_config(p)
+
+
+def test_provided_by_accepted_on_adapter_provided(tmp_path: Path) -> None:
+    """Sanity: `provided_by` is still fine in the adapter_provided layer."""
+    cfg = load_verification_config(
+        _write(
+            tmp_path,
+            yaml.safe_dump(
+                {
+                    "adapter_provided": [
+                        {"id": "v", "command": "x", "provided_by": "an-adapter"}
+                    ]
+                }
+            ),
+        )
+    )
+    assert cfg.adapter_provided[0].provided_by == "an-adapter"
+
+
+def test_non_string_env_value_raises(tmp_path: Path) -> None:
+    """nit 3: a non-string env VALUE is rejected (not just non-dict env)."""
+    p = _write(tmp_path, yaml.safe_dump({"defaults": {"env": {"CI": 1}}}))
+    with pytest.raises(VerificationConfigError):
+        load_verification_config(p)
+
+
+def test_non_string_env_key_raises(tmp_path: Path) -> None:
+    """nit 3: a non-string env KEY is rejected too."""
+    p = _write(tmp_path, yaml.safe_dump({"defaults": {"env": {1: "x"}}}))
+    with pytest.raises(VerificationConfigError):
+        load_verification_config(p)
