@@ -3,10 +3,16 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import subprocess
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from super_harness.core.events import Actor, Event
+from super_harness.core.paths import events_path
+from super_harness.core.ulid import new_event_id
+from super_harness.core.writer import EventWriter
 from super_harness.engineering.verification_config import (
     CheckSpec,
     Defaults,
@@ -21,6 +27,11 @@ from super_harness.sensors.verification_runner import (
     CheckTask,
     VerificationRunner,
     _all_pass_must,
+    _baseline_anchor_presence,
+    _baseline_lifecycle_ordering,
+    _baseline_must_pass_anchor,
+    _baseline_scope_vs_plan,
+    baseline_check_tasks,
     build_variables,
     collect_checks,
     make_verification_event,
@@ -324,22 +335,37 @@ def test_build_variables_aliases_and_empty_paths(tmp_path: Path) -> None:
 # --- collect_checks ---------------------------------------------------------
 
 
-def test_collect_checks_baseline_layer_is_empty_stub(tmp_path: Path) -> None:
-    # Even with the baseline layer enabled, Task 8.4 ships a [] stub.
+def test_collect_checks_baseline_layer_yields_three_baselines(tmp_path: Path) -> None:
+    # Task 8.5: the baseline layer ships 3 in-process checks in fixed order.
     cfg = _config(layers=Layers(baseline=True, framework_adapter=False, user_checks=False))
     tasks = collect_checks(
-        cfg, context=_ctx(tmp_path), archive=tmp_path / "a", variables={}, layer="baseline"
+        cfg,
+        context=_ctx(tmp_path),
+        archive=tmp_path / "a",
+        variables={"CHANGE_ID": "ch", "SLUG": "ch"},
+        layer="baseline",
     )
-    assert tasks == []
+    assert [t.id for t in tasks] == [
+        "anchor-sentinel-presence-final",
+        "lifecycle-ordering",
+        "scope-vs-plan-final",
+    ]
+    # No events.jsonl → no anchors / clean stream / no scope → all pass.
+    by_id = {t.id: t for t in tasks}
+    assert by_id["anchor-sentinel-presence-final"].must_pass is True  # unknown tier
+    assert by_id["lifecycle-ordering"].must_pass is True
+    assert by_id["scope-vs-plan-final"].must_pass is False
 
 
 def test_collect_checks_includes_adapter_and_user_in_order(tmp_path: Path) -> None:
+    # Baseline disabled here to isolate the adapter→user ordering of config checks.
     cfg = _config(
+        layers=Layers(baseline=False),
         adapter_provided=[_spec(check_id="adapter-c", command="true")],
         checks=[_spec(check_id="user-c", command="true")],
     )
     tasks = collect_checks(cfg, context=_ctx(tmp_path), archive=tmp_path / "a", variables={})
-    # baseline (stub, []) → adapter → user.
+    # adapter → user (baseline disabled).
     assert [t.id for t in tasks] == ["adapter-c", "user-c"]
 
 
@@ -359,8 +385,9 @@ def test_collect_checks_layer_filter_restricts_to_one_layer(tmp_path: Path) -> N
 
 
 def test_collect_checks_enabled_flag_gates_layer(tmp_path: Path) -> None:
+    # Baseline disabled so this focuses on the framework_adapter enable flag.
     cfg = _config(
-        layers=Layers(baseline=True, framework_adapter=False, user_checks=True),
+        layers=Layers(baseline=False, framework_adapter=False, user_checks=True),
         adapter_provided=[_spec(check_id="adapter-c", command="true")],
         checks=[_spec(check_id="user-c", command="true")],
     )
@@ -401,8 +428,10 @@ def test_collect_checks_only_ids_filters_across_layers(tmp_path: Path) -> None:
 
 def test_collect_checks_late_binding_closures_are_per_spec(tmp_path: Path) -> None:
     # Each task must run ITS OWN spec, not the loop's last one (late-binding trap).
+    # Baseline disabled so the collected tasks are exactly the two config checks.
     archive = tmp_path / "arch"
     cfg = _config(
+        layers=Layers(baseline=False),
         checks=[
             _spec(check_id="first", command="echo first", capture="stdout"),
             _spec(check_id="second", command="echo second", capture="stdout"),
@@ -423,8 +452,10 @@ def test_collect_checks_late_binding_closures_are_per_spec(tmp_path: Path) -> No
 def test_collect_checks_merges_env_with_os_environ(tmp_path: Path) -> None:
     archive = tmp_path / "arch"
     # Per-check env layered over defaults.env over os.environ; PATH (from
-    # os.environ) must survive the merge so `echo` resolves.
+    # os.environ) must survive the merge so `echo` resolves. Baseline disabled so
+    # `tasks[0]` is the config check under test.
     cfg = _config(
+        layers=Layers(baseline=False),
         checks=[
             _spec(
                 check_id="envc",
@@ -627,9 +658,12 @@ def test_write_summary_json_writes_only_summary(tmp_path: Path) -> None:
 # --- VerificationRunner.check() end-to-end ---------------------------------
 
 
+# Baseline layer DISABLED in this fixture so these config-check end-to-end tests
+# keep their exact `checks_run` counts. The baseline layer (3 in-process checks)
+# is exercised separately by `test_runner_check_baselines_*` below.
 _VERIFY_YAML = """\
 layers:
-  baseline: {{ enabled: true }}
+  baseline: {{ enabled: false }}
   framework_adapter: {{ enabled: true }}
   user_checks: {{ enabled: true }}
 defaults:
@@ -710,7 +744,8 @@ def test_runner_check_parallel_mode(tmp_path: Path) -> None:
 def test_runner_check_layer_filter_via_payload(tmp_path: Path) -> None:
     root = _write_workspace(tmp_path, failing_must_pass="true")
     runner = VerificationRunner()
-    # Restrict to a layer with no checks → 0 checks → passes vacuously.
+    # Restrict to the baseline layer, which this fixture DISABLES → 0 checks →
+    # passes vacuously (the enable flag gates the layer even when named).
     trigger = Activity(type="cli_verify", change_id="ch", payload={"layer": "baseline"})
     res = runner.check(trigger, WorkspaceContext(workspace_root=root))
     assert res.details is not None
@@ -760,3 +795,328 @@ def test_runner_change_id_none_returns_fail_without_crash(tmp_path: Path) -> Non
 def test_verification_runner_is_registered_builtin() -> None:
     assert "verification-runner" in list_builtins()
     assert get_builtin("verification-runner") is VerificationRunner
+
+
+# --------------------------------------------------------------------------- #
+# Task 8.5 — baseline checks
+# --------------------------------------------------------------------------- #
+
+
+def _evt(change_id: str, evt_type: str, payload: dict[str, Any] | None = None) -> Event:
+    return Event(
+        event_id=new_event_id(),
+        type=evt_type,
+        change_id=change_id,
+        timestamp="2026-05-27T10:00:00Z",
+        actor=Actor(type="adapter", identifier="test"),
+        framework="plain",
+        payload=payload or {},
+    )
+
+
+def _seed_events(root: Path, change_id: str, items: list[tuple[str, dict[str, Any]]]) -> None:
+    """Append events (bypassing emit-time validation) to root/.harness/events.jsonl."""
+    w = EventWriter(events_path(root))
+    for evt_type, payload in items:
+        w.emit(_evt(change_id, evt_type, payload), skip_validation=True)
+
+
+def _plan_items(
+    *,
+    anchors: list[str] | None = None,
+    scope_files: list[str] | None = None,
+    tier: str | None = None,
+) -> list[tuple[str, dict[str, Any]]]:
+    """A minimal intent_declared → plan_ready stream carrying anchors/scope/tier."""
+    plan_payload: dict[str, Any] = {}
+    if anchors is not None:
+        plan_payload["affected_anchors"] = anchors
+    if scope_files is not None:
+        plan_payload["scope"] = {"files": scope_files}
+    if tier is not None:
+        plan_payload["tier_hint"] = tier
+    return [
+        ("intent_declared", {"description": "x"}),
+        ("plan_ready", plan_payload),
+    ]
+
+
+def _harness_root(tmp_path: Path) -> Path:
+    (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
+    return tmp_path
+
+
+# --- _baseline_must_pass_anchor (tier-aware) --------------------------------
+
+
+def test_baseline_anchor_must_pass_is_tier_aware() -> None:
+    assert _baseline_must_pass_anchor("Micro") is False
+    assert _baseline_must_pass_anchor("Normal") is True
+    assert _baseline_must_pass_anchor("Large") is True
+    assert _baseline_must_pass_anchor(None) is True  # unknown → fail-closed
+    assert _baseline_must_pass_anchor("Weird") is True
+
+
+# --- anchor-sentinel-presence-final -----------------------------------------
+
+
+def test_baseline_anchor_present_all_passes(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    _seed_events(root, "ch", _plan_items(anchors=["cap-a", "cap-b"], tier="Normal"))
+    # Both sentinels present in source.
+    (root / "src.py").write_text("# @capability:cap-a\n# @capability:cap-b\n")
+    res = _baseline_anchor_presence(
+        "ch", context=_ctx(root), archive=tmp_path / "arch", must_pass=True
+    )
+    assert res.status == "pass"
+    assert res.id == "anchor-sentinel-presence-final"
+    assert res.command == "builtin:anchor-sentinel-presence-final"
+
+
+def test_baseline_anchor_missing_fails_with_report(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    _seed_events(root, "ch", _plan_items(anchors=["cap-a", "cap-b"], tier="Normal"))
+    (root / "src.py").write_text("# @capability:cap-a\n")  # cap-b missing
+    res = _baseline_anchor_presence(
+        "ch", context=_ctx(root), archive=tmp_path / "arch", must_pass=True
+    )
+    assert res.status == "fail"
+    assert res.exit_code == 1
+    assert res.must_pass is True
+    # Missing anchor named in the archived report.
+    assert res.output_path is not None
+    assert "cap-b" in Path(res.output_path).read_text()
+
+
+def test_baseline_anchor_no_declared_anchors_passes(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    _seed_events(root, "ch", _plan_items(tier="Normal"))  # no anchors declared
+    res = _baseline_anchor_presence(
+        "ch", context=_ctx(root), archive=tmp_path / "arch", must_pass=True
+    )
+    assert res.status == "pass"
+    assert res.output_path is None  # nothing to report
+
+
+def test_baseline_anchor_change_absent_from_state_passes(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)  # no events at all
+    res = _baseline_anchor_presence(
+        "ghost", context=_ctx(root), archive=tmp_path / "arch", must_pass=True
+    )
+    assert res.status == "pass"
+
+
+def test_baseline_anchor_micro_tier_is_advisory(tmp_path: Path) -> None:
+    # Micro tier downgrades must_pass to False at build time; even when the
+    # anchor is MISSING (status=fail), must_pass=False means it won't fail verdict.
+    root = _harness_root(tmp_path)
+    _seed_events(root, "ch", _plan_items(anchors=["cap-x"], tier="Micro"))
+    tasks = baseline_check_tasks(
+        _config(),
+        context=_ctx(root),
+        archive=tmp_path / "arch",
+        variables={"CHANGE_ID": "ch", "SLUG": "ch"},
+        only_ids=["anchor-sentinel-presence-final"],
+    )
+    assert len(tasks) == 1
+    assert tasks[0].must_pass is False  # Micro → advisory
+    res = tasks[0].run()
+    assert res.status == "fail"  # cap-x has no sentinel
+    assert res.must_pass is False
+
+
+def test_baseline_anchor_normal_tier_is_must_pass(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    _seed_events(root, "ch", _plan_items(anchors=["cap-x"], tier="Normal"))
+    tasks = baseline_check_tasks(
+        _config(),
+        context=_ctx(root),
+        archive=tmp_path / "arch",
+        variables={"CHANGE_ID": "ch", "SLUG": "ch"},
+        only_ids=["anchor-sentinel-presence-final"],
+    )
+    assert tasks[0].must_pass is True
+
+
+# --- lifecycle-ordering -----------------------------------------------------
+
+
+def test_baseline_lifecycle_clean_passes(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    _seed_events(root, "ch", _plan_items(tier="Normal"))
+    res = _baseline_lifecycle_ordering("ch", context=_ctx(root), archive=tmp_path / "arch")
+    assert res.status == "pass"
+    assert res.must_pass is True
+    assert res.command == "builtin:lifecycle-ordering"
+    assert res.output_path is None
+
+
+def test_baseline_lifecycle_corrupt_fails_with_report(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    # plan_ready as a first event (no intent_declared) is an ordering violation.
+    _seed_events(root, "ch", [("plan_ready", {})])
+    res = _baseline_lifecycle_ordering("ch", context=_ctx(root), archive=tmp_path / "arch")
+    assert res.status == "fail"
+    assert res.must_pass is True
+    assert res.output_path is not None
+    assert "plan_ready" in Path(res.output_path).read_text()
+
+
+# --- scope-vs-plan-final ----------------------------------------------------
+
+
+def _git(root: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True)
+
+
+def _git_repo_with_main(root: Path) -> None:
+    """Initialize a git repo on a `main` branch with one committed file."""
+    _git(root, "init", "-b", "main")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Test")
+    (root / "seed.txt").write_text("seed\n")
+    _git(root, "add", "seed.txt")
+    _git(root, "commit", "-m", "seed")
+
+
+def test_baseline_scope_no_drift_passes(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    _git_repo_with_main(root)
+    _seed_events(root, "ch", _plan_items(scope_files=["src/"], tier="Normal"))
+    # Change a file WITHIN declared scope on a new branch.
+    _git(root, "checkout", "-b", "feature")
+    (root / "src").mkdir()
+    (root / "src" / "f.py").write_text("x\n")
+    _git(root, "add", "src/f.py")
+    _git(root, "commit", "-m", "in-scope change")
+    res = _baseline_scope_vs_plan("ch", context=_ctx(root), archive=tmp_path / "arch")
+    assert res.status == "pass"
+    assert res.must_pass is False
+
+
+def test_baseline_scope_out_of_scope_fails(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    _git_repo_with_main(root)
+    _seed_events(root, "ch", _plan_items(scope_files=["src/"], tier="Normal"))
+    _git(root, "checkout", "-b", "feature")
+    (root / "rogue.py").write_text("y\n")  # outside declared scope
+    _git(root, "add", "rogue.py")
+    _git(root, "commit", "-m", "out-of-scope change")
+    res = _baseline_scope_vs_plan("ch", context=_ctx(root), archive=tmp_path / "arch")
+    assert res.status == "fail"
+    assert res.must_pass is False  # advisory: never fails verdict
+    assert res.output_path is not None
+    assert "rogue.py" in Path(res.output_path).read_text()
+
+
+def test_baseline_scope_empty_declared_passes(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    _git_repo_with_main(root)
+    _seed_events(root, "ch", _plan_items(tier="Normal"))  # no scope.files
+    res = _baseline_scope_vs_plan("ch", context=_ctx(root), archive=tmp_path / "arch")
+    assert res.status == "pass"
+
+
+def test_baseline_scope_git_unavailable_passes_with_note(tmp_path: Path) -> None:
+    # No git repo + a `main` that does not exist → CalledProcessError; the check
+    # CANNOT assert drift, so it passes with an explanatory note (no crash).
+    root = _harness_root(tmp_path)
+    _seed_events(root, "ch", _plan_items(scope_files=["src/"], tier="Normal"))
+    res = _baseline_scope_vs_plan("ch", context=_ctx(root), archive=tmp_path / "arch")
+    assert res.status == "pass"
+    assert res.must_pass is False
+    assert res.output_path is not None
+    assert "skipped" in Path(res.output_path).read_text()
+
+
+# --- baseline_check_tasks wiring / only_ids ---------------------------------
+
+
+def test_baseline_check_tasks_all_three_in_order(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    tasks = baseline_check_tasks(
+        _config(),
+        context=_ctx(root),
+        archive=tmp_path / "arch",
+        variables={"CHANGE_ID": "ch", "SLUG": "ch"},
+    )
+    assert [t.id for t in tasks] == [
+        "anchor-sentinel-presence-final",
+        "lifecycle-ordering",
+        "scope-vs-plan-final",
+    ]
+
+
+def test_baseline_check_tasks_only_ids_filters(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    tasks = baseline_check_tasks(
+        _config(),
+        context=_ctx(root),
+        archive=tmp_path / "arch",
+        variables={"CHANGE_ID": "ch", "SLUG": "ch"},
+        only_ids=["lifecycle-ordering"],
+    )
+    assert [t.id for t in tasks] == ["lifecycle-ordering"]
+
+
+# --- VerificationRunner.check() exercising baselines end-to-end -------------
+
+
+_BASELINE_ONLY_YAML = """\
+layers:
+  baseline: { enabled: true }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: false }
+defaults:
+  timeout_seconds: 30
+  must_pass: true
+  capture: none
+  workdir: .
+execution:
+  mode: sequential
+  max_parallelism: 4
+  fail_fast: false
+checks: []
+"""
+
+
+def test_runner_check_baselines_pass_end_to_end(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    (root / ".harness" / "verification.yaml").write_text(_BASELINE_ONLY_YAML)
+    # Clean stream, anchors all present, no scope declared → all 3 baselines pass.
+    _seed_events(root, "ch", _plan_items(anchors=["cap-a"], tier="Normal"))
+    (root / "src.py").write_text("# @capability:cap-a\n")
+    runner = VerificationRunner()
+    trigger = Activity(type="cli_verify", change_id="ch", payload={})
+    res = runner.check(trigger, WorkspaceContext(workspace_root=root))
+    assert res.status == "pass"
+    assert res.details is not None
+    assert res.details["checks_run"] == 3
+    assert res.emit_events[0].type == "verification_passed"
+
+
+def test_runner_check_baselines_lifecycle_failure_fails_verdict(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    (root / ".harness" / "verification.yaml").write_text(_BASELINE_ONLY_YAML)
+    # Corrupt the stream: plan_ready first → lifecycle-ordering (must_pass) fails.
+    _seed_events(root, "ch", [("plan_ready", {})])
+    runner = VerificationRunner()
+    trigger = Activity(type="cli_verify", change_id="ch", payload={})
+    res = runner.check(trigger, WorkspaceContext(workspace_root=root))
+    assert res.status == "fail"
+    assert res.emit_events[0].type == "verification_failed"
+    failed_ids = [fc["id"] for fc in res.emit_events[0].payload["failed_checks"]]
+    assert "lifecycle-ordering" in failed_ids
+
+
+def test_runner_check_baselines_anchor_missing_normal_tier_fails(tmp_path: Path) -> None:
+    root = _harness_root(tmp_path)
+    (root / ".harness" / "verification.yaml").write_text(_BASELINE_ONLY_YAML)
+    # Normal-tier anchor declared but no sentinel in source → anchor must_pass fail.
+    _seed_events(root, "ch", _plan_items(anchors=["cap-missing"], tier="Normal"))
+    runner = VerificationRunner()
+    trigger = Activity(type="cli_verify", change_id="ch", payload={})
+    res = runner.check(trigger, WorkspaceContext(workspace_root=root))
+    assert res.status == "fail"
+    failed_ids = [fc["id"] for fc in res.emit_events[0].payload["failed_checks"]]
+    assert "anchor-sentinel-presence-final" in failed_ids

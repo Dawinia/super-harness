@@ -16,9 +16,15 @@ subprocesses (`run_check`); the `baseline` layer is in-process Python. To keep
 `run_checks` agnostic, every layer is reduced to a uniform `CheckTask` (an id, a
 `must_pass` flag, and a zero-arg `run` callable producing a `CheckResult`).
 
-**Baseline layer is a Task 8.5 stub here** — `baseline_check_tasks` returns `[]`.
-The 3 real baselines (anchor-sentinel-presence-final / lifecycle-ordering /
-scope-vs-plan-final) and `find_ordering_violations` are out of scope for 8.4.
+**Baseline layer (Task 8.5)** — `baseline_check_tasks` builds 3 in-process
+baselines: `anchor-sentinel-presence-final` (anchors declared in plan have a
+matching `@capability:` sentinel in source; tier-aware must_pass),
+`lifecycle-ordering` (the change's event stream has no illegal transitions —
+an integrity/tamper check; must_pass), and `scope-vs-plan-final` (changed files
+fall within the declared plan scope; advisory must_pass=False, mirroring the
+`scope_drift_detected` warning nature). `find_ordering_violations` (the
+whole-stream validator powering `lifecycle-ordering`) lives in
+`core.emit_validation`.
 
 **`shell=True` is intentional** (spec §3.6 #7): `verification.yaml` is
 repo-owner-trusted, so check commands run through the shell exactly as written.
@@ -42,8 +48,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+from super_harness.core.anchor_scanner import scan_sentinels
+from super_harness.core.emit_validation import find_ordering_violations
 from super_harness.core.events import Actor, Event
-from super_harness.core.paths import verification_results_dir, verification_yaml_path
+from super_harness.core.paths import (
+    events_path,
+    verification_results_dir,
+    verification_yaml_path,
+)
+from super_harness.core.reducer import derive_state
 from super_harness.engineering.verification_config import (
     CheckSpec,
     VerificationConfig,
@@ -264,6 +277,257 @@ def build_variables(change_id: str, context: WorkspaceContext) -> dict[str, str]
     }
 
 
+# Baseline check ids (Task 8.5). Kept as constants so `only_ids` filtering, the
+# CheckTask `id`, and the `command` descriptor never drift out of sync.
+_BASELINE_ANCHOR = "anchor-sentinel-presence-final"
+_BASELINE_LIFECYCLE = "lifecycle-ordering"
+_BASELINE_SCOPE = "scope-vs-plan-final"
+
+# Tiers that DOWNGRADE a missing-anchor result to advisory (warn-only). Per the
+# sensor-gate spec the anchor presence gate is must_pass on Normal/Large but
+# warn-only on Micro changes; an unknown/None tier defaults to must_pass.
+_MICRO_TIER = "Micro"
+
+
+def _baseline_must_pass_anchor(tier: str | None) -> bool:
+    """Tier-aware must_pass for the anchor-presence baseline.
+
+    Micro tier → advisory (False, warn only). Normal / Large / unknown / None →
+    must_pass (True). Defaulting an unknown tier to must_pass is the safe choice
+    (fail-closed: a change with no recognizable tier should not silently skip the
+    anchor gate).
+    """
+    return tier != _MICRO_TIER
+
+
+def _make_baseline_result(
+    check_id: str,
+    *,
+    passed: bool,
+    must_pass: bool,
+    t0: float,
+    command: str,
+    report: str | None,
+    archive: Path,
+) -> CheckResult:
+    """Construct a `CheckResult` for an in-process baseline.
+
+    Exit code is SYNTHETIC (0 pass / 1 fail) — baselines are Python functions,
+    not subprocesses. When `report` is non-empty it is archived to
+    `archive/<check_id>.txt` and `output_path` points at it; otherwise
+    `output_path` is None (nothing to report).
+    """
+    output_path: str | None = None
+    if report:
+        archive.mkdir(parents=True, exist_ok=True)
+        report_file = archive / f"{check_id}.txt"
+        report_file.write_text(report)
+        output_path = str(report_file)
+    return CheckResult(
+        id=check_id,
+        status="pass" if passed else "fail",
+        exit_code=0 if passed else 1,
+        duration_ms=int((time.perf_counter() - t0) * 1000),
+        must_pass=must_pass,
+        command=command,
+        output_path=output_path,
+    )
+
+
+def _baseline_anchor_presence(
+    change_id: str,
+    *,
+    context: WorkspaceContext,
+    archive: Path,
+    must_pass: bool,
+) -> CheckResult:
+    """Baseline: every anchor the plan declared has a `@capability:` sentinel.
+
+    Reads the change's declared anchors from derived state
+    (`affected_anchors` on its `ChangeState`) and the set of sentinels present in
+    source (`scan_sentinels`). Any declared anchor with no matching sentinel is a
+    failure. No anchors declared (or the change absent from derived state) → pass.
+    """
+    t0 = time.perf_counter()
+    states = derive_state(events_path(context.workspace_root))
+    cs = states.get(change_id)
+    declared = list(cs.affected_anchors) if cs is not None else []
+    if not declared:
+        return _make_baseline_result(
+            _BASELINE_ANCHOR,
+            passed=True,
+            must_pass=must_pass,
+            t0=t0,
+            command=f"builtin:{_BASELINE_ANCHOR}",
+            report=None,
+            archive=archive,
+        )
+    present = scan_sentinels(context.workspace_root)
+    missing = sorted(set(declared) - present)
+    report = None
+    if missing:
+        report = (
+            f"Declared anchors with no @capability:<id> sentinel in source "
+            f"(change {change_id}):\n" + "\n".join(f"  - {a}" for a in missing) + "\n"
+        )
+    return _make_baseline_result(
+        _BASELINE_ANCHOR,
+        passed=not missing,
+        must_pass=must_pass,
+        t0=t0,
+        command=f"builtin:{_BASELINE_ANCHOR}",
+        report=report,
+        archive=archive,
+    )
+
+
+def _baseline_lifecycle_ordering(
+    change_id: str,
+    *,
+    context: WorkspaceContext,
+    archive: Path,
+) -> CheckResult:
+    """Baseline: the change's event stream has no illegal transitions.
+
+    Integrity / tamper check — a stream where every event went through the strict
+    emit-time gate cannot be out of order, so any `find_ordering_violations`
+    result means the stream was hand-edited / imported unvetted / corrupted.
+    Always must_pass.
+    """
+    t0 = time.perf_counter()
+    violations = find_ordering_violations(events_path(context.workspace_root), change_id)
+    report = None
+    if violations:
+        report = (
+            f"Lifecycle ordering violations for change {change_id}:\n"
+            + "\n".join(
+                f"  - {v.event_id} ({v.event_type}) from {v.from_state}: {v.reason}"
+                for v in violations
+            )
+            + "\n"
+        )
+    return _make_baseline_result(
+        _BASELINE_LIFECYCLE,
+        passed=not violations,
+        must_pass=True,
+        t0=t0,
+        command=f"builtin:{_BASELINE_LIFECYCLE}",
+        report=report,
+        archive=archive,
+    )
+
+
+def _baseline_scope_vs_plan(
+    change_id: str,
+    *,
+    context: WorkspaceContext,
+    archive: Path,
+) -> CheckResult:
+    """Baseline (advisory): changed files fall within the declared plan scope.
+
+    Compares the plan's declared `scope.files` against the files actually changed
+    on this branch vs `main`. A changed file not covered by any declared entry
+    (exact path or prefix match) is out-of-scope drift → fail. Empty declared
+    scope OR no changed files → pass.
+
+    Advisory (must_pass=False), mirroring the `scope_drift_detected` warning
+    nature (sensor-gate §3.1.4): drift never fails the verdict.
+
+    Graceful degradation: if git is unavailable or `main` is missing, the check
+    CANNOT assert drift, so it returns pass with an explanatory note rather than
+    crying wolf or crashing.
+    """
+    t0 = time.perf_counter()
+    states = derive_state(events_path(context.workspace_root))
+    cs = states.get(change_id)
+    declared_files = list(cs.scope.get("files", [])) if cs is not None else []
+    if not declared_files:
+        return _make_baseline_result(
+            _BASELINE_SCOPE,
+            passed=True,
+            must_pass=False,
+            t0=t0,
+            command=f"builtin:{_BASELINE_SCOPE}",
+            report=None,
+            archive=archive,
+        )
+
+    # TODO(post-v0.1): detect/config base branch (per-repo default branch,
+    # PR-target branch, or a verification.yaml setting). Hardcoded to `main` for
+    # v0.1 — no base-branch detection exists yet.
+    base = "main"
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--name-only", f"{base}...HEAD"],
+            cwd=context.workspace_root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        # Cannot determine the diff (git missing / `main` absent / not a repo):
+        # do NOT cry wolf. Pass with a note. must_pass=False → never fails verdict.
+        note = (
+            f"scope-vs-plan skipped for change {change_id}: could not compute "
+            f"`git diff --name-only {base}...HEAD` ({type(e).__name__}). "
+            f"Cannot assert scope drift; treating as pass.\n"
+        )
+        return _make_baseline_result(
+            _BASELINE_SCOPE,
+            passed=True,
+            must_pass=False,
+            t0=t0,
+            command=f"builtin:{_BASELINE_SCOPE}",
+            report=note,
+            archive=archive,
+        )
+
+    changed = [ln for ln in proc.stdout.splitlines() if ln.strip()]
+    if not changed:
+        return _make_baseline_result(
+            _BASELINE_SCOPE,
+            passed=True,
+            must_pass=False,
+            t0=t0,
+            command=f"builtin:{_BASELINE_SCOPE}",
+            report=None,
+            archive=archive,
+        )
+
+    drifted = [f for f in changed if not _covered_by_scope(f, declared_files)]
+    report = None
+    if drifted:
+        report = (
+            f"Out-of-scope files changed (not covered by declared scope.files) "
+            f"for change {change_id}:\n"
+            + "\n".join(f"  - {f}" for f in drifted)
+            + "\ndeclared scope.files:\n"
+            + "\n".join(f"  - {d}" for d in declared_files)
+            + "\n"
+        )
+    return _make_baseline_result(
+        _BASELINE_SCOPE,
+        passed=not drifted,
+        must_pass=False,
+        t0=t0,
+        command=f"builtin:{_BASELINE_SCOPE}",
+        report=report,
+        archive=archive,
+    )
+
+
+def _covered_by_scope(changed_file: str, declared_files: list[str]) -> bool:
+    """True if `changed_file` is covered by any declared scope entry.
+
+    v0.1 matching: exact path equality OR prefix (`startswith`) — a declared
+    directory entry like `src/foo/` (or `src/foo`) covers everything under it.
+    """
+    for entry in declared_files:
+        if changed_file == entry or changed_file.startswith(entry):
+            return True
+    return False
+
+
 def baseline_check_tasks(
     cfg: VerificationConfig,
     *,
@@ -272,23 +536,93 @@ def baseline_check_tasks(
     variables: dict[str, str],
     only_ids: list[str] | None = None,
 ) -> list[CheckTask]:
-    """Build the baseline-layer `CheckTask`s — a STUB returning `[]` in Task 8.4.
+    """Build the baseline-layer `CheckTask`s (Task 8.5): the 3 in-process checks.
 
-    The baseline layer is the 3 in-process Python checks (anchor-sentinel-
-    presence-final / lifecycle-ordering / scope-vs-plan-final). Those, plus
-    `find_ordering_violations`, are implemented in Task 8.5; this function is the
-    seam they plug into.
+    The 3 baselines are pure-Python (not subprocesses):
+        - `anchor-sentinel-presence-final` — tier-aware must_pass (Micro → warn;
+          Normal/Large/unknown → must_pass).
+        - `lifecycle-ordering` — must_pass (integrity/tamper check).
+        - `scope-vs-plan-final` — advisory (must_pass=False; scope-drift warning).
 
-    The signature already accepts everything the real baselines will need
-    (`context` for workspace access, `archive` for any written artifacts,
-    `variables`/`only_ids` for parity with `collect_checks`) so Task 8.5 fills
-    the body without touching `collect_checks`.
+    Each baseline's `must_pass` is computed HERE (at build time) — in particular
+    the anchor baseline's tier-aware flag is resolved from the change's derived
+    `tier` — so the `run_checks` scheduler's fail-fast logic sees the correct
+    flag before it ever calls `run`. Each `CheckTask.run` is a zero-arg closure;
+    per-baseline values are bound via default args to dodge late-binding.
+
+    `change_id` comes from `variables["CHANGE_ID"]` (set by `build_variables`).
+    `only_ids` filtering happens both here (skip building skipped baselines) and
+    again in `collect_checks` — building is cheap (no work runs until `.run()`),
+    so the local filter just avoids constructing tasks the caller will drop.
 
     Returns:
-        `[]` — no baseline checks run in v0.1 Task 8.4.
+        The baseline `CheckTask`s surviving the `only_ids` filter, in fixed order
+        (anchor → lifecycle → scope).
     """
-    # Task 8.5 plugs the 3 real baselines in here.
-    return []
+    change_id = variables.get("CHANGE_ID") or variables.get("SLUG") or ""
+    wanted = set(only_ids) if only_ids is not None else None
+
+    def _included(check_id: str) -> bool:
+        return wanted is None or check_id in wanted
+
+    # Resolve the anchor baseline's tier-aware must_pass at BUILD time so the
+    # scheduler sees the right flag. derive_state is cheap (v0.1 full rebuild);
+    # the lifecycle/scope baselines re-derive inside their own closures.
+    tasks: list[CheckTask] = []
+
+    # Each `_run` binds its per-baseline values via default args to dodge
+    # late-binding (mirrors `_config_check_task`). Named defs (not lambdas) so
+    # mypy can infer the `Callable[[], CheckResult]` type.
+    if _included(_BASELINE_ANCHOR):
+        states = derive_state(events_path(context.workspace_root))
+        cs = states.get(change_id)
+        anchor_must_pass = _baseline_must_pass_anchor(cs.tier if cs is not None else None)
+
+        def _run_anchor(
+            change_id: str = change_id,
+            context: WorkspaceContext = context,
+            archive: Path = archive,
+            must_pass: bool = anchor_must_pass,
+        ) -> CheckResult:
+            return _baseline_anchor_presence(
+                change_id, context=context, archive=archive, must_pass=must_pass
+            )
+
+        tasks.append(
+            CheckTask(id=_BASELINE_ANCHOR, must_pass=anchor_must_pass, run=_run_anchor)
+        )
+
+    if _included(_BASELINE_LIFECYCLE):
+
+        def _run_lifecycle(
+            change_id: str = change_id,
+            context: WorkspaceContext = context,
+            archive: Path = archive,
+        ) -> CheckResult:
+            return _baseline_lifecycle_ordering(
+                change_id, context=context, archive=archive
+            )
+
+        tasks.append(
+            CheckTask(id=_BASELINE_LIFECYCLE, must_pass=True, run=_run_lifecycle)
+        )
+
+    if _included(_BASELINE_SCOPE):
+
+        def _run_scope(
+            change_id: str = change_id,
+            context: WorkspaceContext = context,
+            archive: Path = archive,
+        ) -> CheckResult:
+            return _baseline_scope_vs_plan(
+                change_id, context=context, archive=archive
+            )
+
+        tasks.append(
+            CheckTask(id=_BASELINE_SCOPE, must_pass=False, run=_run_scope)
+        )
+
+    return tasks
 
 
 def _config_check_task(
