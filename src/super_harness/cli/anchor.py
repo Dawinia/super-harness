@@ -24,7 +24,7 @@ import click
 import yaml
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK
+from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import (
     HarnessNotInitialized,
@@ -58,7 +58,22 @@ def anchor_sync(ctx: click.Context) -> None:
         )
         sys.exit(EXIT_NO_CONFIG)
 
-    result = rebuild_anchor_index(root)
+    # The rebuild WRITES .harness/anchors/index.yaml (mkdir + write_text). A
+    # read-only / permission-restricted .harness/ (CI sandbox, read-only mount)
+    # raises OSError — surface it through format_error like the sibling write
+    # commands (init maps write OSError → EXIT_GENERIC), never a raw traceback.
+    try:
+        result = rebuild_anchor_index(root)
+    except OSError as e:
+        click.echo(
+            format_error(
+                subcommand="anchor sync",
+                message=f"could not write anchors/index.yaml: {e}",
+                hint="Check that .harness/ is writable.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
     click.echo(result.summary)
     sys.exit(EXIT_OK)
 

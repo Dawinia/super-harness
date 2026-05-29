@@ -12,12 +12,14 @@ Coverage:
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK
+from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import anchors_index_path, events_path
 from super_harness.core.post_emit import refresh_state_after_emit
@@ -94,6 +96,29 @@ def test_anchor_sync_no_harness_exits_3(tmp_path: Path) -> None:
     assert r.exit_code == EXIT_NO_CONFIG
     combined = r.output + (r.stderr or "")
     assert "No .harness/" in combined
+
+
+@pytest.mark.skipif(
+    os.geteuid() == 0, reason="root bypasses filesystem permission bits"
+)
+def test_anchor_sync_unwritable_harness_exits_clean(tmp_path: Path) -> None:
+    # A read-only .harness/ makes the rebuild's mkdir/write raise OSError. It must
+    # surface as a clean error (exit 1), never a raw traceback.
+    _init_workspace(tmp_path)
+    harness = tmp_path / ".harness"
+    os.chmod(harness, 0o500)  # r-x: cannot create anchors/ subdir
+    try:
+        r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "anchor", "sync"])
+    finally:
+        os.chmod(harness, 0o700)  # restore so tmp cleanup works
+
+    assert r.exit_code == EXIT_GENERIC, r.output
+    combined = r.output + (r.stderr or "")
+    assert "could not write" in combined
+    assert isinstance(r.exception, SystemExit), (
+        f"Expected SystemExit, got {type(r.exception)}: {r.exception}"
+    )
+    assert "Traceback" not in combined
 
 
 # ---------------------------------------------------------------------------
@@ -256,8 +281,9 @@ def test_anchor_list_missing_sentinel_reports_absent_anchor(tmp_path: Path) -> N
 
     assert r.exit_code == EXIT_OK, r.output
     assert "cap-declared" in r.output
-    # "cap-other" IS in the index so should not appear as missing
-    assert "cap-other" not in r.output or "missing" not in r.output.lower()
+    # "cap-other" is NOT declared for the change (only present in the index), so the
+    # declared-but-absent report must not mention it at all.
+    assert "cap-other" not in r.output
 
 
 def test_anchor_list_missing_sentinel_all_present(tmp_path: Path) -> None:
