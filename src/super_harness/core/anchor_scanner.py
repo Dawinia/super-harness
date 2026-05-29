@@ -95,6 +95,34 @@ def _matches_any(rel_path: Path, globs: list[str]) -> bool:
     return any(fnmatch(rel_str, g) for g in globs)
 
 
+def scan_sentinel_locations(
+    root: Path, file_globs: list[str] | None = None
+) -> dict[str, list[tuple[str, int]]]:
+    """Like scan_sentinels but records WHERE each `@capability:<id>` occurs.
+
+    Returns ``{anchor_id: [(repo_relative_file, 1_based_line), ...]}``. Reuses
+    ``_SENTINEL_RE`` / ``_list_files`` / ``_matches_any`` / binary-skip so the
+    two scanners cannot drift. Files are walked in sorted order (``scan_sentinels``
+    does not) so the index is deterministic.
+    """
+    locations: dict[str, list[tuple[str, int]]] = {}
+    files = _list_files(root)
+    if file_globs is not None:
+        files = [f for f in files if _matches_any(f.relative_to(root), file_globs)]
+    for f in sorted(files):
+        if not f.is_file():
+            continue
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, PermissionError, OSError):
+            continue
+        rel = str(f.relative_to(root))
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            for m in _SENTINEL_RE.finditer(line):
+                locations.setdefault(m.group(1), []).append((rel, lineno))
+    return locations
+
+
 def scan_sentinels(root: Path, file_globs: list[str] | None = None) -> set[str]:
     """Return every `@capability:<id>` sentinel ID found beneath `root`.
 

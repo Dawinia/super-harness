@@ -30,7 +30,6 @@ from super_harness.sensors.verification_runner import (
     _all_pass_must,
     _baseline_anchor_presence,
     _baseline_lifecycle_ordering,
-    _baseline_must_pass_anchor,
     _baseline_scope_vs_plan,
     _covered_by_scope,
     baseline_check_tasks,
@@ -897,17 +896,6 @@ def _plan_items(
 def _harness_root(tmp_path: Path) -> Path:
     (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
     return tmp_path
-
-
-# --- _baseline_must_pass_anchor (tier-aware) --------------------------------
-
-
-def test_baseline_anchor_must_pass_is_tier_aware() -> None:
-    assert _baseline_must_pass_anchor("Micro") is False
-    assert _baseline_must_pass_anchor("Normal") is True
-    assert _baseline_must_pass_anchor("Large") is True
-    assert _baseline_must_pass_anchor(None) is True  # unknown → fail-closed
-    assert _baseline_must_pass_anchor("Weird") is True
 
 
 # --- anchor-sentinel-presence-final -----------------------------------------

@@ -10,7 +10,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from super_harness.core.anchor_scanner import scan_sentinels
+from super_harness.core.anchor_scanner import scan_sentinel_locations, scan_sentinels
 
 
 def test_scan_finds_capability_sentinels(tmp_path: Path) -> None:
@@ -62,3 +62,45 @@ def test_scan_honors_specific_glob_filter(tmp_path: Path) -> None:
     found = scan_sentinels(tmp_path, file_globs=["*.py"])
     assert "cap-py" in found
     assert "cap-md" not in found
+
+
+# --------------------------------------------------------------------------- #
+# scan_sentinel_locations tests (Task 11.2)
+# --------------------------------------------------------------------------- #
+
+
+def test_locations_returns_file_and_1based_line(tmp_path: Path) -> None:
+    """Reports the exact file (repo-relative) and 1-based line for each match."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("# @capability:cap-foo\nprint('hi')\n")
+    (tmp_path / "src" / "bar.ts").write_text("\n// @capability:cap-bar\nexport {};\n")
+    locs = scan_sentinel_locations(tmp_path)
+    assert ("src/foo.py", 1) in locs["cap-foo"]
+    assert ("src/bar.ts", 2) in locs["cap-bar"]
+
+
+def test_locations_skips_binary_files(tmp_path: Path) -> None:
+    """Binary / non-UTF-8 files are silently skipped — no crash."""
+    (tmp_path / "binary.dat").write_bytes(b"\xff\xfe@capability:cap-binary\n")
+    (tmp_path / "text.py").write_text("@capability:cap-text\n")
+    locs = scan_sentinel_locations(tmp_path)
+    assert "cap-text" in locs
+    assert "cap-binary" not in locs
+
+
+def test_locations_empty_repo_returns_empty_dict(tmp_path: Path) -> None:
+    """An empty directory produces an empty dict (no KeyError, no crash)."""
+    locs = scan_sentinel_locations(tmp_path)
+    assert locs == {}
+
+
+def test_locations_same_anchor_aggregates_across_files_and_lines(tmp_path: Path) -> None:
+    """Same anchor ID on multiple lines / files → all locations aggregated."""
+    (tmp_path / "a.py").write_text("# @capability:shared\npass\n# @capability:shared\n")
+    (tmp_path / "b.py").write_text("# @capability:shared\n")
+    locs = scan_sentinel_locations(tmp_path)
+    shared = locs["shared"]
+    assert ("a.py", 1) in shared
+    assert ("a.py", 3) in shared
+    assert ("b.py", 1) in shared
+    assert len(shared) == 3
