@@ -9,6 +9,7 @@ from __future__ import annotations
 import click
 
 from super_harness.cli.adapter import adapter_group
+from super_harness.cli.anchor import anchor_group
 from super_harness.cli.change import change_group
 from super_harness.cli.daemon import daemon_group
 from super_harness.cli.done import done_cmd
@@ -78,3 +79,4 @@ main.add_command(verify_cmd)
 main.add_command(done_cmd)
 main.add_command(sync_cmd)
 main.add_command(verification_group)
+main.add_command(anchor_group)
