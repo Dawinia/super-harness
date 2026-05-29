@@ -59,6 +59,7 @@ __all__ = [
     "inject_framework_subsection",
     "inject_section",
     "remove_subsection",
+    "section_present",
 ]
 
 # Outer section. `inject_section` matches the begin generically (the begin
@@ -80,10 +81,15 @@ _LF = "\n"
 
 
 class AgentsMdInjectionError(Exception):
-    """Raised when AGENTS.md is in an ambiguous state we refuse to guess about.
+    """Raised when AGENTS.md is in a state we refuse to guess about.
 
-    Currently: more than one outer super-harness section block is present
-    (user mis-edit or duplicated markers) — manual cleanup is required (§3.2).
+    - More than one outer super-harness section block is present (user mis-edit
+      or duplicated markers) — manual cleanup is required (§3.2).
+    - The file is not valid UTF-8 (we only edit UTF-8 AGENTS.md). Surfacing this
+      as the module's domain error lets every caller's existing
+      ``except (OSError, AgentsMdInjectionError)`` envelope report it cleanly
+      instead of leaking a raw ``UnicodeDecodeError`` (a ``ValueError``, NOT an
+      ``OSError``).
     """
 
 
@@ -94,6 +100,15 @@ def inject_section(path: Path, content: str) -> None:
     - Exactly one existing section block → replace it (``count=1``).
     - No existing block → append after the existing content (blank-line separated).
     - More than one existing block → raise `AgentsMdInjectionError`.
+    - Unbalanced markers (a ``section begin`` without its matching ``section
+      end``, or vice-versa) → raise `AgentsMdInjectionError`. This is a
+      DATA-LOSS guard: a lone orphan begin marker (user truncation / dropped
+      end on a merge) would otherwise (a) not be seen as a block → append a
+      second section, then (b) on the next run the lazy ``begin .*? end`` span
+      from the orphan begin to the new section's end would be replaced wholesale,
+      silently deleting the user content trapped between them (violating §3.2 /
+      AC-2 "content outside begin/end is never changed"). Fail loud instead,
+      mirroring the multi-block raise.
 
     The file's dominant newline style is preserved (see module docstring).
     """
@@ -104,6 +119,19 @@ def inject_section(path: Path, content: str) -> None:
 
     existing, newline = _read_normalized(path)
     blocks = _SECTION_PATTERN.findall(existing)
+
+    # Marker-balance guard (must precede the splice): every begin needs a matching
+    # end and a complete block. A mismatch (orphan begin/end, interleaved markers)
+    # is an ambiguous state we refuse to splice into — see the data-loss note above.
+    begin_count = existing.count(_SECTION_BEGIN_PREFIX)
+    end_count = existing.count(_SECTION_END)
+    if begin_count != end_count or begin_count != len(blocks):
+        raise AgentsMdInjectionError(
+            f"{path} has unbalanced super-harness section markers "
+            f"({begin_count} begin, {end_count} end, {len(blocks)} complete "
+            f"block(s)); manual cleanup required — every 'section begin' needs a "
+            f"matching 'section end' and exactly one complete block is expected."
+        )
 
     if len(blocks) > 1:
         raise AgentsMdInjectionError(
@@ -116,6 +144,21 @@ def inject_section(path: Path, content: str) -> None:
         new = existing.rstrip() + _LF + _LF + content + _LF
 
     _write_normalized(path, new, newline)
+
+
+def section_present(path: Path) -> bool:
+    """Return True iff ``path`` contains at least one outer super-harness section.
+
+    The overwrite-confirm predicate `super-harness sync` uses to decide whether a
+    re-render would clobber an existing section (and thus warrants a confirm). A
+    read-only counterpart to `inject_section`: it normalizes line endings the same
+    way and matches the same generic begin-marker pattern. AGENTS.md absent → no
+    section exists → False (a fresh render carries no overwrite risk).
+    """
+    if not path.exists():
+        return False
+    existing, _newline = _read_normalized(path)
+    return _SECTION_PATTERN.search(existing) is not None
 
 
 def inject_framework_subsection(path: Path, framework: str, content: str) -> None:
@@ -292,8 +335,20 @@ def _read_normalized(path: Path) -> tuple[str, str]:
 
     Decodes bytes ourselves (no universal-newline translation) so we observe the
     file's real line endings and never accidentally rewrite untouched regions.
+
+    A non-UTF-8 file raises `AgentsMdInjectionError` (the module's domain error),
+    NOT a raw `UnicodeDecodeError`, so callers' existing
+    ``except (OSError, AgentsMdInjectionError)`` envelopes report it cleanly.
+    (``read_bytes`` itself may still raise ``OSError`` — directory / permission —
+    which callers already catch.)
     """
-    raw = path.read_bytes().decode("utf-8")
+    try:
+        raw = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise AgentsMdInjectionError(
+            f"{path} is not valid UTF-8 ({e}); super-harness only edits UTF-8 "
+            f"AGENTS.md — convert it to UTF-8 and retry."
+        ) from e
     newline = _detect_newline(raw)
     if newline == _CRLF:
         return raw.replace(_CRLF, _LF), newline

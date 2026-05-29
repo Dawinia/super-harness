@@ -23,6 +23,7 @@ from super_harness.engineering.agents_md import (
     inject_framework_subsection,
     inject_section,
     remove_subsection,
+    section_present,
 )
 
 # A minimal init-style outer section seed, with both placeholders present, as
@@ -351,6 +352,79 @@ def test_lf_file_stays_lf(tmp_path: Path) -> None:
     raw = path.read_bytes()
     assert b"\r\n" not in raw
     assert b"super-harness agent: claude-code" in raw
+
+
+# --------------------------------------------------------------------------- #
+# section_present (the `sync` overwrite-confirm predicate)
+# --------------------------------------------------------------------------- #
+
+
+def test_section_present_absent_file_is_false(tmp_path: Path) -> None:
+    """AGENTS.md absent → False (no section, nothing to overwrite)."""
+    assert section_present(tmp_path / "AGENTS.md") is False
+
+
+def test_section_present_file_with_section_is_true(tmp_path: Path) -> None:
+    """A file carrying an outer super-harness section block → True."""
+    path = tmp_path / "AGENTS.md"
+    path.write_text(_SEED_WITH_PLACEHOLDERS)
+    assert section_present(path) is True
+
+
+def test_section_present_file_without_section_is_false(tmp_path: Path) -> None:
+    """A file with only user content (no super-harness markers) → False."""
+    path = tmp_path / "AGENTS.md"
+    path.write_text("# My project\n\nJust user prose, no markers.\n")
+    assert section_present(path) is False
+
+
+# --------------------------------------------------------------------------- #
+# non-UTF-8 input → domain error (not a raw UnicodeDecodeError)
+# --------------------------------------------------------------------------- #
+
+
+def test_inject_section_orphan_begin_marker_raises(tmp_path: Path) -> None:
+    """A lone `section begin` with NO matching `section end` is an ambiguous,
+    data-loss-prone state → raise (NOT append a second section). File untouched."""
+    path = tmp_path / "AGENTS.md"
+    original = (
+        "# My project\n\n"
+        "<!-- super-harness section begin · v0.0.1 · DO NOT EDIT MANUALLY -->\n"
+        "user notes that must survive\n"
+    )
+    path.write_text(original)
+    with pytest.raises(AgentsMdInjectionError, match="unbalanced"):
+        inject_section(path, "whatever")
+    assert path.read_text() == original  # untouched on raise
+
+
+def test_inject_section_orphan_end_marker_raises(tmp_path: Path) -> None:
+    """A lone `section end` with no matching begin is equally ambiguous → raise."""
+    path = tmp_path / "AGENTS.md"
+    original = "# My project\n\n<!-- super-harness section end -->\nstuff\n"
+    path.write_text(original)
+    with pytest.raises(AgentsMdInjectionError, match="unbalanced"):
+        inject_section(path, "whatever")
+    assert path.read_text() == original
+
+
+def test_inject_section_non_utf8_raises_domain_error(tmp_path: Path) -> None:
+    """A non-UTF-8 AGENTS.md raises AgentsMdInjectionError (the module domain
+    error), NOT a raw UnicodeDecodeError — so callers' existing
+    `except (OSError, AgentsMdInjectionError)` envelopes report it cleanly."""
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(b"\xff\xfe not utf-8 \x00")
+    with pytest.raises(AgentsMdInjectionError, match="UTF-8"):
+        inject_section(path, "x")
+
+
+def test_section_present_non_utf8_raises_domain_error(tmp_path: Path) -> None:
+    """`section_present` on a non-UTF-8 file raises the domain error too (its read
+    goes through the same normalizer); callers wrap the call."""
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(b"\xff\xfe not utf-8 \x00")
+    with pytest.raises(AgentsMdInjectionError, match="UTF-8"):
+        section_present(path)
 
 
 # --------------------------------------------------------------------------- #
