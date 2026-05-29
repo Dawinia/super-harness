@@ -23,6 +23,7 @@ from super_harness.engineering.agents_md import (
     inject_framework_subsection,
     inject_section,
     remove_subsection,
+    section_present,
 )
 
 # A minimal init-style outer section seed, with both placeholders present, as
@@ -351,6 +352,30 @@ def test_lf_file_stays_lf(tmp_path: Path) -> None:
     raw = path.read_bytes()
     assert b"\r\n" not in raw
     assert b"super-harness agent: claude-code" in raw
+
+
+# --------------------------------------------------------------------------- #
+# section_present (the `sync` overwrite-confirm predicate)
+# --------------------------------------------------------------------------- #
+
+
+def test_section_present_absent_file_is_false(tmp_path: Path) -> None:
+    """AGENTS.md absent → False (no section, nothing to overwrite)."""
+    assert section_present(tmp_path / "AGENTS.md") is False
+
+
+def test_section_present_file_with_section_is_true(tmp_path: Path) -> None:
+    """A file carrying an outer super-harness section block → True."""
+    path = tmp_path / "AGENTS.md"
+    path.write_text(_SEED_WITH_PLACEHOLDERS)
+    assert section_present(path) is True
+
+
+def test_section_present_file_without_section_is_false(tmp_path: Path) -> None:
+    """A file with only user content (no super-harness markers) → False."""
+    path = tmp_path / "AGENTS.md"
+    path.write_text("# My project\n\nJust user prose, no markers.\n")
+    assert section_present(path) is False
 
 
 # --------------------------------------------------------------------------- #

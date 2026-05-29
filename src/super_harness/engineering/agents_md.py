@@ -59,6 +59,7 @@ __all__ = [
     "inject_framework_subsection",
     "inject_section",
     "remove_subsection",
+    "section_present",
 ]
 
 # Outer section. `inject_section` matches the begin generically (the begin
@@ -116,6 +117,21 @@ def inject_section(path: Path, content: str) -> None:
         new = existing.rstrip() + _LF + _LF + content + _LF
 
     _write_normalized(path, new, newline)
+
+
+def section_present(path: Path) -> bool:
+    """Return True iff ``path`` contains at least one outer super-harness section.
+
+    The overwrite-confirm predicate `super-harness sync` uses to decide whether a
+    re-render would clobber an existing section (and thus warrants a confirm). A
+    read-only counterpart to `inject_section`: it normalizes line endings the same
+    way and matches the same generic begin-marker pattern. AGENTS.md absent → no
+    section exists → False (a fresh render carries no overwrite risk).
+    """
+    if not path.exists():
+        return False
+    existing, _newline = _read_normalized(path)
+    return _SECTION_PATTERN.search(existing) is not None
 
 
 def inject_framework_subsection(path: Path, framework: str, content: str) -> None:
