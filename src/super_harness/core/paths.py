@@ -106,3 +106,24 @@ def adapters_yaml_path(root: Path) -> Path:
     `super-harness adapter` CLI to enumerate.
     """
     return root / ".harness" / "adapters.yaml"
+
+
+def verification_yaml_path(root: Path) -> Path:
+    """`.harness/verification.yaml` — verification check config (engineering-integration §2.3).
+
+    Written by `init`; read by the `VerificationRunner` sensor (Phase 8) and the
+    `verify` / `done` CLI commands. Absence is a hard error (EXIT_NO_CONFIG), not
+    a fall-back-to-defaults signal — see `engineering.verification_config`.
+    """
+    return root / ".harness" / "verification.yaml"
+
+
+def verification_results_dir(root: Path, change_id: str, ts: str) -> Path:
+    """`.harness/verification-results/<change_id>/<ts>` — per-run output archive.
+
+    The `VerificationRunner` sensor (Phase 8) writes captured check output and a
+    `summary.json` here. `ts` is an ISO-8601 UTC timestamp string (the run's
+    start time, produced by the runner) so concurrent / repeat runs for one
+    change never clobber each other.
+    """
+    return root / ".harness" / "verification-results" / change_id / ts

@@ -114,3 +114,19 @@ class Sensor(ABC):
 
     def reviewer_strategy(self) -> Literal["subagent", "human", "hybrid"] | None:
         return None
+
+
+# --------------------------------------------------------------------------- #
+# Built-in sensor registration
+# --------------------------------------------------------------------------- #
+#
+# Registered at the BOTTOM of this module (after the base-class defs) to avoid
+# the import cycle: `verification_runner` and `registry` both
+# `from super_harness.sensors import ...`, so the names above must already be
+# bound before we import them. Importing `super_harness.sensors` (which any
+# `from super_harness.sensors.registry import ...` does first) thus self-
+# registers every built-in sensor. `verification-runner` is the first builtin.
+from super_harness.sensors.registry import register_builtin  # noqa: E402
+from super_harness.sensors.verification_runner import VerificationRunner  # noqa: E402
+
+register_builtin("verification-runner", VerificationRunner)
