@@ -177,6 +177,10 @@ class DaemonServer:
         # crashed" + return 1, killing the gate hot-path). On any failure we
         # serve the accept loop with no watchers — gate decisions stay available.
         try:
+            # Shutdown-race window: if SIGTERM fires between the manager assignment
+            # and start(), shutdown()→stop() runs first; serve_forever()'s finally
+            # then joins the (populated) manager — Observers are daemon threads reaped
+            # at process exit, so no real leak.
             self._framework_observers = build_manager_failsafe(self.workspace_root)
             if self._framework_observers is not None:
                 self._framework_observers.start()
