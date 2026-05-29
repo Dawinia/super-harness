@@ -117,6 +117,17 @@ class SensorDispatcher:
     After any successful sensor-emitted event the dispatcher calls
     `refresh_state_after_emit(workspace_root)` so state.yaml never lags the
     event stream (B-3 wiring).
+
+    Return value — both `on_event_emit` and `on_activity` return the
+    `list[SensorResult]` collected from every sensor that completed its
+    `check()` WITHOUT raising. Crashed sensors (`except Exception` →
+    `sensor_crashed`) and timed-out sensors (batch `FuturesTimeout` →
+    `sensor_timeout_exceeded`) contribute NO result to the list — they only
+    auto-emit their lifecycle event. Results are ordered by sensor COMPLETION
+    (the `as_completed` order), and the auto-emit / actor-stamping / state
+    refresh side effects are unchanged. This lets callers (e.g. Task 8.7's
+    `verify` / `done` CLI driving the VerificationRunner sensor through the
+    dispatcher per spec) read the sensors' verdicts directly.
     """
 
     def __init__(
@@ -134,23 +145,46 @@ class SensorDispatcher:
         self.timeout_s = timeout_s
         self.max_parallelism = max_parallelism
 
-    def on_event_emit(self, event: Event) -> None:
-        """Dispatch a lifecycle / extension event to matching sensors."""
-        matching = [s for s in self.sensors if event.type in s.triggers_on_events]
-        self._run_all(matching, event)
+    def on_event_emit(self, event: Event) -> list[SensorResult]:
+        """Dispatch a lifecycle / extension event to matching sensors.
 
-    def on_activity(self, activity: Activity) -> None:
-        """Dispatch a non-event activity (git hook / CLI / watcher) to sensors."""
+        Returns the `SensorResult`s from sensors that completed without
+        raising (crashed / timed-out sensors are omitted; they only auto-emit
+        their `sensor_crashed` / `sensor_timeout_exceeded` lifecycle event).
+        """
+        matching = [s for s in self.sensors if event.type in s.triggers_on_events]
+        return self._run_all(matching, event)
+
+    def on_activity(self, activity: Activity) -> list[SensorResult]:
+        """Dispatch a non-event activity (git hook / CLI / watcher) to sensors.
+
+        Returns the `SensorResult`s from sensors that completed without
+        raising (crashed / timed-out sensors are omitted; they only auto-emit
+        their `sensor_crashed` / `sensor_timeout_exceeded` lifecycle event).
+        """
         matching = [
             s for s in self.sensors if activity.type in s.triggers_on_activities
         ]
-        self._run_all(matching, activity)
+        return self._run_all(matching, activity)
 
     # --- internals --------------------------------------------------------
 
-    def _run_all(self, sensors: list[Sensor], trigger: Event | Activity) -> None:
+    def _run_all(
+        self, sensors: list[Sensor], trigger: Event | Activity
+    ) -> list[SensorResult]:
+        """Run `sensors` in parallel; return results from those that completed.
+
+        The returned list holds one `SensorResult` per sensor whose `check()`
+        returned without raising (in `as_completed` completion order). Sensors
+        that crash (`except Exception`) or exceed the batch timeout
+        (`FuturesTimeout`) contribute nothing to the list — they only auto-emit
+        their `sensor_crashed` / `sensor_timeout_exceeded` lifecycle event. The
+        emit / actor-stamp / state-refresh side effects live in `_handle` and
+        are unchanged.
+        """
         if not sensors:
-            return
+            return []
+        results: list[SensorResult] = []
         # Pending-future cancellation: `ThreadPoolExecutor.__exit__` calls
         # `shutdown(wait=True)` (no cancel_futures). Already-running sensors
         # cannot be killed (CPython has no thread-kill primitive). If the batch
@@ -183,17 +217,20 @@ class SensorDispatcher:
                         )
                     else:
                         self._handle(result, sensor, trigger)
+                        results.append(result)
             except FuturesTimeout:
                 # Every future that did not complete within `timeout_s` gets
                 # a `sensor_timeout_exceeded` lifecycle event. Cancel any
                 # not-yet-started futures; running ones will be abandoned
-                # when the pool context exits (see class docstring).
+                # when the pool context exits (see class docstring). These
+                # sensors produce no `SensorResult` for the returned list.
                 for future in pending:
                     future.cancel()
                     sensor = futures[future]
                     self._emit_lifecycle(
                         "sensor_timeout_exceeded", sensor, trigger
                     )
+        return results
 
     def _safe_run(
         self, sensor: Sensor, trigger: Event | Activity
