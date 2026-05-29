@@ -243,3 +243,142 @@ def test_verify_resolves_active_change(tmp_path: Path) -> None:
     r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "verify"])
     assert r.exit_code == EXIT_OK, r.output
     assert _read_event_types(tmp_path)[-1] == "verification_passed"
+
+
+# --------------------------------------------------------------------------- #
+# FIX 1 — config / placeholder errors surface as EXIT_VALIDATION (2), not a
+# raw traceback + EXIT_GENERIC (1).
+# --------------------------------------------------------------------------- #
+
+# Syntactically broken YAML (unbalanced brackets) → yaml.YAMLError at load.
+_CORRUPT_YAML = "layers: {baseline: {enabled: true}\nchecks: [\n"
+
+# Wrong shape: a bad `capture` enum value (valid YAML, invalid schema).
+_BAD_ENUM_YAML = """\
+layers:
+  baseline: { enabled: false }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: true }
+defaults:
+  capture: everything
+checks: []
+adapter_provided: []
+"""
+
+# A non-allowlisted ${PR_URL} placeholder in a check command (rejected at load).
+_BAD_PLACEHOLDER_YAML = """\
+layers:
+  baseline: { enabled: false }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: true }
+defaults:
+  capture: none
+checks:
+  - id: deploy
+    command: "deploy ${PR_URL}"
+adapter_provided: []
+"""
+
+
+def test_verify_corrupt_yaml_exit_2_no_traceback(tmp_path: Path) -> None:
+    _init_workspace(tmp_path, yaml_text=_CORRUPT_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "verify", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "not valid YAML" in combined
+    # A clean error, NOT a swallowed sensor crash / raw traceback.
+    assert "Traceback" not in combined
+    assert r.exception is None or isinstance(r.exception, SystemExit)
+
+
+def test_verify_wrong_shape_exit_2(tmp_path: Path) -> None:
+    _init_workspace(tmp_path, yaml_text=_BAD_ENUM_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "verify", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "Traceback" not in combined
+
+
+def test_verify_bad_placeholder_exit_2(tmp_path: Path) -> None:
+    _init_workspace(tmp_path, yaml_text=_BAD_PLACEHOLDER_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "verify", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "PR_URL" in combined
+    assert "Traceback" not in combined
+
+
+# --------------------------------------------------------------------------- #
+# FIX 2 — an unknown / layer-mismatched `--check` id is a hard EXIT_VALIDATION,
+# not a vacuous pass.
+# --------------------------------------------------------------------------- #
+
+
+def test_verify_unknown_check_exit_2(tmp_path: Path) -> None:
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "verify", "my-change",
+         "--check", "does-not-exist"],
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "no such check" in combined
+    assert "does-not-exist" in combined
+
+
+def test_verify_known_check_still_runs(tmp_path: Path) -> None:
+    # A valid --check id runs as before (exit 0 here — `ok-1` passes).
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--json", "verify", "my-change",
+         "--check", "ok-1"],
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    data = json.loads(r.output)["data"]
+    assert data["checks_run"] == 1
+    assert data["results"][0]["id"] == "ok-1"
+
+
+def test_verify_check_layer_mismatch_exit_2(tmp_path: Path) -> None:
+    # A baseline id requested under --layer user is not collectable there → error.
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "verify", "my-change",
+         "--layer", "user", "--check", "lifecycle-ordering"],
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "no such check" in combined
+    assert "lifecycle-ordering" in combined
+
+
+# --------------------------------------------------------------------------- #
+# FIX 3 — `--json` summary_path + results[].output_path are REPO-RELATIVE.
+# --------------------------------------------------------------------------- #
+
+
+def test_verify_json_paths_are_repo_relative(tmp_path: Path) -> None:
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "--json", "verify", "my-change"]
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    data = json.loads(r.output)["data"]
+    # Repo-relative: starts with `.harness/verification-results/`, no leading `/`.
+    assert data["summary_path"].startswith(".harness/verification-results/")
+    assert not data["summary_path"].startswith("/")
+    for row in data["results"]:
+        op = row["output_path"]
+        # `capture: none` → output_path is None; if present it must be relative.
+        if op is not None:
+            assert not op.startswith("/")
+            assert op.startswith(".harness/verification-results/")

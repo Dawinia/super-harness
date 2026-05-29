@@ -52,6 +52,11 @@ side by side.
 - Wrong shape / invalid enum / missing-required / duplicate id →
   `VerificationConfigError` (a `ValueError` subclass) → CLI maps to
   EXIT_VALIDATION.
+- A check `command` (user `checks` or `adapter_provided`) that references a
+  non-allowlisted `${NAME}` placeholder → `InterpolationError` (a
+  `VerificationConfigError`, hence a `ValueError`) raised at LOAD time, so a
+  placeholder that could never run is caught by the `verify` / `done` pre-load
+  rather than deep in the sensor's thread pool.
 - Syntax-corrupt yaml → `yaml.YAMLError` propagates unwrapped (same pattern as
   `adapters.registry.load_adapters`). NOTE `yaml.YAMLError` subclasses
   `Exception`, NOT `ValueError` — so a CLI catch tuple aiming to surface BOTH
@@ -228,6 +233,9 @@ def load_verification_config(path: Path) -> VerificationConfig:
             value is invalid, a required `id`/`command` is missing/empty, or a
             check `id` is duplicated within its layer). Subclasses `ValueError`
             → CLI maps to EXIT_VALIDATION.
+        InterpolationError: a check `command` references a `${NAME}` placeholder
+            outside `INTERPOLATION_ALLOWLIST`. A `VerificationConfigError`
+            subclass (hence a `ValueError`) → CLI maps to EXIT_VALIDATION.
     """
     if not path.exists():
         raise FileNotFoundError(
@@ -307,6 +315,31 @@ def interpolate(command: str, variables: dict[str, str]) -> str:
         return variables.get(name, "")
 
     return _PLACEHOLDER_RE.sub(_replace, command)
+
+
+def _validate_command_placeholders(command: str, *, check_id: str) -> None:
+    """Reject any non-allowlisted `${NAME}` placeholder in `command` at load time.
+
+    Catches a bad placeholder when the config is loaded (the `verify` / `done`
+    CLI pre-load), not only at run time deep in the sensor's thread pool. A
+    placeholder outside `INTERPOLATION_ALLOWLIST` can never run, so surfacing it
+    eagerly turns a swallowed sensor crash into a clean EXIT_VALIDATION.
+
+    Shares `_PLACEHOLDER_RE` + `INTERPOLATION_ALLOWLIST` with `interpolate` so
+    the load-time gate and the run-time gate can never drift.
+
+    Raises:
+        InterpolationError: a `${NAME}` placeholder is outside the allowlist,
+            naming the offending placeholder and the owning check id.
+    """
+    for match in _PLACEHOLDER_RE.finditer(command):
+        name = match.group(1)
+        if name not in INTERPOLATION_ALLOWLIST:
+            raise InterpolationError(
+                f"check {check_id!r} command references unknown interpolation "
+                f"placeholder ${{{name}}}; allowed: "
+                f"{sorted('${' + n + '}' for n in INTERPOLATION_ALLOWLIST)}"
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -405,6 +438,11 @@ def _parse_check_entry(
         raise VerificationConfigError(
             f"{path}: check {check_id!r} is missing a non-empty string 'command'"
         )
+    # Reject non-allowlisted `${NAME}` placeholders at LOAD time (not only at
+    # run time in the sensor thread pool) so a typo'd `${PR_URL}` surfaces as a
+    # clean EXIT_VALIDATION via the CLI pre-load. A bad placeholder can never
+    # run, so it is never valid to defer.
+    _validate_command_placeholders(command, check_id=check_id)
 
     provided_by = entry.get("provided_by")
     if provided_by is not None:

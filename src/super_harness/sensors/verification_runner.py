@@ -76,11 +76,13 @@ if TYPE_CHECKING:
     from super_harness.sensors import SensorStatus
 
 __all__ = [
+    "BASELINE_CHECK_IDS",
     "CheckResult",
     "CheckTask",
     "VerificationRunner",
     "build_variables",
     "collect_checks",
+    "collectable_check_ids",
     "make_verification_event",
     "run_check",
     "run_checks",
@@ -282,6 +284,15 @@ def build_variables(change_id: str, context: WorkspaceContext) -> dict[str, str]
 _BASELINE_ANCHOR = "anchor-sentinel-presence-final"
 _BASELINE_LIFECYCLE = "lifecycle-ordering"
 _BASELINE_SCOPE = "scope-vs-plan-final"
+
+# The 3 baseline ids, single-sourced so `baseline_check_tasks` (what runs) and
+# `collectable_check_ids` (what `--check` validation reports as collectable)
+# can never drift. Ordered (anchor → lifecycle → scope) to match build order.
+BASELINE_CHECK_IDS: tuple[str, ...] = (
+    _BASELINE_ANCHOR,
+    _BASELINE_LIFECYCLE,
+    _BASELINE_SCOPE,
+)
 
 # Tiers that DOWNGRADE a missing-anchor result to advisory (warn-only). Per the
 # sensor-gate spec the anchor presence gate is must_pass on Normal/Large but
@@ -741,12 +752,50 @@ def collect_checks(
         )
 
     if only_ids is not None:
+        # Unknown `--check` ids (a typo'd `--check name` that would silently run
+        # 0 checks) are rejected up-front by the CLI via `collectable_check_ids`
+        # BEFORE dispatch, so by the time we get here every requested id is known
+        # to be collectable; this just applies the filter.
         wanted = set(only_ids)
-        # TODO(task 8.7/CLI): warn/error when an only_ids entry matched no check
-        # — a typo'd `--check name` should not silently run 0 checks (poor UX).
         tasks = [t for t in tasks if t.id in wanted]
 
     return tasks
+
+
+def collectable_check_ids(
+    cfg: VerificationConfig, *, layer: str | None = None
+) -> set[str]:
+    """The set of check ids `collect_checks` WOULD collect for `cfg` + `layer`.
+
+    Mirrors `collect_checks`'s layer selection exactly: a layer contributes its
+    ids only when (a) its `cfg.layers.*` enable flag is set AND (b) it is not
+    filtered out by `layer`. Used by the `verify` / `done` CLI to validate
+    `--check <id>` BEFORE dispatch so a typo (or a baseline id requested under
+    `--layer user`) is a clean EXIT_VALIDATION rather than a vacuous pass.
+
+    Baseline ids come from the single-sourced `BASELINE_CHECK_IDS` (same source
+    `baseline_check_tasks` builds from) so the two can never drift.
+
+    Args:
+        cfg: The loaded verification config.
+        layer: Optional single-layer restriction — one of `"baseline"`,
+            `"adapter"`, `"user"` — STILL gated by the layer's enable flag.
+
+    Returns:
+        Every check id collectable under the given `cfg` + `layer` filter.
+    """
+    want_baseline = layer in (None, "baseline")
+    want_adapter = layer in (None, "adapter")
+    want_user = layer in (None, "user")
+
+    ids: set[str] = set()
+    if want_baseline and cfg.layers.baseline:
+        ids.update(BASELINE_CHECK_IDS)
+    if want_adapter and cfg.layers.framework_adapter:
+        ids.update(spec.id for spec in cfg.adapter_provided)
+    if want_user and cfg.layers.user_checks:
+        ids.update(spec.id for spec in cfg.checks)
+    return ids
 
 
 def run_checks(
@@ -868,11 +917,21 @@ def verify_data_block(
     change_id: str,
     results: list[CheckResult],
     archive: Path,
+    workspace_root: Path,
 ) -> dict[str, Any]:
     """Build the FROZEN `verify --json` data block (cli-command-surface §3.4).
 
     Returned verbatim as `SensorResult.details`. Keys are a frozen contract —
     do NOT add/rename/reorder downstream-visible keys.
+
+    Paths are REPO-RELATIVE to `workspace_root` (cli-command-surface §3.4: the
+    schema example + the human error line both use a
+    `.harness/verification-results/<change>/<ts>/...` repo-relative path with no
+    leading slash). The on-disk archive and the internal `CheckResult.output_path`
+    stay absolute; ONLY this frozen `--json` surface is relativized. A path that
+    somehow falls OUTSIDE `workspace_root` is left as-is (via `os.path.relpath`,
+    which yields a `../`-style path rather than raising) — defensive, not
+    expected in practice.
 
     Caveat: under parallel + fail_fast, `checks_run` is a LOWER BOUND — checks
     that already completed but whose results were dropped on a must_pass failure
@@ -883,7 +942,8 @@ def verify_data_block(
     Returns:
         `{change_id, all_pass_must, checks_run, results[...], summary_path}` where
         each result row is `{id, status, exit_code, duration_ms, must_pass,
-        output_path}` and `summary_path` points at `archive/summary.json`.
+        output_path}` (`output_path` repo-relative or `None`) and `summary_path`
+        is the repo-relative path to `archive/summary.json`.
     """
     return {
         "change_id": change_id,
@@ -896,12 +956,25 @@ def verify_data_block(
                 "exit_code": r.exit_code,
                 "duration_ms": r.duration_ms,
                 "must_pass": r.must_pass,
-                "output_path": r.output_path,
+                "output_path": _repo_relative(r.output_path, workspace_root),
             }
             for r in results
         ],
-        "summary_path": str(archive / "summary.json"),
+        "summary_path": _repo_relative(str(archive / "summary.json"), workspace_root),
     }
+
+
+def _repo_relative(path: str | None, workspace_root: Path) -> str | None:
+    """Return `path` relative to `workspace_root` (repo-relative, no leading `/`).
+
+    `None` passes through unchanged (an un-archived check's `output_path`). Uses
+    `os.path.relpath` so a path outside the root degrades to a `../`-style
+    relative path instead of raising — the frozen `--json` contract must never
+    crash on an unexpected absolute path.
+    """
+    if path is None:
+        return None
+    return os.path.relpath(path, workspace_root)
 
 
 def make_verification_event(
@@ -1045,6 +1118,8 @@ class VerificationRunner(Sensor):
                 f"verification {verdict} "
                 f"({len(results)} checks, {len(must_pass_failed)} failed)"
             ),
-            details=verify_data_block(change_id, results, archive),
+            details=verify_data_block(
+                change_id, results, archive, context.workspace_root
+            ),
             emit_events=[make_verification_event(evt_type, change_id, results, archive)],
         )

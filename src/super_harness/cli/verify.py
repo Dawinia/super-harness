@@ -19,7 +19,9 @@ v0.1 (the gh wrapper that resolves a slug from a PR number is Phase 12).
 
 Exit codes (cli-command-surface §2.2):
 - 0 — verdict pass (every must_pass check passed).
-- 2 — verdict fail (a must_pass check failed).
+- 2 — verdict fail (a must_pass check failed) OR a config validation error
+  (syntax-corrupt / wrong-shape / bad-placeholder verification.yaml, or an
+  unknown `--check` id) surfaced by the pre-load before dispatch.
 - 3 — `.harness/verification.yaml` missing (uninitialized / hand-deleted).
 - 1 — the sensor crashed / timed out (no result came back).
 """
@@ -29,6 +31,7 @@ import sys
 from pathlib import Path
 
 import click
+import yaml
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import (
@@ -46,9 +49,13 @@ from super_harness.core.paths import (
     verification_yaml_path,
 )
 from super_harness.core.writer import EventWriter
+from super_harness.engineering.verification_config import load_verification_config
 from super_harness.sensors import Activity, WorkspaceContext
 from super_harness.sensors.dispatcher import SensorDispatcher
-from super_harness.sensors.verification_runner import VerificationRunner
+from super_harness.sensors.verification_runner import (
+    VerificationRunner,
+    collectable_check_ids,
+)
 
 # High fixed dispatcher batch timeout so the per-check `timeout_seconds`
 # (the real contract) is never preempted by the dispatcher-level wall clock.
@@ -110,12 +117,18 @@ def verify_cmd(
         )
         sys.exit(EXIT_VALIDATION)
 
-    # Surface a missing verification.yaml as EXIT_NO_CONFIG *before* dispatch so
-    # the failure is a clean config error, not a swallowed sensor crash (the
-    # sensor's load_verification_config would raise FileNotFoundError inside the
-    # thread pool, which the dispatcher would report as an empty result → the
-    # less-precise EXIT_GENERIC below).
-    if not verification_yaml_path(root).exists():
+    # Pre-load + validate verification.yaml *before* dispatch so config errors
+    # are clean, precise exits — NOT swallowed sensor crashes. The sensor re-loads
+    # the config during its run (the double-load is cheap); this pre-load exists
+    # purely so a missing / syntax-corrupt / wrong-shape / bad-placeholder config
+    # surfaces correctly instead of being caught by the dispatcher's broad
+    # `except Exception` → sensor_crashed → empty results → the imprecise
+    # EXIT_GENERIC below. FileNotFoundError → EXIT_NO_CONFIG; yaml.YAMLError
+    # (syntax) and the VerificationConfigError/ValueError family (wrong shape /
+    # bad enum / dup id / non-allowlisted ${NAME} placeholder) → EXIT_VALIDATION.
+    try:
+        cfg = load_verification_config(verification_yaml_path(root))
+    except FileNotFoundError:
         click.echo(
             format_error(
                 subcommand="verify",
@@ -125,6 +138,42 @@ def verify_cmd(
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
+    except yaml.YAMLError as e:
+        click.echo(
+            format_error(
+                subcommand="verify",
+                message=f"{verification_yaml_path(root)} is not valid YAML: {e}",
+                hint="Fix the YAML syntax in `.harness/verification.yaml`.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    except ValueError as e:
+        # VerificationConfigError / InterpolationError both subclass ValueError;
+        # the exception message is already descriptive.
+        click.echo(
+            format_error(subcommand="verify", message=str(e)),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+
+    # Reject an unknown `--check <id>` BEFORE dispatch: an id collectable in no
+    # (selected) layer would otherwise silently run 0 checks and "pass" vacuously.
+    if check:
+        collectable = collectable_check_ids(cfg, layer=layer)
+        unknown = [c for c in check if c not in collectable]
+        if unknown:
+            in_layer = f" in layer {layer!r}" if layer else ""
+            click.echo(
+                format_error(
+                    subcommand="verify",
+                    message=f"no such check{in_layer}: {', '.join(sorted(unknown))}",
+                    hint="Check the ids in `.harness/verification.yaml`"
+                    + (" or drop `--layer`." if layer else "."),
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
 
     ctx_ws = WorkspaceContext(
         workspace_root=root, git_branch=None, active_change_id=resolved

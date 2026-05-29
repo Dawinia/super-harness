@@ -23,6 +23,7 @@ from super_harness.engineering.verification_config import (
 from super_harness.sensors import Activity, WorkspaceContext
 from super_harness.sensors.registry import get_builtin, list_builtins
 from super_harness.sensors.verification_runner import (
+    BASELINE_CHECK_IDS,
     CheckResult,
     CheckTask,
     VerificationRunner,
@@ -35,6 +36,7 @@ from super_harness.sensors.verification_runner import (
     baseline_check_tasks,
     build_variables,
     collect_checks,
+    collectable_check_ids,
     make_verification_event,
     run_check,
     run_checks,
@@ -427,6 +429,49 @@ def test_collect_checks_only_ids_filters_across_layers(tmp_path: Path) -> None:
     assert [t.id for t in tasks] == ["a1", "u2"]
 
 
+# --- collectable_check_ids (FIX 2) ------------------------------------------
+
+
+def test_baseline_check_ids_is_the_three_baselines() -> None:
+    assert set(BASELINE_CHECK_IDS) == {
+        "anchor-sentinel-presence-final",
+        "lifecycle-ordering",
+        "scope-vs-plan-final",
+    }
+
+
+def test_collectable_check_ids_all_layers() -> None:
+    cfg = _config(
+        adapter_provided=[_spec(check_id="a1", command="true")],
+        checks=[_spec(check_id="u1", command="true")],
+    )
+    # baseline (3) + adapter (a1) + user (u1), all enabled.
+    assert collectable_check_ids(cfg) == set(BASELINE_CHECK_IDS) | {"a1", "u1"}
+
+
+def test_collectable_check_ids_respects_enable_flags() -> None:
+    cfg = _config(
+        layers=Layers(baseline=False, framework_adapter=False, user_checks=True),
+        adapter_provided=[_spec(check_id="a1", command="true")],
+        checks=[_spec(check_id="u1", command="true")],
+    )
+    # baseline + adapter disabled → only the user layer's ids are collectable.
+    assert collectable_check_ids(cfg) == {"u1"}
+
+
+def test_collectable_check_ids_layer_aware() -> None:
+    cfg = _config(
+        adapter_provided=[_spec(check_id="a1", command="true")],
+        checks=[_spec(check_id="u1", command="true")],
+    )
+    # A baseline id is NOT collectable under --layer user.
+    assert collectable_check_ids(cfg, layer="user") == {"u1"}
+    assert "anchor-sentinel-presence-final" not in collectable_check_ids(
+        cfg, layer="user"
+    )
+    assert collectable_check_ids(cfg, layer="baseline") == set(BASELINE_CHECK_IDS)
+
+
 def test_collect_checks_late_binding_closures_are_per_spec(tmp_path: Path) -> None:
     # Each task must run ITS OWN spec, not the loop's last one (late-binding trap).
     # Baseline disabled so the collected tasks are exactly the two config checks.
@@ -572,7 +617,7 @@ def test_verify_data_block_exact_keys(tmp_path: Path) -> None:
         CheckResult("a", "pass", 0, 5, True, "echo a", str(archive / "a.stdout")),
         CheckResult("b", "fail", 1, 7, False, "echo b", None),
     ]
-    block = verify_data_block("ch", results, archive)
+    block = verify_data_block("ch", results, archive, tmp_path)
     assert set(block.keys()) == {
         "change_id",
         "all_pass_must",
@@ -583,7 +628,11 @@ def test_verify_data_block_exact_keys(tmp_path: Path) -> None:
     assert block["change_id"] == "ch"
     assert block["all_pass_must"] is True  # the only failure is advisory
     assert block["checks_run"] == 2
-    assert block["summary_path"] == str(archive / "summary.json")
+    # FIX 3: summary_path + output_path are REPO-RELATIVE to workspace_root (no
+    # leading slash), matching the frozen cli-surface §3.4 schema example.
+    assert block["summary_path"] == "arch/summary.json"
+    assert block["results"][0]["output_path"] == "arch/a.stdout"
+    assert block["results"][1]["output_path"] is None  # None passes through
     assert set(block["results"][0].keys()) == {
         "id",
         "status",
@@ -597,7 +646,7 @@ def test_verify_data_block_exact_keys(tmp_path: Path) -> None:
 def test_verify_data_block_all_pass_must_false_when_must_pass_fails(tmp_path: Path) -> None:
     archive = tmp_path / "arch"
     results = [CheckResult("a", "fail", 1, 5, True, "echo a", None)]
-    block = verify_data_block("ch", results, archive)
+    block = verify_data_block("ch", results, archive, tmp_path)
     assert block["all_pass_must"] is False
 
 
@@ -713,8 +762,11 @@ def test_runner_check_end_to_end_failed(tmp_path: Path) -> None:
     assert ev.type == "verification_failed"
     assert ev.change_id == "my-change"
     assert [fc["id"] for fc in ev.payload["failed_checks"]] == ["failing"]
-    # summary.json written under the archive dir referenced by details.
-    summary_path = Path(res.details["summary_path"])
+    # summary.json written under the archive dir referenced by details. The
+    # details path is now REPO-RELATIVE (FIX 3) so it resolves against root.
+    rel_summary = res.details["summary_path"]
+    assert rel_summary.startswith(".harness/verification-results/")
+    summary_path = root / rel_summary
     assert summary_path.exists()
     assert json.loads(summary_path.read_text())["verdict"] == "failed"
 

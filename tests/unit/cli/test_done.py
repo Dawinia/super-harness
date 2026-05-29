@@ -244,3 +244,102 @@ def test_done_json_success_envelope(tmp_path: Path) -> None:
     assert payload["exit_code"] == EXIT_OK
     # Default path success envelope lifts the verification data block.
     assert payload["data"]["change_id"] == "my-change"
+
+
+# --------------------------------------------------------------------------- #
+# FIX 1 — config / placeholder errors on the DEFAULT path surface as
+# EXIT_VALIDATION (2), not a swallowed sensor crash → EXIT_GENERIC (1).
+# `--skip-verify` never loads config, so an invalid/absent config is irrelevant.
+# --------------------------------------------------------------------------- #
+
+_CORRUPT_YAML = "layers: {baseline: {enabled: true}\nchecks: [\n"
+
+_BAD_ENUM_YAML = """\
+layers:
+  baseline: { enabled: false }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: true }
+defaults:
+  capture: everything
+checks: []
+adapter_provided: []
+"""
+
+_BAD_PLACEHOLDER_YAML = """\
+layers:
+  baseline: { enabled: false }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: true }
+defaults:
+  capture: none
+checks:
+  - id: deploy
+    command: "deploy ${PR_URL}"
+adapter_provided: []
+"""
+
+
+def _init_in_progress_raw(ws: Path, *, yaml_text: str, slug: str = "my-change") -> None:
+    """Drive a change to IMPLEMENTATION_IN_PROGRESS with a raw (possibly invalid)
+    verification.yaml that we do NOT route through the schema loader."""
+    (ws / ".harness").mkdir(parents=True, exist_ok=True)
+    (ws / ".harness" / "verification.yaml").write_text(yaml_text)
+    _drive_to_in_progress(ws, slug)
+
+
+def test_done_corrupt_yaml_exit_2(tmp_path: Path) -> None:
+    _init_in_progress_raw(tmp_path, yaml_text=_CORRUPT_YAML)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "done", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "not valid YAML" in combined
+    assert "Traceback" not in combined
+    # The config error blocks BEFORE any implementation_complete is emitted.
+    assert "implementation_complete" not in _event_types(tmp_path)
+
+
+def test_done_wrong_shape_exit_2(tmp_path: Path) -> None:
+    _init_in_progress_raw(tmp_path, yaml_text=_BAD_ENUM_YAML)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "done", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "implementation_complete" not in _event_types(tmp_path)
+
+
+def test_done_bad_placeholder_exit_2(tmp_path: Path) -> None:
+    _init_in_progress_raw(tmp_path, yaml_text=_BAD_PLACEHOLDER_YAML)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "done", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "PR_URL" in combined
+    assert "implementation_complete" not in _event_types(tmp_path)
+
+
+def test_done_skip_verify_ignores_invalid_config(tmp_path: Path) -> None:
+    # --skip-verify never loads verification.yaml: a corrupt config must NOT block
+    # it. The change is in-progress, so done --skip-verify completes (exit 0).
+    _init_in_progress_raw(tmp_path, yaml_text=_CORRUPT_YAML)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "done", "my-change", "--skip-verify"]
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert _event_types(tmp_path)[-2:] == [
+        "verification_passed",
+        "implementation_complete",
+    ]
+
+
+def test_done_skip_verify_ignores_missing_config(tmp_path: Path) -> None:
+    # --skip-verify with NO verification.yaml at all → still completes.
+    (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
+    _drive_to_in_progress(tmp_path, "my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "done", "my-change", "--skip-verify"]
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert _event_types(tmp_path)[-1] == "implementation_complete"

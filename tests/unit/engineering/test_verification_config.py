@@ -511,6 +511,67 @@ def test_interpolate_empty_braces_left_untouched() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Load-time placeholder validation (FIX 1b) — a non-allowlisted ${NAME} in a
+# check command is rejected at LOAD time, not only at run time.
+# --------------------------------------------------------------------------- #
+
+
+def test_load_rejects_non_allowlisted_placeholder_in_user_check(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        yaml.safe_dump({"checks": [{"id": "deploy", "command": "deploy ${PR_URL}"}]}),
+    )
+    with pytest.raises(InterpolationError) as exc_info:
+        load_verification_config(p)
+    # Names the offending placeholder AND the owning check id.
+    assert "PR_URL" in str(exc_info.value)
+    assert "deploy" in str(exc_info.value)
+
+
+def test_load_rejects_non_allowlisted_placeholder_in_adapter_check(tmp_path: Path) -> None:
+    p = _write(
+        tmp_path,
+        yaml.safe_dump(
+            {
+                "adapter_provided": [
+                    {
+                        "id": "ci",
+                        "command": "run ${COMMIT_SHA}",
+                        "provided_by": "some-adapter",
+                    }
+                ]
+            }
+        ),
+    )
+    with pytest.raises(InterpolationError) as exc_info:
+        load_verification_config(p)
+    assert "COMMIT_SHA" in str(exc_info.value)
+
+
+def test_load_bad_placeholder_is_value_error_subclass(tmp_path: Path) -> None:
+    """The load-time rejection maps to EXIT_VALIDATION via the ValueError catch."""
+    p = _write(
+        tmp_path,
+        yaml.safe_dump({"checks": [{"id": "t", "command": "x ${NOPE}"}]}),
+    )
+    with pytest.raises(ValueError):
+        load_verification_config(p)
+
+
+def test_load_accepts_allowlisted_placeholder_in_check(tmp_path: Path) -> None:
+    """Allowlisted ${SLUG} loads fine — only NON-allowlisted names are rejected."""
+    cfg = load_verification_config(
+        _write(
+            tmp_path,
+            yaml.safe_dump(
+                {"checks": [{"id": "t", "command": "validate --change ${SLUG}"}]}
+            ),
+        )
+    )
+    assert cfg.checks[0].command == "validate --change ${SLUG}"
+
+
+# --------------------------------------------------------------------------- #
 # Carryover nits from Task 8.1 code review
 # --------------------------------------------------------------------------- #
 

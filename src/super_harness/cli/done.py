@@ -29,7 +29,9 @@ payload as `pr_url` when present.
 Exit codes (cli-command-surface §2.2):
 - 0 — verified (or --skip-verify) + implementation_complete emitted.
 - 2 — verification failed (no implementation_complete) OR an EmitPreconditionError
-  (e.g. the change is not in IMPLEMENTATION_IN_PROGRESS).
+  (e.g. the change is not in IMPLEMENTATION_IN_PROGRESS) OR a config validation
+  error (syntax-corrupt / wrong-shape / bad-placeholder verification.yaml)
+  surfaced by the default-path pre-load before dispatch.
 - 3 — `.harness/verification.yaml` missing.
 - 5 — concurrency conflict (reserved; not raised by v0.1 in practice).
 - 1 — the sensor crashed / timed out (no verdict came back).
@@ -42,6 +44,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+import yaml
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import (
@@ -62,6 +65,7 @@ from super_harness.core.paths import (
 from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
+from super_harness.engineering.verification_config import load_verification_config
 from super_harness.sensors import Activity, WorkspaceContext
 from super_harness.sensors.dispatcher import SensorDispatcher
 from super_harness.sensors.verification_runner import VerificationRunner
@@ -131,9 +135,16 @@ def done_cmd(
         return  # _done_skip_verify always sys.exit()s
 
     # --- Default path: run verification through the dispatcher. -----------
-    # Surface a missing config as EXIT_NO_CONFIG before dispatch (same
-    # rationale as `verify` — keep config errors precise).
-    if not verification_yaml_path(root).exists():
+    # Pre-load + validate verification.yaml before dispatch (same rationale as
+    # `verify` — keep config errors precise instead of letting the sensor's
+    # in-thread-pool load raise into the dispatcher's broad `except Exception`).
+    # NOTE: only the DEFAULT path loads config; `--skip-verify` (handled above)
+    # never touches verification.yaml, so a missing/invalid config is irrelevant
+    # there. Missing → EXIT_NO_CONFIG; syntax / wrong-shape / bad-placeholder →
+    # EXIT_VALIDATION.
+    try:
+        load_verification_config(verification_yaml_path(root))
+    except FileNotFoundError:
         click.echo(
             format_error(
                 subcommand="done",
@@ -143,6 +154,24 @@ def done_cmd(
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
+    except yaml.YAMLError as e:
+        click.echo(
+            format_error(
+                subcommand="done",
+                message=f"{verification_yaml_path(root)} is not valid YAML: {e}",
+                hint="Fix the YAML syntax in `.harness/verification.yaml`.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    except ValueError as e:
+        # VerificationConfigError / InterpolationError both subclass ValueError;
+        # the exception message is already descriptive.
+        click.echo(
+            format_error(subcommand="done", message=str(e)),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
 
     ctx_ws = WorkspaceContext(
         workspace_root=root, git_branch=None, active_change_id=resolved
