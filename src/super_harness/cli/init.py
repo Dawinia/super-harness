@@ -302,9 +302,13 @@ def _write_pr_template(ctx: click.Context, root: Path) -> None:
                 default=True,
             )
         except click.Abort:
-            # Non-interactive (CI / no TTY) or ^C → we cannot prompt. Leave the
-            # user's file UNTOUCHED (never modify it silently), non-fatal, and
-            # advise how to proceed. (Without this, Click raises Abort → exit 1.)
+            # click.Abort fires on BOTH an interactive Ctrl-C and a
+            # non-interactive EOF. A real Ctrl-C (TTY) means "stop" → re-raise →
+            # exit 1, consistent with sync.py / `adapter uninstall`'s confirm. A
+            # non-interactive EOF (CI without --quiet) cannot prompt → leave the
+            # user's file UNTOUCHED (never modify it silently), non-fatal, advise.
+            if sys.stdin.isatty():
+                raise
             click.echo(
                 format_error(
                     subcommand="init",
@@ -318,7 +322,7 @@ def _write_pr_template(ctx: click.Context, root: Path) -> None:
             )
             return
         if not proceed:
-            return  # declined → leave untouched, non-fatal
+            return  # declined ('n') → leave untouched, non-fatal (init continues)
     placeholder = f"{METADATA_BEGIN}\n{METADATA_END}\n"
     new = existing.rstrip("\n") + "\n\n" + placeholder
     template_path.write_text(new)
