@@ -81,10 +81,15 @@ _LF = "\n"
 
 
 class AgentsMdInjectionError(Exception):
-    """Raised when AGENTS.md is in an ambiguous state we refuse to guess about.
+    """Raised when AGENTS.md is in a state we refuse to guess about.
 
-    Currently: more than one outer super-harness section block is present
-    (user mis-edit or duplicated markers) — manual cleanup is required (§3.2).
+    - More than one outer super-harness section block is present (user mis-edit
+      or duplicated markers) — manual cleanup is required (§3.2).
+    - The file is not valid UTF-8 (we only edit UTF-8 AGENTS.md). Surfacing this
+      as the module's domain error lets every caller's existing
+      ``except (OSError, AgentsMdInjectionError)`` envelope report it cleanly
+      instead of leaking a raw ``UnicodeDecodeError`` (a ``ValueError``, NOT an
+      ``OSError``).
     """
 
 
@@ -308,8 +313,20 @@ def _read_normalized(path: Path) -> tuple[str, str]:
 
     Decodes bytes ourselves (no universal-newline translation) so we observe the
     file's real line endings and never accidentally rewrite untouched regions.
+
+    A non-UTF-8 file raises `AgentsMdInjectionError` (the module's domain error),
+    NOT a raw `UnicodeDecodeError`, so callers' existing
+    ``except (OSError, AgentsMdInjectionError)`` envelopes report it cleanly.
+    (``read_bytes`` itself may still raise ``OSError`` — directory / permission —
+    which callers already catch.)
     """
-    raw = path.read_bytes().decode("utf-8")
+    try:
+        raw = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise AgentsMdInjectionError(
+            f"{path} is not valid UTF-8 ({e}); super-harness only edits UTF-8 "
+            f"AGENTS.md — convert it to UTF-8 and retry."
+        ) from e
     newline = _detect_newline(raw)
     if newline == _CRLF:
         return raw.replace(_CRLF, _LF), newline

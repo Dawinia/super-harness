@@ -379,6 +379,30 @@ def test_section_present_file_without_section_is_false(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# non-UTF-8 input → domain error (not a raw UnicodeDecodeError)
+# --------------------------------------------------------------------------- #
+
+
+def test_inject_section_non_utf8_raises_domain_error(tmp_path: Path) -> None:
+    """A non-UTF-8 AGENTS.md raises AgentsMdInjectionError (the module domain
+    error), NOT a raw UnicodeDecodeError — so callers' existing
+    `except (OSError, AgentsMdInjectionError)` envelopes report it cleanly."""
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(b"\xff\xfe not utf-8 \x00")
+    with pytest.raises(AgentsMdInjectionError, match="UTF-8"):
+        inject_section(path, "x")
+
+
+def test_section_present_non_utf8_raises_domain_error(tmp_path: Path) -> None:
+    """`section_present` on a non-UTF-8 file raises the domain error too (its read
+    goes through the same normalizer); callers wrap the call."""
+    path = tmp_path / "AGENTS.md"
+    path.write_bytes(b"\xff\xfe not utf-8 \x00")
+    with pytest.raises(AgentsMdInjectionError, match="UTF-8"):
+        section_present(path)
+
+
+# --------------------------------------------------------------------------- #
 # End-to-end round trip
 # --------------------------------------------------------------------------- #
 

@@ -124,12 +124,14 @@ def _sync_full(
     root: Path, agents_path: Path, *, quiet: bool, assume_yes: bool
 ) -> None:
     """Full re-render: outer section version bump + re-inject all adapters."""
-    _confirm_overwrite_if_present(agents_path, quiet=quiet, assume_yes=assume_yes)
-
     # The shared renderer (init + sync SSOT) lets OSError / AgentsMdInjectionError
     # propagate into THIS envelope (fail-loud); its internal adapters.yaml load is
     # non-fatal (advisory + skip), so a corrupt adapters.yaml is NOT re-handled here.
+    # The confirm is INSIDE the try so the section_present read (an unreadable /
+    # non-UTF-8 AGENTS.md) surfaces through format_error too; click.Abort from a
+    # declined prompt is not in the catch tuple → propagates → exit 1.
     try:
+        _confirm_overwrite_if_present(agents_path, quiet=quiet, assume_yes=assume_yes)
         render_super_harness_section(root, agents_path, __version__)
     except (OSError, AgentsMdInjectionError) as e:
         click.echo(
@@ -202,9 +204,11 @@ def _sync_adapter(
             click.echo("No AGENTS.md to sync.")
         sys.exit(EXIT_OK)
 
-    _confirm_overwrite_if_present(agents_path, quiet=quiet, assume_yes=assume_yes)
-
+    # Confirm INSIDE the try so the section_present read (unreadable / non-UTF-8
+    # AGENTS.md) surfaces through format_error; a declined prompt raises
+    # click.Abort (not in the catch tuple) → propagates → exit 1.
     try:
+        _confirm_overwrite_if_present(agents_path, quiet=quiet, assume_yes=assume_yes)
         if isinstance(adapter, AgentAdapter):
             inject_agent_subsection(agents_path, adapter.name, adapter.agents_md_subsection())
         else:

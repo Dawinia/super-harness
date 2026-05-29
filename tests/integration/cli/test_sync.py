@@ -360,6 +360,38 @@ def test_sync_does_not_touch_harness_dir(
     assert after == before
 
 
+def test_sync_unreadable_agents_md_surfaces_clean_error(tmp_path: Path) -> None:
+    """An UNREADABLE AGENTS.md (a directory) on the PROMPT path (no --quiet/--yes,
+    so the section_present read runs before any envelope) surfaces through
+    format_error — exit 1, NO raw traceback. Regression for the section_present
+    read escaping the try/except."""
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / "AGENTS.md").mkdir()  # a directory where a file is expected
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "sync"])
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr
+    assert "super-harness sync:" in r.stderr
+
+
+def test_sync_non_utf8_agents_md_surfaces_clean_error(tmp_path: Path) -> None:
+    """A non-UTF-8 AGENTS.md surfaces through format_error (exit 1, no traceback,
+    file untouched) instead of leaking a raw UnicodeDecodeError — even on the
+    --yes write path (UnicodeDecodeError is a ValueError, not an OSError)."""
+    (tmp_path / ".harness").mkdir()
+    raw = (
+        b"<!-- super-harness section begin \xff v0.0.1 \xff DO NOT EDIT MANUALLY -->\n"
+        b"x\n<!-- super-harness section end -->\n"
+    )
+    (tmp_path / "AGENTS.md").write_bytes(raw)
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "sync", "--yes"])
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr
+    assert "UTF-8" in r.stderr
+    assert (tmp_path / "AGENTS.md").read_bytes() == raw  # untouched
+
+
 def test_sync_preserves_crlf_line_endings(tmp_path: Path) -> None:
     """A CRLF-authored AGENTS.md stays CRLF after sync (no churn of line endings;
     the version stamp is still re-rendered)."""
