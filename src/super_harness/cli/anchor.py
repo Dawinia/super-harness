@@ -151,6 +151,28 @@ def anchor_list(
         sys.exit(EXIT_NO_CONFIG)
     anchors: dict[str, list[dict[str, object]]] = anchors_raw
 
+    # Each anchor value must be a list of {file, line} mappings; anything else is a
+    # corrupt / hand-edited index — the same error family as the non-mapping guards
+    # above, one level deeper. Route to exit 3 instead of crashing on `.get` (a
+    # non-dict row) or iteration (a non-list value). `isinstance(locs, list)` short-
+    # circuits so a scalar `locs` never reaches the inner iteration.
+    if not all(
+        isinstance(locs, list) and all(isinstance(loc, dict) for loc in locs)
+        for locs in anchors.values()
+    ):
+        click.echo(
+            format_error(
+                subcommand="anchor list",
+                message=(
+                    "anchors/index.yaml has malformed anchor locations "
+                    "(expected a list of {file, line} mappings)"
+                ),
+                hint="Run `super-harness anchor sync` to regenerate it.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
+
     # ------------------------------------------------------------------ #
     # --missing-sentinel mode                                              #
     # ------------------------------------------------------------------ #

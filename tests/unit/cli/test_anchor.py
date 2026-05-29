@@ -201,6 +201,27 @@ def test_anchor_list_wrong_shape_index_exits_3(tmp_path: Path) -> None:
     assert "Traceback" not in combined
 
 
+def test_anchor_list_malformed_location_rows_exits_3(tmp_path: Path) -> None:
+    # Valid YAML mapping, `anchors` is a mapping, but an anchor's value is not a
+    # list of {file, line} mappings — must NOT raw-traceback (the inner error-family
+    # gap): a non-dict row and a non-list value both route to exit 3.
+    for body in ("anchors:\n  cap-x:\n  - just-a-string\n", "anchors:\n  cap-x: 42\n"):
+        _init_workspace(tmp_path)
+        idx = anchors_index_path(tmp_path)
+        idx.parent.mkdir(parents=True, exist_ok=True)
+        idx.write_text(body)
+
+        r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "anchor", "list"])
+
+        assert r.exit_code == EXIT_NO_CONFIG, r.output
+        combined = r.output + (r.stderr or "")
+        assert "malformed anchor locations" in combined
+        assert isinstance(r.exception, SystemExit), (
+            f"Expected SystemExit, got {type(r.exception)}: {r.exception}"
+        )
+        assert "Traceback" not in combined
+
+
 def test_anchor_list_non_utf8_index_exits_3(tmp_path: Path) -> None:
     _init_workspace(tmp_path)
     idx = anchors_index_path(tmp_path)
