@@ -71,6 +71,7 @@ from super_harness.sensors import (
     SensorResult,
     WorkspaceContext,
 )
+from super_harness.sensors._anchor_policy import anchor_must_pass_for_tier
 
 if TYPE_CHECKING:
     from super_harness.sensors import SensorStatus
@@ -288,22 +289,6 @@ BASELINE_CHECK_IDS: tuple[str, ...] = (
     _BASELINE_LIFECYCLE,
     _BASELINE_SCOPE,
 )
-
-# Tiers that DOWNGRADE a missing-anchor result to advisory (warn-only). Per the
-# sensor-gate spec the anchor presence gate is must_pass on Normal/Large but
-# warn-only on Micro changes; an unknown/None tier defaults to must_pass.
-_MICRO_TIER = "Micro"
-
-
-def _baseline_must_pass_anchor(tier: str | None) -> bool:
-    """Tier-aware must_pass for the anchor-presence baseline.
-
-    Micro tier → advisory (False, warn only). Normal / Large / unknown / None →
-    must_pass (True). Defaulting an unknown tier to must_pass is the safe choice
-    (fail-closed: a change with no recognizable tier should not silently skip the
-    anchor gate).
-    """
-    return tier != _MICRO_TIER
 
 
 def _make_baseline_result(
@@ -592,7 +577,7 @@ def baseline_check_tasks(
     if _included(_BASELINE_ANCHOR):
         states = derive_state(events_path(context.workspace_root))
         cs = states.get(change_id)
-        anchor_must_pass = _baseline_must_pass_anchor(cs.tier if cs is not None else None)
+        anchor_must_pass = anchor_must_pass_for_tier(cs.tier if cs is not None else None)
 
         def _run_anchor(
             change_id: str = change_id,
