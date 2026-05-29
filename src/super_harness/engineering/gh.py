@@ -111,6 +111,13 @@ def check_gh() -> None:
             "gh CLI not found. Install: brew install gh / apt install gh / "
             "https://cli.github.com/manual/installation"
         ) from exc
+    except subprocess.CalledProcessError as exc:
+        # gh exists but `gh --version` returned non-zero — a broken install.
+        # Keep the "no raw subprocess escape" contract total.
+        raise GhNotInstalled(
+            "gh CLI is installed but `gh --version` failed; the installation may "
+            "be broken. Reinstall: https://cli.github.com/manual/installation"
+        ) from exc
 
     version = _parse_version(out.stdout)
     if version < MIN_VERSION:

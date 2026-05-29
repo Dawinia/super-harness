@@ -297,3 +297,75 @@ def test_init_without_setup_github_never_calls_gh(tmp_path: Path):
     assert not mock_settings.called
     # no .github/ created on a plain init
     assert not (tmp_path / ".github").exists()
+
+
+# --------------------------------------------------------------------------- #
+# (f) error-family hardening (whole-branch review findings)
+# --------------------------------------------------------------------------- #
+
+
+def test_setup_github_non_utf8_existing_template_friendly_error(tmp_path: Path):
+    """A non-UTF-8 existing pull_request_template.md → friendly error (exit 1),
+    never a raw UnicodeDecodeError traceback (UnicodeDecodeError is a ValueError,
+    not OSError — the project's recurring error-family bug class)."""
+    gh_dir = tmp_path / ".github"
+    gh_dir.mkdir()
+    (gh_dir / "pull_request_template.md").write_bytes(b"\xff\xfe not utf-8 \x80\x81")
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "-q", "init", "--setup-github"]
+        )
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness init:" in r.stderr
+    assert "could not read" in r.stderr
+
+
+def test_setup_github_existing_no_block_noninteractive_no_quiet_is_nonfatal(tmp_path: Path):
+    """Existing template w/o block, non-interactive (no input), no --quiet:
+    cannot prompt → leave untouched + exit 0 (NOT Click's Abort/exit 1)."""
+    gh_dir = tmp_path / ".github"
+    gh_dir.mkdir()
+    user_tpl = gh_dir / "pull_request_template.md"
+    user_tpl.write_text("## My custom template\n\nPlease describe.\n")
+    before = user_tpl.read_text()
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        # No `input=` → empty/non-interactive stdin → click.confirm raises Abort;
+        # the fix catches it and degrades to "leave untouched, non-fatal".
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "init", "--setup-github"]
+        )
+    assert r.exit_code == 0, r.output + r.stderr
+    assert "Aborted" not in (r.output + r.stderr)
+    assert "Traceback" not in r.stderr
+    assert user_tpl.read_text() == before
+    assert "non-interactive" in r.stderr.lower() or "skipped" in r.stderr.lower()
+
+
+def test_setup_github_log_write_failure_is_nonfatal(tmp_path: Path):
+    """If the operation-log write itself fails (path blocked), the non-fatal
+    repo-settings degradation STILL exits 0 — never a hard crash (AC-7)."""
+    runner = CliRunner()
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r1 = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert r1.exit_code == 0
+    # Block the log dir: a FILE where the setup-github log dir would go → mkdir fails.
+    blocker = tmp_path / ".harness" / "operation-logs" / "setup-github"
+    blocker.write_text("i am a file, not a dir")
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings",
+        side_effect=GhError("non-admin"),
+    ):
+        r2 = runner.invoke(
+            main,
+            ["--workspace", str(tmp_path), "-q", "init", "--setup-github", "--force"],
+        )
+    assert r2.exit_code == 0, r2.output + r2.stderr
+    assert "Traceback" not in r2.stderr
+    assert blocker.is_file()  # untouched

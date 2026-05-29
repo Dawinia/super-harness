@@ -93,6 +93,14 @@ class TestCheckGh:
         mock_run.assert_called_once()
         assert mock_run.call_args[0][0] == ["gh", "--version"]
 
+    def test_version_probe_called_process_error_raises_gh_not_installed(self) -> None:
+        # gh present but `gh --version` exits non-zero (broken install) → no raw
+        # CalledProcessError escapes; mapped to GhNotInstalled.
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.side_effect = _cpe(returncode=1)
+            with pytest.raises(GhNotInstalled):
+                check_gh()
+
     def test_version_too_old_raises_gh_version_too_old(self) -> None:
         old_version_output = "gh version 2.39.0 (2024-01-01)\n"
         with patch("super_harness.engineering.gh.subprocess.run") as mock_run:

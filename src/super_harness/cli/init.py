@@ -252,7 +252,21 @@ def _write_pr_template(ctx: click.Context, root: Path) -> None:
         template_path.write_text(_pull_request_template())
         return
 
-    existing = template_path.read_text()
+    try:
+        existing = template_path.read_text()
+    except (OSError, UnicodeDecodeError) as e:
+        # error-family: UnicodeDecodeError is a ValueError (not OSError), so both
+        # must be caught — a non-UTF-8 / unreadable existing template must surface
+        # a friendly error, never a raw traceback.
+        click.echo(
+            format_error(
+                subcommand="init",
+                message=f"could not read existing {template_path}: {e}",
+                hint="Ensure the file is UTF-8 and readable, then re-run.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
     block = parse_metadata_block(existing)
 
     if block.block_count >= 2:
@@ -281,11 +295,30 @@ def _write_pr_template(ctx: click.Context, root: Path) -> None:
     # Exactly zero blocks: append one placeholder, preserving the user's content.
     # Modifying an existing file → overwrite-confirm unless --quiet.
     quiet = bool(ctx.obj.get("quiet"))
-    if not quiet and not click.confirm(
-        f"Append super-harness metadata placeholder to existing {template_path}?",
-        default=True,
-    ):
-        return  # declined → leave untouched, non-fatal
+    if not quiet:
+        try:
+            proceed = click.confirm(
+                f"Append super-harness metadata placeholder to existing {template_path}?",
+                default=True,
+            )
+        except click.Abort:
+            # Non-interactive (CI / no TTY) or ^C → we cannot prompt. Leave the
+            # user's file UNTOUCHED (never modify it silently), non-fatal, and
+            # advise how to proceed. (Without this, Click raises Abort → exit 1.)
+            click.echo(
+                format_error(
+                    subcommand="init",
+                    message=(
+                        f"skipped appending the metadata placeholder to existing "
+                        f"{template_path} (non-interactive)"
+                    ),
+                    hint="Re-run with --quiet to append it, or add the block manually.",
+                ),
+                err=True,
+            )
+            return
+        if not proceed:
+            return  # declined → leave untouched, non-fatal
     placeholder = f"{METADATA_BEGIN}\n{METADATA_END}\n"
     new = existing.rstrip("\n") + "\n\n" + placeholder
     template_path.write_text(new)
@@ -299,9 +332,6 @@ def _log_setup_github_failure(harness: Path, error: GhError) -> None:
     human-read audit trail (NOT JSON): the attempted commands + captured detail +
     a one-line outcome.
     """
-    log_dir = harness / "operation-logs" / "setup-github"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    ts = utc_now_iso().replace(":", "-")
     body = (
         "operation: setup-github (enable repo merge settings)\n"
         f"timestamp: {utc_now_iso()}\n"
@@ -311,4 +341,14 @@ def _log_setup_github_failure(harness: Path, error: GhError) -> None:
         "outcome: FAILED — repo merge settings not auto-enabled (non-fatal; "
         "configure manually in Settings -> General -> Pull Requests).\n"
     )
-    (log_dir / f"{ts}.log").write_text(body)
+    try:
+        log_dir = harness / "operation-logs" / "setup-github"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        ts = utc_now_iso().replace(":", "-")
+        (log_dir / f"{ts}.log").write_text(body)
+    except OSError:
+        # Operation-logging is itself best-effort: a log-write failure (full disk,
+        # unwritable .harness/) must NOT turn the non-fatal repo-settings
+        # degradation into a hard init failure. Swallow — the caller already
+        # printed the actionable advisory to stderr.
+        pass
