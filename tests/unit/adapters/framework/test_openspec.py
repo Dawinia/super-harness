@@ -324,12 +324,66 @@ def test_watch_paths_points_at_changes_dir(tmp_path: Path) -> None:
     assert paths == [tmp_path / "openspec" / "changes"]
 
 
-def test_verification_checks_returns_empty_list() -> None:
-    assert OpenSpecAdapter().verification_checks() == []
+def test_verification_checks_returns_one_check() -> None:
+    checks = OpenSpecAdapter().verification_checks()
+    assert len(checks) == 1
 
 
-def test_agents_md_subsection_returns_string() -> None:
-    assert isinstance(OpenSpecAdapter().agents_md_subsection(), str)
+def test_verification_checks_check_id() -> None:
+    checks = OpenSpecAdapter().verification_checks()
+    assert checks[0]["id"] == "openspec-validate"
+
+
+def test_verification_checks_command() -> None:
+    checks = OpenSpecAdapter().verification_checks()
+    assert checks[0]["command"] == "openspec validate ${SLUG} --strict --json"
+
+
+def test_verification_checks_must_pass() -> None:
+    checks = OpenSpecAdapter().verification_checks()
+    assert checks[0]["must_pass"] is True
+
+
+def test_verification_checks_provided_by() -> None:
+    checks = OpenSpecAdapter().verification_checks()
+    assert checks[0]["provided_by"] == "openspec-adapter"
+
+
+def test_agents_md_subsection_contains_opening_marker() -> None:
+    section = OpenSpecAdapter().agents_md_subsection()
+    assert "<!-- super-harness framework: openspec -->" in section
+
+
+def test_agents_md_subsection_contains_closing_marker() -> None:
+    section = OpenSpecAdapter().agents_md_subsection()
+    assert "<!-- /super-harness framework: openspec -->" in section
+
+
+def test_agents_md_subsection_opening_before_closing() -> None:
+    section = OpenSpecAdapter().agents_md_subsection()
+    open_pos = section.index("<!-- super-harness framework: openspec -->")
+    close_pos = section.index("<!-- /super-harness framework: openspec -->")
+    assert open_pos < close_pos
+
+
+def test_agents_md_subsection_contains_validate_command() -> None:
+    section = OpenSpecAdapter().agents_md_subsection()
+    assert "openspec validate <slug> --strict" in section
+
+
+def test_agents_md_subsection_contains_archive_command() -> None:
+    section = OpenSpecAdapter().agents_md_subsection()
+    assert "openspec archive <slug>" in section
+
+
+def test_agents_md_subsection_contains_change_dir_reference() -> None:
+    section = OpenSpecAdapter().agents_md_subsection()
+    assert "openspec/changes/" in section
+
+
+def test_agents_md_subsection_ends_with_newline() -> None:
+    section = OpenSpecAdapter().agents_md_subsection()
+    assert section.endswith("\n")
 
 
 def test_on_uninstall_default_noop(tmp_path: Path) -> None:

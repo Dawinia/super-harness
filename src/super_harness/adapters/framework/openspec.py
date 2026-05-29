@@ -236,8 +236,24 @@ class OpenSpecAdapter(FrameworkAdapter):
         # The daemon watches the changes dir so it knows when to re-run observe.
         return [workspace / "openspec" / "changes"]
 
-    def verification_checks(self) -> list[dict[str, Any]]:  # Task 10.3
-        return []
+    def verification_checks(self) -> list[dict[str, Any]]:
+        return [{
+            "id": "openspec-validate",
+            # verified openspec@1.3.1: change-id is a POSITIONAL arg, not --change.
+            "command": "openspec validate ${SLUG} --strict --json",
+            "must_pass": True,
+            "provided_by": "openspec-adapter",
+        }]
 
-    def agents_md_subsection(self) -> str:  # Task 10.3
-        return ""
+    def agents_md_subsection(self) -> str:
+        # Content mirrors engineering-integration §2.2 framework subsection
+        # (cross-referenced to avoid drift). Commands verified openspec@1.3.1.
+        return (
+            "<!-- super-harness framework: openspec -->\n"
+            "- OpenSpec change lives in `openspec/changes/<slug>/` "
+            "(proposal.md / tasks.md / specs/ deltas).\n"
+            "- Validate before push: `openspec validate <slug> --strict`.\n"
+            "- After merge, fold spec deltas into `openspec/specs/`: "
+            "`openspec archive <slug>`.\n"
+            "<!-- /super-harness framework: openspec -->\n"
+        )
