@@ -11,12 +11,14 @@ import click
 from super_harness.cli.adapter import adapter_group
 from super_harness.cli.change import change_group
 from super_harness.cli.daemon import daemon_group
+from super_harness.cli.done import done_cmd
 from super_harness.cli.event import event_group
 from super_harness.cli.gate import gate_group
 from super_harness.cli.init import init_cmd
 from super_harness.cli.sensor import sensor_group
 from super_harness.cli.state import state_group
 from super_harness.cli.status import status_cmd
+from super_harness.cli.verify import verify_cmd
 from super_harness.version import __version__
 
 
@@ -70,3 +72,5 @@ main.add_command(sensor_group)
 main.add_command(gate_group)
 main.add_command(daemon_group)
 main.add_command(adapter_group)
+main.add_command(verify_cmd)
+main.add_command(done_cmd)
