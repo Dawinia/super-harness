@@ -84,7 +84,7 @@ def anchor_sync(ctx: click.Context) -> None:
     "capability",
     default=None,
     metavar="<id>",
-    help="Restrict output to a single anchor id.",
+    help="Restrict output to a single anchor id (also scopes --missing-sentinel).",
 )
 @click.option(
     "--missing-sentinel",
@@ -202,6 +202,17 @@ def anchor_list(
         state_map = derive_state(events_path(root))
         cs = state_map.get(change_id)
         declared: list[str] = cs.affected_anchors if cs is not None else []
+
+        # --capability composes with --missing-sentinel: it scopes the declared set
+        # to that one anchor ("is THIS anchor declared-but-missing?"). A filter and a
+        # mode are orthogonal, not mutually exclusive.
+        if capability is not None:
+            declared = [aid for aid in declared if aid == capability]
+            if not declared:
+                click.echo(
+                    f"Anchor '{capability}' is not declared by change '{change_id}'."
+                )
+                sys.exit(EXIT_OK)
 
         # NOTE (v0.1): affected_anchors is populated by plan_ready payload, but
         # no emitter fills it in the normal flow yet — declared is typically [].

@@ -286,6 +286,40 @@ def test_anchor_list_missing_sentinel_reports_absent_anchor(tmp_path: Path) -> N
     assert "cap-other" not in r.output
 
 
+def test_missing_sentinel_with_capability_scopes_to_one_anchor(tmp_path: Path) -> None:
+    # --capability composes with --missing-sentinel: both cap-a and cap-b are declared
+    # and both lack sentinels, but scoping to cap-a must report ONLY cap-a.
+    _init_workspace(tmp_path)
+    _emit_plan_ready(tmp_path, "my-change", affected_anchors=["cap-a", "cap-b"])
+    CliRunner().invoke(main, ["--workspace", str(tmp_path), "anchor", "sync"])
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "anchor", "list",
+         "--missing-sentinel", "--capability", "cap-a"],
+    )
+
+    assert r.exit_code == EXIT_OK, r.output
+    assert "cap-a" in r.output
+    assert "cap-b" not in r.output  # filtered out by --capability
+
+
+def test_missing_sentinel_with_capability_not_declared(tmp_path: Path) -> None:
+    # --capability for an anchor the change did NOT declare → clear note, exit 0.
+    _init_workspace(tmp_path)
+    _emit_plan_ready(tmp_path, "my-change", affected_anchors=["cap-a"])
+    CliRunner().invoke(main, ["--workspace", str(tmp_path), "anchor", "sync"])
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "anchor", "list",
+         "--missing-sentinel", "--capability", "cap-zzz"],
+    )
+
+    assert r.exit_code == EXIT_OK, r.output
+    assert "not declared" in r.output
+
+
 def test_anchor_list_missing_sentinel_all_present(tmp_path: Path) -> None:
     _init_workspace(tmp_path)
     _emit_plan_ready(tmp_path, "my-change", affected_anchors=["cap-present"])
