@@ -304,13 +304,14 @@ def test_get_state_absent_returns_none(tmp_path: Path) -> None:
     assert OpenSpecAdapter(workspace=tmp_path).get_state("missing") is None
 
 
-def test_get_state_defaults_workspace_to_cwd(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    _make_change(tmp_path, "add-widget", proposal="# Add widget\n")
-    monkeypatch.chdir(tmp_path)
-    # No explicit workspace -> resolves relative to cwd.
-    state = OpenSpecAdapter().get_state("add-widget")
-    assert state is not None
-    assert state["change_id"] == "add-widget"
+def test_get_state_raises_when_no_workspace() -> None:
+    # Registry-built instances (cls()) have workspace=None. Falling back to cwd
+    # would silently return None for every change (daemon chdir's to "/"), so
+    # get_state must raise RuntimeError instead of silently misbehaving.
+    import pytest
+
+    with pytest.raises(RuntimeError, match=r"OpenSpecAdapter\.get_state requires a workspace"):
+        OpenSpecAdapter().get_state("any-change")
 
 
 # ---------------------------------------------------------------------------

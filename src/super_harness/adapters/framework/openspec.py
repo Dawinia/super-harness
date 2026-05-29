@@ -176,9 +176,12 @@ class OpenSpecAdapter(FrameworkAdapter):
     config.yaml is interactive-config-only). Both dirs must be present.
 
     The registry instantiates adapters with `cls()` (no args), so `workspace`
-    defaults to None and `get_state` resolves it lazily against cwd. Callers that
-    know the workspace (the scan-once CLI / daemon) construct
-    `OpenSpecAdapter(workspace=root)` so `get_state` resolves deterministically.
+    defaults to None. Registry-built instances support `detect`, `observe`, and
+    `watch_paths` (all take an explicit workspace arg). `get_state` is NOT
+    available on registry-built instances — it raises RuntimeError — because
+    falling back to cwd would silently return None for every change (the daemon
+    chdir's to "/"). Callers that need `get_state` must construct
+    `OpenSpecAdapter(workspace=root)` explicitly.
     """
 
     name: ClassVar[str] = "openspec"
@@ -187,7 +190,8 @@ class OpenSpecAdapter(FrameworkAdapter):
 
     def __init__(self, workspace: Path | None = None) -> None:
         # Stored for get_state (which has no workspace param per the ABC). None
-        # -> resolve relative to cwd at call time (registry-built instances).
+        # means the adapter was registry-built (cls()); get_state raises on None
+        # rather than falling back to cwd (silent-wrong when daemon chdir's to /).
         self._workspace = workspace
 
     def detect(self, workspace: Path) -> bool:
@@ -214,9 +218,19 @@ class OpenSpecAdapter(FrameworkAdapter):
 
         Derives from file presence under `openspec/changes/<change_id>/`. Shares
         `_change_state` with the scan so emitted events and queried state agree.
+
+        Raises:
+            RuntimeError: the adapter was built without a workspace (registry
+                builds via `cls()`). Resolving against cwd would silently return
+                None for every change (the daemon chdir's to "/"), so fail loud —
+                construct `OpenSpecAdapter(workspace=root)` to use get_state.
         """
-        root = self._workspace if self._workspace is not None else Path.cwd()
-        return _change_state(root / "openspec" / "changes" / change_id)
+        if self._workspace is None:
+            raise RuntimeError(
+                "OpenSpecAdapter.get_state requires a workspace; construct "
+                "OpenSpecAdapter(workspace=root) (registry-built instances have none)"
+            )
+        return _change_state(self._workspace / "openspec" / "changes" / change_id)
 
     def watch_paths(self, workspace: Path) -> list[Path]:
         # The daemon watches the changes dir so it knows when to re-run observe.
