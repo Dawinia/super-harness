@@ -18,10 +18,11 @@ group (cli/gate.py): walk up for ``.harness/`` and map
 ``HarnessNotInitialized`` → ``EXIT_NO_CONFIG``; error output goes through
 ``format_error`` on stderr.
 
-Free-form ``name`` (NOT a ``click.Choice``): the install exit set is ``0/1/3/5``
-(cli-command-surface) — ``2`` is excluded, but click auto-emits exit 2 on a bad
-``Choice``. We therefore do the registry membership check ourselves and map an
-unknown name to ``EXIT_GENERIC`` (1), the same path as the install RuntimeError.
+Free-form ``name`` (NOT a ``click.Choice``): we do the registry membership
+check ourselves and map an unknown name to ``EXIT_GENERIC`` (1) rather than
+click's auto-emitted exit 2 (which a ``click.Choice`` would fire for an
+unrecognised token). The install exit set intentionally includes ``2`` for the
+OI-3 conflict case (see the ``verification.yaml`` merge paragraph below).
 
 `.claude/`-absent decision (option (a) — install in a fresh repo) is preserved
 from Phase 5: ``ClaudeCodeAdapter.detect(root)`` is NOT a precondition;
@@ -124,7 +125,7 @@ def adapter_install(ctx: click.Context, name: str) -> None:
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
         click.echo(
             format_error(
                 subcommand="adapter install",
@@ -364,7 +365,7 @@ def adapter_uninstall(ctx: click.Context, name: str) -> None:
         sys.exit(EXIT_NO_CONFIG)
     try:
         _remove_verification_checks(root, adapter)
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
         click.echo(
             format_error(
                 subcommand="adapter uninstall",

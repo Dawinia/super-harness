@@ -845,3 +845,59 @@ def test_uninstall_openspec_removes_only_its_adapter_provided_row(
     assert ap_ids == ["other-check"], after
     # User `checks` untouched.
     assert [c["id"] for c in after.get("checks") or []] == ["tests"]
+
+
+# --- non-UTF-8 verification.yaml regression (UnicodeDecodeError is ValueError) -
+
+
+def test_install_openspec_non_utf8_verification_yaml_exits_no_config(
+    tmp_path: Path,
+) -> None:
+    """A non-UTF-8 verification.yaml → `install openspec` exits EXIT_NO_CONFIG (3)
+    with a ``format_error``-shaped message on stderr, NOT a raw traceback.
+
+    Regression: UnicodeDecodeError subclasses ValueError (NOT OSError), so it
+    was NOT caught by the old bare ``except yaml.YAMLError``.
+    """
+    _openspec_workspace(tmp_path)
+    # Write a valid YAML structure with an invalid UTF-8 byte embedded so the
+    # file fails on read_text() (default UTF-8) before yaml ever sees it.
+    _verification_yaml(tmp_path).write_bytes(
+        b"adapter_provided:\n  - id: x\n\xe9\xff bad\n"
+    )
+
+    r = _run(tmp_path, "install", "openspec")
+
+    assert r.exit_code == 3, r.output
+    assert "super-harness adapter install:" in r.stderr, r.stderr
+    assert "corrupt" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr
+
+
+def test_uninstall_openspec_non_utf8_verification_yaml_exits_no_config(
+    tmp_path: Path,
+) -> None:
+    """A non-UTF-8 verification.yaml → `uninstall openspec` exits EXIT_NO_CONFIG (3)
+    with a ``format_error``-shaped message on stderr, NOT a raw traceback.
+
+    Regression: UnicodeDecodeError subclasses ValueError (NOT OSError), so it
+    was NOT caught by the old bare ``except yaml.YAMLError``.
+    """
+    _openspec_workspace(tmp_path)
+    # Install openspec so it appears in adapters.yaml (uninstall checks this).
+    assert _run(tmp_path, "install", "openspec").exit_code == 0
+
+    # Now corrupt verification.yaml with a non-UTF-8 byte.
+    _verification_yaml(tmp_path).write_bytes(
+        b"adapter_provided:\n  - id: x\n\xe9\xff bad\n"
+    )
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--quiet", "adapter", "uninstall", "openspec"],
+    )
+
+    assert r.exit_code == 3, r.output
+    assert "super-harness adapter uninstall:" in r.stderr, r.stderr
+    assert "corrupt" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr

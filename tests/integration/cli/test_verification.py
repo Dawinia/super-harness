@@ -189,3 +189,25 @@ def test_register_corrupt_verification_yaml_exits_no_config(tmp_path: Path) -> N
     assert "super-harness verification register:" in r.stderr, r.stderr
     assert "corrupt" in r.stderr, r.stderr
     assert "Traceback" not in r.stderr, r.stderr
+
+
+def test_register_non_utf8_verification_yaml_exits_no_config(tmp_path: Path) -> None:
+    """A non-UTF-8 verification.yaml → EXIT_NO_CONFIG (3), clean message, no traceback.
+
+    Regression: UnicodeDecodeError subclasses ValueError (NOT OSError), so it
+    was NOT caught by the old bare ``except yaml.YAMLError``.
+    """
+    (tmp_path / ".harness").mkdir()
+    # Write a file with an invalid UTF-8 byte so read_text() (default UTF-8) raises
+    # UnicodeDecodeError before yaml ever parses it.
+    _verification_yaml(tmp_path).write_bytes(
+        b"adapter_provided:\n  - id: x\n\xe9\xff bad\n"
+    )
+    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": "run"}])
+
+    r = _run(tmp_path, "register", "my-adapter", str(cf))
+
+    assert r.exit_code == 3, r.output
+    assert "super-harness verification register:" in r.stderr, r.stderr
+    assert "corrupt" in r.stderr, r.stderr
+    assert "Traceback" not in r.stderr, r.stderr

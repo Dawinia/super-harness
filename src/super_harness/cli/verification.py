@@ -125,7 +125,7 @@ def verification_register(
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
-    except yaml.YAMLError as e:
+    except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
         click.echo(
             format_error(
                 subcommand="verification register",
