@@ -76,8 +76,19 @@ def test_list_when_no_harness(tmp_path: Path, isolated_registry: None) -> None:
     assert "No .harness/" in r.stderr or "No .harness/" in r.output
 
 
-def test_list_empty_registry(harness_workspace: Path, isolated_registry: None) -> None:
-    """`.harness/` exists, no yaml, no builtins → exit 0 with empty message."""
+def test_list_empty_registry(
+    harness_workspace: Path,
+    isolated_registry: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`.harness/` exists, no yaml, no builtins → exit 0 with empty message.
+
+    Phase 8 registers `verification-runner` as the first built-in sensor at
+    import time, so the registry is no longer empty by default. This test
+    targets the empty-state CLI path specifically, so it clears the
+    (isolated) registry snapshot to exercise the "no sensors" message.
+    """
+    monkeypatch.setattr(sensors_registry, "_BUILTIN", {})
     r = CliRunner().invoke(main, ["--workspace", str(harness_workspace), "sensor", "list"])
     assert r.exit_code == EXIT_OK
     # Contributor-helpful empty-state message

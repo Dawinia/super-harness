@@ -210,9 +210,13 @@ def test_dispatcher_runs_matching(tmp_path: Path) -> None:
         writer=writer,
         context=WorkspaceContext(workspace_root=tmp_path),
     )
-    d.on_event_emit(_mk_event())
+    results = d.on_event_emit(_mk_event())
     # _Slow returns pass with no emit_events → events.jsonl stays empty.
     assert _read_events(tmp_path / "events.jsonl") == []
+    # A completed sensor's SensorResult is returned to the caller.
+    assert len(results) == 1
+    assert results[0].status == "pass"
+    assert results[0].summary == "slow ok"
 
 
 def test_dispatcher_emits_sensor_crashed(tmp_path: Path) -> None:
@@ -222,11 +226,13 @@ def test_dispatcher_emits_sensor_crashed(tmp_path: Path) -> None:
         writer=writer,
         context=WorkspaceContext(workspace_root=tmp_path),
     )
-    d.on_event_emit(_mk_event())
+    results = d.on_event_emit(_mk_event())
     lines = _read_events(tmp_path / "events.jsonl")
     assert any('"type":"sensor_crashed"' in line for line in lines)
     # actor.type=sensor + identifier carries name@version
     assert any('"identifier":"boom@0.1.0"' in line for line in lines)
+    # A crashed sensor contributes NO SensorResult to the returned list.
+    assert results == []
 
 
 def test_dispatcher_emits_sensor_timeout_exceeded(tmp_path: Path) -> None:
@@ -237,10 +243,12 @@ def test_dispatcher_emits_sensor_timeout_exceeded(tmp_path: Path) -> None:
         context=WorkspaceContext(workspace_root=tmp_path),
         timeout_s=0.1,
     )
-    d.on_event_emit(_mk_event())
+    results = d.on_event_emit(_mk_event())
     lines = _read_events(tmp_path / "events.jsonl")
     assert any('"type":"sensor_timeout_exceeded"' in line for line in lines)
     assert any('"identifier":"sleeper@0.1.0"' in line for line in lines)
+    # A timed-out sensor contributes NO SensorResult to the returned list.
+    assert results == []
 
 
 def test_dispatcher_runs_sensors_in_parallel(tmp_path: Path) -> None:
@@ -259,7 +267,10 @@ def test_dispatcher_runs_sensors_in_parallel(tmp_path: Path) -> None:
         writer=writer,
         context=WorkspaceContext(workspace_root=tmp_path),
     )
-    d.on_event_emit(_mk_event())
+    results = d.on_event_emit(_mk_event())
+    # Both matching sensors completed → both results are returned (any order).
+    assert len(results) == 2
+    assert {r.summary for r in results} == {"a", "b"}
     assert len(_PARALLEL_STARTS) == 2, f"expected 2 sensor starts, got {_PARALLEL_STARTS}"
     start_gap = abs(_PARALLEL_STARTS[1] - _PARALLEL_STARTS[0])
     # Parallel: both threads pick up their task near-simultaneously (gap ~ms).
@@ -296,7 +307,13 @@ def test_dispatcher_emits_extension_events_from_sensor_result(tmp_path: Path) ->
     )
 
     d = SensorDispatcher([_Emits()], writer=writer, context=ctx)
-    d.on_event_emit(_mk_event(etype="plan_ready", change_id="c1"))
+    results = d.on_event_emit(_mk_event(etype="plan_ready", change_id="c1"))
+
+    # The emitting sensor's SensorResult is returned (with its emit_events).
+    assert len(results) == 1
+    assert results[0].status == "pass"
+    assert len(results[0].emit_events) == 1
+    assert results[0].emit_events[0].type == "plan_approved"
 
     lines = _read_events(events_file)
     assert any('"type":"plan_approved"' in line for line in lines)
@@ -314,9 +331,11 @@ def test_dispatcher_skips_non_matching_sensors(tmp_path: Path) -> None:
         writer=writer,
         context=WorkspaceContext(workspace_root=tmp_path),
     )
-    d.on_event_emit(_mk_event(etype="plan_ready"))  # sensor triggers on "foo"
+    results = d.on_event_emit(_mk_event(etype="plan_ready"))  # sensor triggers on "foo"
     assert sensor.called == 0
     assert _read_events(tmp_path / "events.jsonl") == []
+    # No matching sensors → empty result list.
+    assert results == []
 
 
 def test_dispatcher_handles_activity_trigger(tmp_path: Path) -> None:
@@ -327,8 +346,11 @@ def test_dispatcher_handles_activity_trigger(tmp_path: Path) -> None:
         writer=writer,
         context=WorkspaceContext(workspace_root=tmp_path),
     )
-    d.on_activity(Activity(type="commit", change_id="c1"))
+    results = d.on_activity(Activity(type="commit", change_id="c1"))
     assert sensor.called == 1
+    # Completed activity-triggered sensor's result is returned.
+    assert len(results) == 1
+    assert results[0].summary == "seen"
 
 
 def test_dispatcher_handles_emit_precondition_error_gracefully(
@@ -382,9 +404,9 @@ def test_dispatcher_with_empty_sensors_list(tmp_path: Path) -> None:
         writer=writer,
         context=WorkspaceContext(workspace_root=tmp_path),
     )
-    # No-op for both event and activity triggers.
-    d.on_event_emit(_mk_event())
-    d.on_activity(Activity(type="commit", change_id="c1"))
+    # No-op for both event and activity triggers; both return empty lists.
+    assert d.on_event_emit(_mk_event()) == []
+    assert d.on_activity(Activity(type="commit", change_id="c1")) == []
     assert _read_events(tmp_path / "events.jsonl") == []
 
 

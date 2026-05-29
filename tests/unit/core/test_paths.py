@@ -10,6 +10,8 @@ from super_harness.core.paths import (
     lock_path,
     sensors_yaml_path,
     state_path,
+    verification_results_dir,
+    verification_yaml_path,
 )
 
 
@@ -46,3 +48,15 @@ def test_sensors_and_gates_yaml_paths(tmp_path: Path):
     """
     assert sensors_yaml_path(tmp_path) == tmp_path / ".harness" / "sensors.yaml"
     assert gates_yaml_path(tmp_path) == tmp_path / ".harness" / "gates.yaml"
+
+
+def test_verification_path_helpers(tmp_path: Path):
+    """Phase 8 verification path helpers (verification.yaml + per-run archive)."""
+    assert (
+        verification_yaml_path(tmp_path)
+        == tmp_path / ".harness" / "verification.yaml"
+    )
+    # Hyphen in the `verification-results` segment; change_id then ts nest under it.
+    assert verification_results_dir(tmp_path, "my-change", "2026-05-29T00:00:00Z") == (
+        tmp_path / ".harness" / "verification-results" / "my-change" / "2026-05-29T00:00:00Z"
+    )
