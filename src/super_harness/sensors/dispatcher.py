@@ -53,9 +53,9 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeout
-from datetime import datetime, timezone
 from typing import Any
 
+from super_harness.core.clock import utc_now_iso
 from super_harness.core.events import Actor, Event
 from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.ulid import new_event_id
@@ -73,6 +73,14 @@ log = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S = 300
 DEFAULT_PARALLELISM = 4
+
+# Recommended tuning for a ONE-SHOT, synchronous dispatcher (the CLI `verify` /
+# `done` verification path): a high fixed batch timeout so each check's own
+# `timeout_seconds` is the real contract (never preempted by the dispatcher-level
+# wall clock), and single-threaded fan-out — the check-level parallelism lives
+# INSIDE the VerificationRunner sensor (execution.max_parallelism), not here.
+ONESHOT_DISPATCHER_TIMEOUT_S = 3600
+ONESHOT_DISPATCHER_PARALLELISM = 1
 
 
 class SensorDispatcher:
@@ -252,7 +260,7 @@ class SensorDispatcher:
                 event_id=ev.event_id or new_event_id(),
                 type=ev.type,
                 change_id=ev.change_id,
-                timestamp=ev.timestamp or _now(),
+                timestamp=ev.timestamp or utc_now_iso(),
                 actor=Actor(
                     type="sensor",
                     identifier=f"{sensor.name}@{sensor.version}",
@@ -300,7 +308,7 @@ class SensorDispatcher:
                     event_id=new_event_id(),
                     type=etype,
                     change_id=change_id,
-                    timestamp=_now(),
+                    timestamp=utc_now_iso(),
                     actor=Actor(
                         type="sensor",
                         identifier=f"{sensor.name}@{sensor.version}",
@@ -314,6 +322,3 @@ class SensorDispatcher:
             log.exception("failed to emit %s", etype)
 
 
-def _now() -> str:
-    """ISO-8601 UTC timestamp matching lifecycle-event-model §2 format."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

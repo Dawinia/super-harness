@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import sys
 from dataclasses import asdict
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +40,7 @@ from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
 from super_harness.core.active_change import read_active_change_id
+from super_harness.core.clock import utc_now_iso
 from super_harness.core.events import Actor, Event, EventSchemaError, parse_event_line
 from super_harness.core.paths import (
     HarnessNotInitialized,
@@ -63,11 +63,6 @@ _RESUME_RECENT_EVENT_LIMIT = 20
 # TODO(post-v0.1): distinguish CLI invocations by user (getpass.getuser()) or
 # session id for multi-operator audit trails. v0.1 = single "cli" identifier
 # is used for every `Actor(type="human", identifier="cli")` below.
-
-
-def _utc_now_iso() -> str:
-    """ISO 8601 UTC with trailing `Z` (matches lifecycle-event-model §2 examples)."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 @click.group("change")
@@ -114,7 +109,7 @@ def start(ctx: click.Context, slug: str, description: str, framework: str) -> No
         event_id=new_event_id(),
         type="intent_declared",
         change_id=slug,
-        timestamp=_utc_now_iso(),
+        timestamp=utc_now_iso(),
         actor=Actor(type="human", identifier="cli"),
         framework=framework,  # type: ignore[arg-type]  # click.Choice restricts to Framework
         payload={"description": description or slug},
@@ -167,7 +162,7 @@ def abandon(ctx: click.Context, slug: str, reason: str) -> None:
         event_id=new_event_id(),
         type="intent_abandoned",
         change_id=slug,
-        timestamp=_utc_now_iso(),
+        timestamp=utc_now_iso(),
         actor=Actor(type="human", identifier="cli"),
         framework="plain",
         payload={"reason": reason},

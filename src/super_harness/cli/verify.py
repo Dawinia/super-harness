@@ -51,18 +51,15 @@ from super_harness.core.paths import (
 from super_harness.core.writer import EventWriter
 from super_harness.engineering.verification_config import load_verification_config
 from super_harness.sensors import Activity, WorkspaceContext
-from super_harness.sensors.dispatcher import SensorDispatcher
+from super_harness.sensors.dispatcher import (
+    ONESHOT_DISPATCHER_PARALLELISM,
+    ONESHOT_DISPATCHER_TIMEOUT_S,
+    SensorDispatcher,
+)
 from super_harness.sensors.verification_runner import (
     VerificationRunner,
     collectable_check_ids,
 )
-
-# High fixed dispatcher batch timeout so the per-check `timeout_seconds`
-# (the real contract) is never preempted by the dispatcher-level wall clock.
-# One sensor → max_parallelism=1 (the check-level parallelism lives INSIDE
-# the VerificationRunner sensor, driven by execution.max_parallelism).
-_DISPATCHER_TIMEOUT_S = 3600
-_DISPATCHER_PARALLELISM = 1
 
 
 @click.command("verify")
@@ -183,8 +180,8 @@ def verify_cmd(
         [VerificationRunner()],
         writer=writer,
         context=ctx_ws,
-        timeout_s=_DISPATCHER_TIMEOUT_S,
-        max_parallelism=_DISPATCHER_PARALLELISM,
+        timeout_s=ONESHOT_DISPATCHER_TIMEOUT_S,
+        max_parallelism=ONESHOT_DISPATCHER_PARALLELISM,
     )
     activity = Activity(
         type="cli_verify",

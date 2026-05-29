@@ -44,11 +44,11 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from super_harness.core.anchor_scanner import scan_sentinels
+from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import find_ordering_violations
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import (
@@ -249,11 +249,6 @@ class CheckTask:
     id: str
     must_pass: bool
     run: Callable[[], CheckResult]
-
-
-def _ts() -> str:
-    """ISO-8601 UTC timestamp for the per-run archive dir (matches lifecycle §2)."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def build_variables(change_id: str, context: WorkspaceContext) -> dict[str, str]:
@@ -895,7 +890,7 @@ def write_summary_json(
     archive.mkdir(parents=True, exist_ok=True)
     summary = {
         "verdict": verdict,
-        "generated_at": _ts(),
+        "generated_at": utc_now_iso(),
         "checks_run": len(results),
         "results": [
             {
@@ -1088,7 +1083,7 @@ class VerificationRunner(Sensor):
         layer = payload.get("layer")
         only_ids = payload.get("checks")
 
-        archive = verification_results_dir(context.workspace_root, change_id, _ts())
+        archive = verification_results_dir(context.workspace_root, change_id, utc_now_iso())
         tasks = collect_checks(
             cfg,
             context=context,
