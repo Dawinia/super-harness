@@ -48,6 +48,7 @@ def workspace(tmp_path: Path) -> Path:
 
 def _make_server(workspace: Path) -> DaemonServer:
     return DaemonServer(
+        workspace_root=workspace,
         socket_path=workspace / ".harness" / "daemon.sock",
         state_path=workspace / ".harness" / "state.yaml",
         events_path=workspace / ".harness" / "events.jsonl",
@@ -260,6 +261,7 @@ def test_socket_path_too_long_falls_back_to_tmpdir(tmp_path: Path) -> None:
     state_path = deep / "state.yaml"
     events_path = deep / "events.jsonl"
     server = DaemonServer(
+        workspace_root=deep.parent,  # parent of .harness/
         socket_path=long_socket,
         state_path=state_path,
         events_path=events_path,

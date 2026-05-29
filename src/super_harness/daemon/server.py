@@ -24,6 +24,10 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from super_harness.daemon._uds_path import UDS_PATH_MAX, resolve_socket_path
+from super_harness.daemon.framework_observer import (
+    FrameworkObserverManager,
+    build_manager_failsafe,
+)
 from super_harness.daemon.hot_state import HotState
 from super_harness.daemon.protocol import (
     MAX_REQUEST_BYTES,
@@ -122,6 +126,7 @@ class DaemonServer:
     def __init__(
         self,
         *,
+        workspace_root: Path,
         socket_path: Path,
         state_path: Path,
         events_path: Path,
@@ -145,6 +150,7 @@ class DaemonServer:
             )
             socket_path = resolved
 
+        self.workspace_root: Path = workspace_root
         self.socket_path: Path = socket_path
         self.state_path: Path = state_path
         self.events_path: Path = events_path
@@ -152,12 +158,34 @@ class DaemonServer:
         self._hot_state: HotState = HotState(state_path)
         self._sock: socket.socket | None = None
         self._stop: threading.Event = threading.Event()
+        # Framework file-watcher manager (OI-7). Populated in serve_forever()
+        # POST-fork (daemonize asserts single-thread BEFORE fork — Observers
+        # must spawn after). None until then / when adapter setup fails.
+        self._framework_observers: FrameworkObserverManager | None = None
 
     def serve_forever(self) -> None:
         """Bind UDS socket + accept loop until `shutdown()`."""
         # §3.9 #9: fork-then-thread invariant — caller (daemonize) must run
         # before any thread is spawned. Here we already past that point; we are
         # only spawning per-conn threads from the main accept thread.
+        #
+        # Framework watchers (OI-7) spawn HERE (post-fork): the daemonize()
+        # `assert active_count()==1` runs BEFORE fork, so Observers must start
+        # after. FAIL-SAFE (Axiom 3): build_manager_failsafe swallows a corrupt
+        # adapters.yaml; we additionally guard the start() so NO watcher-setup
+        # failure can crash main()'s loop (which would log "daemon main loop
+        # crashed" + return 1, killing the gate hot-path). On any failure we
+        # serve the accept loop with no watchers — gate decisions stay available.
+        try:
+            self._framework_observers = build_manager_failsafe(self.workspace_root)
+            if self._framework_observers is not None:
+                self._framework_observers.start()
+        except Exception:
+            _log.warning(
+                "framework observe: watcher start failed; serving with no watchers",
+                extra={"log_reason": "watcher_start_failed"},
+            )
+            self._framework_observers = None
         if self.socket_path.exists():
             self.socket_path.unlink()
         self.socket_path.parent.mkdir(parents=True, exist_ok=True)
@@ -182,6 +210,10 @@ class DaemonServer:
                     target=self._serve_conn, args=(conn,), daemon=True
                 ).start()
         finally:
+            # Stop framework watchers so an accept-loop crash never orphans the
+            # Observer threads. stop() is idempotent — shutdown() may also call
+            # it; whichever fires first wins, the other is a no-op.
+            self._stop_framework_observers()
             try:
                 sock.close()
             except OSError:
@@ -192,8 +224,12 @@ class DaemonServer:
                 pass
 
     def shutdown(self) -> None:
-        """Signal the accept loop to exit. Idempotent."""
+        """Signal the accept loop to exit + stop framework watchers. Idempotent."""
         self._stop.set()
+        # Stop + join the framework Observers (bounded) so SIGTERM shutdown
+        # leaves no leaked watcher threads. Idempotent with serve_forever()'s
+        # finally (both may call it).
+        self._stop_framework_observers()
         if self._sock is not None:
             try:
                 self._sock.shutdown(socket.SHUT_RDWR)
@@ -203,6 +239,22 @@ class DaemonServer:
                 self._sock.close()
             except OSError:
                 pass
+
+    def _stop_framework_observers(self) -> None:
+        """Stop + join the framework Observer manager (bounded). Idempotent.
+
+        Safe to call multiple times (manager.stop() is itself idempotent) and
+        safe when no manager was ever set (adapter setup failed / not yet
+        started). Never raises — a watcher-shutdown error must not mask the
+        primary shutdown path.
+        """
+        manager = self._framework_observers
+        if manager is None:
+            return
+        try:
+            manager.stop()
+        except Exception:
+            _log.exception("framework observe: manager.stop() failed during shutdown")
 
     def _serve_conn(self, conn: socket.socket) -> None:
         """Read newline-delimited requests until EOF; reply per line.
@@ -482,6 +534,10 @@ def main() -> int:
     )
 
     server = DaemonServer(
+        # `workspace` was resolved to an ABSOLUTE path BEFORE daemonize()'s
+        # chdir("/"), so framework watch paths (workspace/openspec/changes) stay
+        # valid after the daemon detaches from the user's cwd.
+        workspace_root=workspace,
         socket_path=socket_path,
         state_path=state_path,
         events_path=events_path,

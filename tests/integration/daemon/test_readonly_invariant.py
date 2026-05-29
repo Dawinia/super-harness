@@ -141,6 +141,7 @@ def test_daemon_never_opens_state_yaml_for_write(
 ) -> None:
     """AC-11 (state.yaml half): no write-mode open() targeting state.yaml."""
     server = DaemonServer(
+        workspace_root=workspace,
         socket_path=workspace / ".harness" / "daemon.sock",
         state_path=workspace / ".harness" / "state.yaml",
         events_path=workspace / ".harness" / "events.jsonl",
@@ -171,6 +172,7 @@ def test_daemon_never_opens_events_jsonl_for_write(
     "daemon emits an event" code without going through the reducer.
     """
     server = DaemonServer(
+        workspace_root=workspace,
         socket_path=workspace / ".harness" / "daemon.sock",
         state_path=workspace / ".harness" / "state.yaml",
         events_path=workspace / ".harness" / "events.jsonl",
@@ -202,6 +204,7 @@ def test_tracker_sanity_state_yaml_was_opened_for_read(
     AC-11 protection ONLY holds if this canary stays green.
     """
     server = DaemonServer(
+        workspace_root=workspace,
         socket_path=workspace / ".harness" / "daemon.sock",
         state_path=workspace / ".harness" / "state.yaml",
         events_path=workspace / ".harness" / "events.jsonl",
