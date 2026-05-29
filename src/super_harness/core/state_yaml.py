@@ -19,12 +19,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from super_harness.core.clock import utc_now_iso
 from super_harness.core.state import ChangeState
 
 _HEADER = (
@@ -59,7 +59,7 @@ def write_state_yaml(
     path.parent.mkdir(parents=True, exist_ok=True)
     body: dict[str, Any] = {
         "last_reduced_event_id": last_reduced_event_id,
-        "last_reduced_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "last_reduced_at": utc_now_iso(),
         "changes": {cid: asdict(cs) for cid, cs in changes.items()},
     }
     tmp = path.with_suffix(path.suffix + ".tmp")

@@ -41,7 +41,6 @@ Exit codes (cli-command-surface §2.2):
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +56,7 @@ from super_harness.cli.exit_codes import (
 )
 from super_harness.cli.output import json_envelope
 from super_harness.core.active_change import read_active_change_id
+from super_harness.core.clock import utc_now_iso
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import (
     HarnessNotInitialized,
@@ -70,18 +70,12 @@ from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
 from super_harness.engineering.verification_config import load_verification_config
 from super_harness.sensors import Activity, WorkspaceContext
-from super_harness.sensors.dispatcher import SensorDispatcher
+from super_harness.sensors.dispatcher import (
+    ONESHOT_DISPATCHER_PARALLELISM,
+    ONESHOT_DISPATCHER_TIMEOUT_S,
+    SensorDispatcher,
+)
 from super_harness.sensors.verification_runner import VerificationRunner
-
-# Same dispatcher tuning rationale as `verify` (see cli/verify.py): high fixed
-# batch timeout so per-check timeouts are the real contract; one sensor → 1.
-_DISPATCHER_TIMEOUT_S = 3600
-_DISPATCHER_PARALLELISM = 1
-
-
-def _utc_now_iso() -> str:
-    """ISO 8601 UTC with trailing `Z` (matches lifecycle-event-model §2)."""
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _current_state(root: Path, slug: str) -> str | None:
@@ -214,8 +208,8 @@ def done_cmd(
         [VerificationRunner()],
         writer=writer,
         context=ctx_ws,
-        timeout_s=_DISPATCHER_TIMEOUT_S,
-        max_parallelism=_DISPATCHER_PARALLELISM,
+        timeout_s=ONESHOT_DISPATCHER_TIMEOUT_S,
+        max_parallelism=ONESHOT_DISPATCHER_PARALLELISM,
     )
     # The dispatcher emits verification_passed/failed + refreshes state.yaml
     # internally. On a pass, that verification_passed satisfies the
@@ -288,7 +282,7 @@ def _done_skip_verify(
         event_id=new_event_id(),
         type="verification_passed",
         change_id=slug,
-        timestamp=_utc_now_iso(),
+        timestamp=utc_now_iso(),
         actor=Actor(type="human", identifier="cli"),
         framework="plain",
         payload={"skipped": True, "reason": "--skip-verify"},
@@ -327,7 +321,7 @@ def _emit_implementation_complete(
         event_id=new_event_id(),
         type="implementation_complete",
         change_id=slug,
-        timestamp=_utc_now_iso(),
+        timestamp=utc_now_iso(),
         actor=Actor(type="human", identifier="cli"),
         framework="plain",
         payload={"pr_url": pr} if pr else {},
