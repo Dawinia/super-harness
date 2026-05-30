@@ -418,7 +418,6 @@ super-harness on-merge [OPTIONS]
 
 - `0` success
 - `1` generic error
-- `2` validation error (bad commit SHA / slug)
 - `3` no `.harness/`
 
 ## super-harness pr
@@ -447,6 +446,7 @@ super-harness pr emit-opened [OPTIONS]
 - `0` success
 - `1` generic error
 - `3` no `.harness/`
+- `4` `gh` CLI failure
 
 ## super-harness pr validate
 

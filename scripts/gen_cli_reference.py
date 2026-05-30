@@ -112,11 +112,11 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`0` success",
         "`1` generic error",
         "`3` no `.harness/`",
+        "`4` `gh` CLI failure",
     ],
     "on-merge": [
         "`0` success",
         "`1` generic error",
-        "`2` validation error (bad commit SHA / slug)",
         "`3` no `.harness/`",
     ],
     "sync": [
