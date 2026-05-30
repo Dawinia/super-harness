@@ -12,4 +12,5 @@ you.
 
 - Add `greet(name: str) -> str` to `src/greeter.py`.
 - Add a baseline test in `tests/test_greeter.py`.
-- Update the `greeter` capability spec to declare the new behavior.
+- Verify the `greeter` capability spec declares the required behavior (already
+  done in the seeded version under `openspec/specs/greeter/spec.md`).
