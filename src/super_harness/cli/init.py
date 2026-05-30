@@ -23,6 +23,7 @@ from super_harness.core.clock import utc_now_iso
 from super_harness.engineering.agents_md import AgentsMdInjectionError
 from super_harness.engineering.agents_md_render import render_super_harness_section
 from super_harness.engineering.gh import GhError, check_gh, enable_repo_merge_settings
+from super_harness.engineering.operation_log import write_operation_log
 from super_harness.engineering.pr_metadata import (
     METADATA_BEGIN,
     METADATA_END,
@@ -331,10 +332,10 @@ def _write_pr_template(ctx: click.Context, root: Path) -> None:
 def _log_setup_github_failure(harness: Path, error: GhError) -> None:
     """Write a plain-text operation-log for a failed repo-settings attempt (AC-7).
 
-    Path: ``<harness>/operation-logs/setup-github/<utc-ts>.log`` (``:`` in the
-    timestamp is sanitized to ``-`` for cross-filesystem portability). Body is a
-    human-read audit trail (NOT JSON): the attempted commands + captured detail +
-    a one-line outcome.
+    Body is a human-read audit trail (NOT JSON): the attempted commands +
+    captured detail + a one-line outcome. The on-disk mechanism (path
+    composition, ``:``-sanitization, OSError swallow) is shared via
+    ``engineering.operation_log.write_operation_log``.
     """
     body = (
         "operation: setup-github (enable repo merge settings)\n"
@@ -345,14 +346,4 @@ def _log_setup_github_failure(harness: Path, error: GhError) -> None:
         "outcome: FAILED — repo merge settings not auto-enabled (non-fatal; "
         "configure manually in Settings -> General -> Pull Requests).\n"
     )
-    try:
-        log_dir = harness / "operation-logs" / "setup-github"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        ts = utc_now_iso().replace(":", "-")
-        (log_dir / f"{ts}.log").write_text(body)
-    except OSError:
-        # Operation-logging is itself best-effort: a log-write failure (full disk,
-        # unwritable .harness/) must NOT turn the non-fatal repo-settings
-        # degradation into a hard init failure. Swallow — the caller already
-        # printed the actionable advisory to stderr.
-        pass
+    write_operation_log(harness, "setup-github", body)
