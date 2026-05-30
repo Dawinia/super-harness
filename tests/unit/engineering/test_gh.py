@@ -196,6 +196,22 @@ class TestViewPr:
             with pytest.raises(GhError):
                 view_pr(1, fields=["number"])
 
+    def test_non_utf8_output_raises_gh_error(self) -> None:
+        """Non-UTF-8 PR body raises GhError, not a raw UnicodeDecodeError traceback.
+
+        Phase 14 elevation: PR body is now a slug-resolution source for
+        ``verify --pr`` / ``done --pr``; a raw traceback here would escape the
+        ``except gh.GhError`` contract callers rely on. ``UnicodeDecodeError`` is
+        a ``ValueError`` subclass (NOT an ``OSError`` / not a
+        ``CalledProcessError``); the catch must list it explicitly.
+        """
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.side_effect = UnicodeDecodeError(
+                "utf-8", b"\xff", 0, 1, "invalid start byte"
+            )
+            with pytest.raises(GhError, match="non-UTF-8"):
+                view_pr(1, fields=["number"])
+
     def test_single_field_argv(self) -> None:
         with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
             mock_run.return_value = _completed(stdout='{"number": 1}')

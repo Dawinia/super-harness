@@ -171,6 +171,18 @@ def view_pr(pr_number: int, *, fields: list[str]) -> dict[str, Any]:
         raise GhError(f"gh pr view {pr_number} failed (exit {exc.returncode})") from exc
     except FileNotFoundError as exc:
         raise GhError("gh CLI not found on PATH") from exc
+    except UnicodeDecodeError as exc:
+        # `subprocess.run(..., text=True)` decodes stdout at call time; a PR body
+        # containing non-UTF-8 bytes will raise UnicodeDecodeError (a ValueError
+        # subclass, NOT a subprocess error) before json.loads runs. Caller's
+        # `except gh.GhError` would otherwise miss this and surface as a raw
+        # traceback. Task 14.3 elevated the impact: PR body is now a slug-
+        # resolution source for `verify --pr` / `done --pr`, not just a
+        # validation read.
+        raise GhError(
+            f"gh pr view {pr_number} returned non-UTF-8 output "
+            f"(PR body contains undecodable bytes)"
+        ) from exc
     except json.JSONDecodeError as exc:
         raise GhError(f"gh pr view {pr_number} returned non-JSON output") from exc
 
