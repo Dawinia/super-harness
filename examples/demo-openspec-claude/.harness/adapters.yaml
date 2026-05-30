@@ -1,0 +1,13 @@
+# .harness/adapters.yaml
+# AUTO-MANAGED by super-harness adapter install/uninstall. Do not edit.
+adapters:
+- name: openspec
+  type: framework
+  builtin: true
+  version: 0.1.0
+  enabled: true
+- name: claude-code
+  type: agent
+  builtin: true
+  version: 0.1.0
+  enabled: true

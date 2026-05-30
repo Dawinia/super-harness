@@ -5,6 +5,12 @@ private/
 # user state; user projects that USE super-harness manage their own .harness/).
 # Subagents running sanity checks may accidentally create one here.
 .harness/
+# Exception: the in-tree onboarding demo (examples/demo-openspec-claude/) ships
+# a seeded .harness/ so visitors see what the post-init state looks like. Git
+# requires re-including BOTH the directory and its contents — re-including only
+# the directory still leaves children excluded by the parent rule above.
+!examples/demo-openspec-claude/.harness/
+!examples/demo-openspec-claude/.harness/**
 
 # OS
 .DS_Store

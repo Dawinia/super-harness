@@ -1,0 +1,1 @@
+{"event_id":"ev_01KSWKS1DVXYX8DN2DSPQ6GBMX","type":"intent_declared","change_id":"demo-add-greeter","timestamp":"2026-05-30T14:14:30.075594Z","actor":{"type":"human","identifier":"cli"},"framework":"openspec","framework_state":null,"payload":{"description":"Add a greet() helper to demonstrate the super-harness lifecycle"}}
