@@ -78,7 +78,7 @@ def change_group() -> None:
     type=click.Choice(["openspec", "spec-kit", "superpowers", "plain"]),
     default="plain",
     help="Framework label recorded on the event "
-    "(v0.1: no-op placeholder; Phase 4 wires adapter selection.)",
+    "(v0.1: no-op placeholder; framework adapters auto-detect at observe time.)",
 )
 @click.pass_context
 def start(ctx: click.Context, slug: str, description: str, framework: str) -> None:

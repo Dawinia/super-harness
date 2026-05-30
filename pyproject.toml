@@ -55,6 +55,14 @@ super-harness-hook = "super_harness.daemon.hook_entry:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/super_harness"]
 
+[tool.pytest.ini_options]
+# Limit collection to the main test suite. The demo workspace at
+# examples/demo-openspec-claude/ ships its own tests/test_greeter.py for the
+# walkthrough, but those expect to be run from inside the demo directory
+# (their imports resolve via the demo's own src/ layout); the main suite must
+# not collect them.
+testpaths = ["tests"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"

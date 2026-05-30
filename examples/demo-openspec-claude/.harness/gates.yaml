@@ -1,0 +1,6 @@
+gates:
+  - pre-tool-use
+  - pre-commit
+  - pre-push
+  - pr-open
+  - pr-merge

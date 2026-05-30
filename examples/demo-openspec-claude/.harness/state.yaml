@@ -1,0 +1,25 @@
+# .harness/state.yaml
+# AUTO-GENERATED from events.jsonl. DO NOT EDIT.
+# Regenerate: `super-harness state rebuild`.
+last_reduced_event_id: ev_01KSWMNJ7NSH83CQPZ8YXGZMC8
+last_reduced_at: '2026-05-30T14:30:16.284203Z'
+changes:
+  demo-add-greeter:
+    change_id: demo-add-greeter
+    current_state: IMPLEMENTATION_IN_PROGRESS
+    framework: openspec
+    last_event_id: ev_01KSWMNJ7NSH83CQPZ8YXGZMC8
+    last_event_type: implementation_started
+    last_event_at: '2026-05-30T14:14:33.000000Z'
+    event_counts:
+      intent_declared: 1
+      plan_ready: 1
+      plan_approved: 1
+      implementation_started: 1
+    description: Add a greet() helper to demonstrate the super-harness lifecycle
+    tier: null
+    scope: {}
+    affected_anchors: []
+    pr_url: null
+    merge_commit_sha: null
+    redeclaration_history: []

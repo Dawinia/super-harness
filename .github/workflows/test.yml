@@ -31,3 +31,21 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Run pytest
         run: pytest -v
+
+  cli-reference-drift:
+    # Phase 15 Task 15.2: fail PRs that change the CLI surface without
+    # regenerating docs/cli-reference.md. The generator is deterministic
+    # (alphabetical command order, stable formatting), so any drift is a
+    # real signal — either run `python -m scripts.gen_cli_reference` and
+    # commit the result, or update the hand-maintained exit-code map in
+    # scripts/gen_cli_reference.py._EXIT_CODES if you added a new command.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package + dev dependencies
+        run: pip install -e ".[dev]"
+      - name: Check docs/cli-reference.md is in sync
+        run: python -m scripts.gen_cli_reference --check
