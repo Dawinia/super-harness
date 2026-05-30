@@ -776,6 +776,74 @@ def test_install_openspec_twice_no_duplicate_accumulation(tmp_path: Path) -> Non
     assert [c["id"] for c in rows] == ["openspec-validate"], rows
 
 
+def test_install_openspec_evicts_plain_framework_subsection_from_agents_md(
+    tmp_path: Path,
+) -> None:
+    """Installing a non-plain framework adapter evicts the `framework: plain`
+    block `init` wrote, so AGENTS.md doesn't carry two contradictory framework
+    workflows after the user upgrades from Plain.
+
+    Phase 15 OPEN-ITEM follow-up: the dual-block UX was tracked as v0.2 in the
+    OPEN-ITEMS register; cleared here as a pre-Phase-16 warm-up.
+    """
+    # `init` creates AGENTS.md WITH the framework: plain subsection.
+    init_result = _init(tmp_path)
+    assert init_result.exit_code == 0, init_result.output
+    text_before = _agents_md(tmp_path).read_text()
+    assert "<!-- super-harness framework: plain -->" in text_before
+    assert "<!-- /super-harness framework: plain -->" in text_before
+
+    # Add the openspec layout so detection passes for `install openspec`.
+    (tmp_path / "openspec" / "changes").mkdir(parents=True)
+    (tmp_path / "openspec" / "specs").mkdir(parents=True)
+
+    r = _run(tmp_path, "install", "openspec")
+    assert r.exit_code == 0, r.output
+
+    text_after = _agents_md(tmp_path).read_text()
+    # Plain block evicted.
+    assert "<!-- super-harness framework: plain -->" not in text_after
+    assert "<!-- /super-harness framework: plain -->" not in text_after
+    # OpenSpec block injected.
+    assert "<!-- super-harness framework: openspec -->" in text_after
+    assert "<!-- /super-harness framework: openspec -->" in text_after
+
+
+def test_reinstall_openspec_does_not_resurrect_plain_block(tmp_path: Path) -> None:
+    """Re-installing openspec on a workspace where plain was already evicted
+    must NOT re-inject plain. Idempotency check for the eviction itself.
+    """
+    init_result = _init(tmp_path)
+    assert init_result.exit_code == 0
+    (tmp_path / "openspec" / "changes").mkdir(parents=True)
+    (tmp_path / "openspec" / "specs").mkdir(parents=True)
+
+    assert _run(tmp_path, "install", "openspec").exit_code == 0
+    assert _run(tmp_path, "install", "openspec").exit_code == 0
+
+    text = _agents_md(tmp_path).read_text()
+    assert "<!-- super-harness framework: plain -->" not in text
+    assert text.count("<!-- super-harness framework: openspec -->") == 1
+
+
+def test_install_plain_does_not_evict_itself(tmp_path: Path) -> None:
+    """`install plain` must NOT evict the plain subsection (otherwise it would
+    delete the very block it's about to inject). The eviction guard is keyed
+    on `adapter.name != "plain"`.
+    """
+    init_result = _init(tmp_path)
+    assert init_result.exit_code == 0
+    text_before = _agents_md(tmp_path).read_text()
+    assert "<!-- super-harness framework: plain -->" in text_before
+
+    r = _run(tmp_path, "install", "plain")
+    assert r.exit_code == 0, r.output
+
+    text_after = _agents_md(tmp_path).read_text()
+    # Plain block still present — install plain is idempotent on AGENTS.md.
+    assert "<!-- super-harness framework: plain -->" in text_after
+
+
 def test_install_conflicting_check_id_exits_validation_two(tmp_path: Path) -> None:
     """OI-3: installing openspec when a DIFFERENT provided_by already owns the id
     → EXIT_VALIDATION (2) with a clean format_error, not a silent double-land."""
