@@ -33,7 +33,7 @@ For an end-to-end walkthrough, see [`examples/demo-openspec-claude/`](examples/d
 
 ## What v0.1 ships
 
-- **17 CLI commands** spanning lifecycle (`init` / `change` / `status` / `sync`
+- **16 CLI commands** spanning lifecycle (`init` / `change` / `status` / `sync`
   / `on-merge`), gating (`verify` / `done` / `gate` / `pr validate`), sensors
   (`anchor` / `verification`), and infrastructure (`daemon` / `event` /
   `state` / `adapter` / `sensor`).
