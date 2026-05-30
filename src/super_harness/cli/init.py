@@ -108,7 +108,7 @@ def _skeleton_files() -> dict[str, str]:
     "--framework",
     type=click.Choice(["openspec", "spec-kit", "superpowers", "plain"]),
     help="Explicit framework; default = auto-detect "
-    "(v0.1: no-op placeholder; Phase 4 wires adapter selection.)",
+    "(v0.1: no-op placeholder; framework adapters auto-detect at install time.)",
 )
 @click.option("--force", is_flag=True)
 @click.pass_context
