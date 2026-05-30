@@ -47,7 +47,6 @@ import yaml
 from super_harness.adapters import AgentAdapter, FrameworkAdapter
 from super_harness.adapters.registry import load_adapters
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.core.paths import (
     HarnessNotInitialized,
     adapters_yaml_path,
@@ -60,6 +59,7 @@ from super_harness.engineering.agents_md import (
     section_present,
 )
 from super_harness.engineering.agents_md_render import render_super_harness_section
+from super_harness.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.version import __version__
 
 # Shared AGENTS.md error envelope (mirrors init / adapter install): an OSError

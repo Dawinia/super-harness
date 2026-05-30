@@ -19,7 +19,7 @@ import yaml
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
+from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.sensors import ActivityType, Determinism, Sensor, SensorResult
 from super_harness.sensors import registry as sensors_registry
 from super_harness.sensors.registry import register_builtin

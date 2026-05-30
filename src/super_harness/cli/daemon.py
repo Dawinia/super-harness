@@ -26,12 +26,12 @@ from pathlib import Path
 import click
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.cli.output import json_envelope
 from super_harness.core.paths import HarnessNotInitialized, find_harness_root
 from super_harness.daemon import supervisor
 from super_harness.daemon._uds_path import resolve_socket_path
 from super_harness.daemon.protocol import PROTOCOL_VERSION
+from super_harness.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.version import __version__
 
 

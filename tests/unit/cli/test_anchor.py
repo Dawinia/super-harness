@@ -19,12 +19,12 @@ import pytest
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import anchors_index_path, events_path
 from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
+from super_harness.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 
 # ---------------------------------------------------------------------------
 # Helpers

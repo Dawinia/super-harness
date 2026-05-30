@@ -65,13 +65,6 @@ import click
 import yaml
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import (
-    EXIT_EXTERNAL_TOOL,
-    EXIT_GENERIC,
-    EXIT_NO_CONFIG,
-    EXIT_OK,
-    EXIT_VALIDATION,
-)
 from super_harness.cli.output import json_envelope
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import (
@@ -87,6 +80,13 @@ from super_harness.engineering.pr_metadata import (
     resolve_slug_from_pr_body_strict,
 )
 from super_harness.engineering.verification_config import load_verification_config
+from super_harness.exit_codes import (
+    EXIT_EXTERNAL_TOOL,
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+    EXIT_VALIDATION,
+)
 from super_harness.sensors import Activity, WorkspaceContext
 from super_harness.sensors.dispatcher import (
     ONESHOT_DISPATCHER_PARALLELISM,

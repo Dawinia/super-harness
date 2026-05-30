@@ -33,7 +33,6 @@ from typing import Any
 import click
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
 from super_harness.core._registry import read_plugin_paths
 from super_harness.core.paths import (
@@ -41,6 +40,7 @@ from super_harness.core.paths import (
     find_harness_root,
     sensors_yaml_path,
 )
+from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.sensors.registry import get_builtin, list_builtins, load_sensors
 
 

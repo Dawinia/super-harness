@@ -13,12 +13,6 @@ from pathlib import Path
 import click
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import (
-    EXIT_EXTERNAL_TOOL,
-    EXIT_GENERIC,
-    EXIT_NO_CONFIG,
-    EXIT_OK,
-)
 from super_harness.core.clock import utc_now_iso
 from super_harness.engineering.agents_md import AgentsMdInjectionError
 from super_harness.engineering.agents_md_render import render_super_harness_section
@@ -28,6 +22,12 @@ from super_harness.engineering.pr_metadata import (
     METADATA_BEGIN,
     METADATA_END,
     parse_metadata_block,
+)
+from super_harness.exit_codes import (
+    EXIT_EXTERNAL_TOOL,
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
 )
 from super_harness.version import __version__
 

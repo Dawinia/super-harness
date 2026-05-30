@@ -39,13 +39,6 @@ from typing import Any
 import click
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import (
-    EXIT_EXTERNAL_TOOL,
-    EXIT_GENERIC,
-    EXIT_NO_CONFIG,
-    EXIT_OK,
-    EXIT_VALIDATION,
-)
 from super_harness.cli.output import json_envelope
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import find_ordering_violations
@@ -64,6 +57,13 @@ from super_harness.engineering import gh
 from super_harness.engineering.pr_metadata import (
     REQUIRED_METADATA_KEYS,
     parse_metadata_block,
+)
+from super_harness.exit_codes import (
+    EXIT_EXTERNAL_TOOL,
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+    EXIT_VALIDATION,
 )
 from super_harness.sensors import WorkspaceContext
 from super_harness.sensors.dispatcher import (

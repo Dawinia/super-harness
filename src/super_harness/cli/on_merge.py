@@ -49,11 +49,6 @@ from typing import Any
 import click
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import (
-    EXIT_GENERIC,
-    EXIT_NO_CONFIG,
-    EXIT_OK,
-)
 from super_harness.cli.output import json_envelope
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.events import Actor, Event
@@ -66,6 +61,11 @@ from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.slug import SlugError, validate_slug
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
+from super_harness.exit_codes import (
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+)
 from super_harness.sensors import WorkspaceContext
 from super_harness.sensors.anchor_index_rebuilder import AnchorIndexRebuilder
 from super_harness.sensors.dispatcher import (

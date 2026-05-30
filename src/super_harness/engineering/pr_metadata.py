@@ -22,44 +22,12 @@ from pathlib import Path
 from typing import Any
 
 from super_harness.core.slug import SlugError, validate_slug
-
-# Local mirror of two CLI exit codes used in PrSlugLookupError.
-#
-# We DO NOT `from super_harness.cli.exit_codes import …` here. That looks safe
-# (`cli/exit_codes.py` is a pure leaf — zero imports, just 6 integer constants),
-# but Python's package-init semantics make it cycle: `from
-# super_harness.cli.exit_codes import …` triggers `cli/__init__.py` first, and
-# `cli/__init__.py` eagerly loads the full CLI surface. The chain is:
-#
-#   cli/__init__.py
-#     → cli/adapter.py
-#         → adapters/__init__.py
-#             → sensors/__init__.py
-#                 → sensors/pr_decorator.py  ← imports METADATA_BEGIN/END
-#                     → engineering/pr_metadata.py  ← PARTIALLY INITIALIZED
-#                                                    ImportError raised here
-#
-# Reproducer: ANY new `from super_harness.cli.* import …` line in this module
-# explodes at first test collection with `ImportError: cannot import name
-# 'METADATA_BEGIN' from partially initialized module`. Confirmed Phase 14
-# Task 14.3 stage-2 (a code-quality reviewer was misled by running
-# `python -c "import super_harness.cli.exit_codes"` directly — the leaf
-# module loads fine in isolation, but the SOURCE-LEVEL `from … import`
-# inside a module that sensors/pr_decorator.py transitively imports is what
-# triggers the cycle).
-#
-# The CLI layer sits ABOVE engineering; engineering must never reach back
-# into cli. The two constants below are the frozen v0.1 public contract
-# (cli-command-surface §2.2); duplication is safe because the values are
-# stable, AND `test_pr_metadata_local_exit_codes_match_cli_constants` pins
-# the mirror to the CLI constants so any drift would fail CI.
-#
-# v0.2 cleanup direction (private/OPEN-ITEMS.md): promote `cli/exit_codes.py`
-# to top-level `super_harness/exit_codes.py` (it's not actually cli-specific
-# — process exit codes belong to the package root). That would let
-# engineering/ import it directly without crossing through `cli/__init__.py`.
-_EXIT_VALIDATION = 2
-_EXIT_EXTERNAL_TOOL = 4
+from super_harness.exit_codes import (
+    EXIT_EXTERNAL_TOOL as _EXIT_EXTERNAL_TOOL,
+)
+from super_harness.exit_codes import (
+    EXIT_VALIDATION as _EXIT_VALIDATION,
+)
 
 # ---------------------------------------------------------------------------
 # Marker constants (format SSOT = engineering-integration §2.5)

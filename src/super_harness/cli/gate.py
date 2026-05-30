@@ -34,12 +34,6 @@ import click
 import yaml
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import (
-    EXIT_GENERIC,
-    EXIT_NO_CONFIG,
-    EXIT_OK,
-    EXIT_VALIDATION,
-)
 from super_harness.cli.output import json_envelope
 from super_harness.core._registry import read_plugin_paths
 from super_harness.core.active_change import read_active_change_id
@@ -51,6 +45,12 @@ from super_harness.core.paths import (
 )
 from super_harness.core.state import ChangeState
 from super_harness.core.state_yaml import read_state_yaml
+from super_harness.exit_codes import (
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+    EXIT_VALIDATION,
+)
 from super_harness.gates import GateDecision, ProposedAction
 from super_harness.gates.pre_tool_use import PreToolUseGate
 from super_harness.gates.registry import get_builtin, list_builtins, load_gates

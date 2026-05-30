@@ -29,8 +29,8 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.cli.exit_codes import EXIT_VALIDATION
 from super_harness.core.writer import EventWriter
+from super_harness.exit_codes import EXIT_VALIDATION
 from tests.unit.core.test_writer import _make_event
 
 

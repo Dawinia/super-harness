@@ -44,12 +44,6 @@ from unittest import mock
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.cli.exit_codes import (
-    EXIT_EXTERNAL_TOOL,
-    EXIT_GENERIC,
-    EXIT_NO_CONFIG,
-    EXIT_OK,
-)
 from super_harness.cli.pr import pr_group
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import events_path
@@ -57,6 +51,12 @@ from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
 from super_harness.engineering.gh import GhError
 from super_harness.engineering.pr_metadata import METADATA_BEGIN, METADATA_END
+from super_harness.exit_codes import (
+    EXIT_EXTERNAL_TOOL,
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+)
 
 # Mock at the SENSOR import site (Phase 12 pattern): the dispatcher
 # transitively calls these through PRDecorator.check().
