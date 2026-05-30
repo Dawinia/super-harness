@@ -312,11 +312,6 @@ def _brief(cmd: click.Command) -> str:
     the live binary.
     """
     text = cmd.short_help or cmd.help or ""
-    if not text:
-        cb = getattr(cmd, "callback", None)
-        doc = getattr(cb, "__doc__", None) if cb else None
-        if doc:
-            text = doc
     # Take only the first paragraph (split on a blank line)
     para = text.strip().split("\n\n", 1)[0]
     # Collapse intra-paragraph newlines + whitespace runs
