@@ -31,7 +31,14 @@ from super_harness.engineering.pr_metadata import (
     build_metadata,
     parse_metadata_block,
 )
-from super_harness.sensors import ActivityType, Determinism, Sensor, SensorResult, WorkspaceContext
+from super_harness.sensors import (
+    Activity,
+    ActivityType,
+    Determinism,
+    Sensor,
+    SensorResult,
+    WorkspaceContext,
+)
 
 
 class PRDecoratorError(RuntimeError):
@@ -95,20 +102,13 @@ class PRDecorator(Sensor):
     triggers_on_activities: ClassVar[tuple[ActivityType, ...]] = ()
     determinism: ClassVar[Determinism] = "computational"
 
-    def check(self, trigger: Event, context: WorkspaceContext) -> SensorResult:  # type: ignore[override]
+    def check(self, trigger: Event | Activity, context: WorkspaceContext) -> SensorResult:
         """Fetch PR body, inject metadata block, write back.
 
-        Parameters
-        ----------
-        trigger:
-            Must be a ``pr_opened`` Event with ``payload["pr_number"]`` set.
-        context:
-            WorkspaceContext with ``workspace_root`` pointing to the repo root.
-
-        Returns
-        -------
-        SensorResult
-            status="pass", summary naming the PR number; emit_events=[].
+        The base ``Sensor.check`` accepts ``Event | Activity`` for both trigger
+        kinds; at runtime this sensor is only routed ``pr_opened`` events
+        (``triggers_on_activities`` is empty), but the parameter type matches
+        the base for Liskov correctness — mirroring sibling sensors.
 
         Raises
         ------
@@ -116,10 +116,15 @@ class PRDecorator(Sensor):
             If ``trigger.payload["pr_number"]`` is absent — surfaces via
             dispatcher as ``sensor_crashed``.
         PRDecoratorError
-            If the PR body's marker state is ambiguous or violates AC-3.
+            If the PR body's marker state is ambiguous or violates AC-3, or
+            no change_id can be resolved from trigger or context.
         """
         pr_number: int = trigger.payload["pr_number"]
-        change_id: str = trigger.change_id
+        change_id = getattr(trigger, "change_id", None) or context.active_change_id
+        if change_id is None:
+            raise PRDecoratorError(
+                "PR-decorator: cannot resolve change_id from trigger or context"
+            )
 
         body = view_pr(pr_number, fields=["body"]).get("body") or ""
         new_block = build_metadata(change_id, context.workspace_root)
