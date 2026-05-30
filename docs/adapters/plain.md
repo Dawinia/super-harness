@@ -89,17 +89,14 @@ marker match. Do not edit content between the markers manually; re-run
   Plain contributes no `adapter_provided` checks. Add your own user checks to
   `.harness/verification.yaml` if you want more (see
   [`docs/cli-reference.md`](../cli-reference.md) for the schema).
-- **AGENTS.md shows BOTH a Plain block and an OpenSpec block after I
-  installed OpenSpec.** Expected in v0.1. The framework slot is currently
-  multi-block — `init` writes the Plain fallback subsection; subsequent
-  `adapter install <name>` calls inject their subsection alongside the
-  Plain block without eviction. Evicting the Plain fallback on first
-  non-Plain install is a v0.2 follow-up (architecturally consistent with
-  pluggable multi-framework adapters, but UX-confusing in the common
-  single-framework case). For now you can manually remove the
-  `<!-- super-harness framework: plain --> ... <!-- /super-harness
-  framework: plain -->` block from `AGENTS.md` if you want a single-
-  framework view.
+- **AGENTS.md shows the Plain block even after I installed OpenSpec.**
+  Expected only on installs from before 2026-05-31. Current behavior:
+  `adapter install <non-plain-framework>` injects its subsection AND
+  evicts the Plain fallback `init` wrote (so AGENTS.md does not carry
+  two contradictory workflows). If you still see the Plain block,
+  re-run `adapter install openspec` (idempotent — the eviction is a
+  no-op when Plain is already gone). Asymmetric: `adapter uninstall
+  openspec` does NOT re-inject the Plain fallback (v0.2 follow-up).
 - **Plain is listed as `is_fallback: true` — should I worry?** No. The flag
   tells the dispatcher to activate Plain only when nothing else matches; it
   does not mean Plain is deprecated or unsupported.

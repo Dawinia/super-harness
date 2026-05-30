@@ -160,8 +160,22 @@ def gate_pre_tool_use(
     """
     params: dict[str, Any] = {"tool": tool, "file": file, "change_id": change_id}
     sock = _sock_path(workspace_root)
+    # Hot-path query timeout: 200ms by default (AC-2 budget). Integration tests
+    # under heavy CI load can race a cold hook-subprocess against the 200ms
+    # window even after `ensure_running` confirmed the daemon is up — the
+    # subprocess boot + import + socket connect can absorb most of the budget
+    # and a real query times out, fail-opening exit-0 instead of returning
+    # the gate's block verdict. `SUPER_HARNESS_HOOK_QUERY_TIMEOUT` lets the
+    # test harness widen the window (env var read per call so each hook
+    # subprocess re-resolves). Production should never set this — the 200ms
+    # default is the AC-2 contract.
+    hot_path_timeout = float(
+        os.environ.get("SUPER_HARNESS_HOOK_QUERY_TIMEOUT", "0.2")
+    )
     try:
-        resp = query(sock, method="gate.pre_tool_use", params=params, timeout=0.2)
+        resp = query(
+            sock, method="gate.pre_tool_use", params=params, timeout=hot_path_timeout
+        )
     except (DaemonUnreachable, DaemonTimeout) as exc:
         reason = f"daemon starting; first call permissive ({exc})"
         _spawn_daemon_fire_and_forget(workspace_root)

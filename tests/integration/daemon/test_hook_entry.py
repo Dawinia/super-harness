@@ -36,9 +36,16 @@ def workspace(tmp_path: Path) -> Path:
 
 
 def _start_daemon(workspace: Path) -> None:
-    """Use the supervisor to ensure daemon is up (foreground / blocking)."""
+    """Use the supervisor to ensure daemon is up (foreground / blocking).
+
+    `wait_seconds=15.0` (vs prod default 5.0) is defensive against slow CI
+    daemon-spawn races. The autouse fixture in conftest also widens the hook
+    subprocess's hot-path query timeout via SUPER_HARNESS_HOOK_QUERY_TIMEOUT
+    so a cold subprocess + daemon-query under load cannot fail-open silently.
+    Both knobs root-cause OPEN-ITEMS #4 (daemon readiness determinism).
+    """
     from super_harness.daemon import supervisor
-    supervisor.ensure_running(workspace, wait_seconds=5.0)
+    supervisor.ensure_running(workspace, wait_seconds=15.0)
 
 
 def test_hook_entry_exits_0_on_allow(workspace: Path) -> None:

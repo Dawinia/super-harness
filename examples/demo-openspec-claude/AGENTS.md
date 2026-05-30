@@ -15,10 +15,6 @@ If you use a framework command (recommended): the framework auto-creates the bra
 
 Use your framework's native PR command:
 
-<!-- super-harness framework: plain -->
-- No framework: drive lifecycle via `super-harness change start <slug>` / `super-harness plan ready <slug>` / `super-harness done <slug>`.
-<!-- /super-harness framework: plain -->
-
 <!-- super-harness framework: openspec -->
 - OpenSpec change lives in `openspec/changes/<slug>/` (proposal.md / tasks.md / specs/ deltas).
 - Validate before push: `openspec validate <slug> --strict`.

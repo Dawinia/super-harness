@@ -185,7 +185,20 @@ def adapter_install(ctx: click.Context, name: str) -> None:
             if isinstance(adapter, AgentAdapter):
                 inject_agent_subsection(agents_path, adapter.name, subsection)
             else:
+                # Inject FIRST, then evict plain (order matters): `inject_
+                # framework_subsection` branch 3 appends after the LAST framework
+                # block as its anchor. If we evicted plain first, branch 3 would
+                # have no anchor and the injection would silently no-op. So we
+                # let openspec land after plain (creating the dual-block state
+                # transiently), then drop plain. `remove_subsection` is a no-op
+                # if the plain block is absent (e.g. user installed openspec
+                # first, no plain block ever existed) — idempotent on re-install.
+                # Phase 15 OPEN-ITEM cleanup: uninstall does NOT currently re-
+                # inject plain on the last non-plain framework uninstall
+                # (asymmetric, v0.2 follow-up).
                 inject_framework_subsection(agents_path, adapter.name, subsection)
+                if adapter.name != "plain":
+                    remove_subsection(agents_path, "framework", "plain")
         except (OSError, AgentsMdInjectionError) as e:
             click.echo(
                 format_error(
