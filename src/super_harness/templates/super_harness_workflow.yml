@@ -1,0 +1,123 @@
+# .github/workflows/super-harness.yml
+name: super-harness
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+jobs:
+  # On `opened`, decorate the PR with the super-harness metadata block so
+  # downstream `pr validate` has something to check. Gated to `opened` only:
+  # re-running on synchronize/reopened would no-op (block already present)
+  # while burning CI minutes, and PR-decorator's idempotent merge would
+  # silently re-fold any manual edits inside the marker block — the
+  # AGENTS.md marker-fail-loud spirit (§3.2 / Phase 9 lessons) says we
+  # don't touch user-edited marker regions unless we have to.
+  # NOTE: do NOT add `pr-decorate` to branch-protection required-status-checks —
+  # it is skipped on synchronize/reopened events, and a skipped required check
+  # blocks merge forever depending on the branch-protection mode. Require only
+  # `pr-validate` + `verification` (both run on every PR event).
+  pr-decorate:
+    if: github.event_name == 'pull_request' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install super-harness
+        run: pipx install super-harness==0.1.0
+      - name: Inject PR metadata block
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: super-harness pr emit-opened --pr "$PR_NUMBER" --change "$HEAD_REF"
+
+  # Validate the metadata block + lifecycle ordering + READY_TO_MERGE state on
+  # every PR event (after `pr-decorate` injects on `opened`; subsequent events
+  # re-validate so a user who edits the title/description gets fresh feedback).
+  pr-validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install super-harness
+        run: pipx install super-harness==0.1.0
+      - name: Validate PR metadata + lifecycle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: super-harness pr validate "$PR_NUMBER"
+
+  # Run verification checks against the change's plan/spec. Uses head_ref as
+  # the positional slug (VISION convention: branch = slug). Slug-validation
+  # gate (A6 decision, see cli-command-surface §`on-merge` slug-校验 block)
+  # rejects non-kebab head_refs (`feature/foo`, `bugfix/123`) with actionable
+  # stderr — projects using git-flow naming must switch to kebab branches or
+  # pass an explicit slug locally.
+  verification:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install super-harness
+        run: pipx install super-harness==0.1.0
+      - name: Run super-harness verification
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: super-harness verify "$HEAD_REF"
+
+  # On merge to main, look up the merged PR's head_ref from the commit sha
+  # (github.head_ref is empty on push events — it is a PR-event-only field)
+  # and feed it to on-merge as the explicit --change slug. Uses the canonical
+  # `gh api /repos/{owner}/{repo}/commits/<sha>/pulls` endpoint rather than
+  # `gh pr list --search <sha>` — the former is deterministic (commit→PR
+  # reverse index, no eventual-consistency lag); the latter is a text-search
+  # over the issues index with a few-second indexing window after merge.
+  # If lookup fails, on-merge's commit-message fallback runs (unreliable for
+  # squash-merges with --delete-branch — Phase 13 design, see cli-surface
+  # §`on-merge`) and may exit 1; recovery is local re-run with explicit
+  # --change. gh resolves `{owner}/{repo}` from the current git remote.
+  on-merge:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install super-harness
+        run: pipx install super-harness==0.1.0
+      - name: Resolve change slug from merged PR
+        id: pr_lookup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          slug=$(gh api "/repos/{owner}/{repo}/commits/$COMMIT_SHA/pulls" \
+            --jq '.[0].head.ref // empty')
+          printf 'slug=%s\n' "$slug" >> "$GITHUB_OUTPUT"
+      - name: Process merged change (trigger l1-updater, etc.)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMIT_SHA: ${{ github.sha }}
+          RESOLVED_SLUG: ${{ steps.pr_lookup.outputs.slug }}
+        run: |
+          if [ -n "$RESOLVED_SLUG" ]; then
+            super-harness on-merge --commit "$COMMIT_SHA" --change "$RESOLVED_SLUG"
+          else
+            super-harness on-merge --commit "$COMMIT_SHA"
+          fi
