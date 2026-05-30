@@ -44,12 +44,6 @@ import click
 import yaml
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import (
-    EXIT_GENERIC,
-    EXIT_NO_CONFIG,
-    EXIT_OK,
-    EXIT_VALIDATION,
-)
 from super_harness.core.paths import (
     HarnessNotInitialized,
     find_harness_root,
@@ -58,6 +52,12 @@ from super_harness.core.paths import (
 from super_harness.engineering.verification_config import (
     VerificationCheckConflict,
     merge_adapter_provided,
+)
+from super_harness.exit_codes import (
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+    EXIT_VALIDATION,
 )
 
 

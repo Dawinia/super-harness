@@ -25,7 +25,6 @@ from pathlib import Path
 import click
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
 from super_harness.core.paths import (
     HarnessNotInitialized,
@@ -34,6 +33,7 @@ from super_harness.core.paths import (
 )
 from super_harness.core.reducer import derive_state
 from super_harness.core.state import TERMINAL_STATES
+from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
 
 @click.command("status")

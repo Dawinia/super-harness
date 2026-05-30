@@ -37,7 +37,6 @@ from typing import Any
 import click
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.cli.output import json_envelope
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.clock import utc_now_iso
@@ -53,6 +52,7 @@ from super_harness.core.slug import SlugError, validate_slug
 from super_harness.core.state import STATES, ChangeState
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
+from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
 # v0.1 default recent-event window for `change resume`. The number 20 mirrors
 # adapter-architecture §3.5 `read_recent_events(change_id, limit=20)` so the

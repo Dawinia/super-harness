@@ -24,7 +24,6 @@ import click
 import yaml
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import (
     HarnessNotInitialized,
@@ -33,6 +32,7 @@ from super_harness.core.paths import (
     find_harness_root,
 )
 from super_harness.core.reducer import derive_state
+from super_harness.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.sensors.anchor_index_rebuilder import rebuild_anchor_index
 
 

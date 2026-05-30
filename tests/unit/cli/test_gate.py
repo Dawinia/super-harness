@@ -19,7 +19,7 @@ import yaml
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.cli.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
+from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.gates import Gate, GateDecision, GateFiresOn, GateResult
 from super_harness.gates import registry as gates_registry
 from super_harness.gates.registry import register_builtin

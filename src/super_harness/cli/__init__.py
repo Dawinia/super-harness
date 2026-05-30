@@ -65,7 +65,7 @@ def main(
 
 # Subgroup registration is at module bottom because it must reference `main`
 # after its definition. The subgroup *imports* themselves are top-of-file —
-# state.py / event.py only depend on `super_harness.cli.exit_codes` and
+# state.py / event.py only depend on `super_harness.exit_codes` and
 # `super_harness.cli.output`, never on `super_harness.cli` itself, so there's
 # no circular-import risk.
 main.add_command(state_group)
