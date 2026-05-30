@@ -40,10 +40,12 @@ argument comes from the operator (trusted). In CI, the bundled
 ``super-harness.yml`` workflow's ``verification`` job passes
 ``${{ github.head_ref }}`` as the positional slug. ``head_ref`` is
 PR-author-controlled (kebab branch name = slug per VISION convention), but
-A6 is NOT applied on the positional path — the workflow relies on GitHub's
-own ref-name validation (no spaces, no ``..``, etc.) as the boundary
-defense. By contrast, the ``pr emit-opened --change`` path (also takes
-``head_ref``) DOES apply A6 explicitly per Phase 13 §A6 decision. Summary:
+A6 is NOT applied on the positional path — git ref-name rules permit
+characters like ``/`` that A6 forbids (so a ``feature/foo`` head_ref reaches
+``verify`` unvalidated by A6); the workflow's defense-in-depth is the
+``pr-decorate`` job, which applies A6 inside ``pr emit-opened --change`` and
+fails first (exit 1) on non-kebab refs — ``verify`` is therefore never
+reached with a non-conforming slug under normal CI flow. Summary:
 positional / active-change inherit upstream validation (CLI args, ``change
 start``, git ref-name rules); only ``--pr <num>`` (which parses an
 attacker-controlled PR body) invokes A6 inside

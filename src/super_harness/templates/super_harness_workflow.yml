@@ -58,11 +58,15 @@ jobs:
         run: super-harness pr validate "$PR_NUMBER"
 
   # Run verification checks against the change's plan/spec. Uses head_ref as
-  # the positional slug (VISION convention: branch = slug). Slug-validation
-  # gate (A6 decision, see cli-command-surface §`on-merge` slug-校验 block)
-  # rejects non-kebab head_refs (`feature/foo`, `bugfix/123`) with actionable
-  # stderr — projects using git-flow naming must switch to kebab branches or
-  # pass an explicit slug locally.
+  # the positional slug (VISION convention: branch = slug). A6 slug-validation
+  # gate is applied in the `pr-decorate` job above (via `pr emit-opened --change`)
+  # and the `on-merge` job below (via `on-merge --change`), NOT here — `verify`
+  # takes the positional slug as-is. The defense-in-depth for non-kebab head_refs
+  # (`feature/foo`, `bugfix/123`) is: `pr-decorate` fails first with exit 1
+  # (A6 rejection in `pr emit-opened`), so `verify` is never reached with a
+  # non-conforming slug under normal flow. Projects using git-flow naming must
+  # switch to kebab branches; passing a git-flow branch will not produce a
+  # silent fail (the pipeline halts at pr-decorate).
   verification:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
