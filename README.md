@@ -30,7 +30,12 @@ super-harness change start "my-first-change"     # declare the change
 super-harness done                               # verify + advance to AWAITING_CODE_REVIEW
 ```
 
-For an end-to-end walkthrough, see [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/).
+The 5-line block above shows the workflow shape. The literal end-to-end
+path is **not yet runnable cold on v0.1** — the `plan_approved` event has
+no public CLI emitter (see "What v0.1 does NOT ship yet" below), so a
+fresh `change start` lands at `INTENT_DECLARED` and the PreToolUse gate
+blocks the agent's first `Edit`. For a runnable walkthrough that seeds
+past this gap, see [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/).
 
 ## What v0.1 ships
 

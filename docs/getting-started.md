@@ -62,7 +62,9 @@ What `init --setup-github` does:
    block that links a PR to a change.
 5. Best-effort enables repo `auto-merge` + `squash` settings on GitHub
    (skipped silently if you don't have admin on the repo).
-6. Installs friendly-layer git hooks (`pre-commit`, `pre-push`).
+6. Lists `pre-commit` / `pre-push` in `.harness/gates.yaml` as planned
+   cold-path gates. Actual `.git/hooks/` install is v0.2 — see the
+   project README's "What v0.1 does NOT ship yet" / OPEN-ITEMS #2.
 
 Verify:
 
@@ -301,10 +303,7 @@ super-harness state verify                            # invariant-check events.j
   strictly some checks fail (e.g. anchor-sentinel-presence-final warns on
   Micro, must-pass on Normal+).
 - **Read the full reference**: every command's flags, defaults, and exit
-  codes are documented in [`cli-reference.md`](./cli-reference.md). The
-  cli-command-surface spec
-  ([`private/specs/2026-05-27-cli-command-surface.md`](../private/specs/2026-05-27-cli-command-surface.md))
-  is the source of truth.
+  codes are documented in [`cli-reference.md`](./cli-reference.md).
 
 ---
 
