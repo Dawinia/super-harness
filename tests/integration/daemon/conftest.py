@@ -11,11 +11,31 @@ import signal
 import socket
 import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
+import pytest
 import yaml
 
 from super_harness.daemon.server import DaemonServer
+
+# Hot-path query timeout for hook subprocesses in tests: 5s overrides the
+# production 200ms AC-2 budget so CI-load variance (subprocess cold-start +
+# import time + socket connect) cannot eat the entire window before the daemon
+# query lands. Without this, `test_hook_entry_exits_1_on_block` occasionally
+# fail-opened (exit 0) instead of blocking (exit 1) under heavy CI parallelism
+# — see OPEN-ITEMS #4 (daemon readiness determinism). Applied automatically to
+# every test in this directory via the autouse fixture below; child subprocess
+# inherits the env var.
+_HOOK_QUERY_TIMEOUT_FOR_TESTS = "5.0"
+
+
+@pytest.fixture(autouse=True)
+def _hook_query_timeout_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setenv(
+        "SUPER_HARNESS_HOOK_QUERY_TIMEOUT", _HOOK_QUERY_TIMEOUT_FOR_TESTS
+    )
+    yield
 
 
 def write_state(workspace: Path, change_id: str, current_state: str) -> None:
