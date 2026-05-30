@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import click
 from click.testing import CliRunner
 
 from super_harness.cli import main
@@ -446,7 +447,7 @@ def test_setup_github_existing_workflow_decline_overwrite_leaves_untouched(tmp_p
 
     with patch("super_harness.cli.init.check_gh"), patch(
         "super_harness.cli.init.enable_repo_merge_settings"
-    ):
+    ) as mock_settings:                                # ← name it
         r = CliRunner().invoke(
             main,
             ["--workspace", str(tmp_path), "init", "--setup-github"],
@@ -454,6 +455,18 @@ def test_setup_github_existing_workflow_decline_overwrite_leaves_untouched(tmp_p
         )
     assert r.exit_code == 0, r.output
     assert wf.read_text() == before
+    assert mock_settings.called, (                     # ← prove init reached Step 3
+        "init must traverse Step 2.5 (_write_workflow_file) to reach Step 3 "
+        "(enable_repo_merge_settings); a vacuous test would pass even if "
+        "_write_workflow_file is removed"
+    )
+    # Non-vacuity guard: the overwrite prompt from _write_workflow_file must appear
+    # in output. If _write_workflow_file were removed, this prompt would be absent
+    # and this assertion would fail — proving the test is not vacuous.
+    assert "Overwrite existing" in r.output and "super-harness.yml" in r.output, (
+        "_write_workflow_file must have fired the overwrite prompt; "
+        "if absent, the test is vacuous"
+    )
 
 
 def test_setup_github_existing_workflow_noninteractive_no_quiet_is_nonfatal(tmp_path: Path):
@@ -501,6 +514,8 @@ def test_setup_github_existing_workflow_identical_is_noop(tmp_path: Path):
     """Existing workflow that's byte-identical to bundled → no prompt, no-op exit 0."""
     from importlib.resources import files
 
+    import super_harness.cli.init as _init_mod
+
     bundled = (
         files("super_harness.templates")
         .joinpath("super_harness_workflow.yml")
@@ -513,7 +528,10 @@ def test_setup_github_existing_workflow_identical_is_noop(tmp_path: Path):
 
     with patch("super_harness.cli.init.check_gh"), patch(
         "super_harness.cli.init.enable_repo_merge_settings"
-    ):
+    ) as mock_settings, patch(                        # ← spy: wraps= keeps real behavior
+        "super_harness.cli.init._write_workflow_file",
+        wraps=_init_mod._write_workflow_file,
+    ) as mock_write_wf:
         # No input= — if a prompt fires this will fail (non-interactive Abort → nonfatal)
         # but we want to assert NO prompt fires at all (byte-identical is silent no-op).
         r = CliRunner().invoke(
@@ -521,3 +539,53 @@ def test_setup_github_existing_workflow_identical_is_noop(tmp_path: Path):
         )
     assert r.exit_code == 0, r.output + r.stderr
     assert wf.read_text() == bundled
+    assert mock_settings.called, (                     # ← prove init reached Step 3
+        "init must traverse Step 2.5 (_write_workflow_file) to reach Step 3 "
+        "(enable_repo_merge_settings); a vacuous test would pass even if "
+        "_write_workflow_file is removed"
+    )
+    # Non-vacuity guard: the spy on _write_workflow_file must have been called.
+    # A vacuous test (with _write_workflow_file removed) would fail here.
+    assert mock_write_wf.called, (
+        "_write_workflow_file was never invoked — the test is vacuous"
+    )
+
+
+def test_setup_github_existing_workflow_tty_ctrl_c_exits_1(tmp_path: Path):
+    """Existing workflow file + interactive Ctrl-C (TTY=True + Abort) → exit 1.
+
+    Simulates the user pressing Ctrl-C at the overwrite prompt. The isatty()
+    discriminator distinguishes this from the non-TTY EOF case (which would
+    leave the file untouched + exit 0); TTY Ctrl-C re-raises Abort → Click
+    converts to exit 1.
+
+    CliRunner replaces sys.stdin during invoke (its isolation context sets
+    sys.stdin = _NamedTextIOWrapper). We therefore inject the isatty=True
+    patch via a side_effect on click.confirm: the side_effect fires INSIDE
+    the CliRunner context (sys.stdin is already the runner's stdin object),
+    patches .isatty on that live object, then raises Abort — so the
+    isatty() check in the except-Abort handler sees True and re-raises.
+    """
+    import sys as _sys
+
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    wf = _workflow_path(tmp_path)
+    wf.write_text("old workflow content\n")
+
+    def _abort_as_tty(*args: object, **kwargs: object) -> None:
+        # Patch isatty on the live stdin already installed by CliRunner's
+        # isolation context, then raise Abort to simulate Ctrl-C.
+        _sys.stdin.isatty = lambda: True  # type: ignore[method-assign]
+        raise click.Abort()
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ), patch("super_harness.cli.init.click.confirm", side_effect=_abort_as_tty):
+        r = CliRunner().invoke(
+            main,
+            ["--workspace", str(tmp_path), "init", "--setup-github"],
+        )
+    assert r.exit_code == 1, r.output
+    # Click formats Abort as "Aborted!" on stderr; either suffices as evidence
+    assert "Abort" in (r.output + r.stderr) or r.exit_code == 1
