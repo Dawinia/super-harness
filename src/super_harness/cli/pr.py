@@ -29,9 +29,6 @@ Exit codes (cli-command-surface §`pr validate` / §`pr emit-opened`):
       results list into exit 4 (matches `pr validate`'s gh-failure exit).
 - 5 — reserved (concurrency conflict; no v0.1 path actually exits 5).
 
-`resolve_change_from_pr` (Fork C) is a standalone helper built now for Phase 13's
-`verify --pr` wiring; `pr validate` parses inline because it needs the full block,
-not just the Change field.
 """
 from __future__ import annotations
 
@@ -80,19 +77,6 @@ from super_harness.sensors.pr_decorator import PRDecorator
 # on-merge's pattern: the dispatched-sensor LIST is the contract, not a
 # runtime-observed outcome list. The single entry is PRDecorator.name.
 _SENSORS_TRIGGERED: list[str] = [PRDecorator.name]
-
-
-def resolve_change_from_pr(pr_number: int) -> str | None:
-    """Resolve a change_id from a PR's metadata block, or None if there is no block.
-
-    `view_pr → parse_metadata_block → block.fields["Change"]`. Built now for
-    Phase 13's `verify --pr` wiring (which can only resolve usefully once the
-    PR-decorator injects metadata blocks). `gh.GhError` is allowed to propagate —
-    the Phase-13 caller handles it.
-    """
-    body = gh.view_pr(pr_number, fields=["body"])["body"] or ""
-    block = parse_metadata_block(body)
-    return block.fields.get("Change") if block.present else None
 
 
 @click.group("pr")

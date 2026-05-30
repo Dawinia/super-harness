@@ -18,6 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import click
 from click.testing import CliRunner
 
 from super_harness.cli import main
@@ -346,6 +347,10 @@ def test_setup_github_existing_no_block_noninteractive_no_quiet_is_nonfatal(tmp_
     assert "non-interactive" in r.stderr.lower() or "skipped" in r.stderr.lower()
 
 
+def _workflow_path(root: Path) -> Path:
+    return root / ".github" / "workflows" / "super-harness.yml"
+
+
 def test_setup_github_log_write_failure_is_nonfatal(tmp_path: Path):
     """If the operation-log write itself fails (path blocked), the non-fatal
     repo-settings degradation STILL exits 0 — never a hard crash (AC-7)."""
@@ -369,3 +374,225 @@ def test_setup_github_log_write_failure_is_nonfatal(tmp_path: Path):
     assert r2.exit_code == 0, r2.output + r2.stderr
     assert "Traceback" not in r2.stderr
     assert blocker.is_file()  # untouched
+
+
+# --------------------------------------------------------------------------- #
+# (g) workflow file deployment (Task 14.2)
+# --------------------------------------------------------------------------- #
+
+
+def test_setup_github_writes_workflow_file(tmp_path: Path):
+    """--setup-github writes BOTH .github/ files (PR template + workflow)."""
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "init", "--setup-github"]
+        )
+
+    assert r.exit_code == 0, r.output
+    assert _template_path(tmp_path).exists()
+    assert _workflow_path(tmp_path).exists()
+    wf_text = _workflow_path(tmp_path).read_text()
+    assert len(wf_text) > 0
+
+
+def test_setup_github_workflow_matches_bundled_verbatim(tmp_path: Path):
+    """Written workflow file is byte-for-byte the bundled super_harness_workflow.yml."""
+    from importlib.resources import files
+
+    bundled = (
+        files("super_harness.templates")
+        .joinpath("super_harness_workflow.yml")
+        .read_text()
+    )
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "init", "--setup-github"]
+        )
+    assert r.exit_code == 0, r.output
+    assert _workflow_path(tmp_path).read_text() == bundled
+
+
+def test_setup_github_existing_workflow_with_quiet_overwrites(tmp_path: Path):
+    """Existing workflow file + --quiet → overwrites without prompt."""
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    wf = _workflow_path(tmp_path)
+    wf.write_text("old workflow content\n")
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main,
+            ["--workspace", str(tmp_path), "-q", "init", "--setup-github"],
+        )
+    assert r.exit_code == 0, r.output
+    new_content = wf.read_text()
+    assert new_content != "old workflow content\n"
+    assert len(new_content) > 0
+
+
+def test_setup_github_existing_workflow_decline_overwrite_leaves_untouched(tmp_path: Path):
+    """Existing workflow file + interactive decline → leaves untouched, exit 0."""
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    wf = _workflow_path(tmp_path)
+    wf.write_text("old workflow content\n")
+    before = wf.read_text()
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ) as mock_settings:                                # ← name it
+        r = CliRunner().invoke(
+            main,
+            ["--workspace", str(tmp_path), "init", "--setup-github"],
+            input="n\n",  # decline the confirm
+        )
+    assert r.exit_code == 0, r.output
+    assert wf.read_text() == before
+    assert mock_settings.called, (                     # ← prove init reached Step 3
+        "init must traverse Step 2.5 (_write_workflow_file) to reach Step 3 "
+        "(enable_repo_merge_settings); a vacuous test would pass even if "
+        "_write_workflow_file is removed"
+    )
+    # Non-vacuity guard: the overwrite prompt from _write_workflow_file must appear
+    # in output. If _write_workflow_file were removed, this prompt would be absent
+    # and this assertion would fail — proving the test is not vacuous.
+    assert "Overwrite existing" in r.output and "super-harness.yml" in r.output, (
+        "_write_workflow_file must have fired the overwrite prompt; "
+        "if absent, the test is vacuous"
+    )
+
+
+def test_setup_github_existing_workflow_noninteractive_no_quiet_is_nonfatal(tmp_path: Path):
+    """Existing workflow + non-interactive (no input) + no --quiet → leave untouched, exit 0."""
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    wf = _workflow_path(tmp_path)
+    wf.write_text("old workflow content\n")
+    before = wf.read_text()
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        # No `input=` → empty/non-interactive stdin → click.confirm raises Abort;
+        # the fix catches it and degrades to "leave untouched, non-fatal".
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "init", "--setup-github"]
+        )
+    assert r.exit_code == 0, r.output + r.stderr
+    assert "Aborted" not in (r.output + r.stderr)
+    assert "Traceback" not in r.stderr
+    assert wf.read_text() == before
+    assert "non-interactive" in r.stderr.lower() or "skipped" in r.stderr.lower()
+
+
+def test_setup_github_non_utf8_existing_workflow_friendly_error(tmp_path: Path):
+    """Non-UTF-8 existing workflow file → exit 1 with friendly error, no traceback."""
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    _workflow_path(tmp_path).write_bytes(b"\xff\xfe not utf-8 \x80\x81")
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "-q", "init", "--setup-github"]
+        )
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness init:" in r.stderr
+    assert "could not read" in r.stderr
+
+
+def test_setup_github_existing_workflow_identical_is_noop(tmp_path: Path):
+    """Existing workflow that's byte-identical to bundled → no prompt, no-op exit 0."""
+    from importlib.resources import files
+
+    import super_harness.cli.init as _init_mod
+
+    bundled = (
+        files("super_harness.templates")
+        .joinpath("super_harness_workflow.yml")
+        .read_text()
+    )
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    wf = _workflow_path(tmp_path)
+    wf.write_text(bundled)
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ) as mock_settings, patch(                        # ← spy: wraps= keeps real behavior
+        "super_harness.cli.init._write_workflow_file",
+        wraps=_init_mod._write_workflow_file,
+    ) as mock_write_wf:
+        # No input= — if a prompt fires this will fail (non-interactive Abort → nonfatal)
+        # but we want to assert NO prompt fires at all (byte-identical is silent no-op).
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "init", "--setup-github"]
+        )
+    assert r.exit_code == 0, r.output + r.stderr
+    assert wf.read_text() == bundled
+    assert mock_settings.called, (                     # ← prove init reached Step 3
+        "init must traverse Step 2.5 (_write_workflow_file) to reach Step 3 "
+        "(enable_repo_merge_settings); a vacuous test would pass even if "
+        "_write_workflow_file is removed"
+    )
+    # Non-vacuity guard: the spy on _write_workflow_file must have been called.
+    # A vacuous test (with _write_workflow_file removed) would fail here.
+    assert mock_write_wf.called, (
+        "_write_workflow_file was never invoked — the test is vacuous"
+    )
+
+
+def test_setup_github_existing_workflow_tty_ctrl_c_exits_1(tmp_path: Path):
+    """Existing workflow file + interactive Ctrl-C (TTY=True + Abort) → exit 1.
+
+    Simulates the user pressing Ctrl-C at the overwrite prompt. The isatty()
+    discriminator distinguishes this from the non-TTY EOF case (which would
+    leave the file untouched + exit 0); TTY Ctrl-C re-raises Abort → Click
+    converts to exit 1.
+
+    CliRunner replaces sys.stdin during invoke (its isolation context sets
+    sys.stdin = _NamedTextIOWrapper). We therefore inject the isatty=True
+    patch via a side_effect on click.confirm: the side_effect fires INSIDE
+    the CliRunner context (sys.stdin is already the runner's stdin object),
+    patches .isatty on that live object, then raises Abort — so the
+    isatty() check in the except-Abort handler sees True and re-raises.
+    """
+    import sys as _sys
+
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    wf = _workflow_path(tmp_path)
+    wf.write_text("old workflow content\n")
+
+    def _abort_as_tty(*args: object, **kwargs: object) -> None:
+        # Patch isatty on the live stdin already installed by CliRunner's
+        # isolation context, then raise Abort to simulate Ctrl-C.
+        # Note: cleanup of this isatty mutation relies on CliRunner restoring
+        # sys.stdin on context exit (it replaces the stdin object wholesale).
+        # We do NOT restore .isatty here because the stdin object itself becomes
+        # unreferenced after CliRunner cleanup. If a future Click version stops
+        # fully replacing stdin (only patching some attributes), this test will
+        # need an explicit teardown — currently empirically safe.
+        _sys.stdin.isatty = lambda: True  # type: ignore[method-assign]
+        raise click.Abort()
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ), patch("super_harness.cli.init.click.confirm", side_effect=_abort_as_tty):
+        r = CliRunner().invoke(
+            main,
+            ["--workspace", str(tmp_path), "init", "--setup-github"],
+        )
+    assert r.exit_code == 1, r.output
+    # Click formats the abort with "Aborted!" on stderr; assert strictly so a
+    # regression in Click's abort rendering would actually fail this test.
+    assert "Abort" in (r.output + r.stderr), (r.output, r.stderr)

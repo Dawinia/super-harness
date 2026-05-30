@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest import mock
 
 from click.testing import CliRunner
 
 from super_harness.cli import main
 from super_harness.cli.exit_codes import (
+    EXIT_EXTERNAL_TOOL,
     EXIT_NO_CONFIG,
     EXIT_OK,
     EXIT_VALIDATION,
@@ -369,3 +371,223 @@ def test_done_skip_verify_ignores_missing_config(tmp_path: Path) -> None:
     )
     assert r.exit_code == EXIT_OK, r.output
     assert _event_types(tmp_path)[-1] == "implementation_complete"
+
+
+# --------------------------------------------------------------------------- #
+# Task 14.3 — --pr slug-from-PR resolution
+#
+# Mirrors test_verify.py's matrix. See that file's section header for the
+# resolution order, exit-code matrix, and divergence-from-`pr validate`
+# rationale. `done`'s extra wrinkle: when --pr resolves the slug, the same
+# --pr value is still recorded on the implementation_complete payload as
+# pr_url (the pr value drives BOTH slug resolution AND payload recording).
+#
+# gh is mocked at `super_harness.cli.done.gh.view_pr` (the import site
+# inside done.py — Phase 12 pattern).
+# --------------------------------------------------------------------------- #
+
+VIEW_PR_DONE = "super_harness.cli.done.gh.view_pr"
+
+
+def _metadata_body_done(change: str = "my-change") -> str:
+    return (
+        "Some PR description.\n\n"
+        "<!-- super-harness:metadata -->\n"
+        f"Change: {change}\n"
+        "Tier: Normal\n"
+        "Verification: passed\n"
+        "super-harness version: 0.1.0\n"
+        "<!-- /super-harness:metadata -->\n"
+    )
+
+
+def test_done_positional_only_does_not_call_gh(tmp_path: Path) -> None:
+    """Positional slug + no --pr → gh.view_pr is NOT invoked (regression guard)."""
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    with mock.patch(VIEW_PR_DONE) as m:
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "done", "my-change"]
+        )
+    assert r.exit_code == EXIT_OK, r.output
+    m.assert_not_called()
+
+
+def test_done_pr_resolves_slug_and_runs(tmp_path: Path) -> None:
+    """--pr only, well-formed block → resolves Change → verifies → completes."""
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    with mock.patch(
+        VIEW_PR_DONE, return_value={"body": _metadata_body_done("my-change")}
+    ) as m:
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "done", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_OK, r.output
+    m.assert_called_once()
+    types = _event_types(tmp_path)
+    assert types[-2:] == ["verification_passed", "implementation_complete"]
+
+
+def test_done_pr_no_metadata_block_exits_4(tmp_path: Path) -> None:
+    """--pr but the PR body has no metadata block → exit 4 (precondition)."""
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    with mock.patch(
+        VIEW_PR_DONE, return_value={"body": "just a normal PR description"}
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "done", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_EXTERNAL_TOOL, r.output
+    combined = r.output + (r.stderr or "")
+    assert "no super-harness metadata block" in combined
+    assert "pr emit-opened" in combined
+    # No implementation_complete landed.
+    assert "implementation_complete" not in _event_types(tmp_path)
+
+
+def test_done_pr_multiple_blocks_exits_2(tmp_path: Path) -> None:
+    """--pr with ≥2 metadata blocks → AC-3 violation → exit 2."""
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    body = _metadata_body_done() + "\n" + _metadata_body_done()
+    with mock.patch(VIEW_PR_DONE, return_value={"body": body}):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "done", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "AC-3" in combined or "metadata blocks" in combined
+    assert "implementation_complete" not in _event_types(tmp_path)
+
+
+def test_done_pr_malformed_block_exits_2(tmp_path: Path) -> None:
+    """--pr with an unclosed begin marker → structural error → exit 2."""
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    body = (
+        "Some PR description.\n\n"
+        "<!-- super-harness:metadata -->\n"
+        "Change: my-change\n"
+        # NO end marker.
+    )
+    with mock.patch(VIEW_PR_DONE, return_value={"body": body}):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "done", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "malformed" in combined
+    assert "implementation_complete" not in _event_types(tmp_path)
+
+
+def test_done_pr_gh_error_exits_4(tmp_path: Path) -> None:
+    """--pr + gh.GhError → exit 4 (EXIT_EXTERNAL_TOOL)."""
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    from super_harness.engineering import gh
+
+    with mock.patch(
+        VIEW_PR_DONE, side_effect=gh.GhError("gh pr view 42 failed (exit 1)")
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "done", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_EXTERNAL_TOOL, r.output
+    combined = r.output + (r.stderr or "")
+    assert "could not fetch PR" in combined
+    assert "implementation_complete" not in _event_types(tmp_path)
+
+
+def test_done_positional_wins_over_pr(tmp_path: Path) -> None:
+    """Positional + --pr both → positional wins; gh.view_pr is NOT called."""
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    with mock.patch(VIEW_PR_DONE) as m:
+        r = CliRunner().invoke(
+            main,
+            ["--workspace", str(tmp_path), "done", "my-change", "--pr", "42"],
+        )
+    assert r.exit_code == EXIT_OK, r.output
+    m.assert_not_called()
+
+
+def test_done_pr_block_missing_change_field_exits_4(tmp_path: Path) -> None:
+    """Block present + single, but missing Change field → exit 4."""
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    body = (
+        "<!-- super-harness:metadata -->\n"
+        "Tier: Normal\n"
+        "Verification: passed\n"
+        "<!-- /super-harness:metadata -->\n"
+    )
+    with mock.patch(VIEW_PR_DONE, return_value={"body": body}):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "done", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_EXTERNAL_TOOL, r.output
+    combined = r.output + (r.stderr or "")
+    assert "Change" in combined
+    assert "implementation_complete" not in _event_types(tmp_path)
+
+
+def test_done_pr_invalid_slug_format_exits_2(tmp_path: Path) -> None:
+    """Block + Change with invalid slug (slashes) → A6 gate → exit 2."""
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    body = (
+        "<!-- super-harness:metadata -->\n"
+        "Change: feature/foo\n"
+        "Tier: Normal\n"
+        "Verification: passed\n"
+        "<!-- /super-harness:metadata -->\n"
+    )
+    with mock.patch(VIEW_PR_DONE, return_value={"body": body}):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "done", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "feature/foo" in combined
+    assert "implementation_complete" not in _event_types(tmp_path)
+
+
+def test_done_pr_non_integer_exits_2(tmp_path: Path) -> None:
+    """--pr value is not an integer → clean EXIT_VALIDATION (no traceback)."""
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    with mock.patch(VIEW_PR_DONE) as m:
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "done", "--pr", "not-a-number"]
+        )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    m.assert_not_called()
+    combined = r.output + (r.stderr or "")
+    assert "Traceback" not in combined
+
+
+def test_done_pr_resolution_records_pr_in_payload(tmp_path: Path) -> None:
+    """When --pr resolves the slug, the same --pr value is recorded as pr_url.
+
+    Confirms the dual role of --pr in `done`: it drives slug resolution AND
+    its raw value continues to flow into implementation_complete's pr_url
+    payload (unchanged from pre-14.3 behavior). Assertions:
+      1. gh.view_pr WAS called (proves slug resolution actually went through
+         the --pr code path — NOT a false-pass on active-change fallback).
+      2. implementation_complete's change_id == resolved slug.
+      3. implementation_complete's payload.pr_url == raw --pr value (string).
+    """
+    _init_in_progress(tmp_path, yaml_text=_PASS_YAML)
+    with mock.patch(
+        VIEW_PR_DONE, return_value={"body": _metadata_body_done("my-change")}
+    ) as m:
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "done", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_OK, r.output
+    # 1. The --pr resolution code path actually ran (vs. fallback to
+    #    active-change, which would silently produce the same "my-change"
+    #    slug and look like a pass without exercising the wiring).
+    m.assert_called_once()
+    lines = events_path(tmp_path).read_text().splitlines()
+    ic = next(
+        json.loads(ln)
+        for ln in reversed(lines)
+        if ln.strip() and json.loads(ln)["type"] == "implementation_complete"
+    )
+    # 2. The resolved slug came from the --pr-fetched PR body.
+    assert ic["change_id"] == "my-change"
+    # 3. The original --pr value ALSO landed on the payload as pr_url.
+    assert ic["payload"] == {"pr_url": "42"}

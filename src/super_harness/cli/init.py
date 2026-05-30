@@ -45,6 +45,17 @@ def _pull_request_template() -> str:
     return src.read_text()
 
 
+def _workflow_template() -> str:
+    """Load the bundled GitHub Actions workflow template (engineering-integration §2.8)."""
+    src = _TEMPLATES.joinpath("super_harness_workflow.yml")
+    if not src.is_file():
+        raise click.ClickException(
+            "super-harness install is corrupt — bundled template "
+            "'super_harness_workflow.yml' missing. Reinstall super-harness."
+        )
+    return src.read_text()
+
+
 def _source_paths_default() -> str:
     src = _TEMPLATES.joinpath("source_paths_defaults.yaml")
     if src.is_file():
@@ -89,8 +100,9 @@ def _skeleton_files() -> dict[str, str]:
 @click.option(
     "--setup-github",
     is_flag=True,
-    help="Run gh CLI checks, write .github/pull_request_template.md, and "
-    "best-effort enable repo auto-merge/squash settings (requires gh).",
+    help="Run gh CLI checks, write .github/pull_request_template.md and "
+    ".github/workflows/super-harness.yml, and best-effort enable repo "
+    "auto-merge/squash settings (requires gh).",
 )
 @click.option(
     "--framework",
@@ -216,6 +228,9 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
     # --- Step 2: write / marker-merge .github/pull_request_template.md ---
     _write_pr_template(ctx, root)
 
+    # --- Step 2.5: write .github/workflows/super-harness.yml (Task 14.2) ---
+    _write_workflow_file(ctx, root)
+
     # --- Step 3: best-effort repo settings (non-fatal) ---
     try:
         enable_repo_merge_settings()
@@ -327,6 +342,78 @@ def _write_pr_template(ctx: click.Context, root: Path) -> None:
     placeholder = f"{METADATA_BEGIN}\n{METADATA_END}\n"
     new = existing.rstrip("\n") + "\n\n" + placeholder
     template_path.write_text(new)
+
+
+def _write_workflow_file(ctx: click.Context, root: Path) -> None:
+    """Write or overwrite-with-confirm ``.github/workflows/super-harness.yml`` (§2.8).
+
+    - File absent → write bundled template verbatim (no prompt; ``mkdir -p`` first).
+    - File present + byte-identical to bundled → idempotent no-op.
+    - File present + differs → confirm overwrite (unless global ``--quiet``);
+      non-TTY EOF leaves untouched + advisory (non-fatal);
+      TTY Ctrl-C re-raises (exit 1).
+    - Read of existing file: catch ``(OSError, UnicodeDecodeError)`` → friendly
+      error, EXIT_GENERIC (UnicodeDecodeError is a ValueError, not OSError —
+      the project's recurring error-family bug class).
+    """
+    workflows_dir = root / ".github" / "workflows"
+    workflow_path = workflows_dir / "super-harness.yml"
+    bundled = _workflow_template()
+
+    if not workflow_path.exists():
+        workflows_dir.mkdir(parents=True, exist_ok=True)
+        workflow_path.write_text(bundled)
+        return
+
+    try:
+        existing = workflow_path.read_text()
+    except (OSError, UnicodeDecodeError) as e:
+        # error-family: UnicodeDecodeError is a ValueError (not OSError), so both
+        # must be caught — a non-UTF-8 / unreadable existing workflow file must
+        # surface a friendly error, never a raw traceback.
+        click.echo(
+            format_error(
+                subcommand="init",
+                message=f"could not read existing {workflow_path}: {e}",
+                hint="Ensure the file is UTF-8 and readable, then re-run.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    if existing == bundled:
+        return  # byte-identical → idempotent no-op
+
+    quiet = bool(ctx.obj.get("quiet"))
+    if not quiet:
+        try:
+            proceed = click.confirm(
+                f"Overwrite existing {workflow_path}?",
+                default=True,
+            )
+        except click.Abort:
+            # click.Abort fires on BOTH an interactive Ctrl-C and a
+            # non-interactive EOF. A real Ctrl-C (TTY) means "stop" → re-raise →
+            # exit 1, consistent with _write_pr_template. A non-interactive EOF
+            # (CI without --quiet) cannot prompt → leave the file UNTOUCHED
+            # (never modify it silently), non-fatal, advise.
+            if sys.stdin.isatty():
+                raise
+            click.echo(
+                format_error(
+                    subcommand="init",
+                    message=(
+                        f"skipped overwriting existing {workflow_path} (non-interactive)"
+                    ),
+                    hint="Re-run with --quiet to overwrite, or update the file manually.",
+                ),
+                err=True,
+            )
+            return
+        if not proceed:
+            return  # declined ('n') → leave untouched, non-fatal (init continues)
+
+    workflow_path.write_text(bundled)
 
 
 def _log_setup_github_failure(harness: Path, error: GhError) -> None:

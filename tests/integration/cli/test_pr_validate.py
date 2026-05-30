@@ -32,8 +32,6 @@ Coverage map:
 - test_pr_validate_all_pass_exits_0                 — clean READY_TO_MERGE + complete block
 - test_pr_validate_json_envelope_pass               — frozen envelope + data sub-schema (pass)
 - test_pr_validate_json_envelope_fail               — envelope + errors[] (fail)
-- test_resolve_change_from_pr_returns_change        — helper returns the Change field
-- test_resolve_change_from_pr_no_block_returns_none — helper returns None with no block
 """
 from __future__ import annotations
 
@@ -44,7 +42,6 @@ from unittest import mock
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.cli.pr import resolve_change_from_pr
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import events_path
 from super_harness.core.ulid import new_event_id
@@ -364,21 +361,3 @@ def test_pr_validate_json_envelope_fail(tmp_path: Path) -> None:
         assert err["code"] == "validation"
         assert err["message"] in data["blockers"]
 
-
-# --------------------------------------------------------------------------- #
-# resolve_change_from_pr helper (Fork C) — unit
-# --------------------------------------------------------------------------- #
-
-
-def test_resolve_change_from_pr_returns_change() -> None:
-    """The helper returns the block's Change field when a complete block exists."""
-    with mock.patch(VIEW_PR, return_value={"body": _complete_metadata_body()}):
-        assert resolve_change_from_pr(7) == CHANGE_ID
-
-
-def test_resolve_change_from_pr_no_block_returns_none() -> None:
-    """No metadata block (incl. null body) → helper returns None."""
-    with mock.patch(VIEW_PR, return_value={"body": None}):
-        assert resolve_change_from_pr(7) is None
-    with mock.patch(VIEW_PR, return_value={"body": "no block here"}):
-        assert resolve_change_from_pr(7) is None

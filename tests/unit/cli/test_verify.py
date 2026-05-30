@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest import mock
 
 from click.testing import CliRunner
 
 from super_harness.cli import main
 from super_harness.cli.exit_codes import (
+    EXIT_EXTERNAL_TOOL,
     EXIT_NO_CONFIG,
     EXIT_OK,
     EXIT_VALIDATION,
@@ -382,3 +384,196 @@ def test_verify_json_paths_are_repo_relative(tmp_path: Path) -> None:
         if op is not None:
             assert not op.startswith("/")
             assert op.startswith(".harness/verification-results/")
+
+
+# --------------------------------------------------------------------------- #
+# Task 14.3 — --pr slug-from-PR resolution
+#
+# Resolution order (cli-command-surface §verify):
+#   1. positional <slug>            → use directly
+#   2. --pr <num> (no positional)   → fetch PR body, parse metadata block,
+#                                     extract Change field, validate slug
+#   3. read_active_change_id(root)  → fallback
+#   4. None                         → exit 2 "no change specified"
+#
+# Exit-code matrix for --pr-only resolution failures (intentionally DIFFERS
+# from `pr validate` — see verify.py module docstring + plan §Task 14.3):
+#   gh.GhError                                  → 4 EXIT_EXTERNAL_TOOL
+#   No metadata block at all                    → 4 EXIT_EXTERNAL_TOOL
+#   Malformed metadata (unbalanced markers)     → 2 EXIT_VALIDATION
+#   ≥2 metadata blocks (AC-3 violation)         → 2 EXIT_VALIDATION
+#   Block present, missing Change field         → 4 EXIT_EXTERNAL_TOOL
+#   Block present, Change present, bad slug     → 2 EXIT_VALIDATION
+#   Block present, Change present, valid slug   → resolve OK, run verification
+#
+# gh is ALWAYS mocked here at `super_harness.cli.verify.gh.view_pr` (the
+# import site inside verify.py — Phase 12 pattern).
+# --------------------------------------------------------------------------- #
+
+VIEW_PR_VERIFY = "super_harness.cli.verify.gh.view_pr"
+
+
+def _metadata_body(change: str = "my-change") -> str:
+    """A PR body carrying ONE well-formed super-harness metadata block."""
+    return (
+        "Some PR description.\n\n"
+        "<!-- super-harness:metadata -->\n"
+        f"Change: {change}\n"
+        "Tier: Normal\n"
+        "Verification: passed\n"
+        "super-harness version: 0.1.0\n"
+        "<!-- /super-harness:metadata -->\n"
+    )
+
+
+def test_verify_positional_only_does_not_call_gh(tmp_path: Path) -> None:
+    """Positional slug + no --pr → gh.view_pr is NOT invoked (regression guard)."""
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    with mock.patch(VIEW_PR_VERIFY) as m:
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "verify", "my-change"]
+        )
+    assert r.exit_code == EXIT_OK, r.output
+    m.assert_not_called()
+
+
+def test_verify_pr_resolves_slug_and_runs(tmp_path: Path) -> None:
+    """--pr only, well-formed block → resolves Change field → verification runs."""
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    with mock.patch(
+        VIEW_PR_VERIFY, return_value={"body": _metadata_body("my-change")}
+    ) as m:
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "verify", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_OK, r.output
+    m.assert_called_once()
+    # The verification ran on the resolved slug (last event lands).
+    assert _read_event_types(tmp_path)[-1] == "verification_passed"
+
+
+def test_verify_pr_no_metadata_block_exits_4(tmp_path: Path) -> None:
+    """--pr but the PR body has no metadata block → exit 4 (precondition)."""
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    with mock.patch(
+        VIEW_PR_VERIFY, return_value={"body": "just a normal PR description"}
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "verify", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_EXTERNAL_TOOL, r.output
+    combined = r.output + (r.stderr or "")
+    assert "no super-harness metadata block" in combined
+    # Actionable hint points at `pr emit-opened`.
+    assert "pr emit-opened" in combined
+
+
+def test_verify_pr_multiple_blocks_exits_2(tmp_path: Path) -> None:
+    """--pr with ≥2 metadata blocks → AC-3 violation → exit 2."""
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    body = _metadata_body() + "\n" + _metadata_body()
+    with mock.patch(VIEW_PR_VERIFY, return_value={"body": body}):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "verify", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "AC-3" in combined or "metadata blocks" in combined
+
+
+def test_verify_pr_malformed_block_exits_2(tmp_path: Path) -> None:
+    """--pr with an unclosed begin marker → structural error → exit 2."""
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    # BEGIN with no END → malformed (unclosed begin).
+    body = (
+        "Some PR description.\n\n"
+        "<!-- super-harness:metadata -->\n"
+        "Change: my-change\n"
+        "Tier: Normal\n"
+        # NO end marker.
+    )
+    with mock.patch(VIEW_PR_VERIFY, return_value={"body": body}):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "verify", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "malformed" in combined
+
+
+def test_verify_pr_gh_error_exits_4(tmp_path: Path) -> None:
+    """--pr + gh.GhError → exit 4 (EXIT_EXTERNAL_TOOL)."""
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    from super_harness.engineering import gh
+
+    with mock.patch(
+        VIEW_PR_VERIFY, side_effect=gh.GhError("gh pr view 42 failed (exit 1)")
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "verify", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_EXTERNAL_TOOL, r.output
+    combined = r.output + (r.stderr or "")
+    assert "could not fetch PR" in combined
+
+
+def test_verify_positional_wins_over_pr(tmp_path: Path) -> None:
+    """Positional + --pr both → positional wins; gh.view_pr is NOT called."""
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    with mock.patch(VIEW_PR_VERIFY) as m:
+        r = CliRunner().invoke(
+            main,
+            ["--workspace", str(tmp_path), "verify", "my-change", "--pr", "42"],
+        )
+    assert r.exit_code == EXIT_OK, r.output
+    m.assert_not_called()
+
+
+def test_verify_pr_block_missing_change_field_exits_4(tmp_path: Path) -> None:
+    """Block present + balanced + single, but missing Change field → exit 4."""
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    body = (
+        "<!-- super-harness:metadata -->\n"
+        "Tier: Normal\n"
+        "Verification: passed\n"
+        "<!-- /super-harness:metadata -->\n"
+    )
+    with mock.patch(VIEW_PR_VERIFY, return_value={"body": body}):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "verify", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_EXTERNAL_TOOL, r.output
+    combined = r.output + (r.stderr or "")
+    assert "Change" in combined
+
+
+def test_verify_pr_invalid_slug_format_exits_2(tmp_path: Path) -> None:
+    """Block present + Change field with invalid slug (slashes) → A6 gate → exit 2."""
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    body = (
+        "<!-- super-harness:metadata -->\n"
+        "Change: feature/foo\n"  # invalid: slashes break A6 gate
+        "Tier: Normal\n"
+        "Verification: passed\n"
+        "<!-- /super-harness:metadata -->\n"
+    )
+    with mock.patch(VIEW_PR_VERIFY, return_value={"body": body}):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "verify", "--pr", "42"]
+        )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    combined = r.output + (r.stderr or "")
+    assert "feature/foo" in combined
+
+
+def test_verify_pr_non_integer_exits_2(tmp_path: Path) -> None:
+    """--pr value is not an integer → clean EXIT_VALIDATION (no traceback)."""
+    _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="my-change")
+    with mock.patch(VIEW_PR_VERIFY) as m:
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "verify", "--pr", "not-a-number"]
+        )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    m.assert_not_called()
+    combined = r.output + (r.stderr or "")
+    assert "Traceback" not in combined

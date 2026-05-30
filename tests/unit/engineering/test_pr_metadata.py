@@ -817,3 +817,23 @@ class TestBuildMetadataMarkers:
         result = build_metadata("c1", tmp_path)
         block = parse_metadata_block(result)
         assert block.present is True
+
+
+# ---------------------------------------------------------------------------
+# Task 14.3 — exit-code constant drift regression guard
+#
+# `engineering/pr_metadata.py` keeps a LOCAL mirror of EXIT_VALIDATION /
+# EXIT_EXTERNAL_TOOL (see the module docstring's "Local mirror" note: it
+# can't `from super_harness.cli.exit_codes import …` without a circular
+# import). This test pins the two values together so a future renumbering
+# of the CLI exit codes blows up here instead of silently desyncing.
+# ---------------------------------------------------------------------------
+
+
+def test_pr_metadata_local_exit_codes_match_cli_constants() -> None:
+    """The private _EXIT_* mirror in pr_metadata must equal cli/exit_codes."""
+    from super_harness.cli.exit_codes import EXIT_EXTERNAL_TOOL, EXIT_VALIDATION
+    from super_harness.engineering import pr_metadata as pm
+
+    assert pm._EXIT_VALIDATION == EXIT_VALIDATION
+    assert pm._EXIT_EXTERNAL_TOOL == EXIT_EXTERNAL_TOOL

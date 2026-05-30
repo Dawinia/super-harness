@@ -2,6 +2,11 @@
 
 Parse half (``parse_metadata_block``) is pure-function: no I/O, no global state.
 Write half (``build_metadata``) reads events.jsonl to derive field values.
+Strict-resolve half (``resolve_slug_from_pr_body_strict``) parses a PR body
+and classifies every failure mode into an exit-code intent (via
+``PrSlugLookupError``) for CLI callers (``verify --pr`` / ``done --pr`` —
+Phase 14 Task 14.3); also pure-function (the gh fetch stays at the CLI
+boundary so tests can patch it at each CLI's import site).
 
 Format SSOT: engineering-integration spec §2.5 (required/recommended/optional
 keys, ``Key: Value`` colon-space, marker pair) and §2.6 (pull_request_template
@@ -15,6 +20,46 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from super_harness.core.slug import SlugError, validate_slug
+
+# Local mirror of two CLI exit codes used in PrSlugLookupError.
+#
+# We DO NOT `from super_harness.cli.exit_codes import …` here. That looks safe
+# (`cli/exit_codes.py` is a pure leaf — zero imports, just 6 integer constants),
+# but Python's package-init semantics make it cycle: `from
+# super_harness.cli.exit_codes import …` triggers `cli/__init__.py` first, and
+# `cli/__init__.py` eagerly loads the full CLI surface. The chain is:
+#
+#   cli/__init__.py
+#     → cli/adapter.py
+#         → adapters/__init__.py
+#             → sensors/__init__.py
+#                 → sensors/pr_decorator.py  ← imports METADATA_BEGIN/END
+#                     → engineering/pr_metadata.py  ← PARTIALLY INITIALIZED
+#                                                    ImportError raised here
+#
+# Reproducer: ANY new `from super_harness.cli.* import …` line in this module
+# explodes at first test collection with `ImportError: cannot import name
+# 'METADATA_BEGIN' from partially initialized module`. Confirmed Phase 14
+# Task 14.3 stage-2 (a code-quality reviewer was misled by running
+# `python -c "import super_harness.cli.exit_codes"` directly — the leaf
+# module loads fine in isolation, but the SOURCE-LEVEL `from … import`
+# inside a module that sensors/pr_decorator.py transitively imports is what
+# triggers the cycle).
+#
+# The CLI layer sits ABOVE engineering; engineering must never reach back
+# into cli. The two constants below are the frozen v0.1 public contract
+# (cli-command-surface §2.2); duplication is safe because the values are
+# stable, AND `test_pr_metadata_local_exit_codes_match_cli_constants` pins
+# the mirror to the CLI constants so any drift would fail CI.
+#
+# v0.2 cleanup direction (private/OPEN-ITEMS.md): promote `cli/exit_codes.py`
+# to top-level `super_harness/exit_codes.py` (it's not actually cli-specific
+# — process exit codes belong to the package root). That would let
+# engineering/ import it directly without crossing through `cli/__init__.py`.
+_EXIT_VALIDATION = 2
+_EXIT_EXTERNAL_TOOL = 4
 
 # ---------------------------------------------------------------------------
 # Marker constants (format SSOT = engineering-integration §2.5)
@@ -274,3 +319,176 @@ def build_metadata(change_id: str, root: Path) -> str:
     lines.append(METADATA_END)
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Strict-resolve half — resolve_slug_from_pr_strict (Phase 14 Task 14.3)
+#
+# Used by `verify --pr` / `done --pr` to resolve a slug from a PR's metadata
+# block. Unlike the Phase 12 helper (now deleted) which collapsed every failure
+# to ``None``, this helper classifies failure modes into a typed exception
+# carrying the intended exit code so the CLI can emit precise error verdicts
+# without re-deriving the classification at each call site.
+#
+# IMPORTANT divergence from `pr validate` (cli-command-surface spec, locked
+# in spec reviewer round 1): `pr validate` treats "missing block" as a
+# validation blocker (exit 2 EXIT_VALIDATION). `verify --pr` / `done --pr`
+# treat the same observable state as a precondition failure (exit 4
+# EXIT_EXTERNAL_TOOL) because the block is a slug-lookup PRECONDITION here,
+# not the verdict subject. Do NOT align them.
+#
+# Exit-code matrix for this helper (mirrored in CLI tests). gh.GhError →
+# exit 4 is the CALLER's job — the helper is a pure function over the body
+# string so tests can patch the gh wrapper at the CLI import site (Phase 12
+# pattern, parallel with `cli/pr.py`).
+#
+#   No metadata block at all                    → 4 EXIT_EXTERNAL_TOOL
+#   Malformed metadata (unbalanced markers)     → 2 EXIT_VALIDATION
+#   ≥2 metadata blocks (AC-3 violation)         → 2 EXIT_VALIDATION
+#   Block present, missing Change field         → 4 EXIT_EXTERNAL_TOOL
+#   Block present, Change present, bad slug     → 2 EXIT_VALIDATION  (A6 gate)
+#   Block present, Change present, valid slug   → return slug
+# ---------------------------------------------------------------------------
+
+
+class PrSlugLookupError(Exception):
+    """Resolution failure with classified exit-code intent + actionable hint.
+
+    Carries the (exit_code, message, hint) triple the CLI needs to render a
+    ``format_error`` to stderr + ``sys.exit(exit_code)``. ``exit_code`` is one
+    of ``EXIT_VALIDATION`` (2) or ``EXIT_EXTERNAL_TOOL`` (4) per the matrix
+    above — never any other code.
+    """
+
+    def __init__(self, *, exit_code: int, message: str, hint: str) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+        self.message = message
+        self.hint = hint
+
+
+def resolve_slug_from_pr_body_strict(body: str, *, pr_number: int) -> str:
+    """Parse a PR body, classify failure modes, and return a validated slug.
+
+    Pure function over the body string — fetching the body is the CALLER's
+    job (the CLI keeps the gh boundary visible at its own import site so
+    tests can patch ``cli.verify.gh.view_pr`` / ``cli.done.gh.view_pr``
+    directly, the way Phase 12 tests patch ``cli.pr.gh.view_pr``).
+
+    See the module-level matrix above for the 5 non-fetch failure modes this
+    raises ``PrSlugLookupError`` on. The A6 slug-format gate
+    (``validate_slug``) applies unconditionally to the resolved Change field —
+    PR bodies are attacker-influenceable, so a tampered block (e.g.
+    ``Change: feature/foo``) must not slip past.
+
+    Parameters
+    ----------
+    body:
+        The PR body text. Pass ``""`` for a null/empty PR body.
+    pr_number:
+        The PR number, used only for human-readable error messages so the
+        CLI's stderr line names the PR.
+
+    Returns
+    -------
+    str
+        The resolved + validated change slug.
+
+    Raises
+    ------
+    PrSlugLookupError
+        See the exit-code matrix above. The exception always carries an
+        actionable hint pointing at the operator's next step.
+    """
+    # Parse + classify the four block-shape outcomes.
+    #
+    # NOTE on the malformed-vs-missing split:
+    # ``parse_metadata_block`` returns ``present=False`` for both "no markers
+    # at all" AND "unbalanced markers" — and when the imbalance is an
+    # unclosed BEGIN (no END at EOF) or a dangling END alone, ``block_count``
+    # is 0, so we can't differentiate via that field. We add a direct marker
+    # string check: if ANY marker appears in the body but ``present`` is
+    # False, we know the operator tried to write a block and got the syntax
+    # wrong → malformed (exit 2). Otherwise "no block at all" (exit 4).
+    block = parse_metadata_block(body)
+    has_any_marker = METADATA_BEGIN in body or METADATA_END in body
+
+    if not block.present and not has_any_marker:
+        # No markers anywhere — the PR-decorator never ran (or its output
+        # was stripped). EXIT_EXTERNAL_TOOL: this is a precondition fail (a
+        # PR decorator on the CI side was supposed to inject this), NOT a
+        # verdict on whether the block is well-formed. Divergence from
+        # `pr validate` is intentional — see module docstring.
+        raise PrSlugLookupError(
+            exit_code=_EXIT_EXTERNAL_TOOL,
+            message=f"PR #{pr_number} has no super-harness metadata block",
+            hint=(
+                f"Inject the metadata block by running "
+                f"`super-harness pr emit-opened --pr {pr_number} "
+                f"--change <slug>` first."
+            ),
+        )
+
+    if not block.present:
+        # Markers exist but the block is not well-formed (nested begin /
+        # dangling end / unclosed begin). EXIT_VALIDATION: this is a
+        # structural defect in the PR body, not a fetch / decoration issue.
+        raise PrSlugLookupError(
+            exit_code=_EXIT_VALIDATION,
+            message=(
+                f"PR #{pr_number} has a malformed super-harness metadata block "
+                "(unbalanced markers)"
+            ),
+            hint="Manually fix or remove the broken block, then re-run.",
+        )
+
+    if block.block_count >= 2:
+        # AC-3 violation — engineering-integration spec §AC-3 requires
+        # exactly one block per PR body.
+        raise PrSlugLookupError(
+            exit_code=_EXIT_VALIDATION,
+            message=(
+                f"PR #{pr_number} has {block.block_count} super-harness metadata "
+                "blocks (AC-3: exactly one expected)"
+            ),
+            hint="Remove the duplicate block(s).",
+        )
+
+    # 3. Block is well-formed + single — extract Change field.
+    slug = block.fields.get("Change")
+    if slug is None:
+        # The PR-decorator was supposed to set Change but the field is
+        # absent (a decorated-but-broken block). EXIT_EXTERNAL_TOOL: same
+        # rationale as "no block" — the decorator's output is the
+        # precondition, and it failed to satisfy the required key.
+        raise PrSlugLookupError(
+            exit_code=_EXIT_EXTERNAL_TOOL,
+            message=(
+                f"PR #{pr_number}'s super-harness metadata block has no "
+                "Change field"
+            ),
+            hint=(
+                "The PR-decorator should set Change. Re-run "
+                f"`super-harness pr emit-opened --pr {pr_number} "
+                f"--change <slug>`."
+            ),
+        )
+
+    # 4. A6 slug-format gate — applies regardless of source. The PR body is
+    #    attacker-influenceable, so a Change field like `feature/foo` must
+    #    not slip through as a valid slug.
+    try:
+        validate_slug(slug)
+    except SlugError as e:
+        raise PrSlugLookupError(
+            exit_code=_EXIT_VALIDATION,
+            message=(
+                f"resolved slug {slug!r} from PR #{pr_number} is invalid: {e}"
+            ),
+            hint=(
+                "The Change field must be a kebab-case slug (3-80 chars, "
+                "lower-case alphanumeric + hyphens; e.g. `add-foo`)."
+            ),
+        ) from e
+
+    return slug
