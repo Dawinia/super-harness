@@ -82,9 +82,9 @@ markers manually; re-run `adapter install openspec` if it drifts.
   create `tasks.md` before `proposal.md`, but super-harness's lifecycle
   requires `intent_declared` to precede `plan_ready`. Add the missing
   `proposal.md` and re-run `adapter scan-once openspec`.
-- **OpenSpec's `archive/` subdir re-emits events.** It will not. `scan_changes`
-  explicitly skips `openspec/changes/archive/` so archived changes never
-  generate fresh events.
+- **Worried that archived changes will re-emit events?** They will not —
+  `scan_changes` explicitly skips `openspec/changes/archive/` (see
+  `openspec.py:106`), so archived changes never generate fresh events.
 
 ## Uninstall
 

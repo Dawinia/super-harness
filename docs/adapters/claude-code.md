@@ -11,6 +11,12 @@ harness by registering two hooks directly in `.claude/settings.json`:
   slug, so it resolves the active change) and lets Claude Code inject the
   resulting context dump into the session.
 
+Claude Code's PreToolUse contract treats process exit code `2` as a hard
+deny — that is how the harness blocks an `Edit` / `Write` without a CC
+plugin API: `super-harness-hook` queries the daemon, then exits `2` (block,
+stderr → model) or `0` (allow). JSON `permissionDecision: deny` would be
+cleaner but is blocked upstream (OPEN-ITEMS #3); exit-2 is the v0.1 fallback.
+
 Auto-detected when the workspace contains a `.claude/` directory. If
 `.claude/` is absent at install time, `install_hooks` creates it.
 
@@ -34,6 +40,8 @@ Mechanics:
 
 1. Resolves `super-harness-hook` and `super-harness` to absolute paths via
    `shutil.which` — a missing binary raises `RuntimeError` before any write.
+   Resolution happens at *install* time (not hook runtime) because Claude
+   Code runs hooks with a minimal PATH; a bare reference would fail there.
 2. Snapshots `.claude/settings.json` (or notes its absence) so the install
    is one transaction; if either merge below raises, the snapshot restores.
 3. Merges a **PreToolUse** entry: `matcher: "Edit|Write|MultiEdit|NotebookEdit"`,
@@ -46,8 +54,7 @@ Mechanics:
 
 Each merge backs up `.claude/settings.json` to
 `settings.json.super-harness-backup.<time_ns>` before writing. Re-installs
-are idempotent: an unchanged settings file is not rewritten, no backup is
-produced.
+are idempotent: an unchanged file is not rewritten, no backup produced.
 
 ## What it injects into AGENTS.md
 
@@ -93,12 +100,9 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   (`jq '.hooks.SessionStart' .claude/settings.json`); if absent, re-run
   `adapter install claude-code`. If present but no slug is active,
   `change resume` exits 0 with empty stdout — start one with `change start`.
-- **`adapter uninstall claude-code` leaves entries in
-  `.claude/settings.json`.** Uninstall restores the *earliest* timestamped
-  backup. If no backup exists (the file was unchanged at install time so
-  no backup was written) entries remain — remove the entry whose command
-  contains `--agent claude-code` and the one containing `change resume` by
-  hand.
+- **`adapter uninstall claude-code` leaves entries in `.claude/settings.json`.**
+  By design — uninstall restores the *earliest* pre-install backup; later
+  user edits are preserved. See Uninstall below for details.
 
 ## Uninstall
 
@@ -110,8 +114,9 @@ Mechanics (reverse of install):
 
 1. `on_uninstall()` restores the *earliest*
    `settings.json.super-harness-backup.<ts>` backup (the truly pristine
-   pre-install copy). If no backup exists the file is left untouched
-   (documented v0.1 limitation — clean per-entry removal is Phase 9+).
+   pre-install copy). If no backup exists the file is left untouched (v0.1
+   limitation — clean per-entry removal is tracked as OPEN-ITEMS #9 for a
+   future release).
 2. Removes the `claude-code` row from `.harness/adapters.yaml`
    (verification.yaml prune is a no-op — Claude Code adds no checks).
 3. Removes the `<!-- super-harness agent: claude-code -->` subsection from
