@@ -60,6 +60,7 @@ from super_harness.core.paths import (
 )
 from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.reducer import derive_state
+from super_harness.core.slug import SlugError, validate_slug
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
 from super_harness.engineering import gh
@@ -255,6 +256,26 @@ def pr_emit_opened(ctx: click.Context, pr_number: int, change: str) -> None:
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
+
+    # Validate slug — CI may pass a head_ref that's syntactically a branch but
+    # not a valid slug (e.g. `feature/foo`). Mirror on-merge's validate_slug
+    # gate so both CI emitters reject invalid slugs identically.
+    try:
+        validate_slug(change)
+    except SlugError as e:
+        click.echo(
+            format_error(
+                subcommand="pr emit-opened",
+                message=f"invalid change `{change}`: {e}",
+                hint=(
+                    "Slugs must be kebab-case (a-z, 0-9, hyphens). A branch "
+                    "like `feature/foo` is NOT a valid slug — rename the "
+                    "branch or pass a normalized --change."
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
 
     writer = EventWriter(events_path(root))
     pr_opened_event = Event(

@@ -458,3 +458,40 @@ def test_re_emit_idempotent_pr_decorator_replaces(tmp_path: Path) -> None:
 def test_pr_emit_opened_registered_under_pr_group() -> None:
     """``pr emit-opened`` must be discoverable via the ``pr`` click group."""
     assert "emit-opened" in pr_group.commands
+
+
+# --------------------------------------------------------------------------- #
+# Architecture-round A6 guard: invalid slug (e.g. `feature/foo`) is rejected
+# by validate_slug before any event is emitted. Symmetric with on-merge.
+# --------------------------------------------------------------------------- #
+
+
+def test_invalid_slug_exits_1_before_emit(tmp_path: Path) -> None:
+    """A6 guard: ``pr emit-opened --change feature/foo`` is rejected by
+    ``validate_slug`` with exit 1 + actionable stderr — no ``pr_opened``
+    event is emitted, no PR-decorator is dispatched. Symmetric with the
+    same gate on ``on-merge``.
+    """
+    (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
+
+    r = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(tmp_path),
+            "pr",
+            "emit-opened",
+            "--pr",
+            "7",
+            "--change",
+            "feature/foo",
+        ],
+    )
+
+    assert r.exit_code == 1, r.output + (r.stderr or "")
+    err = (r.stderr or "") + r.output
+    assert "invalid change" in err
+    assert "feature/foo" in err
+    # No event file should have been touched (gate fires before EventWriter).
+    events_file = tmp_path / ".harness" / "events.jsonl"
+    assert not events_file.exists() or events_file.read_text().strip() == ""

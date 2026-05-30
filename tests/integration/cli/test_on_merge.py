@@ -211,15 +211,15 @@ def test_explicit_change_wins(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_fallback_parses_merge_commit_message(tmp_path: Path) -> None:
-    """No ``--change``; merge-commit subject ``Merge pull request #N from owner/branch``
-    → branch (which may contain ``/``) becomes the slug.
+def test_fallback_parses_valid_slug_branch(tmp_path: Path) -> None:
+    """No ``--change``; merge-commit subject ``Merge pull request #N from owner/<slug>``
+    → branch becomes the change_id when it is a valid kebab-case slug.
     """
     sha = _init_repo_with_commit_subject(
         tmp_path,
-        "Merge pull request #42 from owner/feature/foo-bar",
+        "Merge pull request #42 from owner/my-feature-branch",
     )
-    _drive_to_ready_to_merge(tmp_path, "feature/foo-bar")
+    _drive_to_ready_to_merge(tmp_path, "my-feature-branch")
 
     with (
         mock.patch(CREATE_PR, return_value="https://github.com/o/r/pull/201"),
@@ -234,8 +234,35 @@ def test_fallback_parses_merge_commit_message(tmp_path: Path) -> None:
     assert r.exit_code == EXIT_OK, r.output + (r.stderr or "")
     merged = [e for e in _read_events(tmp_path) if e["type"] == "merged"]
     assert len(merged) == 1
-    # Regex must NOT stop at `/` — full "feature/foo-bar" is the captured slug.
-    assert merged[0]["change_id"] == "feature/foo-bar"
+    assert merged[0]["change_id"] == "my-feature-branch"
+
+
+def test_fallback_captures_invalid_slug_then_validate_rejects(tmp_path: Path) -> None:
+    """Architecture-round A6 guard: the regex captures branch names containing
+    ``/`` (e.g. ``feature/foo-bar``) intact rather than truncating at ``/``, but
+    ``validate_slug`` REJECTS the resulting value with an actionable stderr
+    message — `feature/foo-bar` is not a valid kebab slug per ``core/slug.py``.
+    Without this gate the slug would silently pollute the L1 follow-up branch
+    name and the pending-file path.
+    """
+    sha = _init_repo_with_commit_subject(
+        tmp_path,
+        "Merge pull request #42 from owner/feature/foo-bar",
+    )
+    # No need to drive state — validation fires BEFORE the merged event emit.
+    (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "on-merge", "--commit", sha],
+    )
+
+    assert r.exit_code == 1, r.output + (r.stderr or "")
+    err = (r.stderr or "") + r.output
+    assert "invalid change_id" in err
+    assert "feature/foo-bar" in err
+    # No `merged` event should have been emitted (validation gate is pre-emit).
+    assert [e for e in _read_events(tmp_path) if e["type"] == "merged"] == []
 
 
 # --------------------------------------------------------------------------- #
@@ -553,3 +580,35 @@ def test_json_mode_no_envelope_on_exit_3_or_1(tmp_path: Path) -> None:
     # pattern).
     assert r.stdout.strip() == ""
     assert (r.stderr or "").strip() != ""
+
+
+# --------------------------------------------------------------------------- #
+# Architecture-round A5 guard: frozen `sensors_triggered` must match the set
+# of registered builtin sensors whose triggers_on_events contains "merged".
+# --------------------------------------------------------------------------- #
+
+
+def test_frozen_sensors_triggered_matches_registered_merged_sensors() -> None:
+    """cli-command-surface §on-merge `data.sensors_triggered` is a FROZEN
+    list: ``["l1-updater", "anchor-index-rebuilder"]``. If a future
+    contributor registers a third ``merged``-triggered builtin sensor without
+    updating the on-merge hardcoded list AND the spec freeze, the runtime
+    dispatched set (which would include the new sensor) silently diverges
+    from the advertised contract. Fail loudly here so the freeze cannot
+    drift unobserved.
+    """
+    from super_harness.cli.on_merge import _SENSORS_TRIGGERED
+    from super_harness.sensors.registry import get_builtin, list_builtins
+
+    registered_merged_triggered = sorted(
+        name
+        for name in list_builtins()
+        if "merged" in get_builtin(name).triggers_on_events
+    )
+    expected = sorted(_SENSORS_TRIGGERED)
+    assert registered_merged_triggered == expected, (
+        f"frozen on-merge sensors_triggered {expected!r} drifted from "
+        f"registered merged-triggered builtins {registered_merged_triggered!r}. "
+        "Update cli-command-surface §on-merge data schema AND _SENSORS_TRIGGERED "
+        "together, or remove the new sensor's merged trigger."
+    )

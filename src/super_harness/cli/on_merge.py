@@ -63,6 +63,7 @@ from super_harness.core.paths import (
     find_harness_root,
 )
 from super_harness.core.post_emit import refresh_state_after_emit
+from super_harness.core.slug import SlugError, validate_slug
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
 from super_harness.sensors import WorkspaceContext
@@ -79,9 +80,12 @@ from super_harness.sensors.l1_updater import L1Updater
 # this trigger (e.g. AnchorIndexRebuilder is silent).
 _SENSORS_TRIGGERED: list[str] = ["l1-updater", "anchor-index-rebuilder"]
 
-# Subject pattern for the GitHub merge-commit message fallback. The branch name
-# may contain `/` (e.g. `harness/l1-update-foo` or `feature/foo-bar`) — the
-# capture is greedy-everything-up-to-trailing-whitespace, NOT split on `/`.
+# Subject pattern for the GitHub merge-commit message fallback. The capture is
+# greedy-everything-up-to-trailing-whitespace (NOT split on `/`) so an `/`-
+# containing branch name like `feature/foo` is captured intact rather than
+# silently truncated. Whether the captured value is a VALID slug (kebab-case,
+# no `/`) is enforced separately downstream by `validate_slug` — capturing-then-
+# rejecting yields a clean actionable error rather than a silent slug munge.
 _MERGE_COMMIT_SUBJECT_RE = re.compile(
     r"^Merge pull request #\d+ from [^/]+/(.+?)\s*$"
 )
@@ -203,6 +207,29 @@ def on_merge_cli(ctx: click.Context, commit: str, change: str | None) -> None:
                 hint=(
                     "Add `--change ${{ github.head_ref }}` to the CI workflow "
                     "step invoking `super-harness on-merge`."
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    # Validate that the resolved slug obeys core/slug.py's kebab-case contract.
+    # Both legs (--change and merge-commit-message fallback) can produce values
+    # the rest of the system rejects — e.g. a CI passing `feature/foo` as
+    # head_ref. Reject early with an actionable message rather than letting an
+    # invalid slug pollute the L1 follow-up branch name
+    # (`harness/l1-update-<slug>`), the pending-file path, or downstream events.
+    try:
+        validate_slug(change_id)
+    except SlugError as e:
+        click.echo(
+            format_error(
+                subcommand="on-merge",
+                message=f"invalid change_id `{change_id}`: {e}",
+                hint=(
+                    "Slugs must be kebab-case (a-z, 0-9, hyphens). A branch "
+                    "like `feature/foo` is NOT a valid slug — rename the "
+                    "branch or pass a normalized --change."
                 ),
             ),
             err=True,
