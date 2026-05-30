@@ -25,8 +25,9 @@ brew install gh && gh auth login   # gh is a prerequisite for init --setup-githu
 super-harness init --setup-github                # bootstrap repo + CI workflow
 super-harness adapter install openspec           # framework adapter
 super-harness adapter install claude-code        # agent adapter
-# ... make a change with your agent ...
-super-harness done                               # verify + mark ready-to-merge
+super-harness change start "my-first-change"     # declare the change
+# ... your agent edits the code ...
+super-harness done                               # verify + advance to AWAITING_CODE_REVIEW
 ```
 
 For an end-to-end walkthrough, see [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/).
@@ -42,7 +43,8 @@ For an end-to-end walkthrough, see [`examples/demo-openspec-claude/`](examples/d
   current lifecycle state forbids them.
 - **Cold-path PR gates** via CI — `pr validate` checks the PR metadata block
   and lifecycle state, `verify` runs the verification-runner sensor, `done`
-  transitions a change to `READY_TO_MERGE`, and `on-merge` emits the `merged`
+  advances a change from `IMPLEMENTATION_IN_PROGRESS` to
+  `AWAITING_CODE_REVIEW`, and `on-merge` emits the `merged`
   event after the PR lands on main and triggers the L1-updater follow-up PR.
 - **Framework adapters** — OpenSpec (detects `openspec/changes/` and
   `openspec/specs/`, emits `intent_declared` from `proposal.md` and
@@ -64,7 +66,9 @@ For an end-to-end walkthrough, see [`examples/demo-openspec-claude/`](examples/d
 
 ## What v0.1 does NOT ship yet
 
-Trust is built on honesty about scope. The following are deliberately deferred:
+Trust is built on honesty about scope. The following are not in v0.1 — most
+are deliberately deferred to a later version; one is blocked by an upstream
+bug (flagged explicitly).
 
 **Framework adapters (v0.2+):**
 - Spec Kit framework adapter
