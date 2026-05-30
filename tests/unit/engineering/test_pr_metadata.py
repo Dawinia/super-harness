@@ -1,18 +1,27 @@
-"""Tests for engineering/pr_metadata.py — parse half only.
+"""Tests for engineering/pr_metadata.py — parse half + build_metadata write half.
 
-Pure-function module; no I/O, no mocks needed.
-Mirrors the style/imports of test_gh.py for consistency.
+Parse-half tests are pure-function (no I/O, no mocks).
+build_metadata tests use tmp_path + EventWriter to seed events.jsonl.
+No gh / network calls anywhere in this file.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
+from super_harness.core.clock import utc_now_iso
+from super_harness.core.events import Actor, Event
+from super_harness.core.paths import events_path
+from super_harness.core.ulid import new_event_id
+from super_harness.core.writer import EventWriter
 from super_harness.engineering.pr_metadata import (
     METADATA_BEGIN,
     METADATA_END,
     REQUIRED_METADATA_KEYS,
     MetadataBlock,
+    build_metadata,
     parse_metadata_block,
 )
 
@@ -428,3 +437,383 @@ class TestSection26Placeholder:
         block = parse_metadata_block(self._PLACEHOLDER_BODY)
         # fields_complete = False — caller would report missing required keys
         assert not (REQUIRED_METADATA_KEYS <= block.fields.keys())
+
+
+# ---------------------------------------------------------------------------
+# build_metadata helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_ev(
+    change_id: str,
+    event_type: str,
+    payload: dict | None = None,
+    timestamp: str | None = None,
+) -> Event:
+    return Event(
+        event_id=new_event_id(),
+        type=event_type,
+        change_id=change_id,
+        timestamp=timestamp or utc_now_iso(),
+        actor=Actor(type="human", identifier="test"),
+        framework="plain",
+        payload=payload or {},
+    )
+
+
+def _seed_lifecycle(tmp_path: Path, change_id: str) -> Path:
+    """Seed a minimal valid lifecycle up to IMPLEMENTATION_IN_PROGRESS.
+
+    Returns the repo root (tmp_path), which has .harness/events.jsonl inside.
+    Uses skip_validation=True for speed; we just need events on disk.
+    """
+    ep = events_path(tmp_path)
+    w = EventWriter(ep)
+    for etype in ("intent_declared", "plan_ready", "plan_approved", "implementation_started"):
+        w.emit(_make_ev(change_id, etype), skip_validation=True)
+    return tmp_path
+
+
+# ---------------------------------------------------------------------------
+# build_metadata — required-keys completeness + round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMetadataRequiredKeys:
+    def test_required_keys_always_present(self, tmp_path: Path) -> None:
+        """All 4 required keys must appear in the parsed block from build_metadata."""
+        root = tmp_path
+        result = build_metadata("my-change", root)
+        block = parse_metadata_block(result)
+        assert REQUIRED_METADATA_KEYS <= block.fields.keys()
+
+    def test_round_trip_change_key(self, tmp_path: Path) -> None:
+        change_id = "2026-05-30-round-trip"
+        result = build_metadata(change_id, tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Change"] == change_id
+
+    def test_round_trip_version_key(self, tmp_path: Path) -> None:
+        result = build_metadata("some-change", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["super-harness version"] == "v0.1.0"
+
+    def test_round_trip_tier_key_present(self, tmp_path: Path) -> None:
+        result = build_metadata("some-change", tmp_path)
+        block = parse_metadata_block(result)
+        assert "Tier" in block.fields
+
+    def test_round_trip_verification_key_present(self, tmp_path: Path) -> None:
+        result = build_metadata("some-change", tmp_path)
+        block = parse_metadata_block(result)
+        assert "Verification" in block.fields
+
+
+# ---------------------------------------------------------------------------
+# build_metadata — Tier field
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMetadataTier:
+    def test_tier_unknown_when_no_events(self, tmp_path: Path) -> None:
+        """Fresh repo with no events.jsonl → Tier: unknown."""
+        result = build_metadata("fresh-change", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Tier"] == "unknown"
+
+    def test_tier_unknown_when_change_not_in_events(self, tmp_path: Path) -> None:
+        """events.jsonl exists but has no events for this change → Tier: unknown."""
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("other-change", "intent_declared"), skip_validation=True)
+        result = build_metadata("my-change", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Tier"] == "unknown"
+
+    def test_tier_value_from_plan_ready_tier_hint(self, tmp_path: Path) -> None:
+        """plan_ready with tier_hint → Tier rendered with that value."""
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("my-change", "intent_declared"), skip_validation=True)
+        w.emit(
+            _make_ev("my-change", "plan_ready", payload={"tier_hint": "Normal"}),
+            skip_validation=True,
+        )
+        result = build_metadata("my-change", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Tier"] == "Normal"
+
+    def test_tier_critical_value(self, tmp_path: Path) -> None:
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(
+            _make_ev("c1", "plan_ready", payload={"tier_hint": "Critical"}),
+            skip_validation=True,
+        )
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Tier"] == "Critical"
+
+
+# ---------------------------------------------------------------------------
+# build_metadata — Verification field
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMetadataVerification:
+    def test_verification_pending_when_no_events(self, tmp_path: Path) -> None:
+        """No events at all → Verification: pending."""
+        result = build_metadata("no-events-change", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Verification"] == "pending"
+
+    def test_verification_pending_when_no_verify_event(self, tmp_path: Path) -> None:
+        """Events exist but no verification event → Verification: pending."""
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Verification"] == "pending"
+
+    def test_verification_passed(self, tmp_path: Path) -> None:
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
+        w.emit(_make_ev("c1", "implementation_started"), skip_validation=True)
+        w.emit(
+            _make_ev("c1", "verification_passed", payload={}),
+            skip_validation=True,
+        )
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Verification"] == "passed"
+
+    def test_verification_failed(self, tmp_path: Path) -> None:
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
+        w.emit(_make_ev("c1", "implementation_started"), skip_validation=True)
+        w.emit(
+            _make_ev("c1", "verification_failed", payload={}),
+            skip_validation=True,
+        )
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Verification"] == "failed"
+
+    def test_verification_skipped(self, tmp_path: Path) -> None:
+        """verification_passed with payload.skipped=True → Verification: skipped."""
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
+        w.emit(_make_ev("c1", "implementation_started"), skip_validation=True)
+        w.emit(
+            _make_ev(
+                "c1", "verification_passed", payload={"skipped": True, "reason": "--skip-verify"}
+            ),
+            skip_validation=True,
+        )
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Verification"] == "skipped"
+
+    def test_verification_latest_event_wins(self, tmp_path: Path) -> None:
+        """If verification_failed then verification_passed: latest wins → passed."""
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
+        w.emit(_make_ev("c1", "implementation_started"), skip_validation=True)
+        w.emit(_make_ev("c1", "verification_failed"), skip_validation=True)
+        w.emit(_make_ev("c1", "verification_passed", payload={}), skip_validation=True)
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Verification"] == "passed"
+
+
+# ---------------------------------------------------------------------------
+# build_metadata — Affected anchors
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMetadataAffectedAnchors:
+    def test_affected_anchors_omitted_when_empty(self, tmp_path: Path) -> None:
+        """No affected_anchors in plan_ready → key absent from output."""
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_ready", payload={}), skip_validation=True)
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert "Affected anchors" not in block.fields
+
+    def test_affected_anchors_omitted_when_no_plan_ready(self, tmp_path: Path) -> None:
+        """No plan_ready event → key absent."""
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert "Affected anchors" not in block.fields
+
+    def test_affected_anchors_comma_joined_when_non_empty(self, tmp_path: Path) -> None:
+        """affected_anchors list → comma+space joined, round-trip recovers same value."""
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(
+            _make_ev(
+                "c1",
+                "plan_ready",
+                payload={"affected_anchors": ["cap-foo", "cap-bar"]},
+            ),
+            skip_validation=True,
+        )
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Affected anchors"] == "cap-foo, cap-bar"
+
+    def test_affected_anchors_single_item(self, tmp_path: Path) -> None:
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(
+            _make_ev("c1", "plan_ready", payload={"affected_anchors": ["cap-only"]}),
+            skip_validation=True,
+        )
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Affected anchors"] == "cap-only"
+
+
+# ---------------------------------------------------------------------------
+# build_metadata — Plan / Spec / Verification details always omitted (v0.1)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMetadataOmittedV0Keys:
+    def test_plan_always_omitted(self, tmp_path: Path) -> None:
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert "Plan" not in block.fields
+
+    def test_spec_always_omitted(self, tmp_path: Path) -> None:
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert "Spec" not in block.fields
+
+    def test_verification_details_always_omitted(self, tmp_path: Path) -> None:
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert "Verification details" not in block.fields
+
+
+# ---------------------------------------------------------------------------
+# build_metadata — First commit + Implementation started
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMetadataImplementationStarted:
+    def test_first_commit_and_impl_started_rendered(self, tmp_path: Path) -> None:
+        """implementation_started event with first_commit + timestamp → both rendered."""
+        ts = "2026-05-30T12:00:00Z"
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
+        w.emit(
+            _make_ev(
+                "c1",
+                "implementation_started",
+                payload={"first_commit": "abc1234"},
+                timestamp=ts,
+            ),
+            skip_validation=True,
+        )
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["First commit"] == "abc1234"
+        assert block.fields["Implementation started"] == ts
+
+    def test_first_commit_omitted_when_no_implementation_started(self, tmp_path: Path) -> None:
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert "First commit" not in block.fields
+
+    def test_impl_started_omitted_when_no_implementation_started(self, tmp_path: Path) -> None:
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert "Implementation started" not in block.fields
+
+    def test_first_commit_omitted_when_payload_missing_key(self, tmp_path: Path) -> None:
+        """implementation_started event without first_commit in payload → key absent."""
+        ep = events_path(tmp_path)
+        w = EventWriter(ep)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
+        w.emit(
+            _make_ev("c1", "implementation_started", payload={}),
+            skip_validation=True,
+        )
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert "First commit" not in block.fields
+        # Implementation started IS rendered (the event exists), just no first_commit key
+        assert "Implementation started" in block.fields
+
+
+# ---------------------------------------------------------------------------
+# build_metadata — events.jsonl absent
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMetadataNoEventsFile:
+    def test_valid_block_when_no_events_file(self, tmp_path: Path) -> None:
+        """No .harness/events.jsonl → build_metadata must not crash."""
+        result = build_metadata("ghost-change", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.present is True
+        assert REQUIRED_METADATA_KEYS <= block.fields.keys()
+
+    def test_tier_unknown_when_no_events_file(self, tmp_path: Path) -> None:
+        result = build_metadata("ghost-change", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Tier"] == "unknown"
+
+    def test_verification_pending_when_no_events_file(self, tmp_path: Path) -> None:
+        result = build_metadata("ghost-change", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.fields["Verification"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# build_metadata — Marker presence + uniqueness
+# ---------------------------------------------------------------------------
+
+
+class TestBuildMetadataMarkers:
+    def test_metadata_begin_present_exactly_once(self, tmp_path: Path) -> None:
+        result = build_metadata("c1", tmp_path)
+        assert result.count(METADATA_BEGIN) == 1
+
+    def test_metadata_end_present_exactly_once(self, tmp_path: Path) -> None:
+        result = build_metadata("c1", tmp_path)
+        assert result.count(METADATA_END) == 1
+
+    def test_parse_block_count_exactly_one(self, tmp_path: Path) -> None:
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.block_count == 1
+
+    def test_block_present_true(self, tmp_path: Path) -> None:
+        result = build_metadata("c1", tmp_path)
+        block = parse_metadata_block(result)
+        assert block.present is True

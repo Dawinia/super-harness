@@ -138,3 +138,11 @@ register_builtin("anchor-sentinel-presence", AnchorSentinelPresence)
 from super_harness.sensors.anchor_index_rebuilder import AnchorIndexRebuilder  # noqa: E402
 
 register_builtin("anchor-index-rebuilder", AnchorIndexRebuilder)
+
+from super_harness.sensors.pr_decorator import PRDecorator  # noqa: E402
+
+register_builtin("PR-decorator", PRDecorator)
+
+from super_harness.sensors.l1_updater import L1Updater  # noqa: E402
+
+register_builtin("l1-updater", L1Updater)
