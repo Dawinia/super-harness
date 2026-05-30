@@ -24,6 +24,16 @@ def _assert_no_runblock_raw_interpolation(yaml_text: str) -> None:
     (`run: |` / `run: >`), including every continuation line of the block.
     A continuation block ends when a non-blank line appears whose indentation
     is <= the indentation of the `run:` line that opened it.
+
+    Also handles the GitHub-Actions list-marker shorthand form where the step
+    key appears inline with the list item marker (`- run: |`), not on a
+    separate line below `- name:`.
+
+    Threat-model scope: ``github.*`` and ``steps.*`` are the only contexts
+    whose values can be controlled by PR-author content (branch names, PR
+    titles, step outputs derived from those). ``env.`` / ``vars.`` /
+    ``secrets.`` are repo-owner controlled; ``matrix.`` / ``runner.`` are
+    static. So this guard's scope is intentionally narrow.
     """
     lines = yaml_text.splitlines()
     in_run_block = False
@@ -50,6 +60,9 @@ def _assert_no_runblock_raw_interpolation(yaml_text: str) -> None:
                 continue
 
         # Not in a run block: check for a `run:` key on this line.
+        # Handle GitHub-Actions list-marker shorthand: `- run: ...`.
+        if stripped.startswith("- run:"):
+            stripped = stripped[2:]  # strip "- " leaving "run: ..."
         if not stripped.startswith("run:"):
             continue
 
@@ -118,7 +131,8 @@ def test_workflow_template_continuation_lines_also_guarded() -> None:
     multi-line tracking logic is non-vacuous: removing it would let this test
     silently pass while the real template falsely appears safe.
     """
-    vulnerable_yaml = """\
+    # Case 1: full-form step — `- name:` on its own line, `run: |` nested below.
+    vulnerable_yaml_fullform = """\
 jobs:
   example:
     steps:
@@ -127,4 +141,40 @@ jobs:
           echo "branch=${{ github.head_ref }}"
 """
     with pytest.raises(AssertionError, match=r"raw interpolation.*continuation line"):
-        _assert_no_runblock_raw_interpolation(vulnerable_yaml)
+        _assert_no_runblock_raw_interpolation(vulnerable_yaml_fullform)
+
+    # Case 2: list-marker shorthand — `- run: |` inline with the list marker.
+    # This is the idiomatic form in every official GitHub Actions doc example;
+    # the guard must handle it so a future contributor cannot bypass the check
+    # by using shorthand syntax.
+    vulnerable_yaml_shorthand = """\
+jobs:
+  example:
+    steps:
+      - run: |
+          echo "branch=${{ github.head_ref }}"
+"""
+    with pytest.raises(AssertionError, match=r"raw interpolation.*continuation line"):
+        _assert_no_runblock_raw_interpolation(vulnerable_yaml_shorthand)
+
+
+def test_workflow_template_guard_does_not_false_fire_on_env_indirection() -> None:
+    """Positive control: env-mapped ${{ github.* }} must NOT trip the guard.
+
+    The correct hardened pattern maps GitHub context values through env: so
+    that shell scripts reference env-var names only (never raw expressions).
+    Without this test, an accidental over-broadening of the helper (e.g.
+    matching `${{` anywhere instead of only inside run blocks) would silently
+    pass all other tests while breaking the legitimate env-indirection pattern.
+    """
+    safe_yaml = """\
+jobs:
+  ok:
+    steps:
+      - name: safe
+        env:
+          REF: ${{ github.head_ref }}
+        run: |
+          echo "$REF"
+"""
+    _assert_no_runblock_raw_interpolation(safe_yaml)  # must NOT raise
