@@ -17,6 +17,24 @@ git_branch_commit_push tests (real local git, isolated tmp repo):
 10. test_branch_commit_push_raises_on_git_failure
 11. test_branch_commit_push_adds_multiple_files
 12. test_branch_commit_push_uses_relative_paths_for_add
+
+build_l1_pr_body tests (pure string, no I/O):
+13. test_pr_body_contains_change_id
+14. test_pr_body_lists_repo_relative_paths
+15. test_pr_body_preserves_input_order
+16. test_pr_body_deterministic
+17. test_pr_body_empty_files_no_bullet_list
+18. test_pr_body_mentions_auto_merge_or_labels
+19. test_pr_body_handles_bare_name_path_gracefully
+
+pr_num_from_url tests (pure string, no I/O):
+20. test_pr_num_parses_standard_https_url
+21. test_pr_num_parses_with_trailing_slash
+22. test_pr_num_parses_with_fragment_or_query
+23. test_pr_num_parses_ssh_style_url
+24. test_pr_num_raises_on_no_pull_segment
+25. test_pr_num_raises_on_non_numeric
+26. test_pr_num_handles_large_number
 """
 from __future__ import annotations
 
@@ -27,7 +45,12 @@ from unittest.mock import call, patch
 
 import pytest
 
-from super_harness.sensors._l1_helpers import generate_l1_stubs, git_branch_commit_push
+from super_harness.sensors._l1_helpers import (
+    build_l1_pr_body,
+    generate_l1_stubs,
+    git_branch_commit_push,
+    pr_num_from_url,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -309,3 +332,103 @@ def test_branch_commit_push_uses_relative_paths_for_add(tmp_path: Path) -> None:
         text=True,
     ).stdout.strip().split("\n")
     assert "deep/dir/x.md" in tree_files
+
+
+# ---------------------------------------------------------------------------
+# build_l1_pr_body tests
+# ---------------------------------------------------------------------------
+
+
+def test_pr_body_contains_change_id() -> None:
+    body = build_l1_pr_body("abc-123", [])
+    assert "abc-123" in body
+
+
+def test_pr_body_lists_repo_relative_paths() -> None:
+    files = [
+        Path("/tmp/x/docs/reference/capabilities/cap-foo.md"),
+        Path("/tmp/x/docs/reference/capabilities/cap-bar.md"),
+    ]
+    body = build_l1_pr_body("chg-001", files)
+    assert "`docs/reference/capabilities/cap-foo.md`" in body
+    assert "`docs/reference/capabilities/cap-bar.md`" in body
+
+
+def test_pr_body_preserves_input_order() -> None:
+    files = [
+        Path("/tmp/x/docs/reference/capabilities/cap-z.md"),
+        Path("/tmp/x/docs/reference/capabilities/cap-a.md"),
+        Path("/tmp/x/docs/reference/capabilities/cap-m.md"),
+    ]
+    body = build_l1_pr_body("chg-002", files)
+    idx_z = body.index("cap-z.md")
+    idx_a = body.index("cap-a.md")
+    idx_m = body.index("cap-m.md")
+    assert idx_z < idx_a < idx_m
+
+
+def test_pr_body_deterministic() -> None:
+    files = [
+        Path("/tmp/x/docs/reference/capabilities/cap-alpha.md"),
+        Path("/tmp/x/docs/reference/capabilities/cap-beta.md"),
+    ]
+    first = build_l1_pr_body("chg-det", files)
+    second = build_l1_pr_body("chg-det", files)
+    assert first == second
+
+
+def test_pr_body_empty_files_no_bullet_list() -> None:
+    body = build_l1_pr_body("chg-empty", [])
+    assert "chg-empty" in body
+    # Must contain an explanatory message about no files.
+    assert "No files" in body or "no files" in body or "already current" in body
+    # Must not contain a bullet item with a backtick (empty bullet list).
+    assert "- `" not in body
+
+
+def test_pr_body_mentions_auto_merge_or_labels() -> None:
+    body = build_l1_pr_body("chg-labels", [])
+    assert "harness-auto" in body or "no-human-review" in body
+
+
+def test_pr_body_handles_bare_name_path_gracefully() -> None:
+    # Path with no docs/reference/capabilities prefix — fallback to .name.
+    body = build_l1_pr_body("chg-bare", [Path("cap-foo.md")])
+    assert "cap-foo.md" in body
+
+
+# ---------------------------------------------------------------------------
+# pr_num_from_url tests
+# ---------------------------------------------------------------------------
+
+
+def test_pr_num_parses_standard_https_url() -> None:
+    assert pr_num_from_url("https://github.com/owner/repo/pull/123") == 123
+
+
+def test_pr_num_parses_with_trailing_slash() -> None:
+    assert pr_num_from_url("https://github.com/owner/repo/pull/45/") == 45
+
+
+def test_pr_num_parses_with_fragment_or_query() -> None:
+    assert pr_num_from_url("https://github.com/owner/repo/pull/7#discussion_r1") == 7
+    assert pr_num_from_url("https://github.com/owner/repo/pull/9?diff=split") == 9
+
+
+def test_pr_num_parses_ssh_style_url() -> None:
+    assert pr_num_from_url("git@github.com:owner/repo/pull/1024") == 1024
+
+
+def test_pr_num_raises_on_no_pull_segment() -> None:
+    url = "https://github.com/owner/repo"
+    with pytest.raises(ValueError, match=r"https://github\.com/owner/repo"):
+        pr_num_from_url(url)
+
+
+def test_pr_num_raises_on_non_numeric() -> None:
+    with pytest.raises(ValueError):
+        pr_num_from_url("https://github.com/owner/repo/pull/abc")
+
+
+def test_pr_num_handles_large_number() -> None:
+    assert pr_num_from_url("https://github.com/owner/repo/pull/999999") == 999999
