@@ -325,10 +325,10 @@ def build_metadata(change_id: str, root: Path) -> str:
 # Strict-resolve half — resolve_slug_from_pr_strict (Phase 14 Task 14.3)
 #
 # Used by `verify --pr` / `done --pr` to resolve a slug from a PR's metadata
-# block. Unlike Phase 12's `resolve_change_from_pr` (cli/pr.py) which collapses
-# every failure to ``None``, this helper classifies failure modes into a
-# typed exception carrying the intended exit code so the CLI can emit precise
-# error verdicts without re-deriving the classification at each call site.
+# block. Unlike the Phase 12 helper (now deleted) which collapsed every failure
+# to ``None``, this helper classifies failure modes into a typed exception
+# carrying the intended exit code so the CLI can emit precise error verdicts
+# without re-deriving the classification at each call site.
 #
 # IMPORTANT divergence from `pr validate` (cli-command-surface spec, locked
 # in spec reviewer round 1): `pr validate` treats "missing block" as a

@@ -31,8 +31,23 @@ resolution AND its string form lands on the ``implementation_complete``
 payload as ``pr_url`` (unchanged from pre-14.3). Failure-mode classification
 for ``--pr`` resolution mirrors `verify` and DIVERGES from ``pr validate`` —
 see ``engineering/pr_metadata.py`` for the exit-code matrix. The A6
-slug-format gate is applied only on the ``--pr`` path
-(attacker-influenceable input).
+slug-format gate (``core/slug.py::validate_slug``) is applied only on the
+``--pr`` path (attacker-influenceable input); positional / active-change
+slugs skip A6.
+
+Trust model for positional slug: in local use, the positional ``<slug>``
+argument comes from the operator (trusted). In CI, the bundled
+``super-harness.yml`` workflow's ``verification`` job passes
+``${{ github.head_ref }}`` as the positional slug. ``head_ref`` is
+PR-author-controlled (kebab branch name = slug per VISION convention), but
+A6 is NOT applied on the positional path — the workflow relies on GitHub's
+own ref-name validation (no spaces, no ``..``, etc.) as the boundary
+defense. By contrast, the ``pr emit-opened --change`` path (also takes
+``head_ref``) DOES apply A6 explicitly per Phase 13 §A6 decision. Summary:
+positional / active-change inherit upstream validation (CLI args, ``change
+start``, git ref-name rules); only ``--pr <num>`` (which parses an
+attacker-controlled PR body) invokes A6 inside
+``resolve_slug_from_pr_body_strict``.
 
 Exit codes (cli-command-surface §2.2):
 - 0 — verified (or --skip-verify) + implementation_complete emitted.

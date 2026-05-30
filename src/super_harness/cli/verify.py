@@ -24,10 +24,23 @@ classification — see ``engineering/pr_metadata.py`` for the matrix.
 Specifically, ``pr validate`` treats "missing metadata block" as exit 2
 (validation verdict); ``verify --pr`` treats it as exit 4 (precondition
 fail) because here the block is a slug-LOOKUP precondition, not the verdict
-subject. The A6 slug-format gate is applied only on the ``--pr`` path
-(attacker-influenceable input); positional / active-change slugs come from
-trusted sources and skip the gate (those paths' inputs were validated
-upstream by ``change start``).
+subject. The A6 slug-format gate (``core/slug.py::validate_slug``) is
+applied only on the ``--pr`` path (attacker-influenceable input); positional
+/ active-change slugs skip A6.
+
+Trust model for positional slug: in local use, the positional ``<slug>``
+argument comes from the operator (trusted). In CI, the bundled
+``super-harness.yml`` workflow's ``verification`` job passes
+``${{ github.head_ref }}`` as the positional slug. ``head_ref`` is
+PR-author-controlled (kebab branch name = slug per VISION convention), but
+A6 is NOT applied on the positional path — the workflow relies on GitHub's
+own ref-name validation (no spaces, no ``..``, etc.) as the boundary
+defense. By contrast, the ``pr emit-opened --change`` path (also takes
+``head_ref``) DOES apply A6 explicitly per Phase 13 §A6 decision. Summary:
+positional / active-change inherit upstream validation (CLI args, ``change
+start``, git ref-name rules); only ``--pr <num>`` (which parses an
+attacker-controlled PR body) invokes A6 inside
+``resolve_slug_from_pr_body_strict``.
 
 Exit codes (cli-command-surface §2.2):
 - 0 — verdict pass (every must_pass check passed).
