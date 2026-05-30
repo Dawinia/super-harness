@@ -432,3 +432,31 @@ def test_pr_num_raises_on_non_numeric() -> None:
 
 def test_pr_num_handles_large_number() -> None:
     assert pr_num_from_url("https://github.com/owner/repo/pull/999999") == 999999
+
+
+# --------------------------------------------------------------------------- #
+# Round-4 review hardening: stub body composed with f-string interpolation, so
+# anchor ids that incidentally contain `{` or `}` do NOT raise KeyError /
+# IndexError (which would escape the L1Updater AC-7 catch tuple).
+# --------------------------------------------------------------------------- #
+
+
+def test_generate_handles_anchor_id_with_braces(tmp_path: Path) -> None:
+    """Anchor ids with braces must not raise. Production anchor ids are kebab,
+    but the brittleness of ``str.format`` (KeyError on unknown placeholders;
+    IndexError on positional) is bypassed by f-string interpolation. Locks
+    in the Round-4 fix.
+    """
+    from super_harness.sensors._l1_helpers import generate_l1_stubs
+
+    weird = "cap-{weird-but-passes}"
+    written = generate_l1_stubs(tmp_path, [weird])
+
+    assert len(written) == 1
+    assert written[0].name == f"{weird}.md"
+    body = written[0].read_text()
+    # The aid appears verbatim in the title — no format-string interpretation.
+    assert body.startswith(f"# {weird}\n\n")
+    # Idempotency contract still holds for the weird-aid path.
+    second = generate_l1_stubs(tmp_path, [weird])
+    assert second == []

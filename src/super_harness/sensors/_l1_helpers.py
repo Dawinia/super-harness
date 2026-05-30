@@ -21,13 +21,6 @@ __all__ = [
     "pr_num_from_url",
 ]
 
-_STUB_TEMPLATE = (
-    "# {aid}\n\n"
-    "<!-- L1 capability stub auto-written by super-harness l1-updater. -->\n"
-    "<!-- Real generation is v0.2+; this file marks the placeholder location. -->\n"
-)
-
-
 def generate_l1_stubs(root: Path, anchors: list[str]) -> list[Path]:
     """Write minimal L1 capability stub markdown files under *root*.
 
@@ -36,6 +29,13 @@ def generate_l1_stubs(root: Path, anchors: list[str]) -> list[Path]:
     Files that already exist with byte-for-byte identical content are silently
     skipped and NOT included in the return value — this makes the function
     safely idempotent.
+
+    The stub body is composed via f-string interpolation (NOT ``str.format``)
+    so an anchor id that incidentally contains ``{`` or ``}`` is passed
+    through verbatim instead of raising ``KeyError``/``IndexError`` — those
+    exceptions are NOT in the L1Updater AC-7 catch tuple and would otherwise
+    escape to ``sensor_crashed`` (Round-4 review hardening; production anchor
+    ids are kebab so this is belt-and-braces).
 
     Args:
         root: Workspace root (arbitrary filesystem path).
@@ -50,7 +50,11 @@ def generate_l1_stubs(root: Path, anchors: list[str]) -> list[Path]:
     written: list[Path] = []
     for aid in anchors:
         target = out_dir / f"{aid}.md"
-        body = _STUB_TEMPLATE.format(aid=aid)
+        body = (
+            f"# {aid}\n\n"
+            "<!-- L1 capability stub auto-written by super-harness l1-updater. -->\n"
+            "<!-- Real generation is v0.2+; this file marks the placeholder location. -->\n"
+        )
         if target.exists() and target.read_text() == body:
             # Byte-for-byte identical — skip to preserve mtime.
             continue
