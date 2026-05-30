@@ -576,6 +576,12 @@ def test_setup_github_existing_workflow_tty_ctrl_c_exits_1(tmp_path: Path):
     def _abort_as_tty(*args: object, **kwargs: object) -> None:
         # Patch isatty on the live stdin already installed by CliRunner's
         # isolation context, then raise Abort to simulate Ctrl-C.
+        # Note: cleanup of this isatty mutation relies on CliRunner restoring
+        # sys.stdin on context exit (it replaces the stdin object wholesale).
+        # We do NOT restore .isatty here because the stdin object itself becomes
+        # unreferenced after CliRunner cleanup. If a future Click version stops
+        # fully replacing stdin (only patching some attributes), this test will
+        # need an explicit teardown — currently empirically safe.
         _sys.stdin.isatty = lambda: True  # type: ignore[method-assign]
         raise click.Abort()
 
@@ -587,5 +593,6 @@ def test_setup_github_existing_workflow_tty_ctrl_c_exits_1(tmp_path: Path):
             ["--workspace", str(tmp_path), "init", "--setup-github"],
         )
     assert r.exit_code == 1, r.output
-    # Click formats Abort as "Aborted!" on stderr; either suffices as evidence
-    assert "Abort" in (r.output + r.stderr) or r.exit_code == 1
+    # Click formats the abort with "Aborted!" on stderr; assert strictly so a
+    # regression in Click's abort rendering would actually fail this test.
+    assert "Abort" in (r.output + r.stderr), (r.output, r.stderr)

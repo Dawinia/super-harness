@@ -100,8 +100,9 @@ def _skeleton_files() -> dict[str, str]:
 @click.option(
     "--setup-github",
     is_flag=True,
-    help="Run gh CLI checks, write .github/pull_request_template.md, and "
-    "best-effort enable repo auto-merge/squash settings (requires gh).",
+    help="Run gh CLI checks, write .github/pull_request_template.md and "
+    ".github/workflows/super-harness.yml, and best-effort enable repo "
+    "auto-merge/squash settings (requires gh).",
 )
 @click.option(
     "--framework",
