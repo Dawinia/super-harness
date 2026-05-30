@@ -5,7 +5,7 @@ from importlib.resources import files
 import pytest
 import yaml
 
-_RAW_PATTERNS = ("${{ github.", "${{ steps.")
+_RAW_PATTERNS = ("${{ github.", "${{ steps.", "${{ inputs.")
 
 
 def _load_template() -> str:
@@ -29,11 +29,14 @@ def _assert_no_runblock_raw_interpolation(yaml_text: str) -> None:
     key appears inline with the list item marker (`- run: |`), not on a
     separate line below `- name:`.
 
-    Threat-model scope: ``github.*`` and ``steps.*`` are the only contexts
-    whose values can be controlled by PR-author content (branch names, PR
-    titles, step outputs derived from those). ``env.`` / ``vars.`` /
+    Threat-model scope: ``github.*``, ``steps.*``, and ``inputs.*`` are the
+    contexts whose values can be controlled by PR-author content (branch
+    names, PR titles, step outputs derived from those, or
+    ``workflow_dispatch``/``workflow_call`` inputs). ``env.`` / ``vars.`` /
     ``secrets.`` are repo-owner controlled; ``matrix.`` / ``runner.`` are
-    static. So this guard's scope is intentionally narrow.
+    static. So this guard's scope is intentionally narrow. ``inputs.*`` is
+    not used by the current template (no ``workflow_dispatch`` trigger), but
+    is guarded as forward-proofing for any future trigger addition.
     """
     lines = yaml_text.splitlines()
     in_run_block = False
