@@ -82,6 +82,11 @@ bug (flagged explicitly).
 **Process / orchestration:**
 - Multi-stage plan-reviewer and code-reviewer subagent flows
 - Human / hybrid reviewer policies
+- Public CLI verb to advance `AWAITING_PLAN_REVIEW → PLAN_APPROVED` —
+  v0.1 has no shipped emitter for `plan_approved`; framework adapters
+  auto-emit `plan_ready` (OpenSpec from `tasks.md`) but the next
+  transition currently requires direct event emission. The in-tree
+  demo seeds past this gap.
 - Daemon-autonomous event-driven dispatch — v0.1 uses CLI one-shot
   dispatchers (e.g., `super-harness on-merge` dispatches the merged-event
   sensors).

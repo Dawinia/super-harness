@@ -13,8 +13,8 @@ all pre-emitted in `.harness/events.jsonl`) so visitors can exercise the
 `Edit` / `verify` / `done` slice that v0.1 actually ships end-to-end.
 
 This is the canonical onboarding demo for `super-harness` v0.1. It lives
-in-tree so the README on GitHub doubles as a tutorial; Phase 16 will reuse this
-folder as an end-to-end test fixture.
+in-tree so the README on GitHub doubles as a tutorial; a future end-to-end
+test fixture will reuse this folder.
 
 ## Prerequisites
 

@@ -93,9 +93,15 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   snapshot rollback rules out a partial write.
 - **`Edit` tool calls always blocked.** Run `super-harness status`. The
   hook output's `reason` field tells you which lifecycle rule fired (no
-  active change / change is still in `INTENT_DECLARED` / etc.). Advance the
-  change first (e.g. `super-harness plan ready <slug>`); do not work around
-  the block by editing settings.json.
+  active change / change is still in `INTENT_DECLARED` or
+  `AWAITING_PLAN_REVIEW` / etc.). The gate only allows mutations at
+  `PLAN_APPROVED`, `IMPLEMENTATION_IN_PROGRESS`, or `CODE_REVIEW_REJECTED`
+  (see `src/super_harness/gates/decisions.py`). v0.1 has no public CLI
+  verb to advance `AWAITING_PLAN_REVIEW → PLAN_APPROVED`; multi-stage
+  plan-reviewer is deferred to v0.2 (see project README's "What v0.1
+  does NOT ship yet"). Framework adapters auto-emit `plan_ready` when
+  their artifacts exist (OpenSpec watches `tasks.md`). Do not work
+  around the block by editing settings.json.
 - **SessionStart never injects context.** Confirm the hook is registered
   (`jq '.hooks.SessionStart' .claude/settings.json`); if absent, re-run
   `adapter install claude-code`. If present but no slug is active,

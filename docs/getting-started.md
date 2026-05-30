@@ -13,8 +13,7 @@ to landing a PR with all gates green. By the end you'll have:
 This guide assumes a Unix shell (macOS or Linux). All commands are
 copy-paste runnable. For the full CLI surface see
 [`cli-reference.md`](./cli-reference.md). For a runnable end-to-end example,
-see [`examples/demo-openspec-claude/`](../examples/demo-openspec-claude/)
-(forward-link — populated in Task 15.4).
+see [`examples/demo-openspec-claude/`](../examples/demo-openspec-claude/).
 
 ---
 
@@ -195,8 +194,12 @@ super-harness verify
 Exit codes:
 
 - `0` — all `must_pass` checks passed; you can move on.
+- `1` — a sensor crashed or timed out (see stderr).
 - `2` — at least one `must_pass` check failed; fix and re-run.
 - `3` — `.harness/verification.yaml` is missing (re-run `init`).
+- `4` — `--pr <num>` resolution failed (gh fetch / no metadata block / missing Change field).
+
+See [`cli-reference.md`](./cli-reference.md) for the full semantics.
 
 `verify` is read-only — it doesn't advance the lifecycle. To advance the
 change from `IMPLEMENTATION_IN_PROGRESS` to `AWAITING_CODE_REVIEW`, use

@@ -38,7 +38,11 @@ Mechanics:
 3. Persists `{name: openspec, type: framework, version: 0.1.0, enabled: true}`
    into `.harness/adapters.yaml`.
 4. Injects the `<!-- super-harness framework: openspec -->` subsection into
-   `AGENTS.md` (replacing the `plain` block left there by `init`).
+   `AGENTS.md` alongside the `<!-- super-harness framework: plain -->` block
+   written by `init`. **v0.1 does NOT evict the plain block on framework
+   install** — both subsections coexist (consistent with the architectural
+   design of pluggable multi-framework adapters). Evicting the plain
+   fallback when a real framework first installs is a v0.2 follow-up.
 
 Idempotent: re-running the command rewrites the same yaml row and the same
 AGENTS.md block in place. If `AGENTS.md` is absent (you never ran `init`), the
