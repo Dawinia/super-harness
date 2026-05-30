@@ -311,11 +311,13 @@ def pr_emit_opened(ctx: click.Context, pr_number: int, change: str) -> None:
                 message=(
                     f"PR-decorator failed for PR #{pr_number} "
                     "(see `sensor_crashed` event in .harness/events.jsonl for "
-                    "the underlying gh error)"
+                    "the underlying error)"
                 ),
                 hint=(
-                    "Check `gh auth status` and the current repo; rerun "
-                    "`super-harness pr emit-opened` after the external tool is fixed."
+                    "Inspect the `sensor_crashed` event for the root cause — "
+                    "common causes: gh auth/network, PR body has multiple or "
+                    "malformed `super-harness:metadata` markers, or change_id "
+                    "resolution. Rerun `super-harness pr emit-opened` after fixing."
                 ),
             ),
             err=True,

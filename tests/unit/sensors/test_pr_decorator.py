@@ -370,3 +370,46 @@ def test_pr_decorator_registered_as_builtin() -> None:
     from super_harness.sensors.registry import get_builtin
 
     assert get_builtin("PR-decorator") is PRDecorator
+
+
+# --------------------------------------------------------------------------- #
+# 14. Regression: re.sub replacement is lambda-wrapped, so `block` containing
+# backslash sequences is treated as a literal string (whole-branch review
+# MINOR-2 fix — was raw `block` arg, which re.sub interprets as repl with
+# backreferences like `\1` / `\g<name>`).
+# --------------------------------------------------------------------------- #
+
+
+def test_merge_replace_treats_block_as_literal_not_backref() -> None:
+    """Without the lambda wrapper, a `block` containing `\\1` makes re.sub
+    raise ``re.error: invalid group reference 1`` because the substitution
+    pattern has no capture group. With the lambda, the block is returned
+    literally. Defensive guard for any future field value that contains
+    backslashes (e.g. a future Windows-style path in a payload).
+    """
+    from super_harness.engineering.pr_metadata import (
+        METADATA_BEGIN,
+        METADATA_END,
+        parse_metadata_block,
+    )
+    from super_harness.sensors.pr_decorator import _merge_metadata_block
+
+    body = (
+        "Some PR text\n\n"
+        f"{METADATA_BEGIN}\n"
+        "Change: old-slug\n"
+        f"{METADATA_END}\n"
+    )
+    block = (
+        f"{METADATA_BEGIN}\n"
+        "Change: new-slug-with-\\1-literal\n"
+        f"{METADATA_END}"
+    )
+
+    # No raise — the lambda made re.sub treat block as literal.
+    result = _merge_metadata_block(body, block)
+
+    assert "new-slug-with-\\1-literal" in result
+    parsed = parse_metadata_block(result)
+    assert parsed.block_count == 1
+    assert parsed.fields["Change"] == "new-slug-with-\\1-literal"

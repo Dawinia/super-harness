@@ -80,8 +80,11 @@ def _merge_metadata_block(body: str, block: str) -> str:
 
     if result.block_count == 1 and result.present:
         # Safe to replace: exactly one balanced pair verified by parse_metadata_block.
+        # Use a lambda for the replacement so `re.sub` treats `block` as a literal
+        # rather than interpreting `\1` / `\g<name>` / `\\` as backreferences —
+        # field values include the user-controlled change_id slug.
         pattern = re.escape(METADATA_BEGIN) + r".*?" + re.escape(METADATA_END)
-        return re.sub(pattern, block, body, count=1, flags=re.DOTALL)
+        return re.sub(pattern, lambda _m: block, body, count=1, flags=re.DOTALL)
 
     # block_count == 0 and no stray markers → append.
     return body.rstrip() + "\n\n" + block + "\n"

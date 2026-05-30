@@ -223,21 +223,26 @@ class L1Updater(Sensor):
                 ],
             )
 
-        files = generate_l1_stubs(context.workspace_root, anchors)
-        if not files:
-            # All stubs already up-to-date — short-circuit before any git/gh I/O.
-            return SensorResult(
-                status="informational",
-                summary="l1-updater: L1 files already current",
-                emit_events=[
-                    _l1_completed(
-                        change_id, [], pr_url=None, root=context.workspace_root
-                    )
-                ],
-            )
-
         # --- AC-7 transactional region ---------------------------------------
+        # generate_l1_stubs runs INSIDE the try so a pre-existing non-UTF-8
+        # stub file (UnicodeDecodeError, a ValueError subclass) routes through
+        # AC-7's pending-file path instead of bypassing it and becoming
+        # sensor_crashed via the dispatcher's _safe_run.
+        files: list[Path] = []
         try:
+            files = generate_l1_stubs(context.workspace_root, anchors)
+            if not files:
+                # All stubs already up-to-date — short-circuit before any git/gh I/O.
+                return SensorResult(
+                    status="informational",
+                    summary="l1-updater: L1 files already current",
+                    emit_events=[
+                        _l1_completed(
+                            change_id, [], pr_url=None, root=context.workspace_root
+                        )
+                    ],
+                )
+
             # Phase 11's rebuilder writes .harness/anchors/index.yaml. The index
             # is the v0.1 persistence path for anchor locations (the on-merge
             # CI runner's separate rebuilder call is ephemeral).

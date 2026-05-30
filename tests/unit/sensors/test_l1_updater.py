@@ -609,3 +609,52 @@ def test_rerun_after_successful_run_finds_files_current(tmp_path: Path) -> None:
     m_create.assert_not_called()
     m_merge.assert_not_called()
     m_git.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# AC-7 regression: pre-existing non-UTF-8 stub routes through AC-7
+# (whole-branch review MINOR-1 fix — generate_l1_stubs moved into the try).
+# --------------------------------------------------------------------------- #
+
+
+def test_non_utf8_pre_existing_stub_routes_through_ac7(tmp_path: Path) -> None:
+    """A pre-existing non-UTF-8 stub file makes generate_l1_stubs raise
+    UnicodeDecodeError (a ValueError subclass) on its idempotency read_text().
+
+    The AC-7 try/except must catch it via the ValueError branch and route to
+    pending + l1_update_failed instead of bypassing AC-7 and surfacing as
+    sensor_crashed via the dispatcher's _safe_run. Phase 9/10/12 error-family
+    regression guard.
+    """
+    root = _harness_root(tmp_path)
+    change_id = "ch-utf8-regression"
+    _seed_events(
+        root,
+        change_id,
+        [("intent_declared", {}), ("plan_ready", {"affected_anchors": ["cap-foo"]})],
+    )
+    # Pre-create the stub file with non-UTF-8 bytes. generate_l1_stubs's
+    # idempotency check does read_text() → UnicodeDecodeError.
+    out_dir = root / "docs" / "reference" / "capabilities"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "cap-foo.md").write_bytes(b"\xff\xfe\xff")
+
+    trigger = _merged_trigger(change_id)
+    ctx = _ctx(root)
+
+    with (
+        patch("super_harness.sensors.l1_updater.create_pr") as m_create,
+        patch("super_harness.sensors.l1_updater.merge_pr_auto_squash") as m_merge,
+        patch("super_harness.sensors.l1_updater.git_branch_commit_push") as m_git,
+    ):
+        result = L1Updater().check(trigger, ctx)
+
+    assert result.status == "fail"
+    assert len(result.emit_events) == 1
+    assert result.emit_events[0].type == "l1_update_failed"
+    # gh / git must NOT have been called — failure happened in stub generation.
+    m_create.assert_not_called()
+    m_merge.assert_not_called()
+    m_git.assert_not_called()
+    pending = root / ".harness" / "pending-l1-updates" / f"{change_id}.md"
+    assert pending.exists()
