@@ -13,16 +13,32 @@ Wiring: `verify` builds a one-shot `SensorDispatcher` holding only the builtin
 state.yaml internally, so `verify` itself neither emits nor refreshes.
 
 Slug resolution (cli-command-surface convention, NOT git-branch parsing):
-explicit `<slug>` argument wins; else the first non-terminal change via
-`read_active_change_id`. Neither → EXIT_VALIDATION. `--pr` is surface-only in
-v0.1 (the gh wrapper that resolves a slug from a PR number is Phase 12).
+explicit `<slug>` argument wins; else `--pr <num>` fetches the PR body, parses
+the §2.5 metadata block, and uses its ``Change`` field (Phase 14 Task 14.3);
+else the first non-terminal change via `read_active_change_id`. Neither →
+EXIT_VALIDATION.
+
+``--pr`` resolution failures are classified into exit codes by
+``resolve_slug_from_pr_body_strict`` and DIVERGE from ``pr validate``'s
+classification — see ``engineering/pr_metadata.py`` for the matrix.
+Specifically, ``pr validate`` treats "missing metadata block" as exit 2
+(validation verdict); ``verify --pr`` treats it as exit 4 (precondition
+fail) because here the block is a slug-LOOKUP precondition, not the verdict
+subject. The A6 slug-format gate is applied only on the ``--pr`` path
+(attacker-influenceable input); positional / active-change slugs come from
+trusted sources and skip the gate (those paths' inputs were validated
+upstream by ``change start``).
 
 Exit codes (cli-command-surface §2.2):
 - 0 — verdict pass (every must_pass check passed).
 - 2 — verdict fail (a must_pass check failed) OR a config validation error
   (syntax-corrupt / wrong-shape / bad-placeholder verification.yaml, or an
-  unknown `--check` id) surfaced by the pre-load before dispatch.
+  unknown `--check` id) surfaced by the pre-load before dispatch OR a
+  ``--pr`` resolution failure classified as EXIT_VALIDATION (malformed block,
+  ≥2 blocks, bad slug format, non-integer ``--pr`` value).
 - 3 — `.harness/verification.yaml` missing (uninitialized / hand-deleted).
+- 4 — ``--pr`` resolution failure classified as EXIT_EXTERNAL_TOOL (gh fetch
+  failed, no metadata block, or block missing Change field).
 - 1 — the sensor crashed / timed out (no result came back).
 """
 from __future__ import annotations
@@ -35,6 +51,7 @@ import yaml
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.exit_codes import (
+    EXIT_EXTERNAL_TOOL,
     EXIT_GENERIC,
     EXIT_NO_CONFIG,
     EXIT_OK,
@@ -49,6 +66,11 @@ from super_harness.core.paths import (
     verification_yaml_path,
 )
 from super_harness.core.writer import EventWriter
+from super_harness.engineering import gh
+from super_harness.engineering.pr_metadata import (
+    PrSlugLookupError,
+    resolve_slug_from_pr_body_strict,
+)
 from super_harness.engineering.verification_config import load_verification_config
 from super_harness.sensors import Activity, WorkspaceContext
 from super_harness.sensors.dispatcher import (
@@ -68,7 +90,10 @@ from super_harness.sensors.verification_runner import (
     "--pr",
     "pr",
     default=None,
-    help="PR number/URL (surface-only in v0.1; does NOT resolve the slug).",
+    help=(
+        "PR number — when no positional <slug> is given, resolves the slug "
+        "from the PR body's super-harness metadata block."
+    ),
 )
 @click.option(
     "--layer",
@@ -100,12 +125,56 @@ def verify_cmd(
         )
         sys.exit(EXIT_NO_CONFIG)
 
-    # TODO(phase 13): resolve slug from --pr. PR→slug resolution needs the
-    # metadata block the Phase-13 PR-decorator injects (v0.1 PRs carry none), so
-    # `resolve_change_from_pr` (now in cli/pr.py) can only be wired usefully once
-    # that decorator runs. For now --pr is surface-only and never participates in
-    # slug resolution.
-    resolved = slug or read_active_change_id(root)
+    # Slug resolution: positional wins; else --pr fetches the PR body + parses
+    # the §2.5 metadata block (Phase 14 Task 14.3); else active change.
+    # IMPORTANT: --pr exit-code classification DIVERGES from `pr validate` —
+    # see this module's docstring + engineering/pr_metadata.py for the matrix.
+    resolved: str | None
+    if slug:
+        resolved = slug
+    elif pr is not None:
+        # --pr is a `str` Click option (back-compat: we keep it str so a URL
+        # form could be supported later without breaking the CLI surface).
+        # Non-int → clean EXIT_VALIDATION (no traceback, no gh call).
+        try:
+            pr_int = int(pr)
+        except ValueError:
+            click.echo(
+                format_error(
+                    subcommand="verify",
+                    message=f"--pr value must be an integer: {pr!r}",
+                    hint="Pass the PR number, e.g. `--pr 42`.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
+        # Fetch at the CLI boundary so tests can patch `cli.verify.gh.view_pr`
+        # (Phase 12 pattern, parallel with `cli/pr.py`). gh.GhError → exit 4.
+        try:
+            body = gh.view_pr(pr_int, fields=["body"])["body"] or ""
+        except gh.GhError as e:
+            click.echo(
+                format_error(
+                    subcommand="verify",
+                    message=f"could not fetch PR #{pr_int}: {e}",
+                    hint=(
+                        "Check the PR number, `gh auth status`, and the "
+                        "current repo."
+                    ),
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_EXTERNAL_TOOL)
+        try:
+            resolved = resolve_slug_from_pr_body_strict(body, pr_number=pr_int)
+        except PrSlugLookupError as e:
+            click.echo(
+                format_error(subcommand="verify", message=e.message, hint=e.hint),
+                err=True,
+            )
+            sys.exit(e.exit_code)
+    else:
+        resolved = read_active_change_id(root)
     if resolved is None:
         click.echo(
             format_error(
