@@ -31,11 +31,16 @@ super-harness done                               # verify + advance to AWAITING_
 ```
 
 The 5-line block above shows the workflow shape. The literal end-to-end
-path is **not yet runnable cold on v0.1** — the `plan_approved` event has
-no public CLI emitter (see "What v0.1 does NOT ship yet" below), so a
+path is **not yet runnable cold on v0.1** — three lifecycle events
+(`plan_approved`, `implementation_started`, `code_review_passed`) have
+no public emitter in v0.1; the v0.2 reviewer subagent integration
+adds all three (see "What v0.1 does NOT ship yet" below). As a result a
 fresh `change start` lands at `INTENT_DECLARED` and the PreToolUse gate
-blocks the agent's first `Edit`. For a runnable walkthrough that seeds
-past this gap, see [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/).
+blocks the agent's first `Edit`. The in-tree demo
+[`examples/demo-openspec-claude/`](examples/demo-openspec-claude/) ships
+a pre-seeded `.harness/events.jsonl` + `state.yaml` (produced offline)
+that lands a sample change in `IMPLEMENTATION_IN_PROGRESS` so you can
+inspect the harness in a non-trivial state.
 
 ## What v0.1 ships
 
@@ -87,11 +92,21 @@ bug (flagged explicitly).
 **Process / orchestration:**
 - Multi-stage plan-reviewer and code-reviewer subagent flows
 - Human / hybrid reviewer policies
-- Public CLI verb to advance `AWAITING_PLAN_REVIEW → PLAN_APPROVED` —
-  v0.1 has no shipped emitter for `plan_approved`; framework adapters
-  auto-emit `plan_ready` (OpenSpec from `tasks.md`) but the next
-  transition currently requires direct event emission. The in-tree
-  demo seeds past this gap.
+- Public emitters for three reviewer-driven lifecycle events —
+  `plan_approved` (AWAITING_PLAN_REVIEW → PLAN_APPROVED),
+  `implementation_started` (PLAN_APPROVED → IMPLEMENTATION_IN_PROGRESS),
+  and `code_review_passed` (AWAITING_CODE_REVIEW → READY_TO_MERGE).
+  v0.1 has **no shipped emitter** (no CLI verb, no sensor, no
+  follow-up) for any of these three. Framework adapters auto-emit
+  `plan_ready` (OpenSpec from `tasks.md`), but advancing past it
+  currently requires direct event emission via
+  `EventWriter.emit(..., skip_validation=True)`. v0.2 reviewer
+  subagent integration adds emitters for all three. The in-tree demo
+  (`examples/demo-openspec-claude/`) ships pre-seeded events that
+  cover this slice; the v0.1 Phase 16 E2E test produces equivalent
+  events at test runtime via `EventWriter.emit(skip_validation=True)`
+  at three explicitly annotated points and asserts the surrounding
+  shipped wiring works.
 - Daemon-autonomous event-driven dispatch — v0.1 uses CLI one-shot
   dispatchers (e.g., `super-harness on-merge` dispatches the merged-event
   sensors).

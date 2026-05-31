@@ -34,12 +34,11 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
-import time
-from collections.abc import Callable
 from pathlib import Path
 
 from super_harness.core.state import ChangeState
 from super_harness.core.state_yaml import write_state_yaml
+from tests.e2e.conftest import _wait_for_returncode
 
 # Claude-Code-shaped PreToolUse payload for an Edit on a source file. The shim
 # reads `tool_name` + `tool_input.file_path` from stdin (Claude Code delivers
@@ -67,31 +66,6 @@ def _registered_command(ws: Path) -> str:
                 command: str = hook["command"]
                 return command
     raise AssertionError("super-harness PreToolUse hook not registered in settings.json")
-
-
-def _wait_for_returncode(
-    run: Callable[[], subprocess.CompletedProcess[str]],
-    expected: int,
-    *,
-    timeout: float = 3.0,
-    interval: float = 0.05,
-) -> int:
-    """Poll ``run()`` until it returns ``expected`` or the timeout elapses.
-
-    Absorbs the HotState mtime-reload race: the daemon caches state.yaml and
-    re-parses only when the file's mtime advances, so immediately after a
-    ``write_state_yaml`` the daemon's next gate query may still observe the
-    previous state for a few milliseconds. Polling (rather than a fixed sleep)
-    flips deterministically the instant the daemon picks up the new mtime.
-    Returns the last observed returncode (the matched one on success, or the
-    final attempt's code on timeout so the caller's assert message is honest).
-    """
-    deadline = time.monotonic() + timeout
-    last = run().returncode
-    while last != expected and time.monotonic() < deadline:
-        time.sleep(interval)
-        last = run().returncode
-    return last
 
 
 def test_pre_tool_use_blocks_then_allows(tmp_path: Path) -> None:
