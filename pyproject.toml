@@ -62,6 +62,9 @@ packages = ["src/super_harness"]
 # (their imports resolve via the demo's own src/ layout); the main suite must
 # not collect them.
 testpaths = ["tests"]
+markers = [
+    "e2e: full end-to-end lifecycle tests (real daemon + real git; only gh PATH-shimmed). Skip with -m 'not e2e' if you don't want to run the slow ship-gate test.",
+]
 
 [tool.ruff]
 line-length = 100
