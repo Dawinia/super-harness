@@ -38,10 +38,11 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import stat
 import subprocess
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,30 @@ from typing import Any
 
 import pytest
 import yaml
+
+# ---------------------------------------------------------------------------
+# Autouse: widen the daemon hot-path query timeout for every E2E test.
+#
+# The production AC-2 budget is 200 ms (env-var-tunable via
+# ``SUPER_HARNESS_HOOK_QUERY_TIMEOUT``). On a loaded CI runner the hook
+# subprocess cold-start + import + socket connect can eat that whole
+# window before the daemon query lands, fail-opening the gate (exit 0
+# instead of exit 1/2 for BLOCK). The integration daemon tests already
+# carry this same widening (``tests/integration/daemon/conftest.py:30-38``);
+# E2E shares the same exposure surface so we hoist the override here.
+# Phase 15 OPEN-ITEM #4 documented this as MITIGATED-not-eliminated; this
+# is the defense-in-depth half of that mitigation. Child subprocesses
+# inherit the env var.
+# ---------------------------------------------------------------------------
+_HOOK_QUERY_TIMEOUT_FOR_TESTS = "5.0"
+
+
+@pytest.fixture(autouse=True)
+def _hook_query_timeout_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setenv(
+        "SUPER_HARNESS_HOOK_QUERY_TIMEOUT", _HOOK_QUERY_TIMEOUT_FOR_TESTS
+    )
+    yield
 
 # ---------------------------------------------------------------------------
 # Helpers (importable from test modules; not pytest fixtures)
@@ -215,7 +240,7 @@ def _wait_for_completed_process(
     run: Callable[[], subprocess.CompletedProcess[Any]],
     expected: int,
     *,
-    timeout: float = 3.0,
+    timeout: float = 5.0,
     interval: float = 0.05,
 ) -> subprocess.CompletedProcess[Any]:
     """Polling variant that returns the full CompletedProcess.
@@ -299,7 +324,7 @@ def demo_repo(tmp_path: Path) -> Any:
             try:
                 pid = int(pid_file.read_text().strip())
                 if pid > 0:
-                    os.kill(pid, 15)  # SIGTERM
+                    os.kill(pid, signal.SIGTERM)
             except (OSError, ValueError):
                 pass
 

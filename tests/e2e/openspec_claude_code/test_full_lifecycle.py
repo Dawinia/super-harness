@@ -7,11 +7,13 @@ subprocesses for every shipped surface: ``super-harness`` /
 anchor-index-rebuilder. The only mock is ``gh`` (PATH-shim, via the
 ``mock_gh`` fixture in ``tests/e2e/conftest.py``).
 
-See plan §16 for the full reconcile notes covering the 8 drift items
+See plan §16 for the full reconcile notes covering the 10 drift items
 that shaped this test (most notably: no ``review skip``/
 ``implementation start`` CLI verbs, ``on-merge`` not ``merged``, hook
-exit codes 1 (positional) vs 2 (claude-code shim), and the three
-lifecycle gaps bridged via ``EventWriter.emit(skip_validation=True)``).
+exit codes 1 (positional) vs 2 (claude-code shim), absolute hook path
+in ``.claude/settings.json``, verification.yaml PyYAML round-trip + a
+disabled ``framework_adapter`` layer, and the three lifecycle gaps
+bridged via ``EventWriter.emit(skip_validation=True)``).
 """
 from __future__ import annotations
 
