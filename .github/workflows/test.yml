@@ -29,8 +29,30 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install package + dev dependencies
         run: pip install -e ".[dev]"
-      - name: Run pytest
-        run: pytest -v
+      - name: Run pytest (excluding e2e ship-gate)
+        # The @pytest.mark.e2e full-lifecycle test runs in a dedicated job
+        # below (Ubuntu + Py3.12 only) to save CI time. The pre-tool-use
+        # E2E test under tests/e2e/ is intentionally unmarked and continues
+        # to run on every matrix slot — it's been stable since Phase 5 and
+        # exercises platform-specific daemon + hook subprocess code that
+        # benefits from broad coverage.
+        run: pytest -v -m "not e2e"
+
+  e2e:
+    # Phase 16 v0.1 ship gate: full lifecycle E2E (real daemon, real hook
+    # binary, real local git, only `gh` PATH-shimmed). One slot only —
+    # the test exercises platform-agnostic wiring, not platform-specific
+    # primitives, so matrix coverage is overkill.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package + dev dependencies
+        run: pip install -e ".[dev]"
+      - name: Run pytest (e2e ship-gate only)
+        run: pytest -v -m "e2e"
 
   cli-reference-drift:
     # Phase 15 Task 15.2: fail PRs that change the CLI surface without
