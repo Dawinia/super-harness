@@ -311,3 +311,92 @@ def test_init_fresh_does_not_reinject_or_warn(tmp_path: Path):
     text = (tmp_path / "AGENTS.md").read_text()
     assert "<!-- super-harness no-agent-adapter-installed -->" in text
     assert "<!-- super-harness agent:" not in text
+
+
+# --------------------------------------------------------------------------- #
+# .gitignore management (S2 fix — OPEN-ITEMS #6)
+# --------------------------------------------------------------------------- #
+
+
+_GITIGNORE_BEGIN = "# >>> super-harness gitignore (do not edit between markers)"
+_GITIGNORE_END = "# <<< super-harness gitignore"
+_CANONICAL_GITIGNORE_PATHS = (
+    ".harness/state.yaml",
+    ".harness/events.jsonl",
+    ".harness/sensor-results/",
+    ".harness/verification-results/",
+    ".harness/operation-logs/",
+    ".harness/anchors/index.yaml",
+    ".harness/pending-l1-updates/",
+    ".harness/pending-reviews/",
+)
+
+
+def test_init_writes_gitignore_block_fresh_repo(tmp_path: Path):
+    """Fresh repo (no .gitignore): init writes the marker-bounded block with
+    all 8 canonical `.harness/` runtime paths."""
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert r.exit_code == 0, r.output
+    gitignore = tmp_path / ".gitignore"
+    assert gitignore.exists()
+    text = gitignore.read_text()
+    assert _GITIGNORE_BEGIN in text
+    assert _GITIGNORE_END in text
+    for p in _CANONICAL_GITIGNORE_PATHS:
+        assert p in text, f"missing canonical path: {p}"
+
+
+def test_init_preserves_existing_gitignore_user_content(tmp_path: Path):
+    """Existing .gitignore (no super-harness block): init appends the block
+    while preserving the user's content verbatim."""
+    gitignore = tmp_path / ".gitignore"
+    user_content = "# User-written\n*.pyc\nnode_modules/\n.env\n"
+    gitignore.write_text(user_content)
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert r.exit_code == 0, r.output
+    text = gitignore.read_text()
+    # User content preserved.
+    assert "# User-written" in text
+    assert "*.pyc" in text
+    assert "node_modules/" in text
+    assert ".env" in text
+    # Block appended after user content.
+    assert _GITIGNORE_BEGIN in text
+    user_idx = text.index("node_modules/")
+    block_idx = text.index(_GITIGNORE_BEGIN)
+    assert user_idx < block_idx
+
+
+def test_init_force_does_not_duplicate_gitignore_block(tmp_path: Path):
+    """Re-running init with --force does not duplicate the marker block."""
+    runner = CliRunner()
+    runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    r2 = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
+    assert r2.exit_code == 0, r2.output
+    text = (tmp_path / ".gitignore").read_text()
+    assert text.count(_GITIGNORE_BEGIN) == 1
+    assert text.count(_GITIGNORE_END) == 1
+
+
+def test_init_gitignore_multiple_blocks_fails_loud(tmp_path: Path):
+    """An existing .gitignore with ≥2 super-harness marker blocks fails loud
+    (never splices) and leaves the file untouched (Phase 7/9/12 marker
+    discipline)."""
+    gitignore = tmp_path / ".gitignore"
+    bad = (
+        f"{_GITIGNORE_BEGIN}\n"
+        ".harness/state.yaml\n"
+        f"{_GITIGNORE_END}\n"
+        "\n"
+        f"{_GITIGNORE_BEGIN}\n"
+        ".harness/events.jsonl\n"
+        f"{_GITIGNORE_END}\n"
+    )
+    gitignore.write_text(bad)
+    before = gitignore.read_text()
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr, r.stderr
+    assert "super-harness init:" in r.stderr
+    # File left untouched (never spliced).
+    assert gitignore.read_text() == before
