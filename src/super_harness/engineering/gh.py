@@ -287,16 +287,27 @@ def enable_repo_merge_settings() -> None:
     resolves them from the current directory's default git remote, so we pass
     them literally (do NOT hand-resolve via ``gh repo view``).
 
+    After both PATCH calls succeed, a final GET on the same endpoint verifies
+    the flags actually flipped. GitHub silently no-ops some PATCH calls
+    (notably ``allow_auto_merge=true`` on brand-new private repos under the
+    default GITHUB_TOKEN scope — the request returns 200 but the field stays
+    ``false``). Without the post-PATCH verify, a caller would report
+    "merge settings enabled" while the repo still has auto-merge disabled —
+    the dishonesty surfaced by smoke walkthrough v2 / OPEN-ITEMS #6 6d S8.
+
     Pure module contract: this helper raises :class:`GhError` on any failure
-    (non-admin token, no remote, non-GitHub remote — all surface the same) and
-    captures subprocess output so a best-effort caller can archive the command +
+    (non-admin token, no remote, non-GitHub remote, post-PATCH verify
+    detected a flag still false — all surface the same way) and captures
+    subprocess output so a best-effort caller can archive the command +
     stderr to an operation-log. It does NOT write logs or emit events itself.
 
     Raises
     ------
     GhError
-        On subprocess failure or missing ``gh`` binary. The error message
-        carries the captured stderr so the caller can persist it.
+        On subprocess failure, missing ``gh`` binary, or if the post-PATCH
+        verify shows either ``allow_auto_merge`` or ``allow_squash_merge`` is
+        still ``false``. The error message identifies which flag did not
+        flip so the caller's advisory can be specific.
     """
     for flag in ("allow_auto_merge=true", "allow_squash_merge=true"):
         args = ["gh", "api", "-X", "PATCH", "/repos/{owner}/{repo}", "-f", flag]
@@ -310,6 +321,45 @@ def enable_repo_merge_settings() -> None:
             ) from exc
         except FileNotFoundError as exc:
             raise GhError("gh CLI not found on PATH") from exc
+
+    # Post-PATCH verify: GitHub silently no-ops some PATCHes (see docstring).
+    verify_args = ["gh", "api", "/repos/{owner}/{repo}"]
+    try:
+        out = subprocess.run(verify_args, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        raise GhError(
+            f"gh api /repos/{{owner}}/{{repo}} (post-PATCH verify) failed "
+            f"(exit {exc.returncode}): {stderr}"
+        ) from exc
+    except FileNotFoundError as exc:
+        raise GhError("gh CLI not found on PATH") from exc
+
+    try:
+        repo: Any = json.loads(out.stdout)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise GhError(
+            f"gh api /repos/{{owner}}/{{repo}} returned non-JSON: {exc}"
+        ) from exc
+    if not isinstance(repo, dict):
+        raise GhError(
+            "gh api /repos/{owner}/{repo} returned non-object: "
+            f"{type(repo).__name__}"
+        )
+
+    not_flipped = [
+        name
+        for name in ("allow_auto_merge", "allow_squash_merge")
+        if not repo.get(name)
+    ]
+    if not_flipped:
+        raise GhError(
+            "PATCH 200 but flag(s) still false post-verify: "
+            f"{', '.join(not_flipped)}. Token may lack admin scope, or "
+            "GitHub silently ignored the request (known on brand-new "
+            "private repos under default GITHUB_TOKEN scopes). Enable "
+            "manually in repo Settings -> General -> Pull Requests."
+        )
 
 
 def merge_pr_auto_squash(pr_number: int, delete_branch: bool = True) -> None:
