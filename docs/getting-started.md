@@ -165,6 +165,16 @@ starts editing. The hot-path gate enforces lifecycle rules:
 - If the agent tries to `Edit` source code before the lifecycle permits it,
   the `PreToolUseGate` returns `deny` and Claude Code blocks the tool call.
 
+> **v0.1 lifecycle note**: super-harness v0.1 ships the lifecycle data plane
+> and gate enforcement, but the `plan_approved` event (which advances
+> `AWAITING_PLAN_REVIEW` → `PLAN_APPROVED` → `IMPLEMENTATION_IN_PROGRESS`)
+> does NOT have a public CLI emitter — it's reviewer-driven and currently
+> emitted programmatically. For a runnable end-to-end demo of the full
+> lifecycle including the manual emit pattern (using
+> `EventWriter.emit(..., skip_validation=True)`), see
+> [`examples/demo-openspec-claude/`](../examples/demo-openspec-claude/).
+> This gap is tracked in OPEN-ITEMS and will be filled in v0.2.
+
 You don't have to do anything — the daemon + hooks installed by
 `adapter install claude-code` handle this transparently. If you want to
 inspect what the gate would decide right now:
@@ -223,6 +233,12 @@ Create the PR with your normal git workflow (`gh pr create`, `git push`,
 etc.). The pull request template (installed in step 2) already contains the
 super-harness metadata block:
 
+> **If your GitHub repo is brand-new (no commits on `main` yet)**: push an
+> initial commit to `main` before opening a feature-branch PR — `gh repo
+> create --private --add-readme` (or any `git push origin main`) sets up
+> the base branch the PR will target. Otherwise `gh pr create` fails with
+> "remote has no branches".
+
 ```markdown
 <!-- super-harness:metadata
 Change: 2026-06-01-add-greeting
@@ -280,6 +296,10 @@ way `on-merge` itself exits 0 — the merge already happened.
 
 A few read-only commands that are useful for debugging or auditing:
 
+> Note: `anchor list` reads `.harness/anchors/index.yaml` — run
+> `super-harness anchor sync` first to build the index from L1 capability
+> specs (cold-init repos will show "No anchor index yet" until sync runs).
+
 ```bash
 super-harness status                                  # all active changes
 super-harness status --all                            # include ARCHIVED + ABANDONED
@@ -328,7 +348,7 @@ Run `super-harness state rebuild` to regenerate from `events.jsonl`.
 
 **Verify is failing but I don't see why**
 
-`super-harness verify --json` prints the structured verdict including
+`super-harness --json verify` prints the structured verdict including
 per-check details. For full debug traces, also check `.harness/events.jsonl`
 for any `sensor_crashed` or `verification_failed` events.
 
