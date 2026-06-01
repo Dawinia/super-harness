@@ -23,7 +23,10 @@ from super_harness.engineering.gitignore_injector import (
     inject_gitignore_block,
 )
 
-# The 8 canonical .harness/ runtime/derived paths (NOT version-control candidates).
+# Canonical paths the injector emits. Production source is the single
+# `_CANONICAL_PATHS` constant in `gitignore_injector.py`; this test copy
+# mirrors it so the integration assertions check exact-line equality (any
+# drift fails `test_block_lines_match_canonical_paths`).
 _CANONICAL_PATHS = (
     ".harness/state.yaml",
     ".harness/events.jsonl",
@@ -33,6 +36,7 @@ _CANONICAL_PATHS = (
     ".harness/anchors/index.yaml",
     ".harness/pending-l1-updates/",
     ".harness/pending-reviews/",
+    ".claude/*.super-harness-backup.*",
 )
 
 
@@ -261,7 +265,7 @@ def test_existing_gitignore_non_utf8_raises_friendly_error(tmp_path: Path) -> No
 
 
 def test_block_contains_all_8_canonical_paths(tmp_path: Path) -> None:
-    """The marker body contains exactly the 8 canonical paths, in order."""
+    """The marker body contains exactly the canonical paths, in order."""
     path = tmp_path / ".gitignore"
     inject_gitignore_block(path)
     text = path.read_text()
@@ -271,3 +275,31 @@ def test_block_contains_all_8_canonical_paths(tmp_path: Path) -> None:
     body = text[begin_idx:end_idx].strip("\n")
     lines = [line for line in body.split("\n") if line.strip()]
     assert lines == list(_CANONICAL_PATHS), lines
+
+
+def test_block_covers_claude_settings_backup_filenames(tmp_path: Path) -> None:
+    """Regression for S13: the `.claude/*.super-harness-backup.*` pattern is
+    present in the canonical list so users do not accidentally commit the
+    timestamped backup files created by `adapter install claude-code`.
+
+    `_settings_merge.py` writes backups as
+    ``.claude/settings.json.super-harness-backup.<time_ns>`` — assert that
+    pattern (and a couple of realistic example filenames it must match) is
+    inside the emitted block. Smoke walkthrough v3 caught this regression
+    when the backup file landed in `git add -A` and was pushed to a PR.
+    """
+    import fnmatch
+
+    path = tmp_path / ".gitignore"
+    inject_gitignore_block(path)
+    text = path.read_text()
+    # The literal pattern is present in the written block.
+    assert ".claude/*.super-harness-backup.*" in text, text
+    # The pattern matches realistic backup filenames produced by Phase 5
+    # `_settings_merge.write_with_backup`.
+    pattern = ".claude/*.super-harness-backup.*"
+    for sample in (
+        ".claude/settings.json.super-harness-backup.1780305201614632000",
+        ".claude/settings.json.super-harness-backup.0",
+    ):
+        assert fnmatch.fnmatch(sample, pattern), sample

@@ -51,10 +51,19 @@ __all__ = [
 GITIGNORE_BEGIN_MARKER = "# >>> super-harness gitignore (do not edit between markers)"
 GITIGNORE_END_MARKER = "# <<< super-harness gitignore"
 
-# The 8 canonical `.harness/` runtime / derived paths. NOT version-control
-# candidates. (policy.yaml, sensors.yaml, gates.yaml, source-paths.yaml,
-# verification.yaml, conventions.md, adapters.yaml ARE user-config and stay
-# version-controlled — they are deliberately absent from this list.)
+# Canonical paths that should NOT be version-controlled. Two groups:
+#  1. `.harness/` runtime / derived files. (policy.yaml, sensors.yaml,
+#     gates.yaml, source-paths.yaml, verification.yaml, conventions.md,
+#     adapters.yaml ARE user-config and stay version-controlled —
+#     they are deliberately absent.)
+#  2. Per-agent settings backups. `adapter install claude-code` makes a
+#     timestamped backup of `.claude/settings.json` before merging the
+#     PreToolUse / SessionStart hooks (defense for safe rollback per Phase 5
+#     `_settings_merge` design). Without this gitignore line, every run of
+#     `init` / `adapter install` accumulates a backup file the user then
+#     accidentally commits via `git add -A`. Smoke walkthrough v3 caught
+#     this regression (S13). Add new patterns here when other agent
+#     adapters ship a similar backup scheme.
 _CANONICAL_PATHS: tuple[str, ...] = (
     ".harness/state.yaml",
     ".harness/events.jsonl",
@@ -64,6 +73,7 @@ _CANONICAL_PATHS: tuple[str, ...] = (
     ".harness/anchors/index.yaml",
     ".harness/pending-l1-updates/",
     ".harness/pending-reviews/",
+    ".claude/*.super-harness-backup.*",
 )
 
 
