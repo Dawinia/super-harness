@@ -161,6 +161,25 @@ jobs:
         _assert_no_runblock_raw_interpolation(vulnerable_yaml_shorthand)
 
 
+def test_workflow_template_pr_jobs_grant_contents_read() -> None:
+    """Regression for S10 — private-repo checkout requires contents: read.
+
+    `pr-decorate` and `pr-validate` ship explicit `permissions:` blocks. Without
+    `contents: read` they silently drop the default contents grant → on PRIVATE
+    repos `actions/checkout@v4` fails with `fatal: repository not found`. The
+    `verification` job has no `permissions:` (uses defaults, gets contents:read
+    automatically); `on-merge` already has `contents: write`. This test guards
+    the two private-repo-affected jobs.
+    """
+    parsed = yaml.safe_load(_load_template())
+    for job in ("pr-decorate", "pr-validate"):
+        perms = parsed["jobs"][job].get("permissions") or {}
+        assert perms.get("contents") == "read", (
+            f"{job}.permissions.contents must be 'read' "
+            f"(else actions/checkout fails on PRIVATE repos): got {perms!r}"
+        )
+
+
 def test_workflow_template_guard_does_not_false_fire_on_env_indirection() -> None:
     """Positive control: env-mapped ${{ github.* }} must NOT trip the guard.
 
