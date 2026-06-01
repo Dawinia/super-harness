@@ -28,8 +28,15 @@ dist/
 build/
 *.egg-info/
 
-# Python virtual environments
-.venv/
+# Python virtual environments — glob so leftover review/test venvs
+# (`.venv-review/`, `.venv-wheel/`, etc.) are also ignored. Smoke walk v4
+# caught a sdist-build crash where hatchling included a stale `.venv-review/`
+# whose `bin/python3.X` was an absolute symlink — Python 3.12+ tarfile
+# refuses to extract absolute-link members. Defense in depth: the hatchling
+# exclude block in `pyproject.toml [tool.hatch.build]` also excludes
+# `.venv*/` so even if a venv is in-tree but un-gitignored, the sdist
+# stays clean.
+.venv*/
 
 # Python caches
 __pycache__/

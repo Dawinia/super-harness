@@ -29,6 +29,13 @@ dependencies = [
   "PyYAML>=6.0",
   "python-ulid>=2.2",
   "watchdog>=4.0",
+  # `python-ulid 3.1.0`'s installed metadata declares NO runtime requires,
+  # but its `ulid/__init__.py` does `from typing_extensions import Self` —
+  # upstream packaging bug. Declare it explicitly so `pipx install
+  # super-harness` works in a clean venv. Editable installs hide this
+  # because pytest/dev tools transitively pull typing_extensions into
+  # `.venv/`. Smoke walk v4 surfaced this on first wheel install.
+  "typing_extensions>=4.0",
 ]
 
 [project.urls]
@@ -52,8 +59,40 @@ super-harness = "super_harness.cli:main"
 super-harness-daemon = "super_harness.daemon.server:main"
 super-harness-hook = "super_harness.daemon.hook_entry:main"
 
+[tool.hatch.build]
+# Hatchling default sdist includes ALL non-gitignored files. Smoke walk v4
+# caught the failure mode: a stale `.venv-review/` (Phase 14 review-session
+# leftover not glob-matched by the old `.venv/` gitignore rule) got swept
+# into the sdist; its `bin/python3.X` is an absolute symlink and Python
+# 3.12+ tarfile rejects absolute-link members on extract → wheel build
+# crashes. Explicit exclude here is defense in depth for the gitignore
+# `.venv*/` glob — any future leftover venv (`.venv-test`, `.venv-x/`, …)
+# stays out of the shipped artifact regardless of `.gitignore` state.
+exclude = [
+  ".venv*/",
+  "private/",
+  "dist/",
+  "build/",
+  ".mypy_cache/",
+  ".pytest_cache/",
+  ".ruff_cache/",
+  "*.egg-info/",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/super_harness"]
+
+[tool.hatch.build.targets.sdist]
+# sdist includes the project tree minus the global excludes above. We
+# additionally drop the in-tree onboarding demo, internal docs/scripts,
+# and test corpus from the sdist — they ship via the GitHub repo, not the
+# PyPI tarball.
+exclude = [
+  "examples/",
+  "tests/",
+  "docs/",
+  "scripts/",
+]
 
 [tool.pytest.ini_options]
 # Limit collection to the main test suite. The demo workspace at
