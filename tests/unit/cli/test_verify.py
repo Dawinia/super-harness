@@ -577,3 +577,122 @@ def test_verify_pr_non_integer_exits_2(tmp_path: Path) -> None:
     m.assert_not_called()
     combined = r.output + (r.stderr or "")
     assert "Traceback" not in combined
+
+
+# --------------------------------------------------------------------------- #
+# OPEN-ITEMS #6 / S6 — failing-verdict output is rich (per-check rows + summary
+# path), NOT just the one-line `result.summary`.
+#
+# The summary line ("verification failed (N checks, M failed)") still goes to
+# STDOUT for back-compat with anything grepping it; the new rich rows go to
+# STDERR so failure detail follows convention.
+# --------------------------------------------------------------------------- #
+
+
+# `false` is a must_pass failure; `true` is a passing must_pass check. Together
+# they prove the renderer skips passing rows AND advisory rows aren't even
+# present (no must_pass=False rows in this fixture — covered by the pure-renderer
+# unit test in test_verify_render.py).
+_MIXED_FAIL_YAML = """\
+layers:
+  baseline: { enabled: false }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: true }
+defaults:
+  timeout_seconds: 30
+  must_pass: true
+  capture: none
+  workdir: .
+  env: {}
+execution:
+  mode: sequential
+  max_parallelism: 1
+  fail_fast: false
+checks:
+  - id: ok-1
+    command: "true"
+  - id: boom
+    command: "false"
+adapter_provided: []
+"""
+
+
+def test_verify_failure_lists_failing_must_pass_checks_on_stderr(
+    tmp_path: Path,
+) -> None:
+    _init_workspace(tmp_path, yaml_text=_MIXED_FAIL_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "verify", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    # The failing must_pass check id + exit_code are on stderr.
+    assert "boom" in r.stderr
+    assert "exit 1" in r.stderr
+    # The passing check is NOT mentioned in the failure breakdown.
+    assert "ok-1" not in r.stderr
+
+
+def test_verify_failure_includes_summary_path_on_stderr(tmp_path: Path) -> None:
+    _init_workspace(tmp_path, yaml_text=_MIXED_FAIL_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "verify", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "full summary:" in r.stderr
+    assert ".harness/verification-results/" in r.stderr
+    assert "summary.json" in r.stderr
+
+
+def test_verify_failure_keeps_one_line_summary_on_stdout(tmp_path: Path) -> None:
+    # Back-compat: the existing `result.summary` string ("verification failed
+    # (N checks, M failed)") still lands on STDOUT so grep-style tooling
+    # doesn't break.
+    _init_workspace(tmp_path, yaml_text=_MIXED_FAIL_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "verify", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "verification failed" in r.stdout
+    # And the rich rows are NOT duplicated onto stdout (stderr-only).
+    assert "boom" not in r.stdout
+
+
+def test_verify_failure_handles_none_output_path(tmp_path: Path) -> None:
+    # With `capture: none`, the failing check's `output_path` is None — the
+    # renderer must NOT leak the literal "None" string.
+    _init_workspace(tmp_path, yaml_text=_FAIL_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "verify", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "boom" in r.stderr
+    # Defensive: with `capture: none` the row has no `see:` line — the literal
+    # "None" must not leak as a dangling pointer.
+    assert "None" not in r.stderr
+
+
+def test_verify_failure_quiet_suppresses_rich_output(tmp_path: Path) -> None:
+    # --quiet suppresses BOTH the one-line summary AND the rich breakdown;
+    # only the exit code communicates the verdict.
+    _init_workspace(tmp_path, yaml_text=_MIXED_FAIL_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "--quiet", "verify", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert r.stderr == ""
+    assert r.stdout == ""
+
+
+def test_verify_failure_json_mode_no_rich_text_leak(tmp_path: Path) -> None:
+    # --json failure: the envelope is on stdout, NOTHING extra on stderr (the
+    # rich text would corrupt machine-readable output for misconfigured CI).
+    _init_workspace(tmp_path, yaml_text=_MIXED_FAIL_YAML, slug="my-change")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "--json", "verify", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    payload = json.loads(r.stdout)
+    assert payload["status"] == "fail"
+    # No rich rendering leaks onto stderr under --json.
+    assert "boom" not in r.stderr
+    assert "full summary:" not in r.stderr

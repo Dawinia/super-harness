@@ -23,6 +23,7 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.action == 'opened'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +45,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       pull-requests: read
     steps:
       - uses: actions/checkout@v4
@@ -70,6 +72,8 @@ jobs:
   verification:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

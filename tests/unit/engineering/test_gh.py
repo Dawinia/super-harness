@@ -431,14 +431,26 @@ class TestMergePrAutoSquash:
 
 
 class TestEnableRepoMergeSettings:
-    def test_runs_both_patch_calls_with_gh_placeholders(self) -> None:
+    # Canned JSON for the post-PATCH verify GET. The PATCH-then-GET sequence
+    # is: two PATCH calls (empty stdout OK) + one GET that must return a
+    # repo-shaped JSON object with both flags == true; anything else
+    # raises GhError (NEW-S8-honesty fix: do not trust HTTP 200 alone).
+    _VERIFY_JSON_OK = '{"allow_auto_merge": true, "allow_squash_merge": true}'
+
+    def _side_effects_patch_then_verify(
+        self, verify_stdout: str = _VERIFY_JSON_OK
+    ) -> list[MagicMock]:
+        return [_completed(), _completed(), _completed(stdout=verify_stdout)]
+
+    def test_runs_both_patch_calls_then_verify_get(self) -> None:
         with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
-            mock_run.return_value = _completed()
+            mock_run.side_effect = self._side_effects_patch_then_verify()
             enable_repo_merge_settings()
         # two PATCH calls — auto-merge then squash — with gh's own {owner}/{repo}
-        # placeholders passed literally (gh resolves them from the git remote).
+        # placeholders passed literally (gh resolves them from the git remote);
+        # then one GET on the same endpoint for the post-PATCH verify.
         argvs = [call.args[0] for call in mock_run.call_args_list]
-        assert len(argvs) == 2, argvs
+        assert len(argvs) == 3, argvs
         assert argvs[0] == [
             "gh", "api", "-X", "PATCH", "/repos/{owner}/{repo}",
             "-f", "allow_auto_merge=true",
@@ -447,8 +459,9 @@ class TestEnableRepoMergeSettings:
             "gh", "api", "-X", "PATCH", "/repos/{owner}/{repo}",
             "-f", "allow_squash_merge=true",
         ]
+        assert argvs[2] == ["gh", "api", "/repos/{owner}/{repo}"]
 
-    def test_called_process_error_raises_gh_error(self) -> None:
+    def test_patch_called_process_error_raises_gh_error(self) -> None:
         with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
             mock_run.side_effect = _cpe()
             with pytest.raises(GhError):
@@ -462,7 +475,66 @@ class TestEnableRepoMergeSettings:
 
     def test_captures_output_so_caller_can_log_stderr(self) -> None:
         with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
-            mock_run.return_value = _completed()
+            mock_run.side_effect = self._side_effects_patch_then_verify()
             enable_repo_merge_settings()
         # capture_output so a best-effort caller can write stderr to an op-log.
-        assert mock_run.call_args.kwargs.get("capture_output") is True
+        # Check is per-call; assert all three (2 PATCH + 1 GET) capture output.
+        for call in mock_run.call_args_list:
+            assert call.kwargs.get("capture_output") is True
+
+    def test_verify_get_called_process_error_raises_gh_error(self) -> None:
+        # Both PATCH calls succeed; the post-PATCH verify GET errors out.
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.side_effect = [_completed(), _completed(), _cpe()]
+            with pytest.raises(GhError, match="post-PATCH verify"):
+                enable_repo_merge_settings()
+
+    def test_verify_get_non_json_raises_gh_error(self) -> None:
+        # GET returns garbage instead of JSON — surface as GhError (not raw
+        # JSONDecodeError) so the caller's catch tuple stays simple.
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.side_effect = self._side_effects_patch_then_verify(
+                verify_stdout="<html>not json</html>"
+            )
+            with pytest.raises(GhError, match="non-JSON"):
+                enable_repo_merge_settings()
+
+    def test_verify_get_non_object_raises_gh_error(self) -> None:
+        # GET returns a JSON array (or other non-object) — surface as GhError
+        # because we cannot extract the booleans.
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.side_effect = self._side_effects_patch_then_verify(
+                verify_stdout="[]"
+            )
+            with pytest.raises(GhError, match="non-object"):
+                enable_repo_merge_settings()
+
+    def test_verify_get_auto_merge_still_false_raises_gh_error(self) -> None:
+        # The S8 case: PATCH returns 200 but GitHub silently no-ops auto-merge
+        # on brand-new private repos. squash flipped, auto-merge didn't.
+        # Must raise so the caller's stderr advisory + operation-log fire.
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.side_effect = self._side_effects_patch_then_verify(
+                verify_stdout='{"allow_auto_merge": false, "allow_squash_merge": true}'
+            )
+            with pytest.raises(GhError, match="allow_auto_merge"):
+                enable_repo_merge_settings()
+
+    def test_verify_get_both_false_raises_gh_error_listing_both(self) -> None:
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.side_effect = self._side_effects_patch_then_verify(
+                verify_stdout='{"allow_auto_merge": false, "allow_squash_merge": false}'
+            )
+            with pytest.raises(GhError) as excinfo:
+                enable_repo_merge_settings()
+        msg = str(excinfo.value)
+        assert "allow_auto_merge" in msg
+        assert "allow_squash_merge" in msg
+
+    def test_verify_get_squash_still_false_raises_gh_error(self) -> None:
+        with patch("super_harness.engineering.gh.subprocess.run") as mock_run:
+            mock_run.side_effect = self._side_effects_patch_then_verify(
+                verify_stdout='{"allow_auto_merge": true, "allow_squash_merge": false}'
+            )
+            with pytest.raises(GhError, match="allow_squash_merge"):
+                enable_repo_merge_settings()

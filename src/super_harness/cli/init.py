@@ -9,6 +9,7 @@ from __future__ import annotations
 import sys
 from importlib.resources import files
 from pathlib import Path
+from typing import Literal
 
 import click
 
@@ -17,6 +18,10 @@ from super_harness.core.clock import utc_now_iso
 from super_harness.engineering.agents_md import AgentsMdInjectionError
 from super_harness.engineering.agents_md_render import render_super_harness_section
 from super_harness.engineering.gh import GhError, check_gh, enable_repo_merge_settings
+from super_harness.engineering.gitignore_injector import (
+    GitignoreInjectionError,
+    inject_gitignore_block,
+)
 from super_harness.engineering.operation_log import write_operation_log
 from super_harness.engineering.pr_metadata import (
     METADATA_BEGIN,
@@ -32,6 +37,20 @@ from super_harness.exit_codes import (
 from super_harness.version import __version__
 
 _TEMPLATES = files("super_harness.templates")
+
+# S3 fix (OPEN-ITEMS #6): typed outcome literals returned by `_write_pr_template`
+# and `_write_workflow_file` so the advisory printed in `_setup_github` honestly
+# matches what actually happened (wrote / kept-existing / declined). Chosen over
+# generic post-call prints because reality is asymmetric — a no-op idempotent
+# branch must NOT report "wrote".
+#
+# - "wrote"         : new file written (fresh) OR existing file modified.
+# - "kept-existing" : byte-identical / idempotent no-op (file left untouched).
+# - "declined"      : user declined overwrite/append (file left untouched).
+# - "skipped"       : non-interactive EOF without --quiet (file left untouched,
+#                     advisory already on stderr).
+PRTemplateOutcome = Literal["wrote", "kept-existing", "declined", "skipped"]
+WorkflowOutcome = Literal["wrote", "kept-existing", "declined", "skipped"]
 
 
 def _pull_request_template() -> str:
@@ -190,6 +209,28 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
             err=True,
         )
         sys.exit(EXIT_GENERIC)
+    # Wire the repo-root .gitignore (S2 fix — OPEN-ITEMS #6): write a
+    # marker-bounded block listing the 8 canonical `.harness/` runtime paths so
+    # `git add -A` after init does not commit auto-generated state. Same
+    # marker-discipline contract as AGENTS.md: ≥2 blocks → fail loud (never
+    # splice — Phase 7/9/12 data-loss lesson). We do NOT `git add` — staging is
+    # the user's call.
+    gitignore_path = root / ".gitignore"
+    try:
+        inject_gitignore_block(gitignore_path)
+    except (OSError, GitignoreInjectionError) as e:
+        click.echo(
+            format_error(
+                subcommand="init",
+                message=f"scaffolded .harness/ but failed to write .gitignore: {e}",
+                hint=(
+                    "Fix .gitignore (permissions / duplicate super-harness markers) "
+                    "and re-run `init --force`."
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
     if setup_github:
         _setup_github(ctx, root, harness)
     click.echo(f"super-harness initialized at {harness}")
@@ -207,7 +248,15 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
     2. Write / marker-merge ``<root>/.github/pull_request_template.md`` (§2.6).
     3. Best-effort repo settings — a ``GhError`` is non-fatal: write an
        operation-log + advisory to stderr + continue (exit stays 0; AC-7).
+
+    S3 fix (OPEN-ITEMS #6): each substep prints a stdout advisory describing
+    what actually happened (typed outcome from `_write_pr_template` /
+    `_write_workflow_file`). Suppressed under ``--quiet`` or ``--json``.
     """
+    # S3: advisory prints honor --quiet AND --json (init emits no JSON envelope,
+    # but prose advisories would pollute JSON-consumer pipelines all the same).
+    advise = not (bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
+
     # --- Step 1: gh checks first (before any .github/ write) ---
     try:
         check_gh()
@@ -224,12 +273,18 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
             err=True,
         )
         sys.exit(EXIT_EXTERNAL_TOOL)
+    if advise:
+        click.echo("gh CLI: ok")
 
     # --- Step 2: write / marker-merge .github/pull_request_template.md ---
-    _write_pr_template(ctx, root)
+    pr_outcome = _write_pr_template(ctx, root)
+    if advise:
+        _echo_outcome(".github/pull_request_template.md", pr_outcome)
 
     # --- Step 2.5: write .github/workflows/super-harness.yml (Task 14.2) ---
-    _write_workflow_file(ctx, root)
+    wf_outcome = _write_workflow_file(ctx, root)
+    if advise:
+        _echo_outcome(".github/workflows/super-harness.yml", wf_outcome)
 
     # --- Step 3: best-effort repo settings (non-fatal) ---
     try:
@@ -248,12 +303,44 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
             ),
             err=True,
         )
+    else:
+        # Only print the positive advisory on the success path. On GhError the
+        # existing format_error already informs the user via stderr.
+        if advise:
+            click.echo("repo merge settings: enabled auto-merge + squash")
 
 
-def _write_pr_template(ctx: click.Context, root: Path) -> None:
+def _echo_outcome(label: str, outcome: PRTemplateOutcome | WorkflowOutcome) -> None:
+    """Print an honest stdout advisory matching a helper's typed outcome.
+
+    "wrote"         → ``wrote <label>``
+    "kept-existing" → ``kept existing <label>``
+    "declined"      → ``kept existing <label> (declined overwrite)``
+    "skipped"       → ``kept existing <label> (skipped, non-interactive)``
+    """
+    if outcome == "wrote":
+        click.echo(f"wrote {label}")
+    elif outcome == "kept-existing":
+        click.echo(f"kept existing {label}")
+    elif outcome == "declined":
+        click.echo(f"kept existing {label} (declined overwrite)")
+    elif outcome == "skipped":
+        click.echo(f"kept existing {label} (skipped, non-interactive)")
+
+
+def _write_pr_template(ctx: click.Context, root: Path) -> PRTemplateOutcome:
     """Write or marker-merge ``.github/pull_request_template.md`` (§2.6).
 
-    - File absent → write the bundled template verbatim (no prompt).
+    Returns a typed outcome literal so callers can print an HONEST advisory
+    matching what actually happened (S3 fix — OPEN-ITEMS #6):
+
+    - "wrote"         : fresh write OR append-placeholder to existing.
+    - "kept-existing" : existing template already has exactly one block (no-op).
+    - "declined"      : user said 'n' at the append-confirm prompt.
+    - "skipped"       : non-interactive EOF without --quiet (advisory on stderr).
+
+    Branches:
+    - File absent → write the bundled template verbatim (no prompt). → "wrote"
     - File present → marker-aware merge: ensure exactly one metadata placeholder
       block exists. ``block_count >= 2`` → FAIL LOUD (never splice — the AGENTS.md
       greedy-regex data-loss lesson). Already exactly one → no-op (idempotent).
@@ -266,7 +353,7 @@ def _write_pr_template(ctx: click.Context, root: Path) -> None:
     if not template_path.exists():
         gh_dir.mkdir(parents=True, exist_ok=True)
         template_path.write_text(_pull_request_template())
-        return
+        return "wrote"
 
     try:
         existing = template_path.read_text()
@@ -306,7 +393,7 @@ def _write_pr_template(ctx: click.Context, root: Path) -> None:
 
     if block.block_count == 1:
         # Already has exactly one placeholder block — idempotent no-op.
-        return
+        return "kept-existing"
 
     # Exactly zero blocks: append one placeholder, preserving the user's content.
     # Modifying an existing file → overwrite-confirm unless --quiet.
@@ -336,17 +423,25 @@ def _write_pr_template(ctx: click.Context, root: Path) -> None:
                 ),
                 err=True,
             )
-            return
+            return "skipped"
         if not proceed:
-            return  # declined ('n') → leave untouched, non-fatal (init continues)
+            return "declined"  # declined ('n') → leave untouched, non-fatal
     placeholder = f"{METADATA_BEGIN}\n{METADATA_END}\n"
     new = existing.rstrip("\n") + "\n\n" + placeholder
     template_path.write_text(new)
+    return "wrote"
 
 
-def _write_workflow_file(ctx: click.Context, root: Path) -> None:
+def _write_workflow_file(ctx: click.Context, root: Path) -> WorkflowOutcome:
     """Write or overwrite-with-confirm ``.github/workflows/super-harness.yml`` (§2.8).
 
+    Returns a typed outcome literal (S3 fix — OPEN-ITEMS #6):
+    - "wrote"         : fresh write OR overwrite of differing existing file.
+    - "kept-existing" : byte-identical to bundled (idempotent no-op).
+    - "declined"      : user said 'n' at the overwrite-confirm prompt.
+    - "skipped"       : non-interactive EOF without --quiet.
+
+    Branches:
     - File absent → write bundled template verbatim (no prompt; ``mkdir -p`` first).
     - File present + byte-identical to bundled → idempotent no-op.
     - File present + differs → confirm overwrite (unless global ``--quiet``);
@@ -363,7 +458,7 @@ def _write_workflow_file(ctx: click.Context, root: Path) -> None:
     if not workflow_path.exists():
         workflows_dir.mkdir(parents=True, exist_ok=True)
         workflow_path.write_text(bundled)
-        return
+        return "wrote"
 
     try:
         existing = workflow_path.read_text()
@@ -382,7 +477,7 @@ def _write_workflow_file(ctx: click.Context, root: Path) -> None:
         sys.exit(EXIT_GENERIC)
 
     if existing == bundled:
-        return  # byte-identical → idempotent no-op
+        return "kept-existing"  # byte-identical → idempotent no-op
 
     quiet = bool(ctx.obj.get("quiet"))
     if not quiet:
@@ -409,11 +504,12 @@ def _write_workflow_file(ctx: click.Context, root: Path) -> None:
                 ),
                 err=True,
             )
-            return
+            return "skipped"
         if not proceed:
-            return  # declined ('n') → leave untouched, non-fatal (init continues)
+            return "declined"  # declined ('n') → leave untouched, non-fatal
 
     workflow_path.write_text(bundled)
+    return "wrote"
 
 
 def _log_setup_github_failure(harness: Path, error: GhError) -> None:

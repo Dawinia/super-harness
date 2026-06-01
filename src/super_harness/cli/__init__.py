@@ -15,6 +15,11 @@ from super_harness.cli.daemon import daemon_group
 from super_harness.cli.done import done_cmd
 from super_harness.cli.event import event_group
 from super_harness.cli.gate import gate_group
+from super_harness.cli.group_options import (
+    GroupAwareCommand,
+    GroupAwareGroup,
+    rewrap_subtree,
+)
 from super_harness.cli.init import init_cmd
 from super_harness.cli.on_merge import on_merge_cli
 from super_harness.cli.pr import pr_group
@@ -28,6 +33,7 @@ from super_harness.version import __version__
 
 
 @click.group(
+    cls=GroupAwareGroup,
     help="super-harness — CI-first cross-framework + cross-agent AI coding harness.",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
@@ -84,3 +90,20 @@ main.add_command(verification_group)
 main.add_command(anchor_group)
 main.add_command(pr_group)
 main.add_command(on_merge_cli)
+
+
+# Rewrap every registered subcommand (and its descendants) so each one is a
+# `GroupAwareCommand` / `GroupAwareGroup`. Subgroups defined in their own
+# modules use plain ``@click.group(...)`` decorators, so the root group's
+# `command_class`/`group_class` propagation does NOT retroactively apply to
+# them. The class-swap below fixes that minimally — no per-module
+# `cls=GroupAwareCommand` wiring needed. Refs OPEN-ITEMS #6 S8-misleading.
+rewrap_subtree(main)
+
+
+# Re-export names used by other modules / tests.
+__all__ = [
+    "GroupAwareCommand",
+    "GroupAwareGroup",
+    "main",
+]

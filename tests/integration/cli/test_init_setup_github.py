@@ -551,6 +551,165 @@ def test_setup_github_existing_workflow_identical_is_noop(tmp_path: Path):
     )
 
 
+# --------------------------------------------------------------------------- #
+# (h) S3 fix — `init --setup-github` prints stdout advisories per substep
+#     (OPEN-ITEMS #6 S3). Path (a) honest outcome literals: helpers report
+#     wrote / kept-existing / declined so advisory matches reality.
+# --------------------------------------------------------------------------- #
+
+
+def test_setup_github_advisories_appear_on_fresh_success(tmp_path: Path):
+    """Fresh repo + success path: stdout shows one advisory line per substep
+    (gh CLI ok / wrote PR template / wrote workflow / enabled merge settings)
+    plus the final 'super-harness initialized at ...' line."""
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "init", "--setup-github"]
+        )
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "gh CLI: ok" in out, out
+    assert "wrote .github/pull_request_template.md" in out, out
+    assert "wrote .github/workflows/super-harness.yml" in out, out
+    assert "repo merge settings: enabled" in out, out
+    # Final line still present.
+    assert "super-harness initialized at" in out
+
+
+def test_setup_github_advisories_suppressed_under_quiet(tmp_path: Path):
+    """--quiet suppresses all advisory prints (errors / format_error still go to stderr)."""
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main,
+            ["--workspace", str(tmp_path), "-q", "init", "--setup-github"],
+        )
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "gh CLI: ok" not in out
+    assert "wrote .github/pull_request_template.md" not in out
+    assert "wrote .github/workflows/super-harness.yml" not in out
+    assert "repo merge settings:" not in out
+    # Final 'initialized at' line ALSO suppressed under --quiet? — the existing
+    # contract keeps it (no test changes here). We only need to assert
+    # advisory lines are suppressed.
+
+
+def test_setup_github_advisories_suppressed_under_json(tmp_path: Path):
+    """--json suppresses advisories (init emits no JSON envelope, but advisories
+    shouldn't pollute stdout when JSON mode was requested)."""
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main,
+            ["--workspace", str(tmp_path), "--json", "init", "--setup-github"],
+        )
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "gh CLI: ok" not in out
+    assert "wrote .github/pull_request_template.md" not in out
+    assert "wrote .github/workflows/super-harness.yml" not in out
+    assert "repo merge settings:" not in out
+
+
+def test_setup_github_advisory_says_kept_existing_when_pr_template_is_noop(
+    tmp_path: Path,
+):
+    """When _write_pr_template hits the idempotent no-op branch (existing
+    template already has exactly one metadata block), the advisory says
+    'kept existing' — NOT 'wrote' — because reality is "left untouched"."""
+    from importlib.resources import files
+
+    bundled = (
+        files("super_harness.templates").joinpath("pull_request_template.md").read_text()
+    )
+    gh_dir = tmp_path / ".github"
+    gh_dir.mkdir()
+    (gh_dir / "pull_request_template.md").write_text(bundled)
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "init", "--setup-github"]
+        )
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "kept existing .github/pull_request_template.md" in out, out
+    # The 'wrote' advisory must NOT fire for the PR template.
+    assert "wrote .github/pull_request_template.md" not in out
+
+
+def test_setup_github_advisory_says_kept_existing_when_workflow_noop(tmp_path: Path):
+    """Existing workflow that's byte-identical to bundled → advisory says
+    'kept existing' for the workflow."""
+    from importlib.resources import files
+
+    bundled = (
+        files("super_harness.templates")
+        .joinpath("super_harness_workflow.yml")
+        .read_text()
+    )
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    (workflows_dir / "super-harness.yml").write_text(bundled)
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "init", "--setup-github"]
+        )
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "kept existing .github/workflows/super-harness.yml" in out, out
+    assert "wrote .github/workflows/super-harness.yml" not in out
+
+
+def test_setup_github_advisory_says_declined_when_user_declines_workflow(tmp_path: Path):
+    """User declines the workflow overwrite confirm → advisory says
+    'kept existing .github/workflows/super-harness.yml (declined overwrite)'."""
+    workflows_dir = tmp_path / ".github" / "workflows"
+    workflows_dir.mkdir(parents=True)
+    (workflows_dir / "super-harness.yml").write_text("old workflow content\n")
+
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings"
+    ):
+        r = CliRunner().invoke(
+            main,
+            ["--workspace", str(tmp_path), "init", "--setup-github"],
+            input="n\n",  # decline the confirm
+        )
+    assert r.exit_code == 0, r.output
+    out = r.output
+    assert "declined" in out.lower(), out
+
+
+def test_setup_github_advisory_absent_when_settings_fails(tmp_path: Path):
+    """When enable_repo_merge_settings raises GhError (non-fatal), the
+    SUCCESS advisory 'repo merge settings: enabled ...' must NOT fire — the
+    existing advisory on stderr (from the non-fatal degrade) is enough."""
+    with patch("super_harness.cli.init.check_gh"), patch(
+        "super_harness.cli.init.enable_repo_merge_settings",
+        side_effect=GhError("non-admin"),
+    ):
+        r = CliRunner().invoke(
+            main, ["--workspace", str(tmp_path), "init", "--setup-github"]
+        )
+    assert r.exit_code == 0, r.output
+    out = r.output
+    # Stdout success advisory NOT fired on failure path.
+    assert "repo merge settings: enabled" not in out
+    # But the other substep advisories DID fire (they succeeded).
+    assert "wrote .github/pull_request_template.md" in out
+    assert "wrote .github/workflows/super-harness.yml" in out
+
+
 def test_setup_github_existing_workflow_tty_ctrl_c_exits_1(tmp_path: Path):
     """Existing workflow file + interactive Ctrl-C (TTY=True + Abort) → exit 1.
 

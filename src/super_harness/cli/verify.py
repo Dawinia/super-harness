@@ -66,6 +66,7 @@ import yaml
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
+from super_harness.cli.verify_render import render_failure_summary
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import (
     HarnessNotInitialized,
@@ -309,6 +310,16 @@ def verify_cmd(
             )
         )
     elif not ctx.obj.get("quiet"):
+        # One-line `result.summary` stays on STDOUT for back-compat with
+        # anything grepping the exact "verification {verdict} (N checks, M
+        # failed)" string. On failure, the rich per-check breakdown + the
+        # summary_path go to STDERR (failure detail follows convention) —
+        # see cli/verify_render.py for the renderer + OPEN-ITEMS #6 / S6 for
+        # the smoke-walkthrough that motivated this.
         click.echo(result.summary)
+        if not passed:
+            rich = render_failure_summary(result.details or {})
+            if rich:
+                click.echo(rich, err=True)
 
     sys.exit(exit_code)

@@ -591,3 +591,91 @@ def test_done_pr_resolution_records_pr_in_payload(tmp_path: Path) -> None:
     assert ic["change_id"] == "my-change"
     # 3. The original --pr value ALSO landed on the payload as pr_url.
     assert ic["payload"] == {"pr_url": "42"}
+
+
+# --------------------------------------------------------------------------- #
+# OPEN-ITEMS #6 / S6 — failing-verdict output mirrors `verify`: per-check rows
+# (id, exit_code, duration_ms, optional output_path) on STDERR plus a
+# `full summary:` line, while the one-line `result.summary` stays on STDOUT.
+# Replaces the old format_error(hint=summary_path-only) call. Parity between
+# `verify` and `done` failure rendering is intentional — both share the
+# `cli/verify_render.render_failure_summary` helper.
+# --------------------------------------------------------------------------- #
+
+
+_MIXED_FAIL_YAML = """\
+layers:
+  baseline: { enabled: false }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: true }
+defaults:
+  timeout_seconds: 30
+  must_pass: true
+  capture: none
+  workdir: .
+  env: {}
+execution:
+  mode: sequential
+  max_parallelism: 1
+  fail_fast: false
+checks:
+  - id: ok-1
+    command: "true"
+  - id: boom
+    command: "false"
+adapter_provided: []
+"""
+
+
+def test_done_failure_lists_failing_must_pass_checks_on_stderr(
+    tmp_path: Path,
+) -> None:
+    _init_in_progress(tmp_path, yaml_text=_MIXED_FAIL_YAML)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "done", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    # implementation_complete must NOT land — verification failed.
+    assert "implementation_complete" not in _event_types(tmp_path)
+    # Rich failure breakdown lands on stderr.
+    assert "boom" in r.stderr
+    assert "exit 1" in r.stderr
+    # The passing check is not in the failure breakdown.
+    assert "ok-1" not in r.stderr
+
+
+def test_done_failure_includes_summary_path_on_stderr(tmp_path: Path) -> None:
+    _init_in_progress(tmp_path, yaml_text=_MIXED_FAIL_YAML)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "done", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "full summary:" in r.stderr
+    assert ".harness/verification-results/" in r.stderr
+    assert "summary.json" in r.stderr
+
+
+def test_done_failure_handles_none_output_path(tmp_path: Path) -> None:
+    # `capture: none` → failing check has output_path=None; the literal "None"
+    # must not leak as a dangling pointer.
+    _init_in_progress(tmp_path, yaml_text=_FAIL_YAML)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "done", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "boom" in r.stderr
+    assert "None" not in r.stderr
+
+
+def test_done_failure_json_mode_no_rich_text_leak(tmp_path: Path) -> None:
+    # --json failure: the envelope is on stdout, rich text must NOT leak onto
+    # stderr (would corrupt parsers wrapping the CLI invocation).
+    _init_in_progress(tmp_path, yaml_text=_MIXED_FAIL_YAML)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "--json", "done", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    payload = json.loads(r.stdout)
+    assert payload["status"] == "fail"
+    assert "boom" not in r.stderr
+    assert "full summary:" not in r.stderr
