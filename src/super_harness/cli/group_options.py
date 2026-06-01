@@ -41,6 +41,8 @@ _TOP_LEVEL_FLAGS: frozenset[str] = frozenset(
         "-q",
         "--verbose",
         "-v",
+        "--version",
+        "-V",
     }
 )
 

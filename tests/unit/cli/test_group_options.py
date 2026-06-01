@@ -76,6 +76,27 @@ def test_short_verbose_at_subcommand_position_emits_redirect_hint() -> None:
     assert "super-harness -v verify" in result.output
 
 
+def test_version_at_subcommand_position_emits_redirect_hint() -> None:
+    """`--version` is an eager top-level flag — mispositioning it should
+    still get the redirect (the example "Try: super-harness --version verify"
+    is slightly imperfect for eager flags, but points the user in the right
+    direction)."""
+    result = _invoke(["verify", "--version"])
+    assert result.exit_code == 2
+    assert "top-level flag" in result.output
+    assert "--version" in result.output
+    assert "super-harness --version verify" in result.output
+
+
+def test_short_version_at_subcommand_position_emits_redirect_hint() -> None:
+    """Short alias `-V` for `--version` is also a top-level flag."""
+    result = _invoke(["done", "-V"])
+    assert result.exit_code == 2
+    assert "top-level flag" in result.output
+    assert "-V" in result.output
+    assert "super-harness -V done" in result.output
+
+
 def test_nested_subgroup_redirect_includes_full_command_chain() -> None:
     """`change start --json some-slug` should redirect with full chain."""
     result = _invoke(["change", "start", "--json", "some-slug"])

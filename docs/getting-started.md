@@ -170,9 +170,7 @@ starts editing. The hot-path gate enforces lifecycle rules:
 > `AWAITING_PLAN_REVIEW` → `PLAN_APPROVED` → `IMPLEMENTATION_IN_PROGRESS`)
 > does NOT have a public CLI emitter — it's reviewer-driven and currently
 > emitted programmatically. For a runnable end-to-end demo of the full
-> lifecycle including the manual emit pattern (using
-> `EventWriter.emit(..., skip_validation=True)`), see
-> [`examples/demo-openspec-claude/`](../examples/demo-openspec-claude/).
+> lifecycle, see [`examples/demo-openspec-claude/`](../examples/demo-openspec-claude/).
 > This gap is tracked in OPEN-ITEMS and will be filled in v0.2.
 
 You don't have to do anything — the daemon + hooks installed by
