@@ -77,6 +77,7 @@ import yaml
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
+from super_harness.cli.verify_render import render_failure_summary
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.events import Actor, Event
@@ -320,20 +321,31 @@ def done_cmd(
                     data=result.details,
                 )
             )
-        else:
+        elif not ctx.obj.get("quiet"):
+            # Mirror `verify`'s failure rendering (OPEN-ITEMS #6 / S6): the
+            # one-line `result.summary` stays on STDOUT (back-compat); the
+            # rich per-check breakdown + summary_path go to STDERR. Also
+            # keep a short `format_error` line on stderr to spell out the
+            # consequence ("implementation_complete not emitted") that's
+            # specific to `done` and not visible in the verify-style output.
+            click.echo(result.summary)
             click.echo(
                 format_error(
                     subcommand="done",
-                    message=f"verification failed for {resolved}; "
-                    "implementation_complete not emitted",
+                    message=(
+                        f"verification failed for {resolved}; "
+                        "implementation_complete not emitted"
+                    ),
                     hint=(
-                        "Inspect the run summary "
-                        f"({(result.details or {}).get('summary_path', '<summary>')}), "
-                        "fix the failing checks, then re-run `super-harness done`."
+                        "Fix the failing checks below, then re-run "
+                        "`super-harness done`."
                     ),
                 ),
                 err=True,
             )
+            rich = render_failure_summary(result.details or {})
+            if rich:
+                click.echo(rich, err=True)
         sys.exit(EXIT_VALIDATION)
 
     # Verification passed (dispatcher already wrote verification_passed +
