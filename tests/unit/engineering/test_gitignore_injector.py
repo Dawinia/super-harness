@@ -184,6 +184,78 @@ def test_existing_gitignore_two_blocks_fails_loud(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Present + unbalanced markers (orphan begin or orphan end) -> fail loud
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("content", "expected_begin", "expected_end"),
+    [
+        # Orphan begin: 1 begin, 0 end. Without this guard, a subsequent run
+        # would silently delete user content trapped between the orphan begin
+        # and the new block's end (data-loss vector).
+        (
+            f"# User top\n*.pyc\n{GITIGNORE_BEGIN_MARKER}\n.harness/state.yaml\n"
+            "# trailing user content with no end marker\n",
+            1,
+            0,
+        ),
+        # Orphan end: 0 begin, 1 end. Symmetric guard.
+        (
+            f"# User top\n*.pyc\n.harness/state.yaml\n{GITIGNORE_END_MARKER}\n"
+            "# trailing user content\n",
+            0,
+            1,
+        ),
+    ],
+    ids=["orphan-begin", "orphan-end"],
+)
+def test_existing_gitignore_unbalanced_markers_fails_loud(
+    tmp_path: Path, content: str, expected_begin: int, expected_end: int
+) -> None:
+    """Unbalanced super-harness markers (orphan begin xor orphan end) →
+    raise GitignoreInjectionError. Locks in the data-loss guard: without it,
+    a subsequent run would splice over user content trapped between an
+    orphan marker and the newly written block."""
+    path = tmp_path / ".gitignore"
+    path.write_text(content)
+    before = path.read_text()
+    with pytest.raises(GitignoreInjectionError) as excinfo:
+        inject_gitignore_block(path)
+    msg = str(excinfo.value)
+    assert "unbalanced" in msg.lower(), msg
+    # Confirm message includes the exact begin/end counts.
+    assert f"{expected_begin} begin" in msg, msg
+    assert f"{expected_end} end" in msg, msg
+    # File left untouched (never spliced).
+    assert path.read_text() == before
+
+
+# --------------------------------------------------------------------------- #
+# Present + non-UTF-8 bytes -> friendly GitignoreInjectionError
+# --------------------------------------------------------------------------- #
+
+
+def test_existing_gitignore_non_utf8_raises_friendly_error(tmp_path: Path) -> None:
+    """A non-UTF-8 .gitignore raises GitignoreInjectionError (re-raised from
+    the underlying UnicodeDecodeError via ``raise ... from e``). Locks in the
+    friendly-error wrapping so callers' existing
+    ``except (OSError, GitignoreInjectionError)`` envelope reports it cleanly."""
+    path = tmp_path / ".gitignore"
+    # Stray 0xff byte that cannot start a UTF-8 sequence.
+    path.write_bytes(b"\xff\xfe not utf-8 \n")
+    before = path.read_bytes()
+    with pytest.raises(GitignoreInjectionError) as excinfo:
+        inject_gitignore_block(path)
+    msg = str(excinfo.value)
+    assert "utf-8" in msg.lower(), msg
+    # The original UnicodeDecodeError must be preserved on __cause__.
+    assert isinstance(excinfo.value.__cause__, UnicodeDecodeError)
+    # File left untouched (decoder failed before any write).
+    assert path.read_bytes() == before
+
+
+# --------------------------------------------------------------------------- #
 # Body contents lock-in
 # --------------------------------------------------------------------------- #
 

@@ -27,8 +27,10 @@ Behavior
 3. ``.gitignore`` present + exactly 1 marker block → REPLACE the body between
    the markers (idempotent re-init; a re-run on the canonical state is a
    byte-identical no-op).
-4. ``.gitignore`` present + ≥2 marker blocks → raise
-   `GitignoreInjectionError`. Manual cleanup required.
+4. ``.gitignore`` present + ≥2 marker blocks OR unbalanced begin/end markers
+   (one begin without a matching end, or vice versa) → raise
+   `GitignoreInjectionError`. Manual cleanup required. (Splicing across an
+   orphan marker would silently delete trapped user content — data-loss guard.)
 
 API stability: **experimental** (v0.1).
 """
