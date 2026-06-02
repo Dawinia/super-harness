@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-verification-runner
 """Verification runner: the `VerificationRunner` sensor + its execution engine.
 
 Phase 8 tasks 8.3 + 8.4 (engineering-integration §2.3 / §3.6, sensor-gate

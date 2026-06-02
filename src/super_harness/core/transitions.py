@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-state-machine
 """Lifecycle state transition table per lifecycle-event-model §3.7 Reachability.
 
 compute_target_state(current_state, event_type) returns:

@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-l1-anchor-check
 """AnchorSentinelPresence sensor — dual-trigger, audit-only.
 
 Phase 11 Task 11.1 (sensor-gate-architecture §3.1 table row: anchor-sentinel-presence).

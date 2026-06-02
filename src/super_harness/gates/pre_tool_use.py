@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-gate-architecture
 """PreToolUseGate — in-process gate for the 11-state pre-tool-use matrix.
 
 Per sensor-gate-architecture §2.2 + lifecycle-event-model §3.7. This gate
