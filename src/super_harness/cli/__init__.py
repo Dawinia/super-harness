@@ -23,6 +23,7 @@ from super_harness.cli.group_options import (
 from super_harness.cli.implementation import implementation_group
 from super_harness.cli.init import init_cmd
 from super_harness.cli.on_merge import on_merge_cli
+from super_harness.cli.plan import plan_group
 from super_harness.cli.pr import pr_group
 from super_harness.cli.review import review_group
 from super_harness.cli.sensor import sensor_group
@@ -92,6 +93,7 @@ main.add_command(verification_group)
 main.add_command(anchor_group)
 main.add_command(pr_group)
 main.add_command(review_group)
+main.add_command(plan_group)
 main.add_command(implementation_group)
 main.add_command(on_merge_cli)
 
