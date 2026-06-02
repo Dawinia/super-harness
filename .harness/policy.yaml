@@ -1,0 +1,13 @@
+# super-harness policy (see sensor-gate-architecture §2.4)
+
+# Reviewer strategy (HG-02.C). super-harness never runs the review itself;
+# the strategy tells the agent how to produce the verdict:
+#   subagent (default) — dispatch a reviewer subagent (Task tool)
+#   human              — a person reviews + records `review approve|reject`
+#   hybrid             — subagent first, escalate to a human on fail/Large
+# Set `human` when a token budget rules out subagent review for everything.
+reviewers:
+  plan-reviewer:
+    strategy: subagent
+  code-reviewer:
+    strategy: subagent

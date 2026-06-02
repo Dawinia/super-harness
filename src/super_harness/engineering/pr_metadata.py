@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-pr-metadata
 """PR description metadata block — parse half + write half (engineering-integration §2.5).
 
 Parse half (``parse_metadata_block``) is pure-function: no I/O, no global state.

@@ -1,0 +1,34 @@
+layers:
+  baseline: { enabled: true }
+  framework_adapter: { enabled: true }
+  user_checks: { enabled: true }
+defaults:
+  timeout_seconds: 300
+  must_pass: true
+  capture: both
+  workdir: .
+  env: { CI: "1" }
+execution:
+  mode: parallel
+  max_parallelism: 4
+  fail_fast: false
+# HG-D self-host (2026-06-02): super-harness verifies itself with its own dev
+# toolchain. `PATH="$(pwd)/.venv/bin:$PATH"` prepends the repo's editable-install
+# venv so (a) `python`/`ruff`/`mypy` resolve to the project venv and (b) the
+# subprocesses pytest spawns (super-harness / super-harness-daemon /
+# super-harness-hook) are found on PATH — that PATH gap, not a missing binary,
+# is the sole reason the 8 daemon/hook integration+e2e tests fail under a bare
+# `pytest`. Assumes a `.venv/` at repo root (the local dev convention); CI wiring
+# that provisions the env differently is a step-2 / --setup-github concern.
+checks:
+- id: ruff
+  command: PATH="$(pwd)/.venv/bin:$PATH" ruff check src tests scripts
+  must_pass: true
+- id: mypy
+  command: PATH="$(pwd)/.venv/bin:$PATH" mypy src
+  must_pass: true
+- id: pytest
+  command: PATH="$(pwd)/.venv/bin:$PATH" python -m pytest -q
+  must_pass: true
+  timeout_seconds: 600
+adapter_provided: []

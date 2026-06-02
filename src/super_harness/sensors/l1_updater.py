@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-l1-updater
 """L1Updater sensor — opens a follow-up PR with regenerated L1 docs on `merged`.
 
 Phase 13 Task 13.5. Assembles the four Phase 13 helpers

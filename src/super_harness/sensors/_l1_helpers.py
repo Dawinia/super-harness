@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-l1-follow-up-pr
 """Private helpers for the L1Updater sensor.
 
 Four pure-ish utilities:

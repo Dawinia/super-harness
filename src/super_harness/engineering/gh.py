@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-gh-integration
 """Thin subprocess wrapper for the ``gh`` CLI (engineering-integration spec §3.1).
 
 Pure module — no event emission, no operation-log writing, no global state.

@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-agents-md-injection
 """AGENTS.md inject/remove primitives (engineering-integration spec §2.2 / §3.2).
 
 Pure functions that maintain the marked "super-harness section" inside a repo's

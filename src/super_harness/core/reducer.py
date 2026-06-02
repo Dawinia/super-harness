@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-state-reducer
 """Full-rebuild reducer per lifecycle-event-model §3.8.
 
 Replays events.jsonl from line 1 to derive `dict[change_id, ChangeState]`.

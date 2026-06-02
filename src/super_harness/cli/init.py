@@ -1,3 +1,4 @@
+# L1 anchor (HG-D self-host) — @capability:capability-ci-templates
 """super-harness init — scaffold the `.harness/` workspace.
 
 Creates the canonical directory layout (6 subdirs + 6 skeleton files) per
