@@ -33,6 +33,11 @@ from super_harness.core.paths import (
 )
 from super_harness.core.reducer import derive_state
 from super_harness.core.state import TERMINAL_STATES
+from super_harness.engineering.reviewer_policy import (
+    REVIEW_STATE_REVIEWER,
+    ReviewerPolicyError,
+    load_reviewer_strategy,
+)
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
 
@@ -102,22 +107,45 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
         # placeholder, not a bug.
         active = [cs for cs in derived.values() if cs.current_state not in TERMINAL_STATES]
         target = [active[0]] if active else []
-    if ctx.obj.get("json"):
-        click.echo(
-            json_envelope(
-                command="status",
-                status="pass",
-                exit_code=EXIT_OK,
-                data={"changes": [asdict(cs) for cs in target]},
+    # HG-02.C: when a change sits in a review state, surface the configured
+    # reviewer strategy so the agent/human knows whether to dispatch a Task
+    # subagent or hand the review off to a person. Read-only; a malformed
+    # reviewers policy surfaces as a config error (exit 2).
+    def _reviewer_info(cs: object) -> tuple[str | None, str | None]:
+        reviewer = REVIEW_STATE_REVIEWER.get(cs.current_state)  # type: ignore[attr-defined]
+        if reviewer is None:
+            return None, None
+        return reviewer, load_reviewer_strategy(root, reviewer)
+
+    try:
+        if ctx.obj.get("json"):
+            changes_data = []
+            for cs in target:
+                entry = asdict(cs)
+                reviewer, strategy = _reviewer_info(cs)
+                if reviewer is not None:
+                    entry["reviewer"] = reviewer
+                    entry["reviewer_strategy"] = strategy
+                changes_data.append(entry)
+            click.echo(
+                json_envelope(
+                    command="status", status="pass", exit_code=EXIT_OK,
+                    data={"changes": changes_data},
+                )
             )
-        )
-    else:
-        for cs in target:
-            click.echo(f"{cs.change_id}: {cs.current_state}")
-            click.echo(f"  last: {cs.last_event_type} @ {cs.last_event_at}")
-            # `scope` is `dict[str, Any]` defaulting to {} — empty dict is
-            # correctly falsy, so this skips changes that haven't reached
-            # `plan_ready` yet (scope is populated from plan_ready payload).
-            if cs.scope:
-                click.echo(f"  scope: {cs.scope}")
+        else:
+            for cs in target:
+                click.echo(f"{cs.change_id}: {cs.current_state}")
+                click.echo(f"  last: {cs.last_event_type} @ {cs.last_event_at}")
+                # `scope` is `dict[str, Any]` defaulting to {} — empty dict is
+                # correctly falsy, so this skips changes that haven't reached
+                # `plan_ready` yet (scope is populated from plan_ready payload).
+                if cs.scope:
+                    click.echo(f"  scope: {cs.scope}")
+                reviewer, strategy = _reviewer_info(cs)
+                if reviewer is not None:
+                    click.echo(f"  reviewer: {reviewer} (strategy: {strategy})")
+    except ReviewerPolicyError as e:
+        click.echo(format_error(subcommand="status", message=str(e)), err=True)
+        sys.exit(EXIT_VALIDATION)
     sys.exit(EXIT_OK)

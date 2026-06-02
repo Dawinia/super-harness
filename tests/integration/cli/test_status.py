@@ -156,3 +156,61 @@ def test_status_json_envelope_schema(tmp_path: Path) -> None:
     assert entry["current_state"] == "INTENT_DECLARED"
     assert entry["last_event_type"] == "intent_declared"
     assert entry["last_event_at"]
+
+
+# --- HG-02.C: status surfaces the reviewer strategy in review states ----------
+
+
+def _seed_awaiting_plan_review(tmp_path: Path, slug: str) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    w = EventWriter(events_path(tmp_path))
+    for t in ("intent_declared", "plan_ready"):
+        w.emit(
+            Event(
+                event_id=new_event_id(), type=t, change_id=slug,
+                timestamp="2026-06-02T00:00:00Z",
+                actor=Actor(type="human", identifier="cli"),
+                framework="plain", payload={},
+            )
+        )
+    refresh_state_after_emit(tmp_path)
+
+
+def _set_strategy(tmp_path: Path, reviewer: str, strategy: str) -> None:
+    (tmp_path / ".harness" / "policy.yaml").write_text(
+        f"reviewers:\n  {reviewer}:\n    strategy: {strategy}\n"
+    )
+
+
+def test_status_shows_reviewer_strategy_in_review_state(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _seed_awaiting_plan_review(tmp_path, "demo")  # → AWAITING_PLAN_REVIEW
+    _set_strategy(tmp_path, "plan-reviewer", "human")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "status", "demo"])
+    assert r.exit_code == 0, r.output
+    assert "plan-reviewer" in r.output
+    assert "human" in r.output
+
+
+def test_status_no_strategy_line_outside_review_state(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _start(tmp_path, "demo")  # INTENT_DECLARED — not a review state
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "status", "demo"])
+    assert r.exit_code == 0, r.output
+    assert "strategy" not in r.output.lower()
+
+
+def test_status_json_carries_reviewer_strategy(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _seed_awaiting_plan_review(tmp_path, "demo")
+    _set_strategy(tmp_path, "plan-reviewer", "human")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "--json", "status", "demo"])
+    assert r.exit_code == 0, r.output
+    entry = json.loads(r.stdout)["data"]["changes"][0]
+    assert entry["reviewer"] == "plan-reviewer"
+    assert entry["reviewer_strategy"] == "human"

@@ -19,6 +19,12 @@ def test_init_creates_harness_dir(tmp_path: Path):
     assert (tmp_path / ".harness").is_dir()
     assert (tmp_path / ".harness" / "events.jsonl").exists()
     assert (tmp_path / ".harness" / "policy.yaml").exists()
+    # HG-02.C: policy.yaml ships a discoverable reviewers block so a user can
+    # switch a reviewer to `human` when token budget rules out subagent review.
+    policy = (tmp_path / ".harness" / "policy.yaml").read_text()
+    assert "reviewers:" in policy
+    assert "plan-reviewer:" in policy
+    assert "code-reviewer:" in policy
     assert (tmp_path / ".harness" / "sensors.yaml").exists()
     assert (tmp_path / ".harness" / "verification.yaml").exists()
     assert (tmp_path / ".harness" / "source-paths.yaml").exists()

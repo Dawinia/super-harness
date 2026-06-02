@@ -292,6 +292,10 @@ def test_agents_md_subsection_has_review_protocol() -> None:
     assert "super-harness review reject" in block
     # Tells the agent to dispatch a reviewer subagent (uses its own Task tool).
     assert "subagent" in block.lower()
+    # HG-02.C: strategy-aware — the agent checks the configured strategy and, when
+    # it is `human`, hands off instead of self-approving.
+    assert "strategy" in block.lower()
+    assert "human" in block.lower()
 
 
 def test_on_uninstall_restores_earliest_pristine_backup(tmp_path: Path) -> None:
