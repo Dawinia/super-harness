@@ -60,8 +60,16 @@ def _resolve_root(ctx: click.Context, subcommand: str) -> Path:
 def start(ctx: click.Context) -> None:
     """Start the workspace daemon (idempotent; blocks until ready)."""
     root = _resolve_root(ctx, "start")
+    # Socket-wait budget. Production default is 5s (the foreground "command
+    # returns → daemon ready" contract). SUPER_HARNESS_DAEMON_START_TIMEOUT is
+    # the foreground-CLI sibling of the hot-path SUPER_HARNESS_HOOK_QUERY_TIMEOUT
+    # seam (supervisor.py): under heavy CI contention (4-way-parallel
+    # verification) a daemon's spawn→boot→bind can transiently exceed 5s, so the
+    # test harness widens this window to keep `daemon start` from flaking.
+    # Production should never set it — 5s is the contract.
+    wait_seconds = float(os.environ.get("SUPER_HARNESS_DAEMON_START_TIMEOUT", "5.0"))
     try:
-        pid = supervisor.ensure_running(root, wait_seconds=5.0)
+        pid = supervisor.ensure_running(root, wait_seconds=wait_seconds)
     except RuntimeError as e:
         click.echo(
             format_error(
