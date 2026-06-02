@@ -13,6 +13,14 @@ def test_detect_returns_false_for_arbitrary_path() -> None:
     assert PlainAdapter().detect(Path("/nonexistent/workspace")) is False
 
 
+def test_spec_paths_empty_no_spec_concept() -> None:
+    # Plain framework has no spec/plan concept → both empty, no error.
+    assert PlainAdapter().spec_paths(Path("/nonexistent"), "any-change") == {
+        "spec": "",
+        "plan": "",
+    }
+
+
 def test_observe_yields_nothing(tmp_path: Path) -> None:
     assert list(PlainAdapter().observe(tmp_path)) == []
 

@@ -236,6 +236,12 @@ class OpenSpecAdapter(FrameworkAdapter):
         # The daemon watches the changes dir so it knows when to re-run observe.
         return [workspace / "openspec" / "changes"]
 
+    def spec_paths(self, workspace: Path, change_id: str) -> dict[str, str]:
+        # Pure path derivation (HG-01) — mirrors the join in `_change_state` but does
+        # NO I/O, so it is daemon-safe (cwd=`/`) and never raises like `get_state`.
+        base = workspace / "openspec" / "changes" / change_id
+        return {"spec": str(base / "proposal.md"), "plan": str(base / "tasks.md")}
+
     def verification_checks(self) -> list[dict[str, Any]]:
         return [{
             "id": "openspec-validate",

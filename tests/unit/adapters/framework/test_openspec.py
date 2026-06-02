@@ -401,3 +401,12 @@ def test_agents_md_subsection_ends_with_newline() -> None:
 
 def test_on_uninstall_default_noop(tmp_path: Path) -> None:
     assert OpenSpecAdapter().on_uninstall(tmp_path) is None
+
+
+def test_spec_paths_returns_proposal_and_tasks_paths() -> None:
+    # Pure path derivation — pass a non-existent workspace, assert no I/O / real strings.
+    ws = Path("/nonexistent/workspace")
+    slug = "2026-06-02-some-change"
+    paths = OpenSpecAdapter().spec_paths(ws, slug)
+    base = ws / "openspec" / "changes" / slug
+    assert paths == {"spec": str(base / "proposal.md"), "plan": str(base / "tasks.md")}
