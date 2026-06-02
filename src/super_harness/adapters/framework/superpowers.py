@@ -118,6 +118,20 @@ def _seen_from_events(workspace: Path) -> set[tuple[str, str]]:
     return seen
 
 
+def _plan_payload(fm: dict[str, Any]) -> dict[str, Any]:
+    """Build the plan_ready payload from a plan artifact's frontmatter.
+
+    Only the lifecycle-event-model §3.2 keys the reducer consumes are carried,
+    and only when present + non-null. Absent → empty payload (HG-05 intent).
+    """
+    payload: dict[str, Any] = {}
+    for key in ("affected_anchors", "scope", "tier_hint"):
+        value = fm.get(key)
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
 def scan_artifacts(workspace: Path, seen: set[tuple[str, str]]) -> list[Event]:
     """Pure parse-and-emit core: group marked artifacts by `change:` slug and
     return unseen `intent_declared` / `plan_ready` events in dependency order.
@@ -167,7 +181,7 @@ def scan_artifacts(workspace: Path, seen: set[tuple[str, str]]) -> list[Event]:
                     timestamp=utc_now_iso(),
                     actor=_ACTOR,
                     framework=_FRAMEWORK,
-                    payload={},  # Task 4 fills affected_anchors/scope/tier_hint
+                    payload=_plan_payload(g["plan_fm"] or {}),
                 )
             )
     return events
