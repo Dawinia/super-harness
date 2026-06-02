@@ -16,9 +16,12 @@ the change with zero config, but it is optional, not required.
 
 Use your framework's native PR command:
 
-<!-- super-harness framework: plain -->
-- No framework: drive lifecycle via `super-harness change start <slug>` / `super-harness plan ready <slug>` / `super-harness done <slug>`.
-<!-- /super-harness framework: plain -->
+<!-- super-harness framework: superpowers -->
+- Drive the lifecycle with the superpowers skills (brainstorming → writing-plans → TDD). Plans live under `docs/plans/`.
+- Mark an artifact for super-harness with YAML frontmatter: `change: <slug>` (identity) plus optional `stage: design|plan`.
+  - `stage: design` declares intent; `stage: plan` (or omitted) means plan ready. A plan may also carry `affected_anchors` / `scope` / `tier_hint`.
+- Branch naming is yours — the slug travels in the `change:` frontmatter (and PR metadata), not the branch name.
+<!-- /super-harness framework: superpowers -->
 
 super-harness will automatically append a metadata block to your PR description
 between `<!-- super-harness:metadata -->` markers.
