@@ -67,11 +67,22 @@ import yaml
 # ---------------------------------------------------------------------------
 _HOOK_QUERY_TIMEOUT_FOR_TESTS = "5.0"
 
+# Foreground daemon-start socket-wait budget for E2E: 30s overrides the
+# production 5s ceiling so the blocking `super-harness daemon start` subprocess
+# (test_pre_tool_use_claude_code.py / test_full_lifecycle.py) can't flake when a
+# loaded CI runner stalls a daemon's spawn→boot→bind past 5s. Subprocess inherits
+# the env var. Sibling of the hot-path widening above; see
+# tests/unit/cli/test_daemon.py for the unit-level counterpart.
+_DAEMON_START_TIMEOUT_FOR_TESTS = "30"
+
 
 @pytest.fixture(autouse=True)
 def _hook_query_timeout_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv(
         "SUPER_HARNESS_HOOK_QUERY_TIMEOUT", _HOOK_QUERY_TIMEOUT_FOR_TESTS
+    )
+    monkeypatch.setenv(
+        "SUPER_HARNESS_DAEMON_START_TIMEOUT", _DAEMON_START_TIMEOUT_FOR_TESTS
     )
     yield
 

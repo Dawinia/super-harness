@@ -37,6 +37,25 @@ pytestmark = pytest.mark.skipif(
     reason="super-harness-daemon entry-point not installed",
 )
 
+# Foreground daemon-start socket-wait budget for tests: 30s overrides the
+# production 5s ceiling so a transient spawn→boot→bind stall under heavy CI
+# parallelism (the self-host verification.yaml runs pytest + ruff + mypy 4-way
+# in parallel) can't push `daemon start` past the window → RuntimeError → exit 1
+# → flaky test_daemon_start_idempotent. Mirrors the hot-path widening in
+# tests/integration/daemon/conftest.py:30-38 (SUPER_HARNESS_HOOK_QUERY_TIMEOUT);
+# same class as OPEN-ITEM #4 (daemon readiness determinism). The two
+# SUPER_HARNESS_DAEMON_START_TIMEOUT-specific tests below override this via their
+# own monkeypatch.set/delenv.
+_DAEMON_START_TIMEOUT_FOR_TESTS = "30"
+
+
+@pytest.fixture(autouse=True)
+def _daemon_start_timeout_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setenv(
+        "SUPER_HARNESS_DAEMON_START_TIMEOUT", _DAEMON_START_TIMEOUT_FOR_TESTS
+    )
+    yield
+
 
 @pytest.fixture
 def workspace(tmp_path: Path) -> Iterator[Path]:
@@ -75,6 +94,59 @@ def test_daemon_start_idempotent(workspace: Path) -> None:
     r2 = runner.invoke(cli_main, ["--workspace", str(workspace), "daemon", "start"])
     assert r1.exit_code == 0
     assert r2.exit_code == 0
+
+
+def test_daemon_start_honors_timeout_env_var(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`daemon start` reads SUPER_HARNESS_DAEMON_START_TIMEOUT and threads it
+    into supervisor.ensure_running's socket-wait budget.
+
+    This is the foreground-CLI sibling of the hot-path SUPER_HARNESS_HOOK_QUERY_TIMEOUT
+    seam (supervisor.gate_pre_tool_use): on a loaded CI runner the 4-way-parallel
+    verification (pytest + ruff + mypy) can transiently stall a daemon's
+    spawn→boot→bind past the production 5s ceiling, raising RuntimeError → exit 1
+    and flaking test_daemon_start_idempotent. The env var lets tests widen the
+    window without changing the production default (see OPEN-ITEMS daemon-readiness
+    determinism, same class as OPEN-ITEM #4)."""
+    captured: dict[str, float] = {}
+
+    def fake_ensure_running(root: Path, *, wait_seconds: float = 5.0) -> int:
+        captured["wait_seconds"] = wait_seconds
+        return 4321
+
+    monkeypatch.setattr(
+        "super_harness.cli.daemon.supervisor.ensure_running", fake_ensure_running
+    )
+    monkeypatch.setenv("SUPER_HARNESS_DAEMON_START_TIMEOUT", "30")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main, ["--workspace", str(workspace), "daemon", "start"]
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["wait_seconds"] == 30.0
+
+
+def test_daemon_start_timeout_defaults_to_5s(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No env var → ensure_running gets the production 5.0s default unchanged."""
+    captured: dict[str, float] = {}
+
+    def fake_ensure_running(root: Path, *, wait_seconds: float = -1.0) -> int:
+        captured["wait_seconds"] = wait_seconds
+        return 4321
+
+    monkeypatch.setattr(
+        "super_harness.cli.daemon.supervisor.ensure_running", fake_ensure_running
+    )
+    monkeypatch.delenv("SUPER_HARNESS_DAEMON_START_TIMEOUT", raising=False)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli_main, ["--workspace", str(workspace), "daemon", "start"]
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["wait_seconds"] == 5.0
 
 
 def test_daemon_start_exits_3_when_no_harness(tmp_path: Path) -> None:
