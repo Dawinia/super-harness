@@ -35,6 +35,7 @@ from super_harness.adapters import AgentAdapter, FrameworkAdapter
 from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
 from super_harness.adapters.framework.openspec import OpenSpecAdapter
 from super_harness.adapters.framework.plain import PlainAdapter
+from super_harness.adapters.framework.superpowers import SuperpowersAdapter
 from super_harness.core._plugin_loader import load_class_from_path
 
 __all__ = [
@@ -258,3 +259,4 @@ def activate_with_fallback(
 register_builtin("plain", PlainAdapter)
 register_builtin("claude-code", ClaudeCodeAdapter)
 register_builtin("openspec", OpenSpecAdapter)
+register_builtin("superpowers", SuperpowersAdapter)
