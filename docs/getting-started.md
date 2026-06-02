@@ -86,7 +86,7 @@ An *adapter* tells super-harness how to translate between its lifecycle
 events and a specific framework (e.g. OpenSpec, Spec Kit) or agent (e.g.
 Claude Code, Cursor). v0.1 ships:
 
-- **Framework adapters:** `openspec` and `plain`.
+- **Framework adapters:** `openspec`, `superpowers`, and `plain`.
 - **Agent adapters:** `claude-code`.
 
 For this walkthrough we'll wire up the canonical pair:

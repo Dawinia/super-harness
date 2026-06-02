@@ -75,7 +75,11 @@ running the flow yourself.
 - **Framework adapters** — OpenSpec (detects `openspec/changes/` and
   `openspec/specs/`, emits `intent_declared` from `proposal.md` and
   `plan_ready` from `tasks.md`, provides verification check `openspec validate
-  <slug> --strict --json`) and Plain (fallback for repos without a framework).
+  <slug> --strict --json`), Superpowers (version-agnostic: discovers design/plan
+  artifacts by a `change:` frontmatter marker rather than a fixed path, emits
+  `intent_declared` from `stage: design` and `plan_ready` from `stage: plan`,
+  lifting `affected_anchors` / `scope` / `tier_hint` from the plan frontmatter),
+  and Plain (fallback for repos without a framework).
 - **Agent adapter** — Claude Code (writes hooks to `.claude/settings.json` for
   PreToolUse + SessionStart and injects an `AGENTS.md` subsection).
 - **Three-layer verification** — baseline checks (anchor-sentinel-presence-final,
@@ -143,7 +147,7 @@ agent-wrapping projects in the ecosystem:
 | Project | Relationship |
 |---|---|
 | GitHub Spec Kit / OpenSpec | Complementary — super-harness is an upper CI control layer that can stack on top. |
-| Superpowers (obra) | Complementary — can serve as a framework adapter, or run in plain mode. |
+| Superpowers (obra) | Complementary — ships as a built-in framework adapter (marker-driven, version-agnostic discovery), or run in plain mode. |
 | Archon | Different axis — Archon wraps agents (agent-wrapper); super-harness is cross-cutting and CI-first. |
 | SpecFact | Complementary — SpecFact adds runtime contracts to OpenSpec specifically; super-harness provides cross-framework lifecycle above. |
 | Anthropic Managed Agents | Closed-source hosted; super-harness is open-source self-hosted. |
