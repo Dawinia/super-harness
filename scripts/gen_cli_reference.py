@@ -59,6 +59,13 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`3` no `.harness/` (run `init` first)",
         "`5` `state.yaml` lock contention",
     ],
+    "plan ready": [
+        "`0` success",
+        "`1` generic error",
+        "`2` illegal lifecycle transition or malformed `--scope`",
+        "`3` no `.harness/`",
+        "`5` `state.yaml` lock contention",
+    ],
     "change abandon": [
         "`0` success",
         "`1` generic error",

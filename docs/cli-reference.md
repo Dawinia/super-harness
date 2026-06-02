@@ -446,6 +446,37 @@ super-harness on-merge [OPTIONS]
 - `1` generic error
 - `3` no `.harness/`
 
+## super-harness plan
+
+Plan-phase lifecycle verbs (plain-mode manual emit).
+
+```
+super-harness plan COMMAND [ARGS...]
+```
+
+## super-harness plan ready
+
+Emit `plan_ready` (INTENT_DECLARED / PLAN_REJECTED → AWAITING_PLAN_REVIEW).
+
+```
+super-harness plan ready [OPTIONS] SLUG
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `SLUG` | text | *required* |  |
+| `--scope` | text | — | scope.files as an inline yaml list, or `@<path>` to read the yaml from a file. |
+| `--anchors` | text | — | affected_anchors as a comma-separated list of L1 capability IDs. |
+| `--tier-hint` | {Micro\|Normal\|Large} | — | Optional tier estimate (Micro/Normal/Large); recorded as tier_hint → cs.tier. |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+- `2` illegal lifecycle transition or malformed `--scope`
+- `3` no `.harness/`
+- `5` `state.yaml` lock contention
+
 ## super-harness pr
 
 PR-side helpers (validate PR metadata + lifecycle).
