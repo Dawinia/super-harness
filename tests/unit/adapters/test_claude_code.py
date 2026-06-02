@@ -282,6 +282,18 @@ def test_agents_md_subsection_has_markers() -> None:
     assert "super-harness status" in block
 
 
+def test_agents_md_subsection_has_review_protocol() -> None:
+    # HG-02.B: teach the agent the review loop — dispatch a reviewer subagent and
+    # record the verdict via the CLI (the harness never runs the review itself).
+    block = ClaudeCodeAdapter().agents_md_subsection()
+    assert "AWAITING_PLAN_REVIEW" in block
+    assert "AWAITING_CODE_REVIEW" in block
+    assert "super-harness review approve" in block
+    assert "super-harness review reject" in block
+    # Tells the agent to dispatch a reviewer subagent (uses its own Task tool).
+    assert "subagent" in block.lower()
+
+
 def test_on_uninstall_restores_earliest_pristine_backup(tmp_path: Path) -> None:
     """install_hooks runs TWO merges → TWO backups on a pre-existing file.
 
