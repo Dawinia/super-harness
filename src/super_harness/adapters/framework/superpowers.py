@@ -16,7 +16,19 @@ from typing import Any, ClassVar
 import yaml
 
 from super_harness.adapters import FrameworkAdapter
-from super_harness.core.events import Event
+from super_harness.core.clock import utc_now_iso
+from super_harness.core.events import (
+    Actor,
+    Event,
+    EventSchemaError,
+    Framework,
+    parse_event_line,
+)
+from super_harness.core.paths import events_path
+from super_harness.core.ulid import new_event_id
+
+_ACTOR = Actor(type="adapter", identifier="superpowers-adapter")
+_FRAMEWORK: Framework = "superpowers"
 
 # Candidate artifact dirs spanning known superpowers eras. Discovery filters
 # these by the `change:` frontmatter marker, so the location a given superpowers
@@ -52,8 +64,8 @@ def _parse_frontmatter(text: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _iter_marked(workspace: Path) -> Iterator[tuple[Path, dict[str, Any]]]:
-    """Yield `(path, frontmatter)` for every marked artifact under candidate dirs.
+def _iter_marked(workspace: Path) -> Iterator[tuple[Path, dict[str, Any], str]]:
+    """Yield `(path, frontmatter, text)` for every marked artifact under candidate dirs.
 
     "Marked" = a `.md` whose frontmatter carries a non-empty string `change:`.
     Dirs are walked in `_CANDIDATE_DIRS` order, files sorted within each, so the
@@ -73,7 +85,92 @@ def _iter_marked(workspace: Path) -> Iterator[tuple[Path, dict[str, Any]]]:
             fm = _parse_frontmatter(text)
             change = fm.get("change")
             if isinstance(change, str) and change:
-                yield p, fm
+                yield p, fm, text
+
+
+def _first_heading(text: str) -> str | None:
+    """Return the first `# ` heading's text, or None."""
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("# "):
+            return s[2:].strip()
+    return None
+
+
+def _seen_from_events(workspace: Path) -> set[tuple[str, str]]:
+    """Read `(change_id, type)` pairs already in events.jsonl (absent → empty).
+
+    Malformed lines are skipped (reducer warn+skip policy, lifecycle §3.8.1).
+    Mirrors OpenSpecAdapter's dedup so re-scans yield only unseen events.
+    """
+    path = events_path(workspace)
+    if not path.exists():
+        return set()
+    seen: set[tuple[str, str]] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            ev = parse_event_line(line)
+        except EventSchemaError:
+            continue
+        seen.add((ev.change_id, ev.type))
+    return seen
+
+
+def scan_artifacts(workspace: Path, seen: set[tuple[str, str]]) -> list[Event]:
+    """Pure parse-and-emit core: group marked artifacts by `change:` slug and
+    return unseen `intent_declared` / `plan_ready` events in dependency order.
+
+    Per-slug semantics (design doc Decision 3):
+    - `stage: design` → contributes intent only.
+    - `stage: plan` or omitted → contributes intent (if new) + plan_ready.
+    - A slug with only a plan still gets a synthesized intent_declared first, so
+      emit-time validation (intent must precede plan_ready) holds.
+    `seen` suppresses re-emission (multi-emit is legal but noisy).
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for _path, fm, text in _iter_marked(workspace):
+        slug = fm["change"]
+        g = groups.setdefault(slug, {"description": None, "has_plan": False, "plan_fm": None})
+        desc = fm.get("description")
+        if not isinstance(desc, str) or not desc:
+            desc = _first_heading(text)
+        if g["description"] is None and desc:
+            g["description"] = desc
+        if fm.get("stage") != "design":  # plan or omitted
+            g["has_plan"] = True
+            if g["plan_fm"] is None:
+                g["plan_fm"] = fm
+
+    events: list[Event] = []
+    for slug in sorted(groups):
+        g = groups[slug]
+        if (slug, "intent_declared") not in seen:
+            events.append(
+                Event(
+                    event_id=new_event_id(),
+                    type="intent_declared",
+                    change_id=slug,
+                    timestamp=utc_now_iso(),
+                    actor=_ACTOR,
+                    framework=_FRAMEWORK,
+                    payload={"description": g["description"] or slug},
+                )
+            )
+        if g["has_plan"] and (slug, "plan_ready") not in seen:
+            events.append(
+                Event(
+                    event_id=new_event_id(),
+                    type="plan_ready",
+                    change_id=slug,
+                    timestamp=utc_now_iso(),
+                    actor=_ACTOR,
+                    framework=_FRAMEWORK,
+                    payload={},  # Task 4 fills affected_anchors/scope/tier_hint
+                )
+            )
+    return events
 
 
 class SuperpowersAdapter(FrameworkAdapter):
@@ -96,7 +193,12 @@ class SuperpowersAdapter(FrameworkAdapter):
         return any(_iter_marked(workspace))
 
     def observe(self, workspace: Path) -> Iterator[Event]:
-        raise NotImplementedError  # Task 3
+        """One-shot scan: yield unseen lifecycle events for `workspace`.
+
+        Read-only — only YIELDS events; the EventWriter.emit + state refresh
+        happens at callers (mirrors OpenSpecAdapter / PlainAdapter).
+        """
+        yield from scan_artifacts(workspace, _seen_from_events(workspace))
 
     def get_state(self, change_id: str) -> dict[str, Any] | None:
         raise NotImplementedError  # Task 5
