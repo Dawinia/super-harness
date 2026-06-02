@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from super_harness.adapters.framework.superpowers import (
     SuperpowersAdapter,
     _parse_frontmatter,
@@ -154,3 +156,44 @@ class TestPlanPayload:
     def test_no_anchors_empty_payload(self, tmp_path: Path) -> None:
         _write(tmp_path, "docs/plans/2026-06-02-foo.md", _marked("foo", stage="plan"))
         assert self._plan_ready(tmp_path).payload == {}
+
+
+class TestOtherAbcMethods:
+    def test_get_state_raises_without_workspace(self) -> None:
+        # Registry-built (cls()) has no workspace → must fail loud, not return None.
+        with pytest.raises(RuntimeError):
+            SuperpowersAdapter().get_state("foo")
+
+    def test_get_state_returns_dict_for_present_change(self, tmp_path: Path) -> None:
+        _write(tmp_path, "docs/plans/2026-06-02-foo-design.md", _marked("foo", stage="design"))
+        _write(tmp_path, "docs/plans/2026-06-02-foo.md", _marked("foo", stage="plan"))
+        state = SuperpowersAdapter(workspace=tmp_path).get_state("foo")
+        assert state is not None
+        assert state["change_id"] == "foo"
+        assert state["design"] is True
+        assert state["plan"] is True
+
+    def test_get_state_none_for_absent_change(self, tmp_path: Path) -> None:
+        assert SuperpowersAdapter(workspace=tmp_path).get_state("nope") is None
+
+    def test_spec_paths_resolves_found_artifacts(self, tmp_path: Path) -> None:
+        d = _write(tmp_path, "docs/plans/2026-06-02-foo-design.md", _marked("foo", stage="design"))
+        p = _write(tmp_path, "docs/plans/2026-06-02-foo.md", _marked("foo", stage="plan"))
+        paths = SuperpowersAdapter().spec_paths(tmp_path, "foo")
+        assert paths["spec"] == str(d)
+        assert paths["plan"] == str(p)
+
+    def test_watch_paths_lists_existing_candidate_dirs(self, tmp_path: Path) -> None:
+        _write(tmp_path, "docs/plans/2026-06-02-foo.md", _marked("foo"))
+        watched = SuperpowersAdapter().watch_paths(tmp_path)
+        assert tmp_path / "docs" / "plans" in watched
+
+    def test_verification_checks_empty(self) -> None:
+        assert SuperpowersAdapter().verification_checks() == []
+
+    def test_agents_md_subsection_marks_framework_no_branch_mandate(self) -> None:
+        md = SuperpowersAdapter().agents_md_subsection()
+        assert "framework: superpowers" in md
+        assert "change:" in md  # documents the frontmatter marker convention
+        # Must NOT mandate branch naming (slug is decoupled from branch).
+        assert "MUST be named" not in md

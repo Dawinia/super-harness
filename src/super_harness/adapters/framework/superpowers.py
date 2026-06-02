@@ -215,10 +215,75 @@ class SuperpowersAdapter(FrameworkAdapter):
         yield from scan_artifacts(workspace, _seen_from_events(workspace))
 
     def get_state(self, change_id: str) -> dict[str, Any] | None:
-        raise NotImplementedError  # Task 5
+        """Derived presence state for `change_id`, or None if no marked artifact.
+
+        Raises RuntimeError if the adapter was registry-built (no workspace) —
+        resolving against cwd would silently mis-answer under the daemon (cwd=/).
+        """
+        if self._workspace is None:
+            raise RuntimeError(
+                "SuperpowersAdapter.get_state requires a workspace; construct "
+                "SuperpowersAdapter(workspace=root) (registry-built instances have none)"
+            )
+        design_path, plan_path = self._artifact_paths(self._workspace, change_id)
+        if design_path is None and plan_path is None:
+            return None
+        return {
+            "change_id": change_id,
+            "design": design_path is not None,
+            "design_path": str(design_path) if design_path else None,
+            "plan": plan_path is not None,
+            "plan_path": str(plan_path) if plan_path else None,
+        }
+
+    def spec_paths(self, workspace: Path, change_id: str) -> dict[str, str]:
+        """Best-effort resolved design/plan paths for ${SPEC_PATH}/${PLAN_PATH}.
+
+        superpowers filenames are not derivable from the slug (the slug is the
+        frontmatter marker, not the filename), so this scans for the marked
+        artifacts. Returns only the keys actually found.
+        """
+        design_path, plan_path = self._artifact_paths(workspace, change_id)
+        result: dict[str, str] = {}
+        if design_path is not None:
+            result["spec"] = str(design_path)
+        if plan_path is not None:
+            result["plan"] = str(plan_path)
+        return result
+
+    @staticmethod
+    def _artifact_paths(
+        workspace: Path, change_id: str
+    ) -> tuple[Path | None, Path | None]:
+        """Find the (design, plan) artifact paths for `change_id` (None if absent)."""
+        design_path: Path | None = None
+        plan_path: Path | None = None
+        for path, fm, _text in _iter_marked(workspace):
+            if fm["change"] != change_id:
+                continue
+            if fm.get("stage") == "design":
+                design_path = path
+            else:
+                plan_path = path
+        return design_path, plan_path
+
+    def watch_paths(self, workspace: Path) -> list[Path]:
+        return [workspace / rel for rel in _CANDIDATE_DIRS if (workspace / rel).is_dir()]
 
     def verification_checks(self) -> list[dict[str, Any]]:
-        raise NotImplementedError  # Task 5
+        # superpowers ships no native validate command (unlike `openspec validate`).
+        return []
 
     def agents_md_subsection(self) -> str:
-        raise NotImplementedError  # Task 5
+        return (
+            "<!-- super-harness framework: superpowers -->\n"
+            "- Drive the lifecycle with the superpowers skills "
+            "(brainstorming → writing-plans → TDD). Plans live under `docs/plans/`.\n"
+            "- Mark an artifact for super-harness with YAML frontmatter: "
+            "`change: <slug>` (identity) plus optional `stage: design|plan`.\n"
+            "  - `stage: design` declares intent; `stage: plan` (or omitted) means "
+            "plan ready. A plan may also carry `affected_anchors` / `scope` / `tier_hint`.\n"
+            "- Branch naming is yours — the slug travels in the `change:` frontmatter "
+            "(and PR metadata), not the branch name.\n"
+            "<!-- /super-harness framework: superpowers -->\n"
+        )
