@@ -158,20 +158,34 @@ sees the `AGENTS.md` super-harness section + the active change context and
 starts editing. The hot-path gate enforces lifecycle rules:
 
 - In `INTENT_DECLARED`, the agent can author `proposal.md` / `tasks.md` (the
-  OpenSpec adapter watches for these and emits `plan_ready` automatically).
-- After `plan_ready` and approval (which advances state to
-  `PLAN_APPROVED` → `IMPLEMENTATION_IN_PROGRESS`), the agent can edit
-  source code.
-- If the agent tries to `Edit` source code before the lifecycle permits it,
-  the `PreToolUseGate` returns `deny` and Claude Code blocks the tool call.
+  OpenSpec adapter watches for these and emits `plan_ready` automatically →
+  `AWAITING_PLAN_REVIEW`).
+- The plan is then reviewed. super-harness **does not run the review** — it
+  enforces (via the gate) that a verdict is recorded, and you (or the agent's
+  own reviewer subagent, per the `AGENTS.md` protocol) produce it:
 
-> **v0.1 lifecycle note**: super-harness v0.1 ships the lifecycle data plane
-> and gate enforcement, but the `plan_approved` event (which advances
-> `AWAITING_PLAN_REVIEW` → `PLAN_APPROVED` → `IMPLEMENTATION_IN_PROGRESS`)
-> does NOT have a public CLI emitter — it's reviewer-driven and currently
-> emitted programmatically. For a runnable end-to-end demo of the full
-> lifecycle, see [`examples/demo-openspec-claude/`](../examples/demo-openspec-claude/).
-> This gap is tracked in OPEN-ITEMS and will be filled in v0.2.
+  ```bash
+  super-harness review approve my-first-change --reviewer plan-reviewer   # → PLAN_APPROVED
+  super-harness implementation start my-first-change                      # → IMPLEMENTATION_IN_PROGRESS
+  ```
+
+  (Use `review reject ... --reason "<why>"` to send the plan back, or
+  `review skip ...` as an escape hatch. The per-reviewer strategy —
+  `subagent` / `human` / `hybrid` — is set in `.harness/policy.yaml` and shown by
+  `super-harness status`.)
+- Now in `IMPLEMENTATION_IN_PROGRESS`, the agent can edit source code. If it
+  tries to `Edit` before the lifecycle permits it, the `PreToolUseGate` blocks
+  the tool call.
+- After `done` (→ `AWAITING_CODE_REVIEW`), record the code-review verdict the
+  same way: `super-harness review approve my-first-change --reviewer code-reviewer`
+  (→ `READY_TO_MERGE`).
+
+> **Note**: the three reviewer-driven transitions (`plan_approved`,
+> `implementation_started`, `code_review_passed`) now ship as the CLI verbs above —
+> the lifecycle runs end-to-end via the CLI. What is *not* yet shipped is an
+> unattended CI auto-reviewer (a headless LLM that produces the verdict with no
+> human/agent present); that is tracked as a follow-up. Plain-mode `plan_ready`
+> also still has no public CLI emitter — use a framework adapter for the full path.
 
 You don't have to do anything — the daemon + hooks installed by
 `adapter install claude-code` handle this transparently. If you want to

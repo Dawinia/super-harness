@@ -22,32 +22,48 @@ brew install gh && gh auth login   # gh is a prerequisite for init --setup-githu
 ## Quickstart
 
 ```bash
-super-harness init --setup-github                # bootstrap repo + CI workflow
-super-harness adapter install openspec           # framework adapter
-super-harness adapter install claude-code        # agent adapter
-super-harness change start "my-first-change"     # declare the change
-# ... your agent edits the code ...
-super-harness done                               # verify + advance to AWAITING_CODE_REVIEW
+super-harness init --setup-github                          # bootstrap repo + CI workflow
+super-harness adapter install openspec                     # framework adapter
+super-harness adapter install claude-code                  # agent adapter
+super-harness change start "my-first-change"               # → INTENT_DECLARED
+# framework adapter emits plan_ready from tasks.md         # → AWAITING_PLAN_REVIEW
+super-harness review approve my-first-change --reviewer plan-reviewer   # → PLAN_APPROVED
+super-harness implementation start my-first-change         # → IMPLEMENTATION_IN_PROGRESS
+# ... your agent edits the code (the gate now allows it) ...
+super-harness done                                         # verify → AWAITING_CODE_REVIEW
+super-harness review approve my-first-change --reviewer code-reviewer   # → READY_TO_MERGE
 ```
 
-The 5-line block above shows the workflow shape. The literal end-to-end
-path is **not yet runnable cold on v0.1** — three lifecycle events
-(`plan_approved`, `implementation_started`, `code_review_passed`) have
-no public emitter in v0.1; the v0.2 reviewer subagent integration
-adds all three (see "What v0.1 does NOT ship yet" below). As a result a
-fresh `change start` lands at `INTENT_DECLARED` and the PreToolUse gate
-blocks the agent's first `Edit`. The in-tree demo
-[`examples/demo-openspec-claude/`](examples/demo-openspec-claude/) ships
-a pre-seeded `.harness/events.jsonl` + `state.yaml` (produced offline)
-that lands a sample change in `IMPLEMENTATION_IN_PROGRESS` so you can
-inspect the harness in a non-trivial state.
+The lifecycle now advances **end-to-end via the CLI**. The three reviewer-driven
+transitions ship as verbs: `review approve | reject | skip` (emit `plan_approved` /
+`code_review_passed`) and `implementation start` (emits `implementation_started`).
+**super-harness does not run the review for you** — it enforces, via the gate, that a
+review verdict is recorded before the lifecycle proceeds; you (or, per the injected
+`AGENTS.md` protocol, your agent's own reviewer subagent) produce the verdict. The
+per-reviewer **strategy** (`subagent` / `human` / `hybrid`) is set in
+`.harness/policy.yaml` — pick `human` when a token budget rules out subagent review.
+Unattended CI auto-review (a headless reviewer that emits the verdict with no human or
+interactive agent present) is deferred — see "What v0.1 does NOT ship yet". The in-tree
+demo [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/) ships a
+pre-seeded `.harness/` so you can inspect the harness in a non-trivial state without
+running the flow yourself.
+
+> Plain-mode (no framework adapter) `plan_ready` still has no public CLI emitter, so a
+> pure-`plain` cold start stops at `INTENT_DECLARED`; use a framework adapter (OpenSpec
+> emits `plan_ready` from `tasks.md`) for the full CLI path.
 
 ## What v0.1 ships
 
-- **16 CLI commands** spanning lifecycle (`init` / `change` / `status` / `sync`
-  / `on-merge`), gating (`verify` / `done` / `gate` / `pr validate`), sensors
-  (`anchor` / `verification`), and infrastructure (`daemon` / `event` /
-  `state` / `adapter` / `sensor`).
+- **18 CLI commands** spanning lifecycle (`init` / `change` / `review` /
+  `implementation` / `status` / `sync` / `on-merge`), gating (`verify` / `done` /
+  `gate` / `pr validate`), sensors (`anchor` / `verification`), and infrastructure
+  (`daemon` / `event` / `state` / `adapter` / `sensor`).
+- **Reviewer verdict verbs** — `review approve | reject | skip` (emit
+  `plan_approved` / `plan_rejected` / `code_review_passed` / `code_review_failed`)
+  and `implementation start` (emits `implementation_started`). These advance the
+  lifecycle deterministically; the gate enforces a verdict exists, the agent/human
+  produces it. Per-reviewer strategy (`subagent` / `human` / `hybrid`) is
+  configurable in `.harness/policy.yaml` and surfaced by `super-harness status`.
 - **Hot-path PreToolUse gate** via a long-running workspace daemon over a Unix
   domain socket — blocks Edit / Write tool calls in Claude Code when the
   current lifecycle state forbids them.
@@ -90,23 +106,15 @@ bug (flagged explicitly).
   Claude Code is the reference adapter for v0.1.
 
 **Process / orchestration:**
-- Multi-stage plan-reviewer and code-reviewer subagent flows
-- Human / hybrid reviewer policies
-- Public emitters for three reviewer-driven lifecycle events —
-  `plan_approved` (AWAITING_PLAN_REVIEW → PLAN_APPROVED),
-  `implementation_started` (PLAN_APPROVED → IMPLEMENTATION_IN_PROGRESS),
-  and `code_review_passed` (AWAITING_CODE_REVIEW → READY_TO_MERGE).
-  v0.1 has **no shipped emitter** (no CLI verb, no sensor, no
-  follow-up) for any of these three. Framework adapters auto-emit
-  `plan_ready` (OpenSpec from `tasks.md`), but advancing past it
-  currently requires direct event emission via
-  `EventWriter.emit(..., skip_validation=True)`. v0.2 reviewer
-  subagent integration adds emitters for all three. The in-tree demo
-  (`examples/demo-openspec-claude/`) ships pre-seeded events that
-  cover this slice; the v0.1 Phase 16 E2E test produces equivalent
-  events at test runtime via `EventWriter.emit(skip_validation=True)`
-  at three explicitly annotated points and asserts the surrounding
-  shipped wiring works.
+- Unattended CI auto-review — a headless reviewer that produces the verdict
+  with no human or interactive agent present (e.g. shelling out to a headless
+  Claude run). v0.1 ships the verdict *recording* path (`review approve | reject |
+  skip`) and the agent-driven review protocol (the injected `AGENTS.md` tells the
+  Claude Code agent to dispatch its own reviewer subagent and record the verdict),
+  but it does not itself run an LLM review. Tracked as a follow-up.
+- Plain-mode `plan_ready` emitter — OpenSpec auto-emits `plan_ready` from
+  `tasks.md`; a pure-`plain` repo has no public CLI emitter for it yet, so a
+  plain cold start stops at `INTENT_DECLARED`.
 - Daemon-autonomous event-driven dispatch — v0.1 uses CLI one-shot
   dispatchers (e.g., `super-harness on-merge` dispatches the merged-event
   sensors).
