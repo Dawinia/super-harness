@@ -256,22 +256,35 @@ def build_variables(change_id: str, context: WorkspaceContext) -> dict[str, str]
     """Build the `${NAME}` interpolation variables for a verification run.
 
     `SLUG` and `CHANGE_ID` are aliases of the change id (per the
-    `verification_config` allowlist). `SPEC_PATH` / `PLAN_PATH` are HARDCODED
-    EMPTY in v0.1 — the allowlist accepts the names but they substitute to `""`
-    until spec/plan path resolution lands in a later version.
+    `verification_config` allowlist). `SPEC_PATH` / `PLAN_PATH` (HG-01) are resolved
+    via the active change's framework adapter `spec_paths` (pure path derivation);
+    they stay `""` when the context carries no framework, or the framework is unknown,
+    or the framework has no spec/plan concept (e.g. plain).
 
     Args:
         change_id: The change this run is for (already None-resolved by caller).
-        context: The workspace snapshot (reserved for future spec/plan lookup).
+        context: The workspace snapshot; `context.framework` drives spec/plan lookup.
 
     Returns:
         A mapping consumed by `interpolate` for every check `command`.
     """
+    spec_path = plan_path = ""
+    if context.framework:
+        # Local import breaks the sensors<->adapters cycle (adapters/__init__ imports
+        # WorkspaceContext from sensors). `spec_paths` is pure → daemon-safe.
+        from super_harness.adapters import FrameworkAdapter
+        from super_harness.adapters.registry import get_builtin
+
+        cls = get_builtin(context.framework)
+        if cls is not None and issubclass(cls, FrameworkAdapter):
+            paths = cls().spec_paths(context.workspace_root, change_id)
+            spec_path = paths.get("spec", "")
+            plan_path = paths.get("plan", "")
     return {
         "SLUG": change_id,
         "CHANGE_ID": change_id,
-        "SPEC_PATH": "",
-        "PLAN_PATH": "",
+        "SPEC_PATH": spec_path,
+        "PLAN_PATH": plan_path,
     }
 
 

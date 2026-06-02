@@ -325,6 +325,7 @@ def _result(check_id: str, status: str, *, must_pass: bool = True) -> CheckResul
 
 
 def test_build_variables_aliases_and_empty_paths(tmp_path: Path) -> None:
+    # No framework on the context → spec/plan paths empty (the None branch).
     v = build_variables("my-change", _ctx(tmp_path))
     assert v == {
         "SLUG": "my-change",
@@ -332,6 +333,22 @@ def test_build_variables_aliases_and_empty_paths(tmp_path: Path) -> None:
         "SPEC_PATH": "",
         "PLAN_PATH": "",
     }
+
+
+def test_build_variables_resolves_openspec_paths(tmp_path: Path) -> None:
+    # HG-01: framework on context → ${SPEC_PATH}/${PLAN_PATH} resolve to real paths.
+    ctx = WorkspaceContext(workspace_root=tmp_path, framework="openspec")
+    v = build_variables("2026-06-02-x", ctx)
+    base = tmp_path / "openspec" / "changes" / "2026-06-02-x"
+    assert v["SPEC_PATH"] == str(base / "proposal.md")
+    assert v["PLAN_PATH"] == str(base / "tasks.md")
+
+
+def test_build_variables_empty_for_unknown_framework(tmp_path: Path) -> None:
+    # Unknown framework name → no adapter → empty paths, no crash.
+    ctx = WorkspaceContext(workspace_root=tmp_path, framework="nope-fw")
+    v = build_variables("x", ctx)
+    assert v["SPEC_PATH"] == "" and v["PLAN_PATH"] == ""
 
 
 # --- collect_checks ---------------------------------------------------------

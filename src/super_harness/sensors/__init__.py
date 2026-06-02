@@ -67,6 +67,11 @@ class WorkspaceContext:
     workspace_root: Path
     git_branch: str | None = None
     active_change_id: str | None = None
+    # Framework name of the active change (HG-01), used by the verification runner
+    # to resolve `${SPEC_PATH}`/`${PLAN_PATH}` via the adapter's `spec_paths`.
+    # None → those vars stay empty. Defaulted so every existing construction site
+    # (and sensors that don't need it) keep working unchanged.
+    framework: str | None = None
 
 
 @dataclass(frozen=True)

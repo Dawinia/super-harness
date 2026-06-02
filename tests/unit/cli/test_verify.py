@@ -696,3 +696,79 @@ def test_verify_failure_json_mode_no_rich_text_leak(tmp_path: Path) -> None:
     # No rich rendering leaks onto stderr under --json.
     assert "boom" not in r.stderr
     assert "full summary:" not in r.stderr
+
+
+# --- HG-01: ${SPEC_PATH} resolves through verify for an openspec change --------
+
+# A user check that passes ONLY when ${SPEC_PATH} resolves to a real, existing
+# file. If the path wiring is broken (SPEC_PATH=""), `test -f ""` is false → the
+# must_pass check fails → exit 2. So exit 0 proves the path resolved end-to-end.
+_SPEC_PATH_YAML = """\
+layers:
+  baseline: { enabled: false }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: true }
+defaults:
+  timeout_seconds: 30
+  must_pass: true
+  capture: none
+  workdir: .
+  env: {}
+execution:
+  mode: sequential
+  max_parallelism: 1
+  fail_fast: false
+checks:
+  - id: spec-file-exists
+    command: 'test -f "${SPEC_PATH}"'
+adapter_provided: []
+"""
+
+
+def _drive_openspec_in_progress(ws: Path, slug: str) -> None:
+    """Same as _drive_to_in_progress but records framework='openspec' on the change."""
+    writer = EventWriter(events_path(ws))
+    for evt_type in (
+        "intent_declared",
+        "plan_ready",
+        "plan_approved",
+        "implementation_started",
+    ):
+        writer.emit(
+            Event(
+                event_id=new_event_id(),
+                type=evt_type,
+                change_id=slug,
+                timestamp="2026-06-02T00:00:00Z",
+                actor=Actor(type="human", identifier="cli"),
+                framework="openspec",
+                payload={},
+            )
+        )
+    refresh_state_after_emit(ws)
+
+
+def test_verify_resolves_spec_path_for_openspec_change(tmp_path: Path) -> None:
+    # openspec change with a real proposal.md → ${SPEC_PATH} points at it → pass.
+    slug = "2026-06-02-x"
+    (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".harness" / "verification.yaml").write_text(_SPEC_PATH_YAML)
+    _drive_openspec_in_progress(tmp_path, slug)
+    proposal = tmp_path / "openspec" / "changes" / slug / "proposal.md"
+    proposal.parent.mkdir(parents=True, exist_ok=True)
+    proposal.write_text("## Why\nbecause\n")
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "verify", slug])
+    assert r.exit_code == EXIT_OK, r.output
+
+
+def test_verify_spec_path_check_fails_when_proposal_absent(tmp_path: Path) -> None:
+    # Same wiring, but proposal.md absent → the resolved (real) path doesn't exist
+    # → `test -f` fails → exit 2. Proves ${SPEC_PATH} is the proposal path, not "".
+    slug = "2026-06-02-x"
+    (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".harness" / "verification.yaml").write_text(_SPEC_PATH_YAML)
+    _drive_openspec_in_progress(tmp_path, slug)
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "verify", slug])
+    assert r.exit_code == EXIT_VALIDATION, r.output

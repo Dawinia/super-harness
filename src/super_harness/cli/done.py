@@ -281,8 +281,14 @@ def done_cmd(
         )
         sys.exit(EXIT_VALIDATION)
 
+    # HG-01: carry the change's recorded framework so VerificationRunner can
+    # resolve ${SPEC_PATH}/${PLAN_PATH} via the adapter. None when unknown.
+    _cs = derive_state(events_path(root)).get(resolved)
     ctx_ws = WorkspaceContext(
-        workspace_root=root, git_branch=None, active_change_id=resolved
+        workspace_root=root,
+        git_branch=None,
+        active_change_id=resolved,
+        framework=_cs.framework if _cs is not None else None,
     )
     dispatcher = SensorDispatcher(
         [VerificationRunner()],

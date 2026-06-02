@@ -218,3 +218,20 @@ class FrameworkAdapter(ABC):
         adapters opt in to extra cleanup by overriding; not overriding is valid.
         """
         pass
+
+    def spec_paths(self, workspace: Path, change_id: str) -> dict[str, str]:
+        """Resolve this change's spec + plan file paths (HG-01).
+
+        Additive non-abstract default = both empty: a framework with no spec/plan
+        concept (e.g. plain) inherits this unchanged. Adapters that have on-disk
+        spec/plan artifacts override it.
+
+        MUST be PURE PATH DERIVATION — no I/O beyond joining paths. The verification
+        runner calls this to fill the `${SPEC_PATH}` / `${PLAN_PATH}` interpolation
+        variables, and it runs inside the daemon (cwd=`/`), so this must NOT call
+        `get_state` or otherwise touch the filesystem. Paths are returned whether or
+        not the files exist — existence is the check author's concern.
+
+        Returns `{"spec": <path-or-empty>, "plan": <path-or-empty>}`.
+        """
+        return {"spec": "", "plan": ""}
