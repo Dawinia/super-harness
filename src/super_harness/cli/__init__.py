@@ -20,9 +20,11 @@ from super_harness.cli.group_options import (
     GroupAwareGroup,
     rewrap_subtree,
 )
+from super_harness.cli.implementation import implementation_group
 from super_harness.cli.init import init_cmd
 from super_harness.cli.on_merge import on_merge_cli
 from super_harness.cli.pr import pr_group
+from super_harness.cli.review import review_group
 from super_harness.cli.sensor import sensor_group
 from super_harness.cli.state import state_group
 from super_harness.cli.status import status_cmd
@@ -89,6 +91,8 @@ main.add_command(sync_cmd)
 main.add_command(verification_group)
 main.add_command(anchor_group)
 main.add_command(pr_group)
+main.add_command(review_group)
+main.add_command(implementation_group)
 main.add_command(on_merge_cli)
 
 
