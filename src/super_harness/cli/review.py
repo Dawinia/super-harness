@@ -1,15 +1,20 @@
-"""`super-harness review` — reviewer escape-hatch CLI (HG-02, first increment).
+"""`super-harness review` — record reviewer verdicts (HG-02).
 
-`review skip <change> --reviewer plan-reviewer|code-reviewer` explicitly emits
-`plan_approved` / `code_review_passed` (cli-command-surface §499, sensor-gate
-§3.6 #7). This closes 2 of the 3 v0.1 lifecycle-gap emitters by letting a human
-advance the lifecycle past a reviewer. Emit is STRICT — an illegal transition
-(wrong current state) is rejected and nothing is appended.
+The harness does NOT run reviews (per memory project-harness-never-spawns-agent):
+a human or the code agent's own reviewer subagent produces the verdict and records
+it here, while the PreToolUse gate deterministically enforces that *some* verdict
+exists before the lifecycle proceeds. These verbs are the record-the-verdict half.
 
-Exit codes: 0 ok / 2 bad reviewer (click) or illegal transition / 3 no `.harness/`.
-(Reconcile note: cli-command-surface §509 lists 0/1/3/5; that enumeration omits
-the EmitPreconditionError path. House convention across `change start`/`abandon`/
-`done` is EXIT_VALIDATION=2 for an illegal lifecycle transition.)
+- `review approve <change> --reviewer plan-reviewer|code-reviewer` → emits
+  `plan_approved` / `code_review_passed`.
+- `review reject  <change> --reviewer ...` → emits `plan_rejected` / `code_review_failed`.
+- `review skip    <change> --reviewer ...` → escape hatch (== approve, reason=manual_skip;
+  cli-command-surface §499, sensor-gate §3.6 #7).
+
+Emit is STRICT — an illegal transition (wrong current state) is rejected, nothing
+appended. Exit codes: 0 ok / 2 bad reviewer (click) or illegal transition / 3 no
+`.harness/`. (Reconcile note: cli-command-surface §509 lists `review skip` as 0/1/3/5;
+that omits the EmitPreconditionError path — house convention is EXIT_VALIDATION=2.)
 """
 from __future__ import annotations
 
@@ -34,44 +39,45 @@ from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
-# Reviewer name → the extension event a skip emits.
-_REVIEWER_EVENT: dict[str, str] = {
+# Reviewer name → the (pass, fail) extension events its verdict emits.
+_REVIEWER_PASS: dict[str, str] = {
     "plan-reviewer": "plan_approved",
     "code-reviewer": "code_review_passed",
 }
+_REVIEWER_FAIL: dict[str, str] = {
+    "plan-reviewer": "plan_rejected",
+    "code-reviewer": "code_review_failed",
+}
+_REVIEWERS = sorted(_REVIEWER_PASS)
+_reviewer_opt = click.option(
+    "--reviewer", required=True, type=click.Choice(_REVIEWERS),
+    help="plan-reviewer or code-reviewer.",
+)
 
 
 @click.group("review")
 def review_group() -> None:
-    """Reviewer escape hatches (advance the lifecycle past a stuck reviewer)."""
+    """Record reviewer verdicts (approve / reject) or skip a stuck reviewer."""
 
 
-@review_group.command("skip")
-@click.argument("change")
-@click.option(
-    "--reviewer",
-    required=True,
-    type=click.Choice(sorted(_REVIEWER_EVENT)),
-    help="Which reviewer to skip (plan-reviewer → plan_approved, "
-    "code-reviewer → code_review_passed).",
-)
-@click.option("--reason", default="manual_skip", help="Audit reason recorded on the event.")
-@click.pass_context
-def skip(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
-    """Emit `plan_approved` / `code_review_passed` to advance past a reviewer."""
+def _emit_verdict(
+    ctx: click.Context, *, subcommand: str, change: str, reviewer: str, event_type: str, reason: str
+) -> None:
+    """Shared body for skip/approve/reject: emit the verdict event (STRICT) + report.
+
+    The harness does NOT run the review — a human or the code agent's own reviewer
+    subagent produces the verdict and records it here; the gate deterministically
+    enforces that *some* verdict exists before the lifecycle proceeds (see memory
+    project-harness-never-spawns-agent).
+    """
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
-        click.echo(
-            format_error(subcommand="review skip", message=e.message, hint=e.hint),
-            err=True,
-        )
+        click.echo(format_error(subcommand=subcommand, message=e.message, hint=e.hint), err=True)
         sys.exit(EXIT_NO_CONFIG)
 
-    event_type = _REVIEWER_EVENT[reviewer]
-    # Record the change's framework (set by intent_declared) on the event, like HG-01.
     cs = derive_state(events_path(root)).get(change)
-    framework = cs.framework if cs is not None else "plain"
+    framework = cs.framework if cs is not None else "plain"  # like HG-01
     ev = Event(
         event_id=new_event_id(),
         type=event_type,
@@ -86,7 +92,7 @@ def skip(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
     except EmitPreconditionError as e:
         click.echo(
             format_error(
-                subcommand="review skip",
+                subcommand=subcommand,
                 message=str(e),
                 hint=f"`{event_type}` is not legal from the change's current state.",
             ),
@@ -100,7 +106,7 @@ def skip(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
     if ctx.obj.get("json"):
         click.echo(
             json_envelope(
-                command="review skip",
+                command=subcommand,
                 status="pass",
                 exit_code=EXIT_OK,
                 data={
@@ -117,3 +123,42 @@ def skip(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
             f"(reviewer={reviewer}, reason={reason}) → {new_state}"
         )
     sys.exit(EXIT_OK)
+
+
+@review_group.command("approve")
+@click.argument("change")
+@_reviewer_opt
+@click.option("--reason", default="approved", help="Audit reason recorded on the event.")
+@click.pass_context
+def approve(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
+    """Record a PASS verdict: emit `plan_approved` / `code_review_passed`."""
+    _emit_verdict(
+        ctx, subcommand="review approve", change=change, reviewer=reviewer,
+        event_type=_REVIEWER_PASS[reviewer], reason=reason,
+    )
+
+
+@review_group.command("reject")
+@click.argument("change")
+@_reviewer_opt
+@click.option("--reason", default="rejected", help="Audit reason recorded on the event.")
+@click.pass_context
+def reject(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
+    """Record a FAIL verdict: emit `plan_rejected` / `code_review_failed`."""
+    _emit_verdict(
+        ctx, subcommand="review reject", change=change, reviewer=reviewer,
+        event_type=_REVIEWER_FAIL[reviewer], reason=reason,
+    )
+
+
+@review_group.command("skip")
+@click.argument("change")
+@_reviewer_opt
+@click.option("--reason", default="manual_skip", help="Audit reason recorded on the event.")
+@click.pass_context
+def skip(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
+    """Escape hatch — PASS a stuck reviewer (== approve with reason=manual_skip)."""
+    _emit_verdict(
+        ctx, subcommand="review skip", change=change, reviewer=reviewer,
+        event_type=_REVIEWER_PASS[reviewer], reason=reason,
+    )

@@ -62,6 +62,51 @@ def test_skip_plan_reviewer_advances_to_plan_approved(tmp_path: Path) -> None:
     assert _state(tmp_path, "c") == "PLAN_APPROVED"
 
 
+def test_approve_plan_reviewer_advances_to_plan_approved(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
+    args = ["--workspace", str(tmp_path), "review", "approve", "c", "--reviewer", "plan-reviewer"]
+    r = CliRunner().invoke(main, args)
+    assert r.exit_code == EXIT_OK, r.output
+    assert "plan_approved" in _event_types(tmp_path)
+    assert _state(tmp_path, "c") == "PLAN_APPROVED"
+
+
+def test_reject_plan_reviewer_advances_to_plan_rejected(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "reject", "c", "--reviewer", "plan-reviewer",
+         "--reason", "scope too broad"],
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert "plan_rejected" in _event_types(tmp_path)
+    assert _state(tmp_path, "c") == "PLAN_REJECTED"
+
+
+def test_reject_code_reviewer_advances_to_code_review_rejected(tmp_path: Path) -> None:
+    _seed(
+        tmp_path, "c",
+        "intent_declared", "plan_ready", "plan_approved", "implementation_started",
+        "verification_passed", "implementation_complete",
+    )  # → AWAITING_CODE_REVIEW
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "review", "reject", "c", "--reviewer", "code-reviewer"]
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert "code_review_failed" in _event_types(tmp_path)
+    assert _state(tmp_path, "c") == "CODE_REVIEW_REJECTED"
+
+
+def test_reject_illegal_state_rejected(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared")  # plan_rejected illegal from INTENT_DECLARED
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "review", "reject", "c", "--reviewer", "plan-reviewer"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert _event_types(tmp_path) == before
+
+
 def test_skip_code_reviewer_advances_to_ready_to_merge(tmp_path: Path) -> None:
     _seed(
         tmp_path, "c",
