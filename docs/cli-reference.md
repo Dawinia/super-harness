@@ -379,6 +379,32 @@ super-harness gate list [OPTIONS]
 - `0` success
 - `1` generic error
 
+## super-harness implementation
+
+Implementation-phase lifecycle verbs.
+
+```
+super-harness implementation COMMAND [ARGS...]
+```
+
+## super-harness implementation start
+
+Emit `implementation_started` (PLAN_APPROVED → IMPLEMENTATION_IN_PROGRESS).
+
+```
+super-harness implementation start [OPTIONS] SLUG
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `SLUG` | text | *required* |  |
+| `--first-commit` | text | — | The commit sha that began implementation (recorded on the event payload). |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+
 ## super-harness init
 
 Initialize a project for super-harness.
@@ -467,6 +493,71 @@ super-harness pr validate [OPTIONS] PR_NUMBER
 - `2` invalid metadata or lifecycle violation
 - `3` no `.harness/`
 - `4` `gh` CLI failure
+
+## super-harness review
+
+Record reviewer verdicts (approve / reject) or skip a stuck reviewer.
+
+```
+super-harness review COMMAND [ARGS...]
+```
+
+## super-harness review approve
+
+Record a PASS verdict: emit `plan_approved` / `code_review_passed`.
+
+```
+super-harness review approve [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--reason` | text | `'approved'` | Audit reason recorded on the event. |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+
+## super-harness review reject
+
+Record a FAIL verdict: emit `plan_rejected` / `code_review_failed`.
+
+```
+super-harness review reject [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--reason` | text | `'rejected'` | Audit reason recorded on the event. |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+
+## super-harness review skip
+
+Escape hatch — PASS a stuck reviewer (== approve with reason=manual_skip).
+
+```
+super-harness review skip [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--reason` | text | `'manual_skip'` | Audit reason recorded on the event. |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
 
 ## super-harness sensor
 

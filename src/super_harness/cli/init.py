@@ -99,7 +99,21 @@ def _verification_default() -> str:
 
 def _skeleton_files() -> dict[str, str]:
     return {
-        "policy.yaml": "# super-harness policy (see sensor-gate-architecture §2.4)\n",
+        "policy.yaml": (
+            "# super-harness policy (see sensor-gate-architecture §2.4)\n"
+            "\n"
+            "# Reviewer strategy (HG-02.C). super-harness never runs the review itself;\n"
+            "# the strategy tells the agent how to produce the verdict:\n"
+            "#   subagent (default) — dispatch a reviewer subagent (Task tool)\n"
+            "#   human              — a person reviews + records `review approve|reject`\n"
+            "#   hybrid             — subagent first, escalate to a human on fail/Large\n"
+            "# Set `human` when a token budget rules out subagent review for everything.\n"
+            "reviewers:\n"
+            "  plan-reviewer:\n"
+            "    strategy: subagent\n"
+            "  code-reviewer:\n"
+            "    strategy: subagent\n"
+        ),
         "sensors.yaml": "sensors: []\n",
         "gates.yaml": (
             "gates:\n"
