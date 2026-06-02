@@ -1,16 +1,16 @@
 # Private strategy / discussion notes (not for public release)
 private/
 
-# super-harness workspace state — never commit to this repo (it's per-workspace
-# user state; user projects that USE super-harness manage their own .harness/).
-# Subagents running sanity checks may accidentally create one here.
-.harness/
-# Exception: the in-tree onboarding demo (examples/demo-openspec-claude/) ships
-# a seeded .harness/ so visitors see what the post-init state looks like. Git
-# requires re-including BOTH the directory and its contents — re-including only
-# the directory still leaves children excluded by the parent rule above.
-!examples/demo-openspec-claude/.harness/
-!examples/demo-openspec-claude/.harness/**
+# super-harness self-hosts (HG-D, 2026-06-02): this repo is itself driven by
+# super-harness, so its OWN top-level .harness/ is no longer blanket-ignored.
+# Following the tool's own convention, the CONFIG files (verification.yaml,
+# gates.yaml, policy.yaml, sensors.yaml, source-paths.yaml, conventions.md) ARE
+# committed, while the volatile/derived state (events.jsonl, state.yaml, run
+# artifacts) stays ignored via the `super-harness gitignore` managed block that
+# `super-harness init` appends below — do not hand-edit that block.
+# (The in-tree demo under examples/demo-openspec-claude/.harness/ remains
+# committed too, including its seeded events.jsonl/state.yaml, so visitors see a
+# realistic post-init tree.)
 
 # OS
 .DS_Store
@@ -43,3 +43,22 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# super-harness runtime lock (HG-D): `.harness/.state.lock` is a transient
+# flock target, not config — but `super-harness init`'s managed block below
+# omits it, so it would otherwise be committed. Ignored here, outside the
+# managed markers (which init regenerates). Tracked as an init gap in
+# private/OPEN-ITEMS.md.
+.harness/.state.lock
+
+# >>> super-harness gitignore (do not edit between markers)
+.harness/state.yaml
+.harness/events.jsonl
+.harness/sensor-results/
+.harness/verification-results/
+.harness/operation-logs/
+.harness/anchors/index.yaml
+.harness/pending-l1-updates/
+.harness/pending-reviews/
+.claude/*.super-harness-backup.*
+# <<< super-harness gitignore

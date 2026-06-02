@@ -1,0 +1,5 @@
+source_paths:
+  include:
+    - '**/*'
+  exclude:
+    - 'docs/**'
