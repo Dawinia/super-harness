@@ -56,6 +56,9 @@ What `init --setup-github` does:
    append-only event log) + `state.yaml` (the derived current-state cache).
 2. Writes `AGENTS.md` (or extends an existing one) with a `super-harness`
    section your AI agent will read.
+   - If a `.claude/` directory is detected, `init` also auto-installs the
+     Claude Code agent adapter's gate hook (see step 3). Pass `init
+     --no-agent` to skip this.
 3. Writes `.github/workflows/super-harness.yml` — the 4-job CI workflow
    (pr-decorate / pr-validate / verification / on-merge).
 4. Writes `.github/pull_request_template.md` with the required metadata
@@ -96,6 +99,11 @@ super-harness adapter install openspec
 super-harness adapter install claude-code
 ```
 
+(If `init` detected a `.claude/` directory it already auto-installed
+`claude-code`, so `adapter install claude-code` is just an idempotent re-run
+here — run it explicitly only if you used `init --no-agent` or added `.claude/`
+later.)
+
 `adapter install openspec` does:
 
 - Registers OpenSpec hooks (watches `openspec/changes/` for `proposal.md`
@@ -107,9 +115,11 @@ super-harness adapter install claude-code
 
 `adapter install claude-code` does:
 
-- Writes `PreToolUse` + `SessionStart` hooks into `.claude/settings.json`
-  so Claude Code consults super-harness before every `Edit` / `Write` tool
-  call.
+- Writes `PreToolUse` + `SessionStart` hooks into `.claude/settings.local.json`
+  (the per-machine, conventionally-gitignored settings file — not the committed
+  `.claude/settings.json` — because the hook command pins a machine-specific
+  absolute path) so Claude Code consults super-harness before every `Edit` /
+  `Write` tool call.
 - Extends `AGENTS.md` with a Claude-Code-specific subsection.
 
 Confirm both registered:
@@ -354,9 +364,14 @@ re-run `init --setup-github --force` to retry once gh is set up.
 
 **Hot-path gate is too strict — I want to disable it for one tool call**
 
-You can't — that's the whole point of the gate. If the gate is blocking a
-legitimate action, the underlying cause is usually a stale `state.yaml`.
-Run `super-harness state rebuild` to regenerate from `events.jsonl`.
+First check whether the gate is simply right: if it's blocking a legitimate
+action, the underlying cause is often a stale `state.yaml` — run
+`super-harness state rebuild` to regenerate from `events.jsonl`. If the gate is
+genuinely wrong, use the file-based kill switch: from the repo root, `touch
+.harness/gate-disabled` to disable enforcement immediately, and `rm
+.harness/gate-disabled` to re-enable. `Bash` is never gated, so this works even
+when edits are blocked. Do not hand-edit `.claude/settings.local.json` to
+disable it.
 
 **Verify is failing but I don't see why**
 

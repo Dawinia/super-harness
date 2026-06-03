@@ -67,6 +67,10 @@ When a tool call is blocked by the gate:
 - Run `super-harness status` to see the current change, its state, and why the
   edit was rejected, plus the next valid step.
 - Resume context for a change with `super-harness change resume <change_id>`.
+- **Escape hatch (if the gate is wrong):** from the repo root, `touch
+  .harness/gate-disabled` to disable enforcement immediately, and `rm
+  .harness/gate-disabled` to re-enable. This works even when edits are blocked
+  (the gate never blocks `Bash`).
 
 #### Review protocol
 

@@ -2,7 +2,10 @@
 
 The Claude Code adapter is super-harness's reference *agent* adapter and the
 only agent adapter shipped in v0.1. It wires Claude Code's runtime to the
-harness by registering two hooks directly in `.claude/settings.json`:
+harness by registering two hooks directly in `.claude/settings.local.json`
+(the per-machine, conventionally-gitignored settings file — NEVER the committed
+shared `.claude/settings.json` — because the hook `command` pins a
+machine-specific absolute path that must not be committed):
 
 - a **PreToolUse** hook that invokes the `super-harness-hook` binary on
   every `Edit` / `Write` / `MultiEdit` / `NotebookEdit` tool call (the
@@ -25,12 +28,17 @@ Auto-detected when the workspace contains a `.claude/` directory. If
 | Capability | Implementation |
 |---|---|
 | `detect` | `.claude/` directory exists at the workspace root |
-| `install_hooks` | Merges two entries into `.claude/settings.json` (PreToolUse + SessionStart) without clobbering existing entries; snapshots+rolls back on failure |
+| `install_hooks` | Merges two entries into `.claude/settings.local.json` (PreToolUse + SessionStart) without clobbering existing entries; snapshots+rolls back on failure |
 | `inject_context` | Shells out to `super-harness change resume <slug>` and returns its stdout (best-effort; empty string on non-zero exit) |
 | `agents_md_subsection` | Static block explaining the PreToolUse gate behavior and recovery commands |
 | `capabilities` | `pre_tool_use_hook`, `post_tool_use_hook`, `session_start_hook`, `rules_file_injection`, `mcp_server`, `subprocess_execution` (all `True`); `session_end_hook`, `pre_commit_hook` (`False`) |
 
 ## Install
+
+`super-harness init` auto-installs this hook when it detects a `.claude/`
+directory — no separate step needed. To install explicitly (or stand-alone in
+a repo that already ran `init`), use `super-harness adapter install
+claude-code`; to skip the auto-install during `init`, pass `init --no-agent`.
 
 ```bash
 super-harness adapter install claude-code
@@ -42,8 +50,9 @@ Mechanics:
    `shutil.which` — a missing binary raises `RuntimeError` before any write.
    Resolution happens at *install* time (not hook runtime) because Claude
    Code runs hooks with a minimal PATH; a bare reference would fail there.
-2. Snapshots `.claude/settings.json` (or notes its absence) so the install
-   is one transaction; if either merge below raises, the snapshot restores.
+2. Snapshots `.claude/settings.local.json` (or notes its absence) so the
+   install is one transaction; if either merge below raises, the snapshot
+   restores.
 3. Merges a **PreToolUse** entry: `matcher: "Edit|Write|MultiEdit|NotebookEdit"`,
    `command: "<abs super-harness-hook> --agent claude-code"`, `timeout: 10`.
 4. Merges a **SessionStart** entry (no `matcher` → fires on every session
@@ -52,8 +61,8 @@ Mechanics:
    `<!-- super-harness agent: claude-code -->` subsection into `AGENTS.md`
    (replacing the no-agent anchor written by `init`).
 
-Each merge backs up `.claude/settings.json` to
-`settings.json.super-harness-backup.<time_ns>` before writing. Re-installs
+Each merge backs up `.claude/settings.local.json` to
+`settings.local.json.super-harness-backup.<time_ns>` before writing. Re-installs
 are idempotent: an unchanged file is not rewritten, no backup produced.
 
 ## What it injects into AGENTS.md
@@ -74,6 +83,10 @@ When a tool call is blocked by the gate:
 - Run `super-harness status` to see the current change, its state, and why the
   edit was rejected, plus the next valid step.
 - Resume context for a change with `super-harness change resume <change_id>`.
+- **Escape hatch (if the gate is wrong):** from the repo root, `touch
+  .harness/gate-disabled` to disable enforcement immediately, and `rm
+  .harness/gate-disabled` to re-enable. This works even when edits are blocked
+  (the gate never blocks `Bash`).
 <!-- /super-harness agent: claude-code -->
 ```
 
@@ -87,7 +100,7 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   ships with the same wheel. Reinstall the package: `pipx reinstall
   super-harness` (or `pip install --force-reinstall super-harness`). Verify
   with `command -v super-harness-hook`.
-- **`.claude/settings.json` reports `not valid JSON`.** The merge layer
+- **`.claude/settings.local.json` reports `not valid JSON`.** The merge layer
   refuses to splice into a malformed settings file. Open the file, fix the
   JSON, and re-run. The previous super-harness run did not write — the
   snapshot rollback rules out a partial write.
@@ -100,13 +113,16 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   verb to advance `AWAITING_PLAN_REVIEW → PLAN_APPROVED`; multi-stage
   plan-reviewer is deferred to v0.2 (see project README's "What v0.1
   does NOT ship yet"). Framework adapters auto-emit `plan_ready` when
-  their artifacts exist (OpenSpec watches `tasks.md`). Do not work
-  around the block by editing settings.json.
+  their artifacts exist (OpenSpec watches `tasks.md`). To disable the gate
+  when it is genuinely wrong, use the file-based kill switch instead of
+  hand-editing settings: from the repo root, `touch .harness/gate-disabled`
+  (and `rm .harness/gate-disabled` to re-enable). `Bash` is never gated, so
+  this works even when edits are blocked.
 - **SessionStart never injects context.** Confirm the hook is registered
-  (`jq '.hooks.SessionStart' .claude/settings.json`); if absent, re-run
+  (`jq '.hooks.SessionStart' .claude/settings.local.json`); if absent, re-run
   `adapter install claude-code`. If present but no slug is active,
   `change resume` exits 0 with empty stdout — start one with `change start`.
-- **`adapter uninstall claude-code` leaves entries in `.claude/settings.json`.**
+- **`adapter uninstall claude-code` leaves entries in `.claude/settings.local.json`.**
   By design — uninstall restores the *earliest* pre-install backup; later
   user edits are preserved. See Uninstall below for details.
 
@@ -119,7 +135,7 @@ super-harness adapter uninstall claude-code
 Mechanics (reverse of install):
 
 1. `on_uninstall()` restores the *earliest*
-   `settings.json.super-harness-backup.<ts>` backup (the truly pristine
+   `settings.local.json.super-harness-backup.<ts>` backup (the truly pristine
    pre-install copy). If no backup exists the file is left untouched (v0.1
    limitation — clean per-entry removal is tracked as OPEN-ITEMS #9 for a
    future release).

@@ -298,6 +298,15 @@ def test_agents_md_subsection_has_review_protocol() -> None:
     assert "human" in block.lower()
 
 
+def test_agents_md_subsection_documents_kill_switch() -> None:
+    # The file-based kill switch lets the agent (or a human) disable the gate
+    # from the repo root when the gate is wrong. Bash is never gated, so the
+    # `touch`/`rm` escape hatch always works even when edits are blocked.
+    block = ClaudeCodeAdapter().agents_md_subsection()
+    assert ".harness/gate-disabled" in block
+    assert "Escape hatch" in block
+
+
 def test_on_uninstall_restores_earliest_pristine_backup(tmp_path: Path) -> None:
     """install_hooks runs TWO merges → TWO backups on a pre-existing file.
 
