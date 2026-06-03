@@ -127,6 +127,36 @@ def test_init_auto_installs_agent_hook_when_claude_dir_present(
     assert "--agent claude-code" in settings.read_text()
     adapters = (tmp_path / ".harness" / "adapters.yaml").read_text()
     assert "claude-code" in adapters
+    # success advisory on stdout (security-relevant side effect surfaced).
+    assert "registered PreToolUse gate hook" in result.output
+
+
+def test_init_agent_install_yaml_error_is_nonfatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``yaml.YAMLError`` from ``_persist_install_entry`` (corrupt/unreadable
+    ``.harness/adapters.yaml``) is non-fatal: the hook is installed but
+    registration fails, init still completes, and an advisory is printed."""
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        lambda name: f"/abs/bin/{name}",
+    )
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise yaml.YAMLError("boom")
+
+    monkeypatch.setattr(
+        "super_harness.cli.init._persist_install_entry", _raise
+    )
+    (tmp_path / ".claude").mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert result.exit_code == 0, result.output
+    # init still completes: .harness/ scaffolded.
+    assert (tmp_path / ".harness").is_dir()
+    assert (tmp_path / ".harness" / "events.jsonl").exists()
+    # advisory text appears (hook installed but could not be registered).
+    assert "could not be registered" in result.output
 
 
 def test_init_no_agent_flag_skips_hook(

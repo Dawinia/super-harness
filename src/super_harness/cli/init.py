@@ -13,8 +13,12 @@ from pathlib import Path
 from typing import Literal
 
 import click
+import yaml
 
 from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
+# TODO(v0.2): extract shared adapters.yaml persistence so cli.init + cli.adapter
+# both import a public helper instead of this private cross-module reference.
 from super_harness.cli.adapter import _persist_install_entry
 from super_harness.cli.errors import format_error
 from super_harness.core.clock import utc_now_iso
@@ -233,12 +237,16 @@ def init_cmd(
     if not no_agent:
         agent = ClaudeCodeAdapter()
         if agent.detect(root):
+            agent_installed = False
             try:
                 agent.install_hooks(root)
                 _persist_install_entry(
                     root, name=agent.name, kind="agent", version=agent.version
                 )
+                agent_installed = True
             except RuntimeError as e:
+                # RuntimeError = hook NOT installed (e.g. super-harness-hook off
+                # PATH). State: no gate wired, no adapters.yaml entry.
                 click.echo(
                     format_error(
                         subcommand="init",
@@ -249,6 +257,28 @@ def init_cmd(
                     err=True,
                 )
                 # Non-fatal: continue init without the gate.
+            except yaml.YAMLError as e:
+                # YAMLError = hook IS installed but registration failed (corrupt /
+                # unreadable .harness/adapters.yaml). State differs from the
+                # RuntimeError case, so it is a SEPARATE clause. Still non-fatal —
+                # consistent with init's fail-friendly contract elsewhere.
+                click.echo(
+                    format_error(
+                        subcommand="init",
+                        message=f"agent gate hook installed but could not be "
+                                f"registered in .harness/adapters.yaml: {e}",
+                        hint="Fix or remove .harness/adapters.yaml, then run "
+                             "`super-harness adapter install claude-code`.",
+                    ),
+                    err=True,
+                )
+                # Non-fatal: continue init; the hook is wired, only the registry
+                # entry is missing.
+            if agent_installed:
+                click.echo(
+                    "detected Claude Code; registered PreToolUse gate hook in "
+                    ".claude/settings.local.json (pass --no-agent to skip)"
+                )
     try:
         render_super_harness_section(root, agents_path, __version__)
     except (OSError, AgentsMdInjectionError) as e:
