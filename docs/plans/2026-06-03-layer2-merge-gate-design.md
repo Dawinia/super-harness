@@ -183,9 +183,11 @@ mirroring `pr validate`'s output contract.
 ### 4.3 Path canonicalization (correctness-critical)
 Both `git diff` output and stored `scope.files` are normalized to: **repo-root-
 relative, POSIX separators, no leading `./`, no `..`**. `git` is invoked with
-`-c core.quotePath=false` so non-ASCII paths are not octal-quoted. `attest write`
-and `plan ready --scope` store paths in this same canonical form. Symlink
-*targets* are out of scope (the link path itself is still a subject); §10.
+`-c core.quotePath=false` so non-ASCII paths are not octal-quoted. NOTE:
+`plan ready --scope` stores scope paths **verbatim** (as the user typed them);
+the verifier canonicalizes both the diff output AND `scope.files` **at read
+time**, so non-canonical stored paths still match. Symlink *targets* are out of
+scope (the link path itself is still a subject); §10.
 
 ## 5. Exemption policy: STRICT
 

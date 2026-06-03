@@ -868,6 +868,13 @@ jobs:
 Lifecycle verbs go through **Bash** (not the edit-time gate). Order matters:
 `implementation_complete` (done) precedes `code_review_passed` (review approve).
 
+> **Do NOT run `super-harness sync` during this change.** As of commit 80bfc6e,
+> no-arg `sync` re-renders BOTH `AGENTS.md` and `.gitignore`. Neither is in this
+> change's declared scope, so a sync-induced change to either would make the
+> self-gate (`merge-gate.yml`) FAIL on this very PR (un-covered subject file).
+> This change needs no sync — adding a CLI command does not alter the AGENTS.md
+> framework subsections.
+
 1. `git checkout -b 2026-06-04-layer2-merge-gate` (from latest main).
 2. `super-harness change start 2026-06-04-layer2-merge-gate --description "Layer-2 CI merge gate (HG-DF C)"`
 3. `super-harness plan ready 2026-06-04-layer2-merge-gate --tier-hint Large --scope @/tmp/scope.yaml` where `/tmp/scope.yaml` lists **every** subject file (STRICT policy):
