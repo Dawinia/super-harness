@@ -60,5 +60,7 @@ __pycache__/
 .harness/anchors/index.yaml
 .harness/pending-l1-updates/
 .harness/pending-reviews/
+.harness/gate-disabled
+.claude/settings.local.json
 .claude/*.super-harness-backup.*
 # <<< super-harness gitignore
