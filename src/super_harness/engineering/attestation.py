@@ -30,11 +30,14 @@ REQUIRED_STATE = "READY_TO_MERGE"
 
 
 def canonical_path(raw: str) -> str:
-    """Normalize to repo-root-relative POSIX form (forward slashes, no leading
-    './', collapsed '..'/'.').
+    """Normalize to POSIX form: forward slashes, no leading './', collapsed
+    intra-path '.'/'..' segments (via ``posixpath.normpath``).
 
     Applied to BOTH git-diff output and stored ``scope.files`` so set membership
-    is spelling-independent (``./src/x`` == ``src/x``).
+    is spelling-independent (``./src/x`` == ``src/x``). Note: a leading ``..`` or
+    an absolute path is preserved as-is (``normpath`` cannot resolve it without a
+    base) — git never emits such paths for tracked files, and a non-canonical
+    scope entry that fails to match simply fails closed (uncovered → FAIL).
     """
     p = raw.replace("\\", "/").strip()
     p = posixpath.normpath(p)
@@ -159,7 +162,11 @@ class AttestationVerdict:
 
 
 def _is_attestation_path(canonical: str) -> bool:
-    return canonical.startswith(ATTESTATIONS_DIRNAME + "/")
+    # Only actual attestation EVIDENCE (.jsonl) is exempt from the subject set.
+    # A non-.jsonl file committed under the dir (e.g. .harness/attestations/x.py)
+    # must stay a subject requiring coverage — otherwise it would be neither
+    # subject nor evidence and escape the gate entirely (fail-OPEN, B1 / §5).
+    return canonical.startswith(ATTESTATIONS_DIRNAME + "/") and canonical.endswith(".jsonl")
 
 
 def verify_attestations(root: Path, diff_entries: list[DiffEntry]) -> AttestationVerdict:

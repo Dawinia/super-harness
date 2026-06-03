@@ -230,6 +230,46 @@ def test_verify_deletion_must_be_in_scope(tmp_path):
     assert v.ok, v.blockers  # deletion declared in scope → covered
 
 
+def test_verify_non_jsonl_file_under_attestations_dir_is_a_subject(tmp_path):
+    # B1 regression: a non-.jsonl file committed under .harness/attestations/
+    # must NOT be exempt — it requires coverage like any other subject. Without
+    # the fix it escaped the gate entirely (fail-OPEN, violating STRICT §5).
+    diff = [DiffEntry("A", (".harness/attestations/evil.py",))]
+    v = verify_attestations(tmp_path, diff)
+    assert not v.ok
+    assert any("evil.py" in b for b in v.blockers)
+
+
+def test_verify_rename_into_attestations_dir_fails_add_only(tmp_path):
+    _ready_with_scope(tmp_path, "s", ["src/x.py"])
+    diff = [
+        DiffEntry("R100", ("src/x.py", ".harness/attestations/s.jsonl")),
+    ]
+    v = verify_attestations(tmp_path, diff)
+    assert not v.ok
+    assert any("only newly-ADDED" in b for b in v.blockers)
+
+
+def test_verify_one_bad_attestation_fails_whole_run(tmp_path):
+    # Two attestations in one diff: one valid, one not-READY. The bad one must
+    # FAIL the whole run (never silently excluded), even though the good one
+    # covers its own subject.
+    _ready_with_scope(tmp_path, "good", ["src/good.py"])
+    bad_dir = tmp_path / ".harness" / "attestations"
+    w = EventWriter(bad_dir / "bad.jsonl")
+    _emit(w, "intent_declared", "bad")
+    _emit(w, "plan_ready", "bad", {"scope": {"files": ["src/bad.py"]}})  # stuck pre-review
+    diff = [
+        DiffEntry("A", (".harness/attestations/good.jsonl",)),
+        DiffEntry("A", (".harness/attestations/bad.jsonl",)),
+        DiffEntry("M", ("src/good.py",)),
+        DiffEntry("M", ("src/bad.py",)),
+    ]
+    v = verify_attestations(tmp_path, diff)
+    assert not v.ok
+    assert any("bad" in b and "READY_TO_MERGE" in b for b in v.blockers)
+
+
 def test_verify_empty_scope_attestation_covers_nothing(tmp_path):
     att_dir = tmp_path / ".harness" / "attestations"
     att_dir.mkdir(parents=True, exist_ok=True)
