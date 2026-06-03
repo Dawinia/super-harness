@@ -9,7 +9,7 @@ happy-path mechanics, only the NEW behaviour:
 - ``install plain`` (framework): adapters.yaml entry, no verification.yaml side
   effect; AGENTS.md is NOT created when absent (install never creates a bare
   AGENTS.md — that is `init`'s job).
-- ``install claude-code`` (agent): settings.json hook AND adapters.yaml entry.
+- ``install claude-code`` (agent): settings.local.json hook AND adapters.yaml entry.
 - AGENTS.md injection (AC-4 / F13): after `init`, installing an agent consumes
   the no-agent anchor; uninstall restores it; round-trip re-install lands again.
 - ``install <unknown>``: EXIT_GENERIC (1), NOT click's exit 2; no adapters.yaml.
@@ -49,7 +49,7 @@ def _agents_md(ws: Path) -> Path:
 
 
 def _settings(ws: Path) -> Path:
-    return ws / ".claude" / "settings.json"
+    return ws / ".claude" / "settings.local.json"
 
 
 def _entries(ws: Path) -> list[dict]:
@@ -92,7 +92,7 @@ def test_install_plain_writes_framework_entry_no_side_effects(tmp_path: Path) ->
 def test_install_claude_code_writes_hook_and_agent_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`install claude-code` → settings.json hook AND an agent adapters.yaml entry."""
+    """`install claude-code` → settings.local.json hook AND an agent adapters.yaml entry."""
     import shutil
 
     (tmp_path / ".harness").mkdir()

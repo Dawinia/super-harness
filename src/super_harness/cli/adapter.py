@@ -215,9 +215,9 @@ def adapter_install(ctx: click.Context, name: str) -> None:
 
     if not ctx.obj.get("quiet"):
         if created_claude_dir:
-            click.echo("Created .claude/settings.json (no .claude/ existed).")
+            click.echo("Created .claude/settings.local.json (no .claude/ existed).")
         if isinstance(adapter, AgentAdapter):
-            detail = "PreToolUse gate hook registered in .claude/settings.json"
+            detail = "PreToolUse gate hook registered in .claude/settings.local.json"
         else:
             detail = "framework adapter registered"
         click.echo(
@@ -349,7 +349,7 @@ def adapter_uninstall(ctx: click.Context, name: str) -> None:
     # then prune any verification.yaml.adapter_provided rows it contributed
     # (no-op in v0.1 — none were added — and guarded on file-absent).
     #
-    # on_uninstall failure (e.g. PermissionError on .claude/settings.json) aborts
+    # on_uninstall failure (e.g. PermissionError on .claude/settings.local.json) aborts
     # the uninstall entirely — the yaml entry is NOT removed so `list` still shows
     # the adapter and the user can retry after fixing the underlying issue.
     try:

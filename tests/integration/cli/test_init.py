@@ -201,7 +201,7 @@ def test_init_force_reinjects_installed_adapters(
     """`init` → `adapter install claude-code` → `init --force` re-renders the
     AGENTS.md super-harness section AND re-injects every installed adapter's
     subsection, so a re-render never loses adapter guidance (full --force loop
-    closure). The adapters.yaml entry + the settings.json hooks stay intact and
+    closure). The adapters.yaml entry + the settings.local.json hooks stay intact and
     are NOT touched by init.
 
     `adapter install claude-code` resolves `super-harness-hook` via
@@ -217,7 +217,7 @@ def test_init_force_reinjects_installed_adapters(
     assert runner.invoke(main, ["--workspace", str(tmp_path), "init"]).exit_code == 0
 
     # install claude-code → consumes the anchor, injects the agent block, and
-    # records the adapter + settings.json hooks.
+    # records the adapter + settings.local.json hooks.
     monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
     install = runner.invoke(
         main, ["--workspace", str(tmp_path), "adapter", "install", "claude-code"]
@@ -246,8 +246,8 @@ def test_init_force_reinjects_installed_adapters(
     names = [e.get("name") for e in (adapters.get("adapters") or [])]
     assert "claude-code" in names, f"claude-code dropped from adapters.yaml: {adapters}"
 
-    # 2b) settings.json STILL has our PreToolUse + SessionStart hooks (unchanged).
-    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    # 2b) settings.local.json STILL has our PreToolUse + SessionStart hooks (unchanged).
+    settings = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
     pre_commands = [
         h["command"]
         for entry in settings["hooks"]["PreToolUse"]

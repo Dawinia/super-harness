@@ -3,7 +3,9 @@
 
 This is the canonical adapter super-harness ships in v0.1. It bridges Claude
 Code's runtime to the harness by registering two hooks directly into
-``.claude/settings.json``:
+``.claude/settings.local.json`` (the per-machine, conventionally-gitignored
+settings file — NEVER the committed shared ``settings.json`` — because the hook
+``command`` pins a machine-specific absolute path):
 
 - a **PreToolUse** hook whose ``command`` points at the ``super-harness-hook``
   binary (no ``.sh`` wrapper; input parsing lives inside that binary, see
@@ -100,8 +102,8 @@ When you do run a subagent, run a genuinely independent one — don't self-rubbe
 class ClaudeCodeAdapter(AgentAdapter):
     """Reference adapter for the Claude Code runtime (adapter-architecture §3.5).
 
-    Registers a PreToolUse gate hook into ``.claude/settings.json`` and resumes
-    change context via the ``super-harness change resume`` CLI.
+    Registers a PreToolUse gate hook into ``.claude/settings.local.json`` and
+    resumes change context via the ``super-harness change resume`` CLI.
     """
 
     name: ClassVar[str] = "claude-code"
@@ -126,8 +128,11 @@ class ClaudeCodeAdapter(AgentAdapter):
 
         Resolves BOTH binaries to absolute paths UP FRONT (so a missing binary
         aborts before any write), then merges two entries into
-        ``.claude/settings.json`` (no clobber, idempotent — see
-        ``merge_pre_tool_use_hook`` / ``merge_session_start_hook``):
+        ``.claude/settings.local.json`` (no clobber, idempotent — see
+        ``merge_pre_tool_use_hook`` / ``merge_session_start_hook``). The hook
+        ``command`` pins a machine-specific absolute path, so it belongs in the
+        per-machine, conventionally-gitignored ``settings.local.json`` — never
+        the committed shared ``settings.json``:
 
         - **PreToolUse**: ``command`` = ``<abs super-harness-hook> --agent
           claude-code`` (deterministic gate enforcement).
@@ -163,7 +168,7 @@ class ClaudeCodeAdapter(AgentAdapter):
                 f"available before installing the Claude Code adapter."
             )
 
-        settings_path = workspace / ".claude" / "settings.json"
+        settings_path = workspace / ".claude" / "settings.local.json"
         pre_tool_use_command = f"{resolved_hook} --agent claude-code"
         # No-arg `change resume` → resume the active change at session start.
         session_start_command = f"{resolved_cli} change resume"
@@ -220,10 +225,14 @@ class ClaudeCodeAdapter(AgentAdapter):
         return _AGENTS_MD_SUBSECTION
 
     def on_uninstall(self, workspace: Path) -> None:
-        """Best-effort restore of the EARLIEST settings.json backup (pristine).
+        """Best-effort restore of the EARLIEST settings.local.json backup (pristine).
 
-        Each merge backs the file up to ``settings.json.super-harness-backup.
-        <time_ns>`` before its write. ``install_hooks`` runs TWO merges, so a
+        Targets ``.claude/settings.local.json`` — the per-machine, gitignored
+        file ``install_hooks`` wrote to, never the committed shared
+        ``settings.json``. Each merge backs the file up to
+        ``settings.local.json.super-harness-backup.<time_ns>`` before its write
+        (the glob follows ``settings_path.name``). ``install_hooks`` runs TWO
+        merges, so a
         single install on a pre-existing file writes TWO backups: the FIRST
         (lowest ts) captures the truly pristine file; the SECOND captures
         pristine + our PreToolUse entry. To undo BOTH of our hooks we must
@@ -236,7 +245,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         best-effort suitable for v0.1 (clean per-entry removal is a Phase 9+
         refinement).
         """
-        settings_path = workspace / ".claude" / "settings.json"
+        settings_path = workspace / ".claude" / "settings.local.json"
         backups = sorted(
             settings_path.parent.glob(f"{settings_path.name}.super-harness-backup.*"),
             key=_backup_sort_key,
@@ -249,7 +258,7 @@ class ClaudeCodeAdapter(AgentAdapter):
 def _backup_sort_key(path: Path) -> int:
     """Sort key extracting the trailing unix-ts from a backup filename.
 
-    Backups are named ``settings.json.super-harness-backup.<ts>``; sorting by the
+    Backups are named ``settings.local.json.super-harness-backup.<ts>``; sorting by the
     integer ts orders them chronologically so the newest restores last. A
     non-integer suffix sorts first (treated as oldest) so a malformed name never
     shadows a real, newer backup.

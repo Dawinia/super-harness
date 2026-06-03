@@ -4,9 +4,9 @@ Covers the concrete Claude Code adapter contract:
 - `detect` — feature-file check (`.claude/` is a dir).
 - `install_hooks` — resolves BOTH the `super-harness-hook` (PreToolUse) and
   `super-harness` (SessionStart) binaries via `shutil.which`, registers a
-  PreToolUse + a SessionStart hook into `.claude/settings.json` (merge, no
-  `.sh`), raises on a missing binary BEFORE any write, idempotent, and rolls
-  back the settings.json snapshot if a merge fails mid-install.
+  PreToolUse + a SessionStart hook into `.claude/settings.local.json` (merge,
+  no `.sh`), raises on a missing binary BEFORE any write, idempotent, and rolls
+  back the settings.local.json snapshot if a merge fails mid-install.
 - `inject_context` — delegates to `super-harness change resume <id>`, returns
   stdout, tolerates empty / non-zero results without crashing.
 - `agents_md_subsection` — returns a marker-wrapped static markdown block.
@@ -119,7 +119,7 @@ def test_install_hooks_writes_settings_entry(
     )
     ClaudeCodeAdapter().install_hooks(tmp_path)
 
-    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path = tmp_path / ".claude" / "settings.local.json"
     assert settings_path.exists()
     settings = json.loads(settings_path.read_text())
     cmds = _commands(settings)
@@ -144,7 +144,7 @@ def test_install_hooks_missing_hook_binary_raises(
     with pytest.raises(RuntimeError, match="super-harness-hook"):
         ClaudeCodeAdapter().install_hooks(tmp_path)
     # Nothing written before the abort.
-    assert not (tmp_path / ".claude" / "settings.json").exists()
+    assert not (tmp_path / ".claude" / "settings.local.json").exists()
 
 
 def test_install_hooks_missing_cli_binary_raises_before_write(
@@ -158,7 +158,7 @@ def test_install_hooks_missing_cli_binary_raises_before_write(
     )
     with pytest.raises(RuntimeError, match="super-harness"):
         ClaudeCodeAdapter().install_hooks(tmp_path)
-    assert not (tmp_path / ".claude" / "settings.json").exists()
+    assert not (tmp_path / ".claude" / "settings.local.json").exists()
 
 
 def test_install_hooks_idempotent(
@@ -172,7 +172,7 @@ def test_install_hooks_idempotent(
     adapter.install_hooks(tmp_path)
     adapter.install_hooks(tmp_path)
 
-    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    settings = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
     assert _commands(settings).count(_EXPECTED_COMMAND) == 1
     assert _session_commands(settings).count(_EXPECTED_SESSION_COMMAND) == 1
 
@@ -180,14 +180,14 @@ def test_install_hooks_idempotent(
 def test_install_hooks_rolls_back_on_second_merge_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If the SECOND merge raises mid-install, settings.json is restored to its
-    exact pre-install state (snapshot rollback), not left half-written.
+    """If the SECOND merge raises mid-install, settings.local.json is restored to
+    its exact pre-install state (snapshot rollback), not left half-written.
 
     Both binaries resolve (so we get past the up-front check). We force the
     SessionStart merge to raise; the PreToolUse merge has already mutated the
     file by then. Rollback must rewrite the original pre-install bytes.
     """
-    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path = tmp_path / ".claude" / "settings.local.json"
     settings_path.parent.mkdir(parents=True)
     pristine = json.dumps({"model": "claude-opus", "hooks": {}}, indent=2) + "\n"
     settings_path.write_text(pristine)
@@ -215,9 +215,9 @@ def test_install_hooks_rolls_back_on_second_merge_failure(
 def test_install_hooks_rolls_back_to_absent_when_file_was_absent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """If settings.json did not exist pre-install and a merge fails, rollback
+    """If settings.local.json did not exist pre-install and a merge fails, rollback
     DELETES the file (restores the 'absent' snapshot)."""
-    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path = tmp_path / ".claude" / "settings.local.json"
     assert not settings_path.exists()
 
     monkeypatch.setattr(
@@ -306,17 +306,17 @@ def test_on_uninstall_restores_earliest_pristine_backup(tmp_path: Path) -> None:
     so BOTH of our hooks are removed — restoring the newest would leave the
     PreToolUse hook behind.
     """
-    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path = tmp_path / ".claude" / "settings.local.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(json.dumps({"hooks": {"PreToolUse": ["mutated"]}}))
     pristine = {"model": "claude-opus", "hooks": {}}
     # ts=100: pristine (1st merge's backup). ts=200: pristine + our PreToolUse
     # (2nd merge's backup). The earliest (100) must win.
     settings_path.with_name(
-        "settings.json.super-harness-backup.100"
+        "settings.local.json.super-harness-backup.100"
     ).write_text(json.dumps(pristine))
     settings_path.with_name(
-        "settings.json.super-harness-backup.200"
+        "settings.local.json.super-harness-backup.200"
     ).write_text(
         json.dumps(
             {
@@ -340,7 +340,7 @@ def test_install_then_uninstall_round_trip_restores_pristine(
         "super_harness.adapters.agent.claude_code.shutil.which",
         _which_both,
     )
-    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path = tmp_path / ".claude" / "settings.local.json"
     settings_path.parent.mkdir(parents=True)
     pristine = {"model": "claude-opus", "permissions": {"allow": ["Bash(ls:*)"]}}
     settings_path.write_text(json.dumps(pristine, indent=2))
@@ -358,7 +358,7 @@ def test_install_then_uninstall_round_trip_restores_pristine(
 
 
 def test_on_uninstall_no_backup_is_noop(tmp_path: Path) -> None:
-    settings_path = tmp_path / ".claude" / "settings.json"
+    settings_path = tmp_path / ".claude" / "settings.local.json"
     settings_path.parent.mkdir(parents=True)
     settings_path.write_text(json.dumps({"model": "keep"}))
 

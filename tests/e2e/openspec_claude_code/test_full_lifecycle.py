@@ -11,7 +11,7 @@ See plan §16 for the full reconcile notes covering the 10 drift items
 that shaped this test (most notably: no ``review skip``/
 ``implementation start`` CLI verbs, ``on-merge`` not ``merged``, hook
 exit codes 1 (positional) vs 2 (claude-code shim), absolute hook path
-in ``.claude/settings.json``, verification.yaml PyYAML round-trip + a
+in ``.claude/settings.local.json``, verification.yaml PyYAML round-trip + a
 disabled ``framework_adapter`` layer, and the three lifecycle gaps
 bridged via ``EventWriter.emit(skip_validation=True)``).
 """
@@ -57,7 +57,7 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     _run(["super-harness", "adapter", "install", "openspec"], cwd=demo_repo)
     _run(["super-harness", "adapter", "install", "claude-code"], cwd=demo_repo)
     assert (demo_repo / ".harness" / "events.jsonl").exists()
-    settings = json.loads((demo_repo / ".claude" / "settings.json").read_text())
+    settings = json.loads((demo_repo / ".claude" / "settings.local.json").read_text())
     pre_tool = settings["hooks"]["PreToolUse"]
     # The adapter writes the **absolute** path of the hook binary into
     # `command` (adapters/agent/claude_code.py:121 uses
