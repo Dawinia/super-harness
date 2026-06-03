@@ -105,6 +105,48 @@ def test_init_help_advertises_v01_caveat(tmp_path: Path):
 
 
 # --------------------------------------------------------------------------- #
+# Agent gate hook auto-install (one-command onboarding)
+# --------------------------------------------------------------------------- #
+
+
+def test_init_auto_installs_agent_hook_when_claude_dir_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """init with `.claude/` present installs the PreToolUse hook into
+    settings.local.json and registers claude-code in adapters.yaml."""
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        lambda name: f"/abs/bin/{name}",
+    )
+    (tmp_path / ".claude").mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert result.exit_code == 0, result.output
+    settings = tmp_path / ".claude" / "settings.local.json"
+    assert settings.exists()
+    assert "--agent claude-code" in settings.read_text()
+    adapters = (tmp_path / ".harness" / "adapters.yaml").read_text()
+    assert "claude-code" in adapters
+
+
+def test_init_no_agent_flag_skips_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".claude").mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--no-agent"])
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".claude" / "settings.local.json").exists()
+
+
+def test_init_no_claude_dir_is_agent_noop(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".claude").exists()
+
+
+# --------------------------------------------------------------------------- #
 # AGENTS.md outer-section wiring (engineering-integration §2.2 / §3.2)
 # --------------------------------------------------------------------------- #
 

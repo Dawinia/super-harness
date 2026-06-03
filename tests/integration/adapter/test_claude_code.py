@@ -122,7 +122,11 @@ def _prepopulate_settings(ws: Path) -> None:
 
 
 def _init(ws: Path):
-    return CliRunner().invoke(main, ["--workspace", str(ws), "init"])
+    # --no-agent: these tests exercise the EXPLICIT `adapter install claude-code`
+    # flow on a bare init. Init now auto-installs the detected agent when `.claude/`
+    # is present (these tests pre-populate it), so opt out here to keep init bare and
+    # let the subsequent manual install be the thing under test.
+    return CliRunner().invoke(main, ["--workspace", str(ws), "init", "--no-agent"])
 
 
 def _install(ws: Path):

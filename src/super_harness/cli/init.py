@@ -14,6 +14,8 @@ from typing import Literal
 
 import click
 
+from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+from super_harness.cli.adapter import _persist_install_entry
 from super_harness.cli.errors import format_error
 from super_harness.core.clock import utc_now_iso
 from super_harness.engineering.agents_md import AgentsMdInjectionError
@@ -145,8 +147,19 @@ def _skeleton_files() -> dict[str, str]:
     "(v0.1: no-op placeholder; framework adapters auto-detect at install time.)",
 )
 @click.option("--force", is_flag=True)
+@click.option(
+    "--no-agent",
+    is_flag=True,
+    help="Skip auto-installing the detected agent's gate hook.",
+)
 @click.pass_context
-def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, force: bool) -> None:
+def init_cmd(
+    ctx: click.Context,
+    setup_github: bool,
+    framework: str | None,
+    force: bool,
+    no_agent: bool,
+) -> None:
     """Initialize a project for super-harness.
 
     v0.1: --json is not honored by init (bootstrap command produces no
@@ -209,6 +222,33 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
     # shared renderer (init + sync SSOT) lets OSError / AgentsMdInjectionError
     # propagate into THIS try's AGENTS.md envelope (fail-loud); only its internal
     # adapters.yaml load is non-fatal (advisory + skip) — see the renderer module.
+    # Auto-install the detected agent adapter's gate hook (one-command onboarding).
+    # Runs BEFORE render_super_harness_section so the renderer injects the agent's
+    # AGENTS.md subsection from the freshly-persisted adapters.yaml entry. The gate
+    # is dormant until a change is active (no active change -> allow), so this never
+    # surprises a fresh init by blocking edits. Non-fatal: a missing hook binary
+    # warns and leaves the gate uninstalled rather than aborting init. We
+    # intentionally do NOT call _merge_verification_checks — claude-code contributes
+    # no verification checks, so it would be a no-op (YAGNI).
+    if not no_agent:
+        agent = ClaudeCodeAdapter()
+        if agent.detect(root):
+            try:
+                agent.install_hooks(root)
+                _persist_install_entry(
+                    root, name=agent.name, kind="agent", version=agent.version
+                )
+            except RuntimeError as e:
+                click.echo(
+                    format_error(
+                        subcommand="init",
+                        message=f"agent gate hook not installed: {e}",
+                        hint="reinstall super-harness so super-harness-hook is on "
+                             "PATH, then run `super-harness adapter install claude-code`.",
+                    ),
+                    err=True,
+                )
+                # Non-fatal: continue init without the gate.
     try:
         render_super_harness_section(root, agents_path, __version__)
     except (OSError, AgentsMdInjectionError) as e:
@@ -225,7 +265,8 @@ def init_cmd(ctx: click.Context, setup_github: bool, framework: str | None, forc
         )
         sys.exit(EXIT_GENERIC)
     # Wire the repo-root .gitignore (S2 fix — OPEN-ITEMS #6): write a
-    # marker-bounded block listing the 8 canonical `.harness/` runtime paths so
+    # marker-bounded block listing the canonical `.harness/` runtime + per-machine
+    # `.claude/` paths so
     # `git add -A` after init does not commit auto-generated state. Same
     # marker-discipline contract as AGENTS.md: ≥2 blocks → fail loud (never
     # splice — Phase 7/9/12 data-loss lesson). We do NOT `git add` — staging is

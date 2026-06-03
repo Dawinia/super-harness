@@ -418,6 +418,7 @@ super-harness init [OPTIONS]
 | `--setup-github` | flag | `False` | Run gh CLI checks, write .github/pull_request_template.md and .github/workflows/super-harness.yml, and best-effort enable repo auto-merge/squash settings (requires gh). |
 | `--framework` | {openspec\|spec-kit\|superpowers\|plain} | — | Explicit framework; default = auto-detect (v0.1: no-op placeholder; framework adapters auto-detect at install time.) |
 | `--force` | flag | `False` |  |
+| `--no-agent` | flag | `False` | Skip auto-installing the detected agent's gate hook. |
 
 **Exit codes:**
 
