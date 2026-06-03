@@ -42,6 +42,10 @@ def _agents_md(ws: Path) -> Path:
     return ws / "AGENTS.md"
 
 
+def _gitignore(ws: Path) -> Path:
+    return ws / ".gitignore"
+
+
 def _init(runner: CliRunner, ws: Path):
     return runner.invoke(main, ["--workspace", str(ws), "init"])
 
@@ -457,3 +461,65 @@ def test_sync_full_lifecycle_init_install_sync(
     assert text.count(_CLAUDE_BEGIN) == 1
     assert _NO_AGENT not in text
     assert "<!-- super-harness framework: plain -->" in text
+
+
+# --------------------------------------------------------------------------- #
+# --gitignore scope (managed .gitignore block refresh)
+# --------------------------------------------------------------------------- #
+
+
+def test_sync_gitignore_refreshes_block_in_place(tmp_path: Path) -> None:
+    """`sync --gitignore` re-renders the managed block when it has drifted,
+    preserving user content outside the markers and leaving AGENTS.md untouched."""
+    from super_harness.engineering.gitignore_injector import _render_block
+
+    runner = CliRunner()
+    assert _init(runner, tmp_path).exit_code == 0
+    # Simulate drift: replace the canonical block body with a stale, NON-canonical
+    # line, keeping the markers; add user content outside the markers.
+    gi = _gitignore(tmp_path)
+    gi.write_text(
+        "# >>> super-harness gitignore (do not edit between markers)\n"
+        ".harness/OLD-stale-line\n"  # non-canonical so a no-op bug can't pass
+        "# <<< super-harness gitignore\n"
+        "my-own-ignore/\n"
+    )
+    agents_before = _agents_md(tmp_path).read_text()
+
+    r = runner.invoke(
+        main, ["--workspace", str(tmp_path), "--quiet", "sync", "--gitignore"]
+    )
+    assert r.exit_code == 0, r.output
+
+    after = gi.read_text()
+    # Block now matches the full canonical render…
+    assert _render_block().rstrip("\n") in after
+    # …user content preserved…
+    assert "my-own-ignore/" in after
+    # …AGENTS.md untouched by a gitignore-scoped sync.
+    assert _agents_md(tmp_path).read_text() == agents_before
+
+
+def test_sync_gitignore_creates_block_when_absent(tmp_path: Path) -> None:
+    """`sync --gitignore` writes the block when `.gitignore` has none yet."""
+    runner = CliRunner()
+    assert _init(runner, tmp_path).exit_code == 0
+    _gitignore(tmp_path).unlink()  # init wrote one; remove to test the absent path
+
+    r = runner.invoke(
+        main, ["--workspace", str(tmp_path), "--quiet", "sync", "--gitignore"]
+    )
+    assert r.exit_code == 0, r.output
+    text = _gitignore(tmp_path).read_text()
+    assert "# >>> super-harness gitignore" in text
+    assert ".claude/settings.local.json" in text
+
+
+def test_sync_gitignore_idempotent(tmp_path: Path) -> None:
+    """A second `sync --gitignore` on canonical state is a byte-identical no-op."""
+    runner = CliRunner()
+    assert _init(runner, tmp_path).exit_code == 0
+    runner.invoke(main, ["--workspace", str(tmp_path), "--quiet", "sync", "--gitignore"])
+    before = _gitignore(tmp_path).read_text()
+    runner.invoke(main, ["--workspace", str(tmp_path), "--quiet", "sync", "--gitignore"])
+    assert _gitignore(tmp_path).read_text() == before
