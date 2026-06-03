@@ -1,0 +1,24 @@
+name: merge-gate
+# Layer-2 CI merge gate (HG-DF C) — self-host. Re-derives, from the PR diff +
+# committed .harness/attestations/<slug>.jsonl, whether every changed file went
+# through a complete, ordered, scope-covering lifecycle. Fail-closed: a git /
+# merge-base failure exits non-zero (never a vacuous pass). fetch-depth: 0 makes
+# the base...head merge-base reachable.
+on:
+  pull_request: {}
+
+jobs:
+  attest-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install package
+        run: pip install -e ".[dev]"
+      - name: Verify lifecycle attestations cover the diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: super-harness attest verify --base "$BASE_SHA" --head "$HEAD_SHA"

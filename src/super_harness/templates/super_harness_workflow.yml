@@ -85,6 +85,33 @@ jobs:
           HEAD_REF: ${{ github.head_ref }}
         run: super-harness verify "$HEAD_REF"
 
+  # Layer-2 merge gate (HG-DF C): re-derive from the PR diff + committed
+  # attestations (.harness/attestations/<slug>.jsonl) whether every changed file
+  # went through a complete, correctly-ordered lifecycle whose scope covers it.
+  # Pure git + committed evidence — no daemon, no events.jsonl, agent-agnostic
+  # (catches edits that bypassed any agent's edit-time hook). fetch-depth: 0 is
+  # required so the base...head merge-base is reachable. BASE/HEAD SHAs are
+  # mapped through env: (never raw ${{ }} in run) per the script-injection guard.
+  # NOTE: needs a super-harness release that ships `attest verify` — bump the
+  # pinned version below when that release lands.
+  attest-verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install super-harness
+        run: pipx install super-harness==0.1.0
+      - name: Verify lifecycle attestations cover the diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: super-harness attest verify --base "$BASE_SHA" --head "$HEAD_SHA"
+
   # On merge to main, look up the merged PR's head_ref from the commit sha
   # (github.head_ref is empty on push events — it is a PR-event-only field)
   # and feed it to on-merge as the explicit --change slug. Uses the canonical

@@ -172,12 +172,26 @@ def test_workflow_template_pr_jobs_grant_contents_read() -> None:
     job that runs `actions/checkout` against the same exposure class.
     """
     parsed = yaml.safe_load(_load_template())
-    for job in ("pr-decorate", "pr-validate", "verification"):
+    for job in ("pr-decorate", "pr-validate", "verification", "attest-verify"):
         perms = parsed["jobs"][job].get("permissions") or {}
         assert perms.get("contents") == "read", (
             f"{job}.permissions.contents must be 'read' "
             f"(else actions/checkout fails on PRIVATE repos): got {perms!r}"
         )
+
+
+def test_template_has_attest_verify_job() -> None:
+    """Layer-2 merge gate (HG-DF C): the template must ship an `attest-verify`
+    PR job that does a FULL-history checkout (fetch-depth: 0) so the
+    base...head merge-base is reachable for `attest verify`."""
+    parsed = yaml.safe_load(_load_template())
+    assert "attest-verify" in parsed["jobs"]
+    job = parsed["jobs"]["attest-verify"]
+    checkout = next(
+        s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout")
+    )
+    assert checkout["with"]["fetch-depth"] == 0
+    assert _load_template().count("super-harness attest verify") == 1
 
 
 def test_workflow_template_guard_does_not_false_fire_on_env_indirection() -> None:
