@@ -153,6 +153,13 @@ def test_sync_help_agents_md_advertises_v01_noop(tmp_path: Path) -> None:
     assert "no-op" in r.output
 
 
+def test_sync_help_lists_gitignore_scope(tmp_path: Path) -> None:
+    """`sync --help` documents the new --gitignore scope."""
+    r = CliRunner().invoke(main, ["sync", "--help"])
+    assert r.exit_code == 0
+    assert "--gitignore" in r.output
+
+
 # --------------------------------------------------------------------------- #
 # overwrite-confirm
 # --------------------------------------------------------------------------- #

@@ -675,7 +675,7 @@ super-harness status [OPTIONS] [SLUG]
 
 ## super-harness sync
 
-Re-render the AGENTS.md super-harness section without re-running init.
+Re-render the managed super-harness artifacts without re-running init.
 
 ```
 super-harness sync [OPTIONS]
@@ -683,8 +683,9 @@ super-harness sync [OPTIONS]
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `--agents-md` | flag | `False` | Re-render the AGENTS.md super-harness section (version bump + re-inject installed adapters). v0.1: identical to no-arg — built-in adapters contribute no verification.yaml checks yet, so the adapter-checks sync leg is a no-op (v0.2 adds it). |
-| `--adapter` | text | — | Re-inject ONLY this adapter's subsection (no outer version bump). Wins over --agents-md if both are given. |
+| `--agents-md` | flag | `False` | Re-render ONLY the AGENTS.md super-harness section (no .gitignore change). v0.1: built-in adapters contribute no verification.yaml checks yet, so the adapter-checks sync leg is a no-op (v0.2 adds it). |
+| `--adapter` | text | — | Re-inject ONLY this adapter's subsection (no outer version bump). Wins over --agents-md / --gitignore if combined. |
+| `--gitignore` | flag | `False` | Re-render ONLY the managed .gitignore block (no AGENTS.md change). Picks up `_CANONICAL_PATHS` additions from a super-harness upgrade without re-running init. |
 | `--yes`, `-y` | flag | `False` | Skip the overwrite-confirm prompt. |
 
 **Exit codes:**

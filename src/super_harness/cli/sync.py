@@ -1,27 +1,35 @@
-"""super-harness sync — re-render the AGENTS.md super-harness section.
+"""super-harness sync — re-render the managed super-harness artifacts.
 
-The "re-render-without-reinit" path: bring the §2.2 outer super-harness section
-(version stamp + every installed adapter's guidance block) back up to date
-WITHOUT re-running `init` — it never touches `.harness/` — and WITHOUT ever
-modifying user content outside the begin/end markers. The render logic itself is
-shared with `init` via ``engineering.agents_md_render.render_super_harness_section``
-(the init + sync SSOT), so the §2.2 template never drifts between the two.
+The "re-render-without-reinit" path: bring the managed artifacts back up to date
+WITHOUT re-running `init` — it never touches `.harness/` config — and WITHOUT ever
+modifying user content outside the begin/end markers. There are TWO managed
+artifacts (both also written by `init`): the §2.2 outer AGENTS.md super-harness
+section (version stamp + every installed adapter's guidance block) and the
+repo-root marker-bounded ``.gitignore`` block (the canonical auto-generated /
+per-machine paths). Each render is shared with `init` via its SSOT —
+``engineering.agents_md_render.render_super_harness_section`` and
+``engineering.gitignore_injector.inject_gitignore_block`` — so neither template
+drifts between init and sync.
 
 Surface (cli-command-surface §sync):
 
-    super-harness sync [--agents-md] [--adapter <name>] [--yes/-y]
+    super-harness sync [--agents-md] [--gitignore] [--adapter <name>] [--yes/-y]
 
-Modes:
-1. No flags / ``--agents-md`` — FULL re-render (identical in v0.1: built-in
-   adapters contribute no verification.yaml checks yet, so the adapter-checks
-   sync leg is a no-op; v0.2 adds it). Stamps the outer section at the current
-   ``__version__`` and re-injects the plain framework block + every installed
-   adapter.
-2. ``--adapter <name>`` — re-inject ONLY that adapter's subsection (NO outer
-   version bump). If BOTH ``--adapter`` and ``--agents-md`` are given,
-   ``--adapter`` wins (adapter-only scope).
+Modes (no flag = all managed artifacts; each flag = one scope):
+1. No flags — FULL re-render: the AGENTS.md section (version stamp + plain
+   framework block + every installed adapter) AND the ``.gitignore`` block.
+   (Passing BOTH ``--agents-md`` and ``--gitignore`` is equivalent to no-arg.)
+2. ``--agents-md`` — re-render ONLY the AGENTS.md section (no ``.gitignore``
+   change). v0.1: built-in adapters contribute no verification.yaml checks yet,
+   so the adapter-checks sync leg is a no-op (v0.2 adds it).
+3. ``--gitignore`` — re-render ONLY the managed ``.gitignore`` block. Picks up
+   ``_CANONICAL_PATHS`` additions from a super-harness upgrade non-destructively
+   (``init --force`` would clobber skeleton config; this does not).
+4. ``--adapter <name>`` — re-inject ONLY that adapter's subsection (NO outer
+   version bump). ``--adapter`` is the narrowest scope and wins if combined with
+   ``--agents-md`` / ``--gitignore``.
 
-Overwrite-confirm (both modes): if an existing super-harness section would be
+Overwrite-confirm (AGENTS.md legs): if an existing super-harness section would be
 overwritten (``section_present``) we prompt — UNLESS global ``--quiet`` or the
 local ``--yes`` was passed. Declining raises Click's ``Abort`` → exit 1 (matches
 ``adapter uninstall``). No section present (AGENTS.md absent, or present without
@@ -85,10 +93,9 @@ _GITIGNORE_WRITE_HINT = (
     "agents_md",
     is_flag=True,
     help=(
-        "Re-render the AGENTS.md super-harness section (version bump + re-inject "
-        "installed adapters). v0.1: identical to no-arg — built-in adapters "
-        "contribute no verification.yaml checks yet, so the adapter-checks sync "
-        "leg is a no-op (v0.2 adds it)."
+        "Re-render ONLY the AGENTS.md super-harness section (no .gitignore "
+        "change). v0.1: built-in adapters contribute no verification.yaml checks "
+        "yet, so the adapter-checks sync leg is a no-op (v0.2 adds it)."
     ),
 )
 @click.option(
