@@ -98,3 +98,22 @@ def test_sync_gitignore_write_failure_exits_generic(tmp_path: Path) -> None:
     assert "super-harness sync:" in r.stderr
     assert "failed to update .gitignore" in r.stderr
     assert "Hint:" in r.stderr
+
+
+def test_sync_full_gitignore_leg_failure_after_agents_md_exits_generic(
+    tmp_path: Path,
+) -> None:
+    """In the full (no-arg) path, an AGENTS.md render that SUCCEEDS followed by a
+    failing `.gitignore` write exits 1 (no traceback) — AGENTS.md is already
+    written (half-success), but each write is atomic and `sync` is idempotent, so
+    a re-run self-heals. Force the gitignore failure with a DIRECTORY at its path;
+    AGENTS.md is absent so its render succeeds (no overwrite, no prompt)."""
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".gitignore").mkdir()
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "--quiet", "sync"])
+    assert r.exit_code == 1, r.output
+    assert "Traceback" not in r.stderr
+    assert "failed to update .gitignore" in r.stderr
+    # The AGENTS.md leg ran first and succeeded (file now exists).
+    assert (tmp_path / "AGENTS.md").is_file()
