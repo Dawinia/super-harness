@@ -132,7 +132,7 @@ def test_sync_gitignore_refreshes_block_in_place(tmp_path: Path) -> None:
     gi = _gitignore(tmp_path)
     gi.write_text(
         "# >>> super-harness gitignore (do not edit between markers)\n"
-        ".harness/state.yaml\n"
+        ".harness/OLD-stale-line\n"  # deliberately NON-canonical so a no-op bug can't pass
         "# <<< super-harness gitignore\n"
         "my-own-ignore/\n"
     )
@@ -354,11 +354,11 @@ def test_sync_agents_md_is_agents_only_no_arg_also_does_gitignore(
     assert _init(runner, tmp_path).exit_code == 0
     agents_after_init = _agents_md(tmp_path).read_text()
 
-    # Drift the gitignore block (stale body).
+    # Drift the gitignore block (stale, NON-canonical body).
     gi = _gitignore(tmp_path)
     gi.write_text(
         "# >>> super-harness gitignore (do not edit between markers)\n"
-        ".harness/state.yaml\n"
+        ".harness/OLD-stale-line\n"
         "# <<< super-harness gitignore\n"
     )
 
@@ -487,6 +487,11 @@ Update the dispatch in `sync_cmd`:
         _sync_full(root, agents_path, quiet=quiet, assume_yes=assume_yes)
 ```
 
+**Also (review nit 1): delete the now-stale `_ = agents_md` discard + its
+3-line comment** (currently `sync.py:109-112`, the "`--agents-md` is accepted but
+unread …" comment). After this task `agents_md` IS read in the dispatch, so the
+discard is dead and the comment is false. Remove both.
+
 > Note: this introduces light duplication between `_sync_agents_md_only` and the
 > AGENTS.md leg of `_sync_full`. Keep it — extracting a shared inner helper that
 > calls `sys.exit` is more tangled than the two readable legs. (DRY judgment:
@@ -546,6 +551,15 @@ keeping the genuine v0.1 adapter-checks no-op caveat (it still applies):
 Update the module docstring "Modes:" block (top of `sync.py`) to describe the
 four scopes (no-flag = both; `--agents-md`; `--gitignore`; `--adapter`) and the
 precedence (`--adapter` narrowest; `--agents-md` + `--gitignore` together = both).
+
+**Also fold these two review nits in the same edit:**
+- **(nit 3) module-docstring synopsis line** (`sync.py:12`) currently reads
+  `super-harness sync [--agents-md] [--adapter <name>] [--yes/-y]` — add
+  `[--gitignore]` to it.
+- **(nit 2) the `sync_cmd` function docstring** (`sync.py:104-108`) currently
+  says "`--agents-md` is identical to the no-arg full re-render" — that is now
+  false. Reword to: no-arg sync refreshes BOTH the AGENTS.md section and the
+  `.gitignore` block; `--agents-md` / `--gitignore` are single-artifact scopes.
 
 **Step 2: Update the help test.** `test_sync_help_agents_md_advertises_v01_noop`
 asserts `"v0.1"` and `"no-op"` are in `sync --help` — both survive the rewrite,
