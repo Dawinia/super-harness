@@ -1,27 +1,35 @@
-"""super-harness sync — re-render the AGENTS.md super-harness section.
+"""super-harness sync — re-render the managed super-harness artifacts.
 
-The "re-render-without-reinit" path: bring the §2.2 outer super-harness section
-(version stamp + every installed adapter's guidance block) back up to date
-WITHOUT re-running `init` — it never touches `.harness/` — and WITHOUT ever
-modifying user content outside the begin/end markers. The render logic itself is
-shared with `init` via ``engineering.agents_md_render.render_super_harness_section``
-(the init + sync SSOT), so the §2.2 template never drifts between the two.
+The "re-render-without-reinit" path: bring the managed artifacts back up to date
+WITHOUT re-running `init` — it never touches `.harness/` config — and WITHOUT ever
+modifying user content outside the begin/end markers. There are TWO managed
+artifacts (both also written by `init`): the §2.2 outer AGENTS.md super-harness
+section (version stamp + every installed adapter's guidance block) and the
+repo-root marker-bounded ``.gitignore`` block (the canonical auto-generated /
+per-machine paths). Each render is shared with `init` via its SSOT —
+``engineering.agents_md_render.render_super_harness_section`` and
+``engineering.gitignore_injector.inject_gitignore_block`` — so neither template
+drifts between init and sync.
 
 Surface (cli-command-surface §sync):
 
-    super-harness sync [--agents-md] [--adapter <name>] [--yes/-y]
+    super-harness sync [--agents-md] [--gitignore] [--adapter <name>] [--yes/-y]
 
-Modes:
-1. No flags / ``--agents-md`` — FULL re-render (identical in v0.1: built-in
-   adapters contribute no verification.yaml checks yet, so the adapter-checks
-   sync leg is a no-op; v0.2 adds it). Stamps the outer section at the current
-   ``__version__`` and re-injects the plain framework block + every installed
-   adapter.
-2. ``--adapter <name>`` — re-inject ONLY that adapter's subsection (NO outer
-   version bump). If BOTH ``--adapter`` and ``--agents-md`` are given,
-   ``--adapter`` wins (adapter-only scope).
+Modes (no flag = all managed artifacts; each flag = one scope):
+1. No flags — FULL re-render: the AGENTS.md section (version stamp + plain
+   framework block + every installed adapter) AND the ``.gitignore`` block.
+   (Passing BOTH ``--agents-md`` and ``--gitignore`` is equivalent to no-arg.)
+2. ``--agents-md`` — re-render ONLY the AGENTS.md section (no ``.gitignore``
+   change). v0.1: built-in adapters contribute no verification.yaml checks yet,
+   so the adapter-checks sync leg is a no-op (v0.2 adds it).
+3. ``--gitignore`` — re-render ONLY the managed ``.gitignore`` block. Picks up
+   ``_CANONICAL_PATHS`` additions from a super-harness upgrade non-destructively
+   (``init --force`` would clobber skeleton config; this does not).
+4. ``--adapter <name>`` — re-inject ONLY that adapter's subsection (NO outer
+   version bump). ``--adapter`` is the narrowest scope and wins if combined with
+   ``--agents-md`` / ``--gitignore``.
 
-Overwrite-confirm (both modes): if an existing super-harness section would be
+Overwrite-confirm (AGENTS.md legs): if an existing super-harness section would be
 overwritten (``section_present``) we prompt — UNLESS global ``--quiet`` or the
 local ``--yes`` was passed. Declining raises Click's ``Abort`` → exit 1 (matches
 ``adapter uninstall``). No section present (AGENTS.md absent, or present without
@@ -59,6 +67,10 @@ from super_harness.engineering.agents_md import (
     section_present,
 )
 from super_harness.engineering.agents_md_render import render_super_harness_section
+from super_harness.engineering.gitignore_injector import (
+    GitignoreInjectionError,
+    inject_gitignore_block,
+)
 from super_harness.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 from super_harness.version import __version__
 
@@ -69,6 +81,10 @@ _AGENTS_MD_WRITE_HINT = (
     "Fix AGENTS.md (file permissions / duplicate super-harness markers) and "
     "re-run `sync`."
 )
+_GITIGNORE_WRITE_HINT = (
+    "Fix .gitignore (permissions / duplicate super-harness markers) and "
+    "re-run `sync --gitignore`."
+)
 
 
 @click.command("sync")
@@ -77,10 +93,9 @@ _AGENTS_MD_WRITE_HINT = (
     "agents_md",
     is_flag=True,
     help=(
-        "Re-render the AGENTS.md super-harness section (version bump + re-inject "
-        "installed adapters). v0.1: identical to no-arg — built-in adapters "
-        "contribute no verification.yaml checks yet, so the adapter-checks sync "
-        "leg is a no-op (v0.2 adds it)."
+        "Re-render ONLY the AGENTS.md super-harness section (no .gitignore "
+        "change). v0.1: built-in adapters contribute no verification.yaml checks "
+        "yet, so the adapter-checks sync leg is a no-op (v0.2 adds it)."
     ),
 )
 @click.option(
@@ -88,7 +103,15 @@ _AGENTS_MD_WRITE_HINT = (
     "adapter_name",
     default=None,
     help="Re-inject ONLY this adapter's subsection (no outer version bump). "
-    "Wins over --agents-md if both are given.",
+    "Wins over --agents-md / --gitignore if combined.",
+)
+@click.option(
+    "--gitignore",
+    "gitignore",
+    is_flag=True,
+    help="Re-render ONLY the managed .gitignore block (no AGENTS.md change). "
+    "Picks up `_CANONICAL_PATHS` additions from a super-harness upgrade "
+    "without re-running init.",
 )
 @click.option(
     "--yes",
@@ -99,31 +122,45 @@ _AGENTS_MD_WRITE_HINT = (
 )
 @click.pass_context
 def sync_cmd(
-    ctx: click.Context, agents_md: bool, adapter_name: str | None, assume_yes: bool
+    ctx: click.Context,
+    agents_md: bool,
+    adapter_name: str | None,
+    gitignore: bool,
+    assume_yes: bool,
 ) -> None:
-    """Re-render the AGENTS.md super-harness section without re-running init.
+    """Re-render the managed super-harness artifacts without re-running init.
 
-    v0.1: --json is not honored by sync (re-render produces no machine-parseable
-    state) and --agents-md is identical to the no-arg full re-render.
+    No-arg `sync` refreshes BOTH the AGENTS.md super-harness section and the
+    managed `.gitignore` block. `--agents-md` / `--gitignore` are single-artifact
+    scopes; `--adapter <name>` is the narrowest scope (one adapter subsection) and
+    wins if combined. v0.1: --json is not honored (re-render produces no
+    machine-parseable state).
     """
-    # --agents-md is accepted but unread in the full-render branch: it selects the
-    # default (full) mode and only carries the v0.1 no-op caveat in --help (Phase 1
-    # placeholder convention — no runtime stderr notice).
-    _ = agents_md
     root = _resolve_root(ctx, "sync")
     agents_path = root / "AGENTS.md"
     quiet = bool(ctx.obj.get("quiet"))
 
     if adapter_name is not None:
         _sync_adapter(root, agents_path, adapter_name, quiet=quiet, assume_yes=assume_yes)
+    elif gitignore and not agents_md:
+        _sync_gitignore(root, quiet=quiet)
+    elif agents_md and not gitignore:
+        _sync_agents_md_only(root, agents_path, quiet=quiet, assume_yes=assume_yes)
     else:
+        # no flag, or both --agents-md and --gitignore → full (both artifacts)
         _sync_full(root, agents_path, quiet=quiet, assume_yes=assume_yes)
 
 
 def _sync_full(
     root: Path, agents_path: Path, *, quiet: bool, assume_yes: bool
 ) -> None:
-    """Full re-render: outer section version bump + re-inject all adapters."""
+    """Full re-render: AGENTS.md section (version bump + all adapters) AND the
+    managed `.gitignore` block.
+
+    The AGENTS.md leg owns the overwrite-confirm; the `.gitignore` block has no
+    user content between its markers, so it piggybacks silently after a confirmed
+    AGENTS.md render. Both legs share init's fail-loud error envelope.
+    """
     # The shared renderer (init + sync SSOT) lets OSError / AgentsMdInjectionError
     # propagate into THIS envelope (fail-loud); its internal adapters.yaml load is
     # non-fatal (advisory + skip), so a corrupt adapters.yaml is NOT re-handled here.
@@ -144,8 +181,79 @@ def _sync_full(
         )
         sys.exit(EXIT_GENERIC)
 
+    try:
+        inject_gitignore_block(root / ".gitignore")
+    except (OSError, GitignoreInjectionError) as e:
+        click.echo(
+            format_error(
+                subcommand="sync",
+                message=f"failed to update .gitignore: {e}",
+                hint=_GITIGNORE_WRITE_HINT,
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    if not quiet:
+        click.echo(
+            f"Synced AGENTS.md super-harness section (v{__version__}) "
+            f"and .gitignore block."
+        )
+    sys.exit(EXIT_OK)
+
+
+def _sync_agents_md_only(
+    root: Path, agents_path: Path, *, quiet: bool, assume_yes: bool
+) -> None:
+    """Re-render ONLY the AGENTS.md section (no gitignore leg).
+
+    Light duplication with `_sync_full`'s AGENTS.md leg is deliberate: extracting
+    a shared inner helper that calls `sys.exit` is more tangled than the two
+    readable legs, and the same error-envelope shape is already mirrored across
+    `_sync_adapter`.
+    """
+    try:
+        _confirm_overwrite_if_present(agents_path, quiet=quiet, assume_yes=assume_yes)
+        render_super_harness_section(root, agents_path, __version__)
+    except (OSError, AgentsMdInjectionError) as e:
+        click.echo(
+            format_error(
+                subcommand="sync",
+                message=f"failed to update AGENTS.md: {e}",
+                hint=_AGENTS_MD_WRITE_HINT,
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
     if not quiet:
         click.echo(f"Synced AGENTS.md super-harness section (v{__version__}).")
+    sys.exit(EXIT_OK)
+
+
+def _sync_gitignore(root: Path, *, quiet: bool) -> None:
+    """Re-render ONLY the managed `.gitignore` block (init + sync SSOT).
+
+    Reuses `inject_gitignore_block` (marker-bounded, non-destructive, no-op when
+    current, fail-loud on duplicate/unbalanced/non-UTF-8 markers). No confirm
+    prompt: the block is purely our canonical path list — there is no user
+    content between the markers to lose. Mirrors init's error envelope.
+    """
+    try:
+        inject_gitignore_block(root / ".gitignore")
+    except (OSError, GitignoreInjectionError) as e:
+        click.echo(
+            format_error(
+                subcommand="sync",
+                message=f"failed to update .gitignore: {e}",
+                hint=_GITIGNORE_WRITE_HINT,
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    if not quiet:
+        click.echo("Synced .gitignore super-harness block.")
     sys.exit(EXIT_OK)
 
 

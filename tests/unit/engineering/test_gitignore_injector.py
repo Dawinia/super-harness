@@ -305,3 +305,33 @@ def test_block_covers_claude_settings_backup_filenames(tmp_path: Path) -> None:
         ".claude/settings.json.super-harness-backup.0",
     ):
         assert fnmatch.fnmatch(sample, pattern), sample
+
+
+def test_committed_repo_gitignore_block_matches_injector() -> None:
+    """Dogfood drift-guard: this repo's committed root `.gitignore` super-harness
+    block is byte-identical to what `inject_gitignore_block` would render today.
+
+    Guards against `_CANONICAL_PATHS` drifting from the committed block (the gap
+    that masked PR #34 review I-1). If this fails, run
+    `super-harness sync --gitignore` and commit the updated `.gitignore`.
+    """
+    from super_harness.engineering.gitignore_injector import _render_block
+
+    repo_root = Path(__file__).resolve().parents[3]
+    gitignore = repo_root / ".gitignore"
+    assert gitignore.exists(), f"{gitignore} missing"
+
+    text = gitignore.read_text(encoding="utf-8")
+    assert text.count(GITIGNORE_BEGIN_MARKER) == 1, "expected exactly one block"
+    assert text.count(GITIGNORE_END_MARKER) == 1, "expected exactly one block"
+
+    begin = text.index(GITIGNORE_BEGIN_MARKER)
+    end = text.index(GITIGNORE_END_MARKER) + len(GITIGNORE_END_MARKER)
+    committed_block = text[begin:end]
+
+    # `_render_block()` ends with a trailing LF; the in-file block does not carry
+    # its own trailing LF inside the [begin, end] slice — strip for comparison.
+    assert committed_block == _render_block().rstrip("\n"), (
+        "Committed .gitignore super-harness block has drifted from "
+        "_CANONICAL_PATHS. Run `super-harness sync --gitignore` and commit."
+    )
