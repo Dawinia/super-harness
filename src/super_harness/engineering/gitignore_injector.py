@@ -1,8 +1,9 @@
 """.gitignore marker-bounded block injector (S2 fix).
 
 `super-harness init` writes a marker-bounded block into the repo-root
-`.gitignore` listing the 8 canonical `.harness/` auto-generated paths that
-are NOT version-control candidates (runtime state, sensor results, etc.).
+`.gitignore` listing the canonical auto-generated / per-machine paths that
+are NOT version-control candidates (runtime state, sensor results,
+per-machine local settings, etc.).
 
 This module follows the same marker-discipline contract as
 `engineering.agents_md` (Phase 7/9/12 lesson): exactly one block expected;
@@ -56,14 +57,16 @@ GITIGNORE_END_MARKER = "# <<< super-harness gitignore"
 #     gates.yaml, source-paths.yaml, verification.yaml, conventions.md,
 #     adapters.yaml ARE user-config and stay version-controlled —
 #     they are deliberately absent.)
-#  2. Per-agent settings backups. `adapter install claude-code` makes a
-#     timestamped backup of `.claude/settings.json` before merging the
-#     PreToolUse / SessionStart hooks (defense for safe rollback per Phase 5
-#     `_settings_merge` design). Without this gitignore line, every run of
-#     `init` / `adapter install` accumulates a backup file the user then
-#     accidentally commits via `git add -A`. Smoke walkthrough v3 caught
-#     this regression (S13). Add new patterns here when other agent
-#     adapters ship a similar backup scheme.
+#  2. Per-agent local settings + their backups. `adapter install claude-code`
+#     installs the gate hook into `.claude/settings.local.json` (which carries
+#     a machine-specific absolute path, so it must never be committed) and
+#     makes a timestamped backup of `.claude/settings.local.json` before
+#     merging the PreToolUse / SessionStart hooks (defense for safe rollback
+#     per Phase 5 `_settings_merge` design). Without these gitignore lines,
+#     the per-machine settings file and every run's backup file get
+#     accidentally committed via `git add -A`. Smoke walkthrough v3 caught
+#     the backup regression (S13). Add new patterns here when other agent
+#     adapters ship a similar local-settings / backup scheme.
 _CANONICAL_PATHS: tuple[str, ...] = (
     ".harness/state.yaml",
     ".harness/events.jsonl",
@@ -73,6 +76,8 @@ _CANONICAL_PATHS: tuple[str, ...] = (
     ".harness/anchors/index.yaml",
     ".harness/pending-l1-updates/",
     ".harness/pending-reviews/",
+    ".harness/gate-disabled",
+    ".claude/settings.local.json",
     ".claude/*.super-harness-backup.*",
 )
 

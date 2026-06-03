@@ -335,12 +335,14 @@ _CANONICAL_GITIGNORE_PATHS = (
     ".harness/anchors/index.yaml",
     ".harness/pending-l1-updates/",
     ".harness/pending-reviews/",
+    ".harness/gate-disabled",
+    ".claude/settings.local.json",
 )
 
 
 def test_init_writes_gitignore_block_fresh_repo(tmp_path: Path):
     """Fresh repo (no .gitignore): init writes the marker-bounded block with
-    all 8 canonical `.harness/` runtime paths."""
+    the canonical `.harness/` runtime + per-machine `.claude/` paths."""
     r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
     assert r.exit_code == 0, r.output
     gitignore = tmp_path / ".gitignore"
