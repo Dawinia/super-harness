@@ -105,6 +105,106 @@ def test_init_help_advertises_v01_caveat(tmp_path: Path):
 
 
 # --------------------------------------------------------------------------- #
+# Agent gate hook auto-install (one-command onboarding)
+# --------------------------------------------------------------------------- #
+
+
+def test_init_auto_installs_agent_hook_when_claude_dir_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """init with `.claude/` present installs the PreToolUse hook into
+    settings.local.json and registers claude-code in adapters.yaml."""
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        lambda name: f"/abs/bin/{name}",
+    )
+    (tmp_path / ".claude").mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert result.exit_code == 0, result.output
+    settings = tmp_path / ".claude" / "settings.local.json"
+    assert settings.exists()
+    assert "--agent claude-code" in settings.read_text()
+    adapters = (tmp_path / ".harness" / "adapters.yaml").read_text()
+    assert "claude-code" in adapters
+    # success advisory on stdout (security-relevant side effect surfaced).
+    assert "registered PreToolUse gate hook" in result.output
+
+
+def test_init_agent_install_yaml_error_is_nonfatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``yaml.YAMLError`` from ``_persist_install_entry`` (corrupt/unreadable
+    ``.harness/adapters.yaml``) is non-fatal: the hook is installed but
+    registration fails, init still completes, and an advisory is printed."""
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        lambda name: f"/abs/bin/{name}",
+    )
+
+    def _raise(*args: object, **kwargs: object) -> None:
+        raise yaml.YAMLError("boom")
+
+    monkeypatch.setattr(
+        "super_harness.cli.init._persist_install_entry", _raise
+    )
+    (tmp_path / ".claude").mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert result.exit_code == 0, result.output
+    # init still completes: .harness/ scaffolded.
+    assert (tmp_path / ".harness").is_dir()
+    assert (tmp_path / ".harness" / "events.jsonl").exists()
+    # advisory text appears (hook installed but could not be registered).
+    assert "could not be registered" in result.output
+
+
+def test_init_agent_install_runtime_error_is_nonfatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `super-harness-hook` is off PATH, ``install_hooks`` raises its
+    documented ``RuntimeError`` — init must treat this as NON-fatal: scaffold
+    `.harness/`, skip the gate (no settings.local.json written), and surface an
+    advisory. ``install_hooks`` checks the hook binary before the CLI binary, so
+    returning None for the hook is enough to trigger the RuntimeError."""
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        lambda name: None,
+    )
+    (tmp_path / ".claude").mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    # Non-fatal: init still completes.
+    assert result.exit_code == 0, result.output
+    # .harness/ scaffolded.
+    assert (tmp_path / ".harness").is_dir()
+    # Install failed before writing the gate hook — settings.local.json absent.
+    assert not (tmp_path / ".claude" / "settings.local.json").exists()
+    # Advisory text surfaced (hook not installed / not found on PATH).
+    assert (
+        "gate hook not installed" in result.output
+        or "not found on PATH" in result.output
+    ), result.output
+
+
+def test_init_no_agent_flag_skips_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".claude").mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--no-agent"])
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".claude" / "settings.local.json").exists()
+
+
+def test_init_no_claude_dir_is_agent_noop(tmp_path: Path) -> None:
+    runner = CliRunner()
+    result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".claude").exists()
+
+
+# --------------------------------------------------------------------------- #
 # AGENTS.md outer-section wiring (engineering-integration §2.2 / §3.2)
 # --------------------------------------------------------------------------- #
 
@@ -201,7 +301,7 @@ def test_init_force_reinjects_installed_adapters(
     """`init` → `adapter install claude-code` → `init --force` re-renders the
     AGENTS.md super-harness section AND re-injects every installed adapter's
     subsection, so a re-render never loses adapter guidance (full --force loop
-    closure). The adapters.yaml entry + the settings.json hooks stay intact and
+    closure). The adapters.yaml entry + the settings.local.json hooks stay intact and
     are NOT touched by init.
 
     `adapter install claude-code` resolves `super-harness-hook` via
@@ -217,7 +317,7 @@ def test_init_force_reinjects_installed_adapters(
     assert runner.invoke(main, ["--workspace", str(tmp_path), "init"]).exit_code == 0
 
     # install claude-code → consumes the anchor, injects the agent block, and
-    # records the adapter + settings.json hooks.
+    # records the adapter + settings.local.json hooks.
     monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)
     install = runner.invoke(
         main, ["--workspace", str(tmp_path), "adapter", "install", "claude-code"]
@@ -246,8 +346,8 @@ def test_init_force_reinjects_installed_adapters(
     names = [e.get("name") for e in (adapters.get("adapters") or [])]
     assert "claude-code" in names, f"claude-code dropped from adapters.yaml: {adapters}"
 
-    # 2b) settings.json STILL has our PreToolUse + SessionStart hooks (unchanged).
-    settings = json.loads((tmp_path / ".claude" / "settings.json").read_text())
+    # 2b) settings.local.json STILL has our PreToolUse + SessionStart hooks (unchanged).
+    settings = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
     pre_commands = [
         h["command"]
         for entry in settings["hooks"]["PreToolUse"]
@@ -335,12 +435,14 @@ _CANONICAL_GITIGNORE_PATHS = (
     ".harness/anchors/index.yaml",
     ".harness/pending-l1-updates/",
     ".harness/pending-reviews/",
+    ".harness/gate-disabled",
+    ".claude/settings.local.json",
 )
 
 
 def test_init_writes_gitignore_block_fresh_repo(tmp_path: Path):
     """Fresh repo (no .gitignore): init writes the marker-bounded block with
-    all 8 canonical `.harness/` runtime paths."""
+    the canonical `.harness/` runtime + per-machine `.claude/` paths."""
     r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
     assert r.exit_code == 0, r.output
     gitignore = tmp_path / ".gitignore"

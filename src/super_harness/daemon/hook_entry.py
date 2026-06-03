@@ -65,7 +65,10 @@ def _run_positional(argv: list[str]) -> None:
 
     decision, reason = _decide(tool, file)
     if decision == "block":
-        sys.stderr.write(f"super-harness: BLOCK ({reason})\n")
+        sys.stderr.write(
+            f"super-harness: BLOCK ({reason})\n"
+            f"  escape hatch: touch .harness/gate-disabled to disable the gate\n"
+        )
         sys.exit(1)
     sys.exit(0)
 
@@ -92,7 +95,10 @@ def _run_claude_code_shim() -> None:
 
     decision, reason = _decide(tool, file)
     if decision == "block":
-        sys.stderr.write(f"super-harness: BLOCK ({reason})\n")
+        sys.stderr.write(
+            f"super-harness: BLOCK ({reason})\n"
+            f"  escape hatch: touch .harness/gate-disabled to disable the gate\n"
+        )
         sys.exit(2)  # Claude Code: exit 2 = block + stderr → model
     sys.exit(0)
 
@@ -112,6 +118,14 @@ def _decide(tool: str, file: str | None) -> tuple[Literal["allow", "block"], str
     except HarnessNotInitialized:
         # No super-harness in this workspace → not our concern; ALLOW.
         return "allow", "no .harness in workspace"
+
+    # File-based kill switch (self-host hard-gate escape hatch): a sentinel file
+    # short-circuits to ALLOW before any daemon/state access, so a wedged daemon
+    # or corrupt state can never trap the user. Toggle via ungated Bash
+    # (`touch .harness/gate-disabled` / `rm`). Robust where `daemon stop` is not
+    # — the unreachable path respawns the daemon, so stop only reprieves one edit.
+    if (root / ".harness" / "gate-disabled").exists():
+        return "allow", "gate disabled (.harness/gate-disabled present)"
 
     # Resolve change_id: env override > derived active change > None.
     import os

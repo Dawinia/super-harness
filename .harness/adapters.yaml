@@ -6,3 +6,8 @@ adapters:
   builtin: true
   version: 0.1.0
   enabled: true
+- name: claude-code
+  type: agent
+  builtin: true
+  version: 0.1.0
+  enabled: true

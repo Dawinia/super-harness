@@ -29,7 +29,51 @@ between `<!-- super-harness:metadata -->` markers.
 
 ### Agent-specific guidance
 
-<!-- super-harness no-agent-adapter-installed -->
+<!-- super-harness agent: claude-code -->
+### super-harness (Claude Code)
+
+A **PreToolUse** hook is enabled for this workspace. `Edit` / `Write` /
+`MultiEdit` / `NotebookEdit` tool calls are blocked by super-harness when the
+current change state forbids the mutation (deterministic gate enforcement).
+
+When a tool call is blocked by the gate:
+- Run `super-harness status` to see the current change, its state, and why the
+  edit was rejected, plus the next valid step.
+- Resume context for a change with `super-harness change resume <change_id>`.
+- **Escape hatch (if the gate is wrong):** from the repo root, `touch
+  .harness/gate-disabled` to disable enforcement immediately, and `rm
+  .harness/gate-disabled` to re-enable. This works even when edits are blocked
+  (the gate never blocks `Bash`).
+
+#### Review protocol
+
+super-harness does NOT review for you — it enforces (via the gate) that a review
+verdict is recorded before the lifecycle proceeds, and YOU produce the verdict.
+When `super-harness status <change>` reports a review state, it also prints the
+configured **strategy** for that reviewer (`subagent` / `human` / `hybrid`):
+
+- **`subagent`** (default) — dispatch a genuinely independent reviewer **subagent**
+  (your `Task` tool) to run the checklist, then record the verdict.
+- **`human`** — do NOT self-approve. A human reviews and records the verdict; leave
+  the change in its review state for them.
+- **`hybrid`** — run the subagent first; escalate to a human on a fail (or a Large
+  tier change) before recording.
+
+Checklists & verdict verbs per review state:
+
+- **`AWAITING_PLAN_REVIEW`** (plan-reviewer) — check spec coverage / design / scope /
+  declared anchors. Record with `super-harness review approve <change> --reviewer
+  plan-reviewer` or `super-harness review reject <change> --reviewer plan-reviewer
+  --reason "<why>"`. Approve → `PLAN_APPROVED` (gate then allows edits); reject →
+  `PLAN_REJECTED` for a revised plan.
+- **`AWAITING_CODE_REVIEW`** (code-reviewer) — check the diff against the plan (spec
+  compliance / anchors planted / quality). Record with `super-harness review approve
+  <change> --reviewer code-reviewer` (or `review reject ...`). Approve → `READY_TO_MERGE`.
+- `super-harness review skip <change> --reviewer <name>` is an escape hatch (records an
+  approval with `reason=manual_skip`) for when a reviewer is stuck.
+
+When you do run a subagent, run a genuinely independent one — don't self-rubber-stamp.
+<!-- /super-harness agent: claude-code -->
 
 ### Before opening PR
 

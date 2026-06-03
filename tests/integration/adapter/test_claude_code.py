@@ -2,7 +2,7 @@
 
 The reference-adapter ship guard: ONE realistic flow that runs the real
 ``super-harness init`` followed by ``super-harness adapter install claude-code``
-against a workspace whose ``.claude/settings.json`` already holds user content,
+against a workspace whose ``.claude/settings.local.json`` already holds user content,
 then asserts that EVERYTHING lands together — both hooks, the settings backup,
 and the AGENTS.md injection.
 
@@ -11,7 +11,7 @@ What this adds OVER the existing suites (deliberately NOT re-copied):
 - ``tests/integration/cli/test_adapter.py`` (Task 7) covers the init → install
   AGENTS.md anchor consume / idempotent block / absent-skip / uninstall-restore
   round-trip — but it mocks ``shutil.which`` to a fake path and NEVER asserts
-  ``settings.json`` in that flow, never pre-populates settings (so the backup
+  ``settings.local.json`` in that flow, never pre-populates settings (so the backup
   path is unexercised at the integration layer), and never asserts BOTH hooks +
   the AGENTS.md block in a single flow.
 - ``tests/unit/adapters/test_claude_code.py`` (Task 8) covers ``install_hooks``
@@ -92,7 +92,7 @@ _USER_SETTINGS = {
 
 
 def _settings_path(ws: Path) -> Path:
-    return ws / ".claude" / "settings.json"
+    return ws / ".claude" / "settings.local.json"
 
 
 def _agents_md(ws: Path) -> Path:
@@ -111,18 +111,22 @@ def _hook_commands(ws: Path, event: str) -> list[str]:
 
 def _backups(ws: Path) -> list[Path]:
     parent = _settings_path(ws).parent
-    return sorted(parent.glob("settings.json.super-harness-backup.*"))
+    return sorted(parent.glob("settings.local.json.super-harness-backup.*"))
 
 
 def _prepopulate_settings(ws: Path) -> None:
-    """Write a user's existing `.claude/settings.json` BEFORE init/install."""
+    """Write a user's existing `.claude/settings.local.json` BEFORE init/install."""
     path = _settings_path(ws)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(_USER_SETTINGS, indent=2) + "\n")
 
 
 def _init(ws: Path):
-    return CliRunner().invoke(main, ["--workspace", str(ws), "init"])
+    # --no-agent: these tests exercise the EXPLICIT `adapter install claude-code`
+    # flow on a bare init. Init now auto-installs the detected agent when `.claude/`
+    # is present (these tests pre-populate it), so opt out here to keep init bare and
+    # let the subsequent manual install be the thing under test.
+    return CliRunner().invoke(main, ["--workspace", str(ws), "init", "--no-agent"])
 
 
 def _install(ws: Path):
@@ -146,7 +150,7 @@ def test_init_then_install_lands_hooks_backup_and_agents_md(tmp_path: Path) -> N
     entry-point binaries (no `shutil.which` mock) so the registered hook commands
     are the actual resolved absolute paths a user would get.
     """
-    # 1. A workspace whose `.claude/settings.json` already holds user content.
+    # 1. A workspace whose `.claude/settings.local.json` already holds user content.
     _prepopulate_settings(tmp_path)
 
     # 2. `super-harness init` — writes `.harness/` + the root AGENTS.md (outer
@@ -180,10 +184,10 @@ def test_init_then_install_lands_hooks_backup_and_agents_md(tmp_path: Path) -> N
     assert _USER_HOOK_COMMAND in pre_tool_use
     assert settings["model"] == "claude-opus-4"
 
-    # 4b. A backup was written because settings.json pre-existed (NET-NEW at the
+    # 4b. A backup was written because settings.local.json pre-existed (NET-NEW at the
     #     integration layer) — and it captures the pristine user file.
     backups = _backups(tmp_path)
-    assert backups, "expected a settings.json.super-harness-backup.* on prepopulated install"
+    assert backups, "expected a settings.local.json.super-harness-backup.* on prepopulated install"
     earliest = json.loads(backups[0].read_text())
     assert earliest == _USER_SETTINGS, "earliest backup must be the pristine user settings"
 
@@ -212,11 +216,11 @@ def test_init_then_install_lands_hooks_backup_and_agents_md(tmp_path: Path) -> N
 def test_init_install_uninstall_restores_pristine_settings_and_anchor(
     tmp_path: Path,
 ) -> None:
-    """init → install → uninstall returns settings.json to its pristine pre-install
+    """init → install → uninstall returns settings.local.json to its pristine pre-install
     state AND restores the AGENTS.md no-agent anchor.
 
     Complements test_adapter.py's uninstall coverage (which mocks `which` and does
-    not assert settings.json): here the FULL end-to-end with the real binaries and
+    not assert settings.local.json): here the FULL end-to-end with the real binaries and
     a pre-populated settings file proves uninstall removes BOTH our hooks (the
     earliest-backup restore) while leaving the user's content exactly as it was.
     """
@@ -230,7 +234,7 @@ def test_init_install_uninstall_restores_pristine_settings_and_anchor(
     uninstall_result = _uninstall(tmp_path)
     assert uninstall_result.exit_code == 0, uninstall_result.output
 
-    # settings.json restored to the exact pristine user state (both hooks gone,
+    # settings.local.json restored to the exact pristine user state (both hooks gone,
     # user hook + unrelated key intact).
     restored = json.loads(_settings_path(tmp_path).read_text())
     assert restored == _USER_SETTINGS

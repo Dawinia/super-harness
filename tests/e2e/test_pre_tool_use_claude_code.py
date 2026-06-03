@@ -7,9 +7,9 @@ This is the payoff test for Phase 5. It drives the **production** entry points
   1. ``super-harness init``                  → scaffolds a real ``.harness/``
   2. ``super-harness adapter install claude-code``
                                              → registers the PreToolUse gate hook
-                                                in ``.claude/settings.json``
+                                                in ``.claude/settings.local.json``
   3. ``super-harness daemon start``          → brings up the gate decision engine
-  4. the **exact command string** registered in ``.claude/settings.json`` is
+  4. the **exact command string** registered in ``.claude/settings.local.json`` is
      invoked with a Claude-Code-shaped JSON payload on stdin, and we assert it
      BLOCKS (exit 2) in a blocking state (``INTENT_DECLARED``) and ALLOWS
      (exit 0) once the state advances (``PLAN_APPROVED``).
@@ -53,19 +53,19 @@ _PAYLOAD = json.dumps(
 
 
 def _registered_command(ws: Path) -> str:
-    """Extract the super-harness PreToolUse hook command from settings.json.
+    """Extract the super-harness PreToolUse hook command from settings.local.json.
 
     Asserting on the EXACT registered string (rather than reconstructing it)
     proves the adapter wrote a runnable hook and that we invoke precisely what
     Claude Code would.
     """
-    data = json.loads((ws / ".claude" / "settings.json").read_text())
+    data = json.loads((ws / ".claude" / "settings.local.json").read_text())
     for entry in data["hooks"]["PreToolUse"]:
         for hook in entry["hooks"]:
             if "--agent claude-code" in hook["command"]:
                 command: str = hook["command"]
                 return command
-    raise AssertionError("super-harness PreToolUse hook not registered in settings.json")
+    raise AssertionError("super-harness PreToolUse hook not registered in settings.local.json")
 
 
 def test_pre_tool_use_blocks_then_allows(tmp_path: Path) -> None:
@@ -80,7 +80,7 @@ def test_pre_tool_use_blocks_then_allows(tmp_path: Path) -> None:
     )
     assert (ws / ".harness").is_dir(), "init did not create .harness/"
 
-    # 2. Install the claude-code adapter (registers the hook in settings.json).
+    # 2. Install the claude-code adapter (registers the hook in settings.local.json).
     subprocess.run(
         ["super-harness", "--workspace", str(ws), "adapter", "install", "claude-code"],
         check=True,

@@ -1,7 +1,7 @@
 """Integration tests for `super-harness adapter install claude-code` (Task 5.7).
 
 Wires the v0.1 MINIMAL adapter CLI: only `adapter install claude-code`, which
-registers the PreToolUse hook into `.claude/settings.json` via the
+registers the PreToolUse hook into `.claude/settings.local.json` via the
 `ClaudeCodeAdapter` (Task 5.6). No uninstall/list, no other adapters, no
 adapters.yaml persistence (all Phase 6).
 
@@ -11,7 +11,7 @@ path lands verbatim in the registered hook command (`<abs> --agent claude-code`)
 
 Coverage map:
 - test_install_creates_pre_tool_use_hook  — fresh `.harness/` workspace, no
-                                            `.claude/` → exit 0, settings.json
+                                            `.claude/` → exit 0, settings.local.json
                                             created with the gate hook command
 - test_install_is_idempotent              — second run → exit 0, still exactly
                                             one entry (merge dedupe)
@@ -33,11 +33,11 @@ _EXPECTED_COMMAND = f"{_FAKE_HOOK} --agent claude-code"
 
 
 def _settings(ws: Path) -> Path:
-    return ws / ".claude" / "settings.json"
+    return ws / ".claude" / "settings.local.json"
 
 
 def _pre_tool_use_commands(ws: Path) -> list[str]:
-    """Collect every PreToolUse hook command string from settings.json."""
+    """Collect every PreToolUse hook command string from settings.local.json."""
     data = json.loads(_settings(ws).read_text())
     commands: list[str] = []
     for entry in data["hooks"]["PreToolUse"]:
@@ -53,7 +53,7 @@ def test_install_creates_pre_tool_use_hook(
 
     Documents the `.claude/`-absent decision: install works in a repo without a
     pre-existing `.claude/` dir; `merge_pre_tool_use_hook` mkdirs parents and
-    creates settings.json from empty config.
+    creates settings.local.json from empty config.
     """
     (tmp_path / ".harness").mkdir()
     monkeypatch.setattr(shutil, "which", lambda _name: _FAKE_HOOK)

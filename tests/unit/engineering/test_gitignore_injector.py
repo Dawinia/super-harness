@@ -36,6 +36,8 @@ _CANONICAL_PATHS = (
     ".harness/anchors/index.yaml",
     ".harness/pending-l1-updates/",
     ".harness/pending-reviews/",
+    ".harness/gate-disabled",
+    ".claude/settings.local.json",
     ".claude/*.super-harness-backup.*",
 )
 
@@ -94,7 +96,7 @@ def test_existing_gitignore_zero_blocks_appends_block(tmp_path: Path) -> None:
     user_idx = text.index("node_modules/")
     block_idx = text.index(GITIGNORE_BEGIN_MARKER)
     assert user_idx < block_idx
-    # All 8 canonical paths present.
+    # All canonical paths present.
     for p in _CANONICAL_PATHS:
         assert p in text, f"missing canonical path: {p}"
 
@@ -264,7 +266,7 @@ def test_existing_gitignore_non_utf8_raises_friendly_error(tmp_path: Path) -> No
 # --------------------------------------------------------------------------- #
 
 
-def test_block_contains_all_8_canonical_paths(tmp_path: Path) -> None:
+def test_block_contains_all_canonical_paths(tmp_path: Path) -> None:
     """The marker body contains exactly the canonical paths, in order."""
     path = tmp_path / ".gitignore"
     inject_gitignore_block(path)
