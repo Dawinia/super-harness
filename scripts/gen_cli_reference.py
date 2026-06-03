@@ -126,6 +126,17 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`1` generic error",
         "`3` no `.harness/`",
     ],
+    "attest write": [
+        "`0` success",
+        "`1` no events for the slug (run the lifecycle first)",
+        "`3` no `.harness/`",
+    ],
+    "attest verify": [
+        "`0` pass (every changed file covered)",
+        "`2` blocker(s): uncovered file / scope drift / incomplete lifecycle",
+        "`3` no `.harness/`",
+        "`4` `git` failure (fail-closed; e.g. unreachable merge-base)",
+    ],
     "sync": [
         "`0` success",
         "`1` generic error",

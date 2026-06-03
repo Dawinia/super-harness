@@ -147,6 +147,52 @@ super-harness anchor sync [OPTIONS]
 - `1` generic error
 - `3` no `.harness/`
 
+## super-harness attest
+
+Lifecycle attestation: snapshot evidence + verify it covers a diff.
+
+```
+super-harness attest COMMAND [ARGS...]
+```
+
+## super-harness attest verify
+
+Fail if any changed file lacks a complete, ordered, scope-covering attestation.
+
+```
+super-harness attest verify [OPTIONS]
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `--base` | text | *required* | Base ref/SHA (e.g. PR base.sha). |
+| `--head` | text | *required* | Head ref/SHA (e.g. PR head.sha). |
+
+**Exit codes:**
+
+- `0` pass (every changed file covered)
+- `2` blocker(s): uncovered file / scope drift / incomplete lifecycle
+- `3` no `.harness/`
+- `4` `git` failure (fail-closed; e.g. unreachable merge-base)
+
+## super-harness attest write
+
+Snapshot the per-change event slice to .harness/attestations/<slug>.jsonl.
+
+```
+super-harness attest write [OPTIONS] SLUG
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `SLUG` | text | *required* |  |
+
+**Exit codes:**
+
+- `0` success
+- `1` no events for the slug (run the lifecycle first)
+- `3` no `.harness/`
+
 ## super-harness change
 
 Declare / abandon / list lifecycle changes.
