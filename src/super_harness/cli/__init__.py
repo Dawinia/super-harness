@@ -11,6 +11,7 @@ import click
 
 from super_harness.cli.adapter import adapter_group
 from super_harness.cli.anchor import anchor_group
+from super_harness.cli.attest import attest_group
 from super_harness.cli.change import change_group
 from super_harness.cli.daemon import daemon_group
 from super_harness.cli.done import done_cmd
@@ -97,6 +98,7 @@ main.add_command(review_group)
 main.add_command(plan_group)
 main.add_command(implementation_group)
 main.add_command(on_merge_cli)
+main.add_command(attest_group)
 
 
 # Rewrap every registered subcommand (and its descendants) so each one is a

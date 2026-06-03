@@ -1,0 +1,171 @@
+"""`super-harness attest` — Layer-2 CI merge gate (HG-DF item C).
+
+`attest write <slug>` snapshots a change's committed attestation
+(`.harness/attestations/<slug>.jsonl`); `attest verify --base --head` is the CI
+gate that fails when any changed file lacks a complete, ordered, scope-covering
+attestation. The `git` boundary lives here (patchable in tests), mirroring how
+`cli/pr.py` keeps the `gh` boundary at the CLI import site.
+
+Exit codes:
+- `attest write`: 0 ok / 1 no events for the slug / 3 no `.harness/`.
+- `attest verify`: 0 pass / 2 blocker(s) (EXIT_VALIDATION) / 3 no `.harness/` /
+  4 git failure (EXIT_EXTERNAL_TOOL, FAIL-CLOSED — never a vacuous pass).
+"""
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import click
+
+from super_harness.cli.errors import format_error
+from super_harness.cli.output import json_envelope
+from super_harness.core.paths import (
+    HarnessNotInitialized,
+    events_path,
+    find_harness_root,
+)
+from super_harness.engineering.attestation import (
+    ATTESTATIONS_DIRNAME,
+    parse_name_status,
+    verify_attestations,
+    write_attestation,
+)
+from super_harness.exit_codes import (
+    EXIT_EXTERNAL_TOOL,
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+    EXIT_VALIDATION,
+)
+
+
+class _GitError(Exception):
+    """`git diff` failed — translated to a FAIL-CLOSED exit 4 by the CLI."""
+
+
+@click.group("attest")
+def attest_group() -> None:
+    """Lifecycle attestation: snapshot evidence + verify it covers a diff."""
+
+
+@attest_group.command("write")
+@click.argument("slug")
+@click.pass_context
+def attest_write(ctx: click.Context, slug: str) -> None:
+    """Snapshot the per-change event slice to .harness/attestations/<slug>.jsonl."""
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as e:
+        click.echo(
+            format_error(subcommand="attest write", message=e.message, hint=e.hint),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
+    try:
+        out = write_attestation(events_path(root), root / ATTESTATIONS_DIRNAME, slug)
+    except ValueError as e:
+        click.echo(
+            format_error(
+                subcommand="attest write",
+                message=str(e),
+                hint=(
+                    "Run the lifecycle for this change first — events.jsonl must "
+                    "contain its events before an attestation can be written."
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+    rel = out.relative_to(root).as_posix()
+    if ctx.obj.get("json"):
+        click.echo(
+            json_envelope(
+                command="attest write",
+                status="pass",
+                exit_code=EXIT_OK,
+                data={"change": slug, "attestation_path": rel},
+            )
+        )
+    elif not ctx.obj.get("quiet"):
+        click.echo(f"super-harness: wrote attestation {rel}")
+    sys.exit(EXIT_OK)
+
+
+def _git_name_status(base: str, head: str, cwd: Path) -> str:
+    """Run `git diff --name-status base...head` in *cwd*.
+
+    Raises ``_GitError`` on a non-zero git exit (the CLI translates that into a
+    FAIL-CLOSED exit 4 — an unreachable merge-base must never become a pass).
+    """
+    proc = subprocess.run(
+        ["git", "-c", "core.quotePath=false", "diff", "--name-status", f"{base}...{head}"],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise _GitError(proc.stderr.strip() or f"git diff failed (exit {proc.returncode})")
+    return proc.stdout
+
+
+@attest_group.command("verify")
+@click.option("--base", required=True, help="Base ref/SHA (e.g. PR base.sha).")
+@click.option("--head", required=True, help="Head ref/SHA (e.g. PR head.sha).")
+@click.pass_context
+def attest_verify(ctx: click.Context, base: str, head: str) -> None:
+    """Fail if any changed file lacks a complete, ordered, scope-covering attestation."""
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as e:
+        click.echo(
+            format_error(subcommand="attest verify", message=e.message, hint=e.hint),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
+    try:
+        raw = _git_name_status(base, head, root)
+    except _GitError as e:
+        click.echo(
+            format_error(
+                subcommand="attest verify",
+                message=f"git diff failed: {e}",
+                hint="Ensure a full checkout (fetch-depth: 0) with a reachable merge-base.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_EXTERNAL_TOOL)  # FAIL-CLOSED — never a vacuous pass
+
+    verdict = verify_attestations(root, parse_name_status(raw))
+    data: dict[str, Any] = {
+        "subjects": verdict.subjects,
+        "covered": verdict.covered,
+        "attestations": verdict.attestations,
+        "blockers": verdict.blockers,
+    }
+    if ctx.obj.get("json"):
+        click.echo(
+            json_envelope(
+                command="attest verify",
+                status="pass" if verdict.ok else "fail",
+                exit_code=EXIT_OK if verdict.ok else EXIT_VALIDATION,
+                data=data,
+                errors=[{"code": "validation", "message": b} for b in verdict.blockers],
+            )
+        )
+    elif verdict.ok:
+        if not ctx.obj.get("quiet"):
+            click.echo(f"attest verify: PASS ({len(verdict.subjects)} file(s) covered)")
+    else:
+        click.echo(
+            format_error(
+                subcommand="attest verify",
+                message=f"{len(verdict.blockers)} blocker(s):\n  - "
+                + "\n  - ".join(verdict.blockers),
+                hint="Each changed file must be in a complete lifecycle attestation's scope.",
+            ),
+            err=True,
+        )
+    sys.exit(EXIT_OK if verdict.ok else EXIT_VALIDATION)
