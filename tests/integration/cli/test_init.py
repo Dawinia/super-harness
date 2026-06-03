@@ -159,6 +159,34 @@ def test_init_agent_install_yaml_error_is_nonfatal(
     assert "could not be registered" in result.output
 
 
+def test_init_agent_install_runtime_error_is_nonfatal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When `super-harness-hook` is off PATH, ``install_hooks`` raises its
+    documented ``RuntimeError`` — init must treat this as NON-fatal: scaffold
+    `.harness/`, skip the gate (no settings.local.json written), and surface an
+    advisory. ``install_hooks`` checks the hook binary before the CLI binary, so
+    returning None for the hook is enough to trigger the RuntimeError."""
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        lambda name: None,
+    )
+    (tmp_path / ".claude").mkdir()
+    runner = CliRunner()
+    result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    # Non-fatal: init still completes.
+    assert result.exit_code == 0, result.output
+    # .harness/ scaffolded.
+    assert (tmp_path / ".harness").is_dir()
+    # Install failed before writing the gate hook — settings.local.json absent.
+    assert not (tmp_path / ".claude" / "settings.local.json").exists()
+    # Advisory text surfaced (hook not installed / not found on PATH).
+    assert (
+        "gate hook not installed" in result.output
+        or "not found on PATH" in result.output
+    ), result.output
+
+
 def test_init_no_agent_flag_skips_hook(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
