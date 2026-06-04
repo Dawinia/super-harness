@@ -18,11 +18,14 @@ import json
 import posixpath
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from super_harness.core.emit_validation import find_ordering_violations
+from super_harness.core.events import Event, EventSchemaError, parse_event_line
 from super_harness.core.reducer import derive_state
 
 ATTESTATIONS_DIRNAME = ".harness/attestations"
+PLACEHOLDER_IDENTITY = "cli"
 MILESTONE_EVENTS: frozenset[str] = frozenset(
     {"plan_approved", "implementation_complete", "code_review_passed"}
 )
@@ -234,3 +237,66 @@ def verify_attestations(root: Path, diff_entries: list[DiffEntry]) -> Attestatio
         covered=sorted(covered),
         attestations=validated,
     )
+
+
+# --------------------------------------------------------------------------- #
+# HG-12 cut 1: review-independence disclosure (substrate, NOT enforcement)
+# --------------------------------------------------------------------------- #
+def derive_independence(events: list[Event]) -> dict[str, Any]:
+    """Classify a change's code-review independence from its events (pure).
+
+    Discloses code-review only (per design §4.1). Truth table, first match wins:
+      1. no ``code_review_passed``                  → ``unattributed``
+      2. reviewer ``actor.type == "ci"``            → ``ci`` (forward-compat;
+         not producible via the current CLI, see design §4.1 row 2)
+      3. ``payload["skipped"] is True``             → ``skipped``
+      4. reviewer or author is the ``"cli"`` placeholder → ``unattributed``
+      5. reviewer identifier == author identifier   → ``self-signed``
+      6. otherwise                                  → ``independent``
+
+    This is disclosure, not enforcement: the identity is self-asserted and a solo
+    owner can set both sides freely.
+    """
+    author = next(
+        (e.actor.identifier for e in events if e.type == "intent_declared"), None
+    )
+    reviews = [e for e in events if e.type == "code_review_passed"]
+    if not reviews:
+        cls, reviewer, skipped = "unattributed", None, False
+    else:
+        r = reviews[-1]  # last wins (reject → re-review cycles)
+        reviewer = r.actor.identifier
+        skipped = r.payload.get("skipped") is True
+        if r.actor.type == "ci":
+            cls = "ci"
+        elif skipped:
+            cls = "skipped"
+        elif reviewer == PLACEHOLDER_IDENTITY or author == PLACEHOLDER_IDENTITY:
+            cls = "unattributed"
+        elif reviewer == author:
+            cls = "self-signed"
+        else:
+            cls = "independent"
+    return {
+        "author": author,
+        "code_review": {"classification": cls, "reviewer": reviewer, "skipped": skipped},
+    }
+
+
+def independence_for_attestation(att_path: Path) -> dict[str, Any]:
+    """Read an attestation file tolerantly and derive independence.
+
+    Tolerant parse (warn-equivalent skip of malformed lines, never raise) so the
+    non-failing disclosure path can never crash an otherwise-passing
+    ``attest verify`` — mirrors the reducer / ``check_attestation`` policy.
+    """
+    events: list[Event] = []
+    for raw in att_path.read_text(encoding="utf-8").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        try:
+            events.append(parse_event_line(s))
+        except EventSchemaError:
+            continue
+    return derive_independence(events)

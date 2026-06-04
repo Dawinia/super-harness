@@ -28,6 +28,7 @@ from super_harness.cli.output import json_envelope
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import EmitPreconditionError
 from super_harness.core.events import Actor, Event
+from super_harness.core.identity import resolve_identity
 from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
@@ -61,7 +62,8 @@ def review_group() -> None:
 
 
 def _emit_verdict(
-    ctx: click.Context, *, subcommand: str, change: str, reviewer: str, event_type: str, reason: str
+    ctx: click.Context, *, subcommand: str, change: str, reviewer: str, event_type: str,
+    reason: str, as_identity: str | None = None, extra_payload: dict[str, object] | None = None,
 ) -> None:
     """Shared body for skip/approve/reject: emit the verdict event (STRICT) + report.
 
@@ -83,9 +85,9 @@ def _emit_verdict(
         type=event_type,
         change_id=change,
         timestamp=utc_now_iso(),
-        actor=Actor(type="human", identifier="cli"),
+        actor=Actor(type="human", identifier=resolve_identity(root, as_identity)),
         framework=framework,
-        payload={"reviewer": reviewer, "reason": reason},
+        payload={"reviewer": reviewer, "reason": reason, **(extra_payload or {})},
     )
     try:
         EventWriter(events_path(root)).emit(ev)
@@ -125,16 +127,25 @@ def _emit_verdict(
     sys.exit(EXIT_OK)
 
 
+_as_opt = click.option(
+    "--as", "as_identity", default=None,
+    help="Reviewer identity recorded on the event "
+    "(default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`).",
+)
+
+
 @review_group.command("approve")
 @click.argument("change")
 @_reviewer_opt
 @click.option("--reason", default="approved", help="Audit reason recorded on the event.")
+@_as_opt
 @click.pass_context
-def approve(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
+def approve(ctx: click.Context, change: str, reviewer: str, reason: str,
+            as_identity: str | None) -> None:
     """Record a PASS verdict: emit `plan_approved` / `code_review_passed`."""
     _emit_verdict(
         ctx, subcommand="review approve", change=change, reviewer=reviewer,
-        event_type=_REVIEWER_PASS[reviewer], reason=reason,
+        event_type=_REVIEWER_PASS[reviewer], reason=reason, as_identity=as_identity,
     )
 
 
@@ -142,12 +153,14 @@ def approve(ctx: click.Context, change: str, reviewer: str, reason: str) -> None
 @click.argument("change")
 @_reviewer_opt
 @click.option("--reason", default="rejected", help="Audit reason recorded on the event.")
+@_as_opt
 @click.pass_context
-def reject(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
+def reject(ctx: click.Context, change: str, reviewer: str, reason: str,
+           as_identity: str | None) -> None:
     """Record a FAIL verdict: emit `plan_rejected` / `code_review_failed`."""
     _emit_verdict(
         ctx, subcommand="review reject", change=change, reviewer=reviewer,
-        event_type=_REVIEWER_FAIL[reviewer], reason=reason,
+        event_type=_REVIEWER_FAIL[reviewer], reason=reason, as_identity=as_identity,
     )
 
 
@@ -155,10 +168,18 @@ def reject(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
 @click.argument("change")
 @_reviewer_opt
 @click.option("--reason", default="manual_skip", help="Audit reason recorded on the event.")
+@_as_opt
 @click.pass_context
-def skip(ctx: click.Context, change: str, reviewer: str, reason: str) -> None:
-    """Escape hatch — PASS a stuck reviewer (== approve with reason=manual_skip)."""
+def skip(ctx: click.Context, change: str, reviewer: str, reason: str,
+         as_identity: str | None) -> None:
+    """Escape hatch — PASS a stuck reviewer (== approve with reason=manual_skip).
+
+    Stamps a structured ``payload["skipped"] = True`` marker so the merge-boundary
+    independence disclosure can distinguish a *skipped* review from a real one,
+    independent of the free-text ``--reason`` (HG-12 cut 1).
+    """
     _emit_verdict(
         ctx, subcommand="review skip", change=change, reviewer=reviewer,
-        event_type=_REVIEWER_PASS[reviewer], reason=reason,
+        event_type=_REVIEWER_PASS[reviewer], reason=reason, as_identity=as_identity,
+        extra_payload={"skipped": True},
     )

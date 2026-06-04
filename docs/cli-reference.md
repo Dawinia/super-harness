@@ -274,6 +274,7 @@ super-harness change start [OPTIONS] SLUG
 | `SLUG` | text | *required* |  |
 | `--description` | text | `''` | Human-readable change description. |
 | `--framework` | {openspec\|spec-kit\|superpowers\|plain} | `'plain'` | Framework label recorded on the event (v0.1: no-op placeholder; framework adapters auto-detect at observe time.) |
+| `--as` | text | — | Author identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
@@ -593,6 +594,7 @@ super-harness review approve [OPTIONS] CHANGE
 | `CHANGE` | text | *required* |  |
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
 | `--reason` | text | `'approved'` | Audit reason recorded on the event. |
+| `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
@@ -612,6 +614,7 @@ super-harness review reject [OPTIONS] CHANGE
 | `CHANGE` | text | *required* |  |
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
 | `--reason` | text | `'rejected'` | Audit reason recorded on the event. |
+| `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
@@ -631,6 +634,7 @@ super-harness review skip [OPTIONS] CHANGE
 | `CHANGE` | text | *required* |  |
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
 | `--reason` | text | `'manual_skip'` | Audit reason recorded on the event. |
+| `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 

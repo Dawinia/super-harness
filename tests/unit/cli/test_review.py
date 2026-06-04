@@ -157,3 +157,59 @@ def test_skip_json_envelope(tmp_path: Path) -> None:
     assert payload["data"]["event_emitted"] == "plan_approved"
     assert payload["data"]["new_state"] == "PLAN_APPROVED"
     assert payload["data"]["reviewer"] == "plan-reviewer"
+
+
+# --- HG-12 cut 1: reviewer identity + structured skip marker ----------------- #
+_PREFIX = (
+    "intent_declared", "plan_ready", "plan_approved", "implementation_started",
+    "verification_passed", "implementation_complete",
+)  # → AWAITING_CODE_REVIEW
+
+
+def _last(ws: Path, *, type: str, change_id: str) -> dict:
+    evs = [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()]
+    return [e for e in evs if e["type"] == type and e["change_id"] == change_id][-1]
+
+
+def test_review_approve_records_as_identity(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", *_PREFIX)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "approve", "c",
+        "--reviewer", "code-reviewer", "--as", "bob@example.com"])
+    assert r.exit_code == EXIT_OK, r.output
+    ev = _last(tmp_path, type="code_review_passed", change_id="c")
+    assert ev["actor"]["identifier"] == "bob@example.com"
+    assert "skipped" not in ev["payload"]  # approve must NOT set the skip marker
+
+
+def test_review_reject_records_as_identity(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", *_PREFIX)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "reject", "c",
+        "--reviewer", "code-reviewer", "--as", "carol@example.com"])
+    assert r.exit_code == EXIT_OK, r.output
+    ev = _last(tmp_path, type="code_review_failed", change_id="c")
+    assert ev["actor"]["identifier"] == "carol@example.com"
+
+
+def test_review_skip_sets_structured_marker(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", *_PREFIX)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--reason", "on vacation"])
+    assert r.exit_code == EXIT_OK, r.output
+    ev = _last(tmp_path, type="code_review_passed", change_id="c")
+    assert ev["payload"]["skipped"] is True          # marker, not the reason
+    assert ev["payload"]["reason"] == "on vacation"  # reason stays free text
+
+
+def test_review_approve_default_identity_via_resolver(tmp_path: Path, monkeypatch) -> None:
+    _seed(tmp_path, "c", *_PREFIX)
+    monkeypatch.setattr(
+        "super_harness.cli.review.resolve_identity", lambda ws, override=None: "git@x"
+    )
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "approve", "c", "--reviewer", "code-reviewer"])
+    assert r.exit_code == EXIT_OK, r.output
+    ev = _last(tmp_path, type="code_review_passed", change_id="c")
+    assert ev["actor"]["identifier"] == "git@x"
