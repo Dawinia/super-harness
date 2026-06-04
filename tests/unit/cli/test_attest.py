@@ -162,3 +162,23 @@ def test_verify_tolerated_malformed_line_still_discloses(tmp_path, monkeypatch):
     r = _verify(tmp_path, monkeypatch, _DIFF)
     assert "review independence:" in r.output
     assert r.exit_code == 0  # no crash out of the non-failing path
+
+
+def test_verify_fail_still_discloses_validated_attestation(tmp_path, monkeypatch):
+    # feat-x covers src/x.py; src/y.py is an uncovered subject → overall FAIL,
+    # but the validated attestation still gets its disclosure line.
+    _attestation(tmp_path, "feat-x", "alice@x", "alice@x")
+    r = _verify(tmp_path, monkeypatch, _DIFF + "M\tsrc/y.py\n")
+    assert r.exit_code == 2  # uncovered y.py fails the gate
+    assert "review independence: self-signed" in r.output  # disclosure still emitted
+
+
+def test_verify_quiet_suppresses_disclosure(tmp_path, monkeypatch):
+    _attestation(tmp_path, "feat-x", "alice@x", "bob@x")
+    _init(tmp_path)
+    monkeypatch.setattr(attest_mod, "_git_name_status", lambda b, h, c: _DIFF)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "--quiet",
+        "attest", "verify", "--base", "main", "--head", "HEAD"])
+    assert r.exit_code == 0
+    assert "review independence:" not in r.output
