@@ -18,6 +18,7 @@ import json
 import posixpath
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from super_harness.core.emit_validation import find_ordering_violations
 from super_harness.core.events import Event, EventSchemaError, parse_event_line
@@ -241,7 +242,7 @@ def verify_attestations(root: Path, diff_entries: list[DiffEntry]) -> Attestatio
 # --------------------------------------------------------------------------- #
 # HG-12 cut 1: review-independence disclosure (substrate, NOT enforcement)
 # --------------------------------------------------------------------------- #
-def derive_independence(events: list[Event]) -> dict:
+def derive_independence(events: list[Event]) -> dict[str, Any]:
     """Classify a change's code-review independence from its events (pure).
 
     Discloses code-review only (per design §4.1). Truth table, first match wins:
@@ -282,7 +283,7 @@ def derive_independence(events: list[Event]) -> dict:
     }
 
 
-def independence_for_attestation(att_path: Path) -> dict:
+def independence_for_attestation(att_path: Path) -> dict[str, Any]:
     """Read an attestation file tolerantly and derive independence.
 
     Tolerant parse (warn-equivalent skip of malformed lines, never raise) so the

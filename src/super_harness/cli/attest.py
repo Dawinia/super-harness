@@ -47,7 +47,7 @@ class _GitError(Exception):
     """`git diff` failed — translated to a FAIL-CLOSED exit 4 by the CLI."""
 
 
-def _independence_line(item: dict) -> str:
+def _independence_line(item: dict[str, Any]) -> str:
     """One plain-ASCII disclosure line for a validated attestation (HG-12 cut 1).
 
     Disclosure only — this never affects the verify pass/fail. The `ci` class is
