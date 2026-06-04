@@ -29,6 +29,7 @@ from super_harness.core.paths import (
 )
 from super_harness.engineering.attestation import (
     ATTESTATIONS_DIRNAME,
+    independence_for_attestation,
     parse_name_status,
     verify_attestations,
     write_attestation,
@@ -44,6 +45,24 @@ from super_harness.exit_codes import (
 
 class _GitError(Exception):
     """`git diff` failed — translated to a FAIL-CLOSED exit 4 by the CLI."""
+
+
+def _independence_line(item: dict) -> str:
+    """One plain-ASCII disclosure line for a validated attestation (HG-12 cut 1).
+
+    Disclosure only — this never affects the verify pass/fail. The `ci` class is
+    forward-compat (not producible via the current CLI; see design §4.1 row 2).
+    """
+    cls, who = item["classification"], item.get("reviewer")
+    if cls == "self-signed":
+        return f"review independence: self-signed (self-review) — {who}"
+    if cls == "independent":
+        return f"review independence: independent — {who}"
+    if cls == "skipped":
+        return f"review independence: skipped — {who}"
+    if cls == "ci":
+        return "review independence: ci"
+    return 'review independence: unattributed (legacy "cli" placeholder)'
 
 
 @click.group("attest")
@@ -139,11 +158,23 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
         sys.exit(EXIT_EXTERNAL_TOOL)  # FAIL-CLOSED — never a vacuous pass
 
     verdict = verify_attestations(root, parse_name_status(raw))
+    # HG-12 cut 1: disclose review independence for each validated (newly-ADDED,
+    # scope-covering) attestation. Disclosure only — never changes pass/fail.
+    independence = [
+        {
+            "slug": slug,
+            **independence_for_attestation(
+                root / ATTESTATIONS_DIRNAME / f"{slug}.jsonl"
+            )["code_review"],
+        }
+        for slug in verdict.attestations
+    ]
     data: dict[str, Any] = {
         "subjects": verdict.subjects,
         "covered": verdict.covered,
         "attestations": verdict.attestations,
         "blockers": verdict.blockers,
+        "independence": independence,
     }
     if ctx.obj.get("json"):
         click.echo(
@@ -155,17 +186,23 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
                 errors=[{"code": "validation", "message": b} for b in verdict.blockers],
             )
         )
-    elif verdict.ok:
-        if not ctx.obj.get("quiet"):
-            click.echo(f"attest verify: PASS ({len(verdict.subjects)} file(s) covered)")
     else:
-        click.echo(
-            format_error(
-                subcommand="attest verify",
-                message=f"{len(verdict.blockers)} blocker(s):\n  - "
-                + "\n  - ".join(verdict.blockers),
-                hint="Each changed file must be in a complete lifecycle attestation's scope.",
-            ),
-            err=True,
-        )
+        # Human path only — disclosure lines must NEVER print before the `--json`
+        # branch or they would corrupt the single-line JSON envelope.
+        if not ctx.obj.get("quiet"):
+            for item in independence:
+                click.echo(_independence_line(item))
+        if verdict.ok:
+            if not ctx.obj.get("quiet"):
+                click.echo(f"attest verify: PASS ({len(verdict.subjects)} file(s) covered)")
+        else:
+            click.echo(
+                format_error(
+                    subcommand="attest verify",
+                    message=f"{len(verdict.blockers)} blocker(s):\n  - "
+                    + "\n  - ".join(verdict.blockers),
+                    hint="Each changed file must be in a complete lifecycle attestation's scope.",
+                ),
+                err=True,
+            )
     sys.exit(EXIT_OK if verdict.ok else EXIT_VALIDATION)
