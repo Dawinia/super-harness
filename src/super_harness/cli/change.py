@@ -41,6 +41,7 @@ from super_harness.cli.output import json_envelope
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.events import Actor, Event, EventSchemaError, parse_event_line
+from super_harness.core.identity import resolve_identity
 from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
@@ -60,11 +61,6 @@ from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 # same tail length and the agent's context window is predictable.
 _RESUME_RECENT_EVENT_LIMIT = 20
 
-# TODO(post-v0.1): distinguish CLI invocations by user (getpass.getuser()) or
-# session id for multi-operator audit trails. v0.1 = single "cli" identifier
-# is used for every `Actor(type="human", identifier="cli")` below.
-
-
 @click.group("change")
 def change_group() -> None:
     """Declare / abandon / list lifecycle changes."""
@@ -80,8 +76,18 @@ def change_group() -> None:
     help="Framework label recorded on the event "
     "(v0.1: no-op placeholder; framework adapters auto-detect at observe time.)",
 )
+@click.option(
+    "--as",
+    "as_identity",
+    default=None,
+    help="Author identity recorded on the event "
+    "(default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`).",
+)
 @click.pass_context
-def start(ctx: click.Context, slug: str, description: str, framework: str) -> None:
+def start(
+    ctx: click.Context, slug: str, description: str, framework: str,
+    as_identity: str | None,
+) -> None:
     """Declare a new change by emitting `intent_declared`."""
     # Slug validation runs BEFORE find_harness_root so users get a fast,
     # location-independent error on a bad slug regardless of cwd.
@@ -110,7 +116,7 @@ def start(ctx: click.Context, slug: str, description: str, framework: str) -> No
         type="intent_declared",
         change_id=slug,
         timestamp=utc_now_iso(),
-        actor=Actor(type="human", identifier="cli"),
+        actor=Actor(type="human", identifier=resolve_identity(root, as_identity)),
         framework=framework,  # type: ignore[arg-type]  # click.Choice restricts to Framework
         payload={"description": description or slug},
     )

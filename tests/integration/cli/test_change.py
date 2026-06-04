@@ -427,3 +427,35 @@ def test_change_resume_explicit_unknown_slug_still_exits_2(tmp_path: Path):
     )
     assert r.exit_code == 2
     assert "ch-missing" in r.stderr
+
+
+# --- HG-12 cut 1: author identity on intent_declared ------------------------- #
+def _last_event(tmp_path: Path, *, type: str, change_id: str):
+    lines = (tmp_path / ".harness" / "events.jsonl").read_text().splitlines()
+    evs = [json.loads(x) for x in lines if x.strip()]
+    return [e for e in evs if e["type"] == type and e["change_id"] == change_id][-1]
+
+
+def test_change_start_records_as_identity(tmp_path: Path):
+    _init(tmp_path)
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "change", "start", "feat-x",
+         "--as", "alice@example.com"],
+    )
+    assert r.exit_code == 0
+    ev = _last_event(tmp_path, type="intent_declared", change_id="feat-x")
+    assert ev["actor"]["identifier"] == "alice@example.com"
+
+
+def test_change_start_defaults_via_resolver(tmp_path: Path, monkeypatch):
+    _init(tmp_path)
+    monkeypatch.setattr(
+        "super_harness.cli.change.resolve_identity", lambda ws, override=None: "git@x"
+    )
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "change", "start", "feat-y"]
+    )
+    assert r.exit_code == 0
+    ev = _last_event(tmp_path, type="intent_declared", change_id="feat-y")
+    assert ev["actor"]["identifier"] == "git@x"
