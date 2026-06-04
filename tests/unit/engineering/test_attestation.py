@@ -14,7 +14,9 @@ from super_harness.engineering.attestation import (
     DiffEntry,
     canonical_path,
     check_attestation,
+    derive_independence,
     extract_change_events,
+    independence_for_attestation,
     parse_name_status,
     verify_attestations,
     write_attestation,
@@ -289,3 +291,95 @@ def test_verify_empty_scope_attestation_covers_nothing(tmp_path):
     v = verify_attestations(tmp_path, diff)
     assert not v.ok
     assert any("src/x.py" in b for b in v.blockers)
+
+
+# --------------------------------------------------------------------------- #
+# HG-12 cut 1: derive_independence truth table + independence_for_attestation
+# --------------------------------------------------------------------------- #
+def _ev(t: str, ident: str, atype: str = "human", payload: dict | None = None) -> Event:
+    return Event(
+        event_id="e", type=t, change_id="c", timestamp="2026-06-04T00:00:00Z",
+        actor=Actor(type=atype, identifier=ident), framework="plain",
+        payload=payload or {},
+    )
+
+
+def test_independence_independent_when_reviewer_differs() -> None:
+    evs = [_ev("intent_declared", "alice@x"), _ev("code_review_passed", "bob@x")]
+    r = derive_independence(evs)["code_review"]
+    assert r["classification"] == "independent"
+    assert r["reviewer"] == "bob@x"
+
+
+def test_independence_self_signed_when_same_identity() -> None:
+    evs = [_ev("intent_declared", "alice@x"), _ev("code_review_passed", "alice@x")]
+    assert derive_independence(evs)["code_review"]["classification"] == "self-signed"
+
+
+def test_independence_skipped_marker_overrides_identity_match() -> None:
+    evs = [_ev("intent_declared", "alice@x"),
+           _ev("code_review_passed", "alice@x", payload={"skipped": True})]
+    assert derive_independence(evs)["code_review"]["classification"] == "skipped"
+
+
+def test_independence_ci_forward_compat_via_constructed_event() -> None:
+    evs = [_ev("intent_declared", "alice@x"),
+           _ev("code_review_passed", "ci-runner", atype="ci")]
+    assert derive_independence(evs)["code_review"]["classification"] == "ci"
+
+
+def test_independence_unattributed_when_author_is_cli() -> None:
+    evs = [_ev("intent_declared", "cli"), _ev("code_review_passed", "bob@x")]
+    assert derive_independence(evs)["code_review"]["classification"] == "unattributed"
+
+
+def test_independence_unattributed_when_reviewer_is_cli() -> None:
+    evs = [_ev("intent_declared", "alice@x"), _ev("code_review_passed", "cli")]
+    assert derive_independence(evs)["code_review"]["classification"] == "unattributed"
+
+
+def test_independence_unattributed_legacy_cli_pair_not_selfsigned() -> None:
+    evs = [_ev("intent_declared", "cli"), _ev("code_review_passed", "cli")]
+    assert derive_independence(evs)["code_review"]["classification"] == "unattributed"
+
+
+def test_independence_unattributed_when_no_code_review() -> None:
+    evs = [_ev("intent_declared", "alice@x")]
+    assert derive_independence(evs)["code_review"]["classification"] == "unattributed"
+
+
+def test_independence_last_code_review_passed_wins() -> None:
+    evs = [_ev("intent_declared", "alice@x"),
+           _ev("code_review_passed", "alice@x"),   # reject cycle, then:
+           _ev("code_review_passed", "bob@x")]
+    r = derive_independence(evs)["code_review"]
+    assert r["classification"] == "independent"
+    assert r["reviewer"] == "bob@x"
+
+
+def test_independence_for_attestation_reads_file(tmp_path: Path) -> None:
+    p = tmp_path / "a.jsonl"
+    p.write_text(
+        json.dumps({"event_id": "e", "type": "intent_declared", "change_id": "c",
+                    "timestamp": "t", "actor": {"type": "human", "identifier": "alice@x"},
+                    "framework": "plain", "payload": {}}) + "\n"
+        + json.dumps({"event_id": "e", "type": "code_review_passed", "change_id": "c",
+                      "timestamp": "t", "actor": {"type": "human", "identifier": "bob@x"},
+                      "framework": "plain", "payload": {}}) + "\n"
+    )
+    assert independence_for_attestation(p)["code_review"]["classification"] == "independent"
+
+
+def test_independence_for_attestation_tolerates_malformed_line(tmp_path: Path) -> None:
+    p = tmp_path / "a.jsonl"
+    p.write_text(
+        json.dumps({"event_id": "e", "type": "intent_declared", "change_id": "c",
+                    "timestamp": "t", "actor": {"type": "human", "identifier": "alice@x"},
+                    "framework": "plain", "payload": {}}) + "\n"
+        + "{ this is not valid json\n"
+        + json.dumps({"event_id": "e", "type": "code_review_passed", "change_id": "c",
+                      "timestamp": "t", "actor": {"type": "human", "identifier": "bob@x"},
+                      "framework": "plain", "payload": {}}) + "\n"
+    )
+    # tolerant parse: malformed line skipped, never raises
+    assert independence_for_attestation(p)["code_review"]["classification"] == "independent"
