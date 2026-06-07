@@ -1,11 +1,12 @@
 # Design: Decision-conformance governance — what super-harness actually guards
 
 Date: 2026-06-05
-Status: converged (brainstorm) — the *concept* is coherent. The three **serious**
-gaps (upper links / false-positive flood / checkability) now have first-cut designs
-(§12, 2026-06-08); three **medium** gaps remain open (§11.4–6). Still
-**engineering-incomplete** and not an implementation plan (no TDD / task breakdown).
-Supersedes the open question parked in memory `project-next-doc-code-harness`.
+Status: converged (brainstorm) — design-time gaps closed at first-cut level (§12):
+the serious 3 (upper links / false-positive flood / checkability) + the conceptual
+half of #4 (attention routing); #5 subsumed by §12.2–3; #6 (migration) deferred to
+build. Still **engineering-incomplete** — first cuts carry residuals and there is no
+implementation plan (no TDD / task breakdown) yet. Supersedes the open question parked
+in memory `project-next-doc-code-harness`.
 Reframes `private/INTENT-VS-BUILT.md` intent ② and the existing `@capability`
 anchor machinery (see §8).
 
@@ -343,7 +344,7 @@ un-designed. Worst first.
    for how concrete a decision must be to be anchorable. Too-vague decisions = the
    34-dangling problem wearing a ratification stamp.
 
-**Fuzzy but not fatal:**
+**Fuzzy but not fatal** (#4 conceptual half → §12.4; #5 subsumed by §12.2–3; #6 deferred to build):
 
 4. **Ratification mechanics + AI-controls-attention.** The human's actual ratify
    *action* is unspecified (§7.1 says how identity is *recorded*, not the act). And
@@ -435,3 +436,42 @@ reviewable beats a prose "I checked"); **important-but-inherently-fuzzy decision
 ("intuitive API", "elegant") get the weakest enforcement** — unavoidable; and **watch
 the hard-anchor : context ratio** — if most decisions fall to "context", the system has
 silently gone mostly-advisory.
+
+### 12.4 Attention routing must not be AI-controlled (conceptual half of §11.4)
+
+The model rests on "human judgment is the ground truth" — but if the AI flags which
+decisions the human should scrutinize ("these are load-bearing, bulk-approve the rest"),
+the unreliable element controls the overseer's attention: under-flag a bad decision and
+it slips through bulk-approval. Fix: **the AI must not own the human's attention budget.**
+
+- **The AI's flag may only add emphasis — never auto-approve or hide.** Every decision
+  still needs an explicit human ratification; there is no AI-triggerable "silent
+  bulk-pass." Under-flagging can fail to highlight, but cannot remove a decision from the
+  ratification queue.
+- **Scrutiny routing is driven by mechanical signals the AI does not control**, not its
+  opinion:
+  - **Overriding a prior ratified decision = top priority, and is mechanically detected**
+    (the §12.3 / §7.2 re-ratification lock). Overturning past human judgment always
+    surfaces, regardless of AI flagging.
+  - **An uncheckable (rung-3) decision escalates to *more* human attention, not less** —
+    the machine cannot guard it, so "the AI could not write a check" is itself a
+    call-the-human signal (inverts the tendency to ignore the fuzzy ones).
+  - plus blast radius (many sites), sensitive category (auth/data/money), no-precedent
+    novelty.
+- **Independent second-opinion on the flagging** (fresh agent / CI reviewer: "anything
+  risky under-flagged?") as a cost-raising backstop.
+
+Two load-bearing inversions: **uncheckable → more eyes** (not fewer); **overriding a
+prior decision always surfaces** (mechanical, AI cannot suppress).
+
+*Honest limit:* still cannot force the human to actually look (they can rubber-stamp a
+clearly-flagged danger — the bedrock human ceiling). But the AI's lever to route
+attention *away* from danger is removed; the residual is "the human chose not to look at
+a visibly-flagged risk" — on the human, visible, not hidden by the AI.
+
+**Disposition of the other medium gaps:** the rest of §11.4 (the human's concrete ratify
+*action* — command / UI) is deferred to build time. §11.5 (hard-vs-soft coverage) is
+subsumed by §12.2–§12.3 — the hard slice *grows* as decisions are made checkable, so it
+is a ratio to watch (§12.3), not a mechanism to design. §11.6 (migration) is deferred to
+build (must be done against the real codebase). **Design-time brainstorm closed here;
+remaining work is build-time.**
