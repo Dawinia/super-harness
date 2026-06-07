@@ -1,10 +1,10 @@
 # Design: Decision-conformance governance — what super-harness actually guards
 
 Date: 2026-06-05
-Status: converged (brainstorm) — the *concept* is coherent, but
-**engineering-incomplete**: see §11 for known gaps (incl. the upper Spec↔Plan /
-Plan↔Code links, still un-designed). The three mechanism pieces (§7) are sketched at
-concept level, not airtight. Not an implementation plan (no TDD / task breakdown).
+Status: converged (brainstorm) — the *concept* is coherent. The three **serious**
+gaps (upper links / false-positive flood / checkability) now have first-cut designs
+(§12, 2026-06-08); three **medium** gaps remain open (§11.4–6). Still
+**engineering-incomplete** and not an implementation plan (no TDD / task breakdown).
 Supersedes the open question parked in memory `project-next-doc-code-harness`.
 Reframes `private/INTENT-VS-BUILT.md` intent ② and the existing `@capability`
 anchor machinery (see §8).
@@ -321,7 +321,7 @@ bedrock ceiling.)
 The *concept* is coherent, but several engineering pieces are still fuzzy or
 un-designed. Worst first.
 
-**Could break the design:**
+**Could break the design** (first cuts now in §12, 2026-06-08):
 
 1. **Upper links (Spec↔Plan, Plan↔Code) are not actually designed.** §2 asserts
    "same pattern"; §3–§7 only worked out the *lower* links (code↔decision,
@@ -360,3 +360,78 @@ un-designed. Worst first.
 
 Tracked in `private/OPEN-ITEMS.md` #7. The design is **conceptual-complete,
 engineering-incomplete** — §1–§10 describe the intended shape, not a built/airtight one.
+
+## 12. First cuts for the three serious gaps (2026-06-08)
+
+Worked out in brainstorm; these resolve §11.1–§11.3 at concept level (residuals noted).
+
+### 12.1 Upper links (Spec↔Plan, Plan↔Code) — same thread, one layer up
+
+Not a new mechanism: **everything threads on the decision.** The Plan is
+decision-tagged like code/doc — each plan-item declares "I elaborate decision D" — so
+the same three signals apply at the Plan layer:
+- dangling up: a plan-item cites a non-ratified `D` → illegal.
+- **dangling down: a ratified decision with no plan-item → silently dropped — this is
+  MECHANICAL** (set difference: ratified decisions vs decisions-with-a-plan-item). So
+  "does the Plan cover the whole Spec?" — which felt inferential — is a hard check.
+- changed → re-check that the plan-item still elaborates `D`.
+
+Refinements:
+- **Decisions are minted at both layers:** the Spec holds what/why decisions; the Plan
+  mints its own *how* decisions (library, structure), human-ratified at plan time. A
+  decision is born where the human ratifies that choice and threads downward.
+- **Architecture-fitness folds in:** "the architecture" is a *class of decisions*
+  ("layered, no upward imports"); "fits architecture" = passes the betrayal check
+  against arch-type decisions. No separate architecture subsystem.
+- **Plan↔Code needs no separate anchor:** both point at the same decisions. "Code
+  implements plan" = code-review against those decisions (inferential); "every plan
+  decision has code" = mechanical dangling-down again.
+
+The win: **silent-drop of a decision (decided but never planned/built) is caught
+mechanically at every layer** — the most valuable thing, and it is *hard*. Residual
+(soft): "plan-item correctly elaborates D" / "code correctly implements plan" is
+inferential (rubber-stamp ceiling) — the mechanical check catches "nobody even claimed
+to do it", not "claimed but did it wrong/hollow." Leans on §12.2 / §12.3.
+
+### 12.2 False-positive flood — watch the rule, not the bytes
+
+The flood comes from the weakest signal ("text changed"). Fix = a signal-strength
+ladder; push decisions to the top rung:
+1. **Decision has an executable check** (test / structural rule / lint): a change fires
+   only when the check *fails*. **No flood**; many-to-many dissolves (one global
+   invariant covers N sites; one site's edit runs only the relevant checks). This is
+   the target — a link should *prefer* an executable check. *(This adds a third checker
+   kind to §5: the executable invariant, beside regen-and-diff.)*
+2. **No invariant, tight anchor:** tag the narrowest stable region; normalize (ignore
+   formatting/comments/internal renames) before diffing. Less noise, not zero.
+3. **Pure rationale:** a cheap relevance-filter absorbs the flood (escalate only "maybe
+   relevant") — and these arguably should not hard-gate at all (context, not contract).
+
+Lever: don't "stop the flood" — **minimize the population stuck on weak signals.**
+Residual: an executable check is AI-written → could be hollow (see §12.3 anti-hollow);
+the relevance-filter can false-negative.
+
+### 12.3 Checkability — the decision must arrive with its check
+
+Definition (handed over by §12.2): a decision is "checkable" to the degree you can
+write an executable check for it. **Enforced at birth: the AI must propose the check
+*alongside* the decision; the human ratifies decision + check together.** Outcome by
+what it carries:
+- executable check → **hard anchor** (can block merge).
+- concrete acceptance criterion, no automatable check → **reviewable anchor** (the
+  re-check judges against the criterion, not vibes).
+- nothing checkable → **recorded as context** (surfaced in feedforward), **never
+  gates** — a wish, not a contract.
+
+Birth rule: **no check → no hard anchor.** (Also explains the 34 dangling: no decision
+and no check behind them.)
+
+**Anti-hollow-check lever:** require the check to *demonstrably fail on a
+counterexample* ("show it biting"). An always-pass check is exposed; the runnable
+counterexample is reviewable.
+
+Residuals (honest): check + counterexample are AI-written (can be weak, but runnable /
+reviewable beats a prose "I checked"); **important-but-inherently-fuzzy decisions
+("intuitive API", "elegant") get the weakest enforcement** — unavoidable; and **watch
+the hard-anchor : context ratio** — if most decisions fall to "context", the system has
+silently gone mostly-advisory.
