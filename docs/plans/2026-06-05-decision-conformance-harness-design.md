@@ -1,10 +1,11 @@
 # Design: Decision-conformance governance — what super-harness actually guards
 
 Date: 2026-06-05
-Status: converged (brainstorm) — conceptual design complete, including the three
-mechanism pieces (§7, designed 2026-06-07). Not yet an implementation plan (no TDD /
-task breakdown). Supersedes the open question parked in memory
-`project-next-doc-code-harness`.
+Status: converged (brainstorm) — the *concept* is coherent, but
+**engineering-incomplete**: see §11 for known gaps (incl. the upper Spec↔Plan /
+Plan↔Code links, still un-designed). The three mechanism pieces (§7) are sketched at
+concept level, not airtight. Not an implementation plan (no TDD / task breakdown).
+Supersedes the open question parked in memory `project-next-doc-code-harness`.
 Reframes `private/INTENT-VS-BUILT.md` intent ② and the existing `@capability`
 anchor machinery (see §8).
 
@@ -314,3 +315,48 @@ bedrock ceiling.)
 > back to the human, never laundered. Structure can be welded shut; semantics can
 > only be forced to be re-examined; a determined owner can still bypass — so it welds
 > the floor and leaves a trail, nothing more, nothing less.
+
+## 11. Open / not-yet-clear (honest gaps — do NOT read §1–§10 as "done")
+
+The *concept* is coherent, but several engineering pieces are still fuzzy or
+un-designed. Worst first.
+
+**Could break the design:**
+
+1. **Upper links (Spec↔Plan, Plan↔Code) are not actually designed.** §2 asserts
+   "same pattern"; §3–§7 only worked out the *lower* links (code↔decision,
+   code↔doc). Yet these upper links are the *more valuable* ones (where a human
+   decision is most easily overridden). *(Being dug 2026-06-08. First cut: the Plan
+   is decision-tagged just like code/doc, so the same dangling / changed signals
+   apply one layer up; "Plan covers the whole Spec" = "every ratified decision has a
+   plan-item" is **mechanical** (dangling-down); only "this plan-item correctly
+   elaborates D" + "fits architecture" is the inferential review; and architecture
+   itself is just a *class of decisions*, so arch-fit folds into the same betrayal
+   check against arch-type decisions.)*
+2. **Many-to-many web + false-positive flood.** §3 flags the web but does not solve
+   it. A decision spread over many sites — and a site carrying several decisions —
+   means "tagged code changed → re-check" fires on *every* trivial edit (even a
+   rename), drowning re-checks in noise → rubber-stamp. "Tiered" (§7.2) only gestures
+   at this; the noise / false-positive control is undesigned.
+3. **"Checkability" of a decision is undefined.** A decision is prose; "auth must be
+   stateless" is checkable, "code should be elegant" is a dead anchor. No bar exists
+   for how concrete a decision must be to be anchorable. Too-vague decisions = the
+   34-dangling problem wearing a ratification stamp.
+
+**Fuzzy but not fatal:**
+
+4. **Ratification mechanics + AI-controls-attention.** The human's actual ratify
+   *action* is unspecified (§7.1 says how identity is *recorded*, not the act). And
+   "the AI flags which decisions are load-bearing" is itself an AI judgment —
+   under-flag a risky one and the human bulk-approves it.
+5. **Hard-vs-soft coverage is thinner than it feels.** Only two things are
+   mechanically welded (ground-truth regen-diff; decision-record integrity lock);
+   most decisions are prose → the soft proxy. For the primary user (all-AI + a solo,
+   possibly lazy human) the residual *hard* protection is a narrow band.
+6. **Migration from the current state is undesigned.** Specs don't enumerate
+   decisions, nothing is ratified, 34 `@capability` dangle. Adoption means
+   retro-creating + ratifying decisions for everything — exactly the cost Oracle's
+   `@snippet` "adopt late, when stabilized" warning (§9) is about.
+
+Tracked in `private/OPEN-ITEMS.md` #7. The design is **conceptual-complete,
+engineering-incomplete** — §1–§10 describe the intended shape, not a built/airtight one.
