@@ -147,3 +147,66 @@ def test_show_missing(tmp_path):
     root = _init(tmp_path)
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "show", "d-x"])
     assert r.exit_code == 2
+
+
+import json
+
+
+def test_check_clean_exit0(tmp_path):
+    root = _init(tmp_path)
+    _new_ratified(root, "d-a")
+    (root / "src").mkdir()
+    (root / "src/x.py").write_text("# @decision:d-a\n", encoding="utf-8")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 0, r.output
+
+
+def test_check_dangling_up_exit2(tmp_path):
+    root = _init(tmp_path)
+    (root / "src").mkdir()
+    (root / "src/x.py").write_text("# @decision:d-ghost\n", encoding="utf-8")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 2
+    assert "d-ghost" in r.output
+
+
+def test_check_dangling_down_is_warn_exit0(tmp_path):
+    root = _init(tmp_path)
+    _new_ratified(root, "d-a")  # ratified, no anchor
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 0
+    assert "d-a" in r.output  # warning surfaced
+
+
+def test_check_malformed_exit3(tmp_path):
+    root = _init(tmp_path)
+    (root / "docs/decisions").mkdir(parents=True)
+    (root / "docs/decisions/d-a.md").write_text("no frontmatter\n", encoding="utf-8")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 3
+
+
+def test_check_error_dominates_dangling_up(tmp_path):
+    # precedence: a record error (3) wins over a dangling-up (2)
+    root = _init(tmp_path)
+    (root / "docs/decisions").mkdir(parents=True)
+    (root / "docs/decisions/d-a.md").write_text("no frontmatter\n", encoding="utf-8")
+    (root / "src").mkdir()
+    (root / "src/x.py").write_text("# @decision:d-ghost\n", encoding="utf-8")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 3
+
+
+def test_check_json_envelope(tmp_path):
+    # --json is the GLOBAL flag (root position) → frozen 6-key envelope.
+    root = _init(tmp_path)
+    (root / "src").mkdir()
+    (root / "src/x.py").write_text("# @decision:d-ghost\n", encoding="utf-8")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "--json", "decision", "check"])
+    payload = json.loads(r.output)
+    assert payload["command"] == "decision check"
+    assert payload["status"] == "fail"
+    assert payload["exit_code"] == 2
+    assert payload["data"]["dangling_up"] == [{"id": "d-ghost", "file": "src/x.py", "line": 1}]
+    assert payload["data"]["dangling_down"] == []
+    assert payload["errors"] == []

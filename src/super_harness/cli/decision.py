@@ -11,6 +11,7 @@ from pathlib import Path
 import click
 
 from super_harness.cli.errors import format_error
+from super_harness.cli.output import json_envelope
 from super_harness.core.anchor_scanner import scan_sentinel_locations
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.decision_check import ALWAYS_EXCLUDE, ANCHOR_KEYWORD, run_check
@@ -207,3 +208,55 @@ def show_cmd(ctx: click.Context, decision_id: str) -> None:
     for f, ln in sorted(locs):
         click.echo(f"  {f}:{ln}")
     sys.exit(EXIT_OK)
+
+
+@decision_group.command("check")
+@click.pass_context
+def check_cmd(ctx: click.Context) -> None:
+    """Whole-repo dangling check: up=block(2) / down=warn / record error=3.
+
+    Honors the GLOBAL --json flag (ctx.obj["json"]) → frozen json_envelope shape.
+    """
+    root = _resolve(ctx, "decision check")
+    result = run_check(root)
+    if result.errors:
+        exit_code, status = EXIT_NO_CONFIG, "fail"
+    elif result.dangling_up:
+        exit_code, status = EXIT_VALIDATION, "fail"
+    elif result.dangling_down:
+        exit_code, status = EXIT_OK, "warning"
+    else:
+        exit_code, status = EXIT_OK, "pass"
+
+    if ctx.obj.get("json"):
+        click.echo(
+            json_envelope(
+                command="decision check",
+                status=status,
+                exit_code=exit_code,
+                data={
+                    "dangling_up": [
+                        {"id": d.id, "file": d.file, "line": d.line}
+                        for d in result.dangling_up
+                    ],
+                    "dangling_down": list(result.dangling_down),
+                },
+                errors=[
+                    {"code": e.kind, "message": e.detail, "file": e.file}
+                    for e in result.errors
+                ],
+            )
+        )
+    else:
+        for e in result.errors:
+            click.echo(f"ERROR [{e.kind}] {e.file}: {e.detail}", err=True)
+        for d in result.dangling_up:
+            click.echo(
+                f"DANGLING-UP {d.file}:{d.line} @decision:{d.id} (no ratified decision)",
+                err=True,
+            )
+        for did in result.dangling_down:
+            click.echo(f"warning: dangling-down {did} (ratified, no code anchor)")
+        if status == "pass":
+            click.echo("decision check: clean")
+    sys.exit(exit_code)
