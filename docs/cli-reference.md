@@ -331,6 +331,138 @@ super-harness daemon stop [OPTIONS]
 - `0` stopped
 - `1` generic error
 
+## super-harness decision
+
+Author, ratify, and check decision records.
+
+```
+super-harness decision COMMAND [ARGS...]
+```
+
+## super-harness decision check
+
+Whole-repo dangling check: up=block(2) / down=warn / record error=3.
+
+```
+super-harness decision check [OPTIONS]
+```
+
+**Exit codes:**
+
+- `0` clean, or only dangling-down warnings
+- `2` one or more dangling-up anchors (gate violation)
+- `3` record/config error (duplicate id / malformed record) or no `.harness/`
+
+## super-harness decision list
+
+List decisions (optionally filtered); --dangling shows the down set.
+
+```
+super-harness decision list [OPTIONS]
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `--status` | {proposed\|ratified\|superseded\|retired} | — |  |
+| `--dangling` | flag | `False` | Show ratified decisions with no code anchor. |
+
+**Exit codes:**
+
+- `0` success
+- `3` no `.harness/`
+
+## super-harness decision new
+
+Create a `proposed` decision at docs/decisions/<id>.md.
+
+```
+super-harness decision new [OPTIONS] DECISION_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `DECISION_ID` | text | *required* |  |
+| `--text` | text | *required* | One-line decision. |
+
+**Exit codes:**
+
+- `0` success
+- `2` invalid id, or id already exists (case-folded)
+- `3` no `.harness/` (run `init` first)
+
+## super-harness decision ratify
+
+Mark a proposed decision ratified (stamps who/when). Ratifies only this one.
+
+```
+super-harness decision ratify [OPTIONS] DECISION_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `DECISION_ID` | text | *required* |  |
+
+**Exit codes:**
+
+- `0` success
+- `2` no such decision, or not in `proposed` state
+- `3` no `.harness/`
+
+## super-harness decision retire
+
+Retire a decision (tombstone): no successor, not anchorable, not dangling-down.
+
+```
+super-harness decision retire [OPTIONS] DECISION_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `DECISION_ID` | text | *required* |  |
+
+**Exit codes:**
+
+- `0` success
+- `2` no such decision
+- `3` no `.harness/`
+
+## super-harness decision show
+
+Show a decision's fields + the code anchors currently pointing at it.
+
+```
+super-harness decision show [OPTIONS] DECISION_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `DECISION_ID` | text | *required* |  |
+
+**Exit codes:**
+
+- `0` success
+- `2` no such decision
+- `3` no `.harness/`
+
+## super-harness decision supersede
+
+Retire <old_id> in favor of a ratified <new_id>; link both directions.
+
+```
+super-harness decision supersede [OPTIONS] OLD_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `OLD_ID` | text | *required* |  |
+| `--by` | text | *required* | The ratified successor id. |
+
+**Exit codes:**
+
+- `0` success
+- `2` missing decision, or successor not ratified
+- `3` no `.harness/`
+
 ## super-harness done
 
 Verify a change and emit implementation_complete on a pass.

@@ -156,3 +156,20 @@ jobs:
           else
             super-harness on-merge --commit "$COMMIT_SHA"
           fi
+
+  # Decision-conformance dangling check (referential integrity): block anchors
+  # that name no ratified decision; warn on ratified decisions with no code.
+  # Mark this required in branch protection for it to actually block.
+  decision-check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: Install super-harness
+        run: pipx install super-harness==0.1.0
+      - name: Decision conformance (dangling check)
+        run: super-harness decision check

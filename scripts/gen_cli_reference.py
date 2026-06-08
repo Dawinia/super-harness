@@ -217,6 +217,33 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`0` running",
         "`1` stopped or stale PID",
     ],
+    "decision new": [
+        "`0` success",
+        "`2` invalid id, or id already exists (case-folded)",
+        "`3` no `.harness/` (run `init` first)",
+    ],
+    "decision ratify": [
+        "`0` success",
+        "`2` no such decision, or not in `proposed` state",
+        "`3` no `.harness/`",
+    ],
+    "decision supersede": [
+        "`0` success",
+        "`2` missing decision, or successor not ratified",
+        "`3` no `.harness/`",
+    ],
+    "decision retire": [
+        "`0` success",
+        "`2` no such decision",
+        "`3` no `.harness/`",
+    ],
+    "decision list": ["`0` success", "`3` no `.harness/`"],
+    "decision show": ["`0` success", "`2` no such decision", "`3` no `.harness/`"],
+    "decision check": [
+        "`0` clean, or only dangling-down warnings",
+        "`2` one or more dangling-up anchors (gate violation)",
+        "`3` record/config error (duplicate id / malformed record) or no `.harness/`",
+    ],
 }
 
 
