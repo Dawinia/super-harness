@@ -81,3 +81,38 @@ def new_cmd(ctx: click.Context, decision_id: str, text: str) -> None:
     write_decision(d)
     click.echo(f"created {d.path.relative_to(root)} (proposed)")
     sys.exit(EXIT_OK)
+
+
+def _load_one(root: Path, sub: str, decision_id: str) -> Decision:
+    path = decisions_dir(root) / f"{decision_id}.md"
+    if not path.is_file():
+        click.echo(
+            format_error(subcommand=sub, message=f"no decision {decision_id!r}",
+                         hint="Run `decision list` to see ids."),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    return parse_decision_file(path)
+
+
+@decision_group.command("ratify")
+@click.argument("decision_id")
+@click.pass_context
+def ratify_cmd(ctx: click.Context, decision_id: str) -> None:
+    """Mark a proposed decision ratified (stamps who/when). Ratifies only this one."""
+    root = _resolve(ctx, "decision ratify")
+    d = _load_one(root, "decision ratify", decision_id)
+    if d.status != "proposed":
+        click.echo(
+            format_error(subcommand="decision ratify",
+                         message=f"{decision_id!r} is {d.status}, not proposed",
+                         hint="Only a proposed decision can be ratified."),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    d.status = "ratified"
+    d.ratified_by = resolve_identity(root)
+    d.ratified_at = utc_now_iso()
+    write_decision(d)
+    click.echo(f"ratified {decision_id} (by {d.ratified_by})")
+    sys.exit(EXIT_OK)
