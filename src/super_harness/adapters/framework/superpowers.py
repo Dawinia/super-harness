@@ -16,6 +16,7 @@ from typing import Any, ClassVar
 import yaml
 
 from super_harness.adapters import FrameworkAdapter
+from super_harness.core.frontmatter import split_frontmatter
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.events import (
     Actor,
@@ -48,20 +49,8 @@ def _parse_frontmatter(text: str) -> dict[str, Any]:
     error, or frontmatter that is not a mapping (e.g. a list/scalar). Never
     raises — a malformed artifact must not crash the read-only scan.
     """
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            block = "\n".join(lines[1:i])
-            break
-    else:
-        return {}  # no closing fence
-    try:
-        data = yaml.safe_load(block)
-    except yaml.YAMLError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    parsed = split_frontmatter(text)
+    return parsed[0] if parsed is not None else {}
 
 
 def _iter_marked(workspace: Path) -> Iterator[tuple[Path, dict[str, Any], str]]:
