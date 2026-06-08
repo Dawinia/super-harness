@@ -40,6 +40,8 @@ class CheckResult:
 
 def run_check(workspace_root: Path) -> CheckResult:
     decisions, errors = load_decisions(workspace_root)
+    if errors:
+        return CheckResult(dangling_up=[], dangling_down=[], errors=errors)
     ratified = {d.id for d in decisions if d.status == "ratified"}
 
     include, exclude = load_source_scope(workspace_root)

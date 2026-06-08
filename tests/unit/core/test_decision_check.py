@@ -60,6 +60,7 @@ def test_errors_surface(tmp_path):
     _w(tmp_path / "docs/decisions/d-a.md", "no frontmatter\n")
     r = run_check(tmp_path)
     assert len(r.errors) == 1 and r.ok is False
+    assert r.dangling_up == [] and r.dangling_down == []
 
 
 def test_docs_decisions_never_self_match(tmp_path):
