@@ -72,14 +72,14 @@ def test_load_reports_malformed(tmp_path):
     assert len(errors) == 1 and errors[0].kind == "malformed"
 
 
-def test_load_reports_casefolded_duplicate(tmp_path):
-    # On a case-sensitive FS both files exist; ids collide under casefold.
+def test_load_reports_casefolded_collision(tmp_path):
+    # case-sensitive FS: both exist -> duplicate_id. case-insensitive FS: second
+    # write overwrites first (stem != id) -> malformed. Either way: collision
+    # suppressed (no valid decision) and an error reported.
     _write(tmp_path / "docs/decisions/d-a.md", "---\nid: d-a\nstatus: proposed\n---\na\n")
     _write(tmp_path / "docs/decisions/d-A.md", "---\nid: d-A\nstatus: proposed\n---\na\n")
     decisions, errors = load_decisions(tmp_path)
-    kinds = {e.kind for e in errors}
-    # d-A is rejected: invalid uppercase id (malformed) — still an error, gate blocks.
-    assert errors and "malformed" in kinds
+    assert decisions == [] and errors
 
 
 def test_load_missing_dir_is_empty(tmp_path):

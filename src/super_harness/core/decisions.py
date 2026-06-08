@@ -82,28 +82,47 @@ def load_decisions(workspace_root: Path) -> tuple[list[Decision], list[RecordErr
     errors: list[RecordError] = []
     if not ddir.is_dir():
         return decisions, errors
-    seen: dict[str, str] = {}
-    for p in sorted(ddir.glob("*.md")):
-        if p.name in _RESERVED_NAMES or p.name.startswith(("_", ".")):
+
+    # Build candidate list (same exclusion rules as before).
+    candidates = [
+        p
+        for p in sorted(ddir.glob("*.md"))
+        if p.name not in _RESERVED_NAMES and not p.name.startswith(("_", "."))
+    ]
+
+    # Group by casefolded stem BEFORE parsing so collisions are detectable
+    # even on case-insensitive filesystems where only one of the two files
+    # survives the write.
+    from collections import defaultdict
+
+    groups: dict[str, list[Path]] = defaultdict(list)
+    for p in candidates:
+        groups[p.stem.casefold()].append(p)
+
+    # Iterate groups in sorted key order for deterministic output.
+    for cf_key in sorted(groups):
+        group = groups[cf_key]
+        if len(group) > 1:
+            first = group[0]
+            rel = str(first.relative_to(workspace_root))
+            filenames = ", ".join(sorted(p.name for p in group))
+            errors.append(
+                RecordError(
+                    kind="duplicate_id",
+                    id=first.stem,
+                    file=rel,
+                    detail=f"case-folded filename collision: {filenames}",
+                )
+            )
             continue
+        # Singleton group — parse normally.
+        p = group[0]
         rel = str(p.relative_to(workspace_root))
         try:
             d = parse_decision_file(p)
         except (ValueError, OSError, yaml.YAMLError) as e:
             errors.append(RecordError(kind="malformed", file=rel, detail=str(e)))
             continue
-        cf = d.id.casefold()
-        if cf in seen:
-            errors.append(
-                RecordError(
-                    kind="duplicate_id",
-                    id=d.id,
-                    file=rel,
-                    detail=f"duplicate (case-folded) of {seen[cf]!r}",
-                )
-            )
-            continue
-        seen[cf] = d.id
         decisions.append(d)
     return decisions, errors
 
@@ -119,6 +138,7 @@ def serialize_decision(decision: Decision) -> str:
 
 
 def write_decision(decision: Decision) -> None:
-    assert decision.path is not None
+    if decision.path is None:
+        raise ValueError("write_decision requires decision.path to be set")
     decision.path.parent.mkdir(parents=True, exist_ok=True)
     decision.path.write_text(serialize_decision(decision), encoding="utf-8")
