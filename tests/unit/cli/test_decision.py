@@ -63,3 +63,30 @@ def test_ratify_only_from_proposed(tmp_path):
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
     assert r.exit_code == 2  # already ratified
+
+
+def _new_ratified(root, did):
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", did, "--text", "x"])
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", did])
+
+
+def test_supersede_links_both(tmp_path):
+    root = _init(tmp_path)
+    _new_ratified(root, "d-old")
+    _new_ratified(root, "d-new")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision",
+                                  "supersede", "d-old", "--by", "d-new"])
+    assert r.exit_code == 0, r.output
+    old = (root / "docs/decisions/d-old.md").read_text()
+    new = (root / "docs/decisions/d-new.md").read_text()
+    assert "status: superseded" in old and "superseded_by: d-new" in old
+    assert "supersedes: d-old" in new
+
+
+def test_supersede_requires_ratified_successor(tmp_path):
+    root = _init(tmp_path)
+    _new_ratified(root, "d-old")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-new", "--text", "x"])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision",
+                                  "supersede", "d-old", "--by", "d-new"])
+    assert r.exit_code == 2  # d-new not ratified

@@ -116,3 +116,29 @@ def ratify_cmd(ctx: click.Context, decision_id: str) -> None:
     write_decision(d)
     click.echo(f"ratified {decision_id} (by {d.ratified_by})")
     sys.exit(EXIT_OK)
+
+
+@decision_group.command("supersede")
+@click.argument("old_id")
+@click.option("--by", "new_id", required=True, help="The ratified successor id.")
+@click.pass_context
+def supersede_cmd(ctx: click.Context, old_id: str, new_id: str) -> None:
+    """Retire <old_id> in favor of a ratified <new_id>; link both directions."""
+    root = _resolve(ctx, "decision supersede")
+    old = _load_one(root, "decision supersede", old_id)
+    new = _load_one(root, "decision supersede", new_id)
+    if new.status != "ratified":
+        click.echo(
+            format_error(subcommand="decision supersede",
+                         message=f"successor {new_id!r} is {new.status}, not ratified",
+                         hint="Ratify the successor first."),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    old.status = "superseded"
+    old.superseded_by = new_id
+    new.supersedes = old_id
+    write_decision(old)
+    write_decision(new)
+    click.echo(f"superseded {old_id} by {new_id}")
+    sys.exit(EXIT_OK)
