@@ -43,8 +43,6 @@ import subprocess
 from fnmatch import fnmatch
 from pathlib import Path
 
-_SENTINEL_RE = re.compile(r"@capability:([A-Za-z0-9_-]+)")
-
 # Glob patterns that we treat as "match every file" (avoids `**` quirks in
 # fnmatch / PurePath.match on Python 3.10-3.13).
 _MATCH_ALL_GLOBS = frozenset({"**/*", "**"})
