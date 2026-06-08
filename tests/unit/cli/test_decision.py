@@ -104,3 +104,29 @@ def test_retire_missing(tmp_path):
     root = _init(tmp_path)
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "retire", "d-x"])
     assert r.exit_code == 2
+
+
+def test_list_shows_status(tmp_path):
+    root = _init(tmp_path)
+    _new_ratified(root, "d-a")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-b", "--text", "x"])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "list"])
+    assert r.exit_code == 0
+    assert "d-a" in r.output and "ratified" in r.output
+    assert "d-b" in r.output and "proposed" in r.output
+
+
+def test_list_filter_status(tmp_path):
+    root = _init(tmp_path)
+    _new_ratified(root, "d-a")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-b", "--text", "x"])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "list",
+                                  "--status", "proposed"])
+    assert "d-b" in r.output and "d-a" not in r.output
+
+
+def test_list_dangling_shows_down(tmp_path):
+    root = _init(tmp_path)
+    _new_ratified(root, "d-a")  # ratified, no anchor → dangling down
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "list", "--dangling"])
+    assert r.exit_code == 0 and "d-a" in r.output

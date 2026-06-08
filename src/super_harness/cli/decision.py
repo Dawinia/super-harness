@@ -12,10 +12,12 @@ import click
 
 from super_harness.cli.errors import format_error
 from super_harness.core.clock import utc_now_iso
+from super_harness.core.decision_check import run_check
 from super_harness.core.decisions import (
     Decision,
     decisions_dir,
     is_valid_id,
+    load_decisions,
     parse_decision_file,
     write_decision,
 )
@@ -154,4 +156,24 @@ def retire_cmd(ctx: click.Context, decision_id: str) -> None:
     d.status = "retired"
     write_decision(d)
     click.echo(f"retired {decision_id}")
+    sys.exit(EXIT_OK)
+
+
+@decision_group.command("list")
+@click.option("--status", "status_filter", default=None,
+              type=click.Choice(["proposed", "ratified", "superseded", "retired"]))
+@click.option("--dangling", is_flag=True, help="Show ratified decisions with no code anchor.")
+@click.pass_context
+def list_cmd(ctx: click.Context, status_filter: str | None, dangling: bool) -> None:
+    """List decisions (optionally filtered); --dangling shows the down set."""
+    root = _resolve(ctx, "decision list")
+    if dangling:
+        for did in run_check(root).dangling_down:
+            click.echo(f"{did}\tdangling-down")
+        sys.exit(EXIT_OK)
+    decisions, _ = load_decisions(root)
+    for d in sorted(decisions, key=lambda x: x.id):
+        if status_filter and d.status != status_filter:
+            continue
+        click.echo(f"{d.id}\t{d.status}")
     sys.exit(EXIT_OK)
