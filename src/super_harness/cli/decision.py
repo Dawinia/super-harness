@@ -11,8 +11,9 @@ from pathlib import Path
 import click
 
 from super_harness.cli.errors import format_error
+from super_harness.core.anchor_scanner import scan_sentinel_locations
 from super_harness.core.clock import utc_now_iso
-from super_harness.core.decision_check import run_check
+from super_harness.core.decision_check import ALWAYS_EXCLUDE, ANCHOR_KEYWORD, run_check
 from super_harness.core.decisions import (
     Decision,
     decisions_dir,
@@ -23,6 +24,7 @@ from super_harness.core.decisions import (
 )
 from super_harness.core.identity import resolve_identity
 from super_harness.core.paths import HarnessNotInitialized, find_harness_root
+from super_harness.core.source_scope import load_source_scope
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
 
@@ -176,4 +178,32 @@ def list_cmd(ctx: click.Context, status_filter: str | None, dangling: bool) -> N
         if status_filter and d.status != status_filter:
             continue
         click.echo(f"{d.id}\t{d.status}")
+    sys.exit(EXIT_OK)
+
+
+@decision_group.command("show")
+@click.argument("decision_id")
+@click.pass_context
+def show_cmd(ctx: click.Context, decision_id: str) -> None:
+    """Show a decision's fields + the code anchors currently pointing at it."""
+    root = _resolve(ctx, "decision show")
+    d = _load_one(root, "decision show", decision_id)
+    click.echo(f"id:     {d.id}")
+    click.echo(f"status: {d.status}")
+    if d.ratified_by:
+        click.echo(f"ratified_by: {d.ratified_by}")
+    if d.ratified_at:
+        click.echo(f"ratified_at: {d.ratified_at}")
+    if d.supersedes:
+        click.echo(f"supersedes: {d.supersedes}")
+    if d.superseded_by:
+        click.echo(f"superseded_by: {d.superseded_by}")
+    include, exclude = load_source_scope(root)
+    locs = scan_sentinel_locations(
+        root, file_globs=include, keyword=ANCHOR_KEYWORD,
+        exclude_globs=exclude + ALWAYS_EXCLUDE,
+    ).get(decision_id, [])
+    click.echo("anchors:")
+    for f, ln in sorted(locs):
+        click.echo(f"  {f}:{ln}")
     sys.exit(EXIT_OK)

@@ -130,3 +130,20 @@ def test_list_dangling_shows_down(tmp_path):
     _new_ratified(root, "d-a")  # ratified, no anchor → dangling down
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "list", "--dangling"])
     assert r.exit_code == 0 and "d-a" in r.output
+
+
+def test_show_lists_fields_and_anchors(tmp_path):
+    root = _init(tmp_path)
+    _new_ratified(root, "d-a")
+    (root / "src").mkdir()
+    (root / "src/x.py").write_text("# @decision:d-a\n", encoding="utf-8")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "show", "d-a"])
+    assert r.exit_code == 0, r.output
+    assert "d-a" in r.output and "ratified" in r.output
+    assert "src/x.py:1" in r.output
+
+
+def test_show_missing(tmp_path):
+    root = _init(tmp_path)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "show", "d-x"])
+    assert r.exit_code == 2
