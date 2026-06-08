@@ -7,10 +7,12 @@ scan maps None→{}; decision-record loading raises (fail-closed).
 """
 from __future__ import annotations
 
+from typing import Any
+
 import yaml
 
 
-def split_frontmatter(text: str) -> tuple[dict, str] | None:
+def split_frontmatter(text: str) -> tuple[dict[str, Any], str] | None:
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return None

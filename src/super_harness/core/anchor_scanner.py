@@ -51,7 +51,7 @@ _DEFAULT_KEYWORD = "@capability:"
 _CHARSET = r"([A-Za-z0-9_-]+)"  # permissive/case-preserving (design §3.1)
 
 
-def _build_re(keyword: str) -> "re.Pattern[str]":
+def _build_re(keyword: str) -> re.Pattern[str]:
     return re.compile(re.escape(keyword) + _CHARSET)
 
 

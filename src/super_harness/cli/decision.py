@@ -11,7 +11,7 @@ from pathlib import Path
 import click
 
 from super_harness.cli.errors import format_error
-from super_harness.cli.output import json_envelope
+from super_harness.cli.output import Status, json_envelope
 from super_harness.core.anchor_scanner import scan_sentinel_locations
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.decision_check import ALWAYS_EXCLUDE, ANCHOR_KEYWORD, run_check
@@ -77,14 +77,9 @@ def new_cmd(ctx: click.Context, decision_id: str, text: str) -> None:
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
-    d = Decision(
-        id=decision_id,
-        status="proposed",
-        body=text,
-        path=decisions_dir(root) / f"{decision_id}.md",
-    )
-    write_decision(d)
-    click.echo(f"created {d.path.relative_to(root)} (proposed)")
+    path = decisions_dir(root) / f"{decision_id}.md"
+    write_decision(Decision(id=decision_id, status="proposed", body=text, path=path))
+    click.echo(f"created {path.relative_to(root)} (proposed)")
     sys.exit(EXIT_OK)
 
 
@@ -219,6 +214,7 @@ def check_cmd(ctx: click.Context) -> None:
     """
     root = _resolve(ctx, "decision check")
     result = run_check(root)
+    status: Status
     if result.errors:
         exit_code, status = EXIT_NO_CONFIG, "fail"
     elif result.dangling_up:

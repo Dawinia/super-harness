@@ -13,11 +13,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
 
-import yaml
-
 from super_harness.adapters import FrameworkAdapter
 from super_harness.core.clock import utc_now_iso
-from super_harness.core.frontmatter import split_frontmatter
 from super_harness.core.events import (
     Actor,
     Event,
@@ -25,6 +22,7 @@ from super_harness.core.events import (
     Framework,
     parse_event_line,
 )
+from super_harness.core.frontmatter import split_frontmatter
 from super_harness.core.paths import events_path
 from super_harness.core.ulid import new_event_id
 
