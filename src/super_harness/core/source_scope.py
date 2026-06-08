@@ -29,6 +29,10 @@ def load_source_scope(workspace_root: Path) -> tuple[list[str], list[str]]:
     sp = data.get("source_paths") if isinstance(data, dict) else None
     if not isinstance(sp, dict):
         return list(DEFAULT_INCLUDE), list(DEFAULT_EXCLUDE)
-    include = sp.get("include") or DEFAULT_INCLUDE
-    exclude = sp.get("exclude") or DEFAULT_EXCLUDE
+    include = sp.get("include")
+    if not isinstance(include, list) or not include:
+        include = DEFAULT_INCLUDE
+    exclude = sp.get("exclude")
+    if not isinstance(exclude, list) or not exclude:
+        exclude = DEFAULT_EXCLUDE
     return list(include), list(exclude)

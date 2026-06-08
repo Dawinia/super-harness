@@ -34,3 +34,12 @@ def test_missing_keys_fall_back(tmp_path):
     _write(tmp_path / ".harness/source-paths.yaml", "source_paths: {}\n")
     inc, exc = load_source_scope(tmp_path)
     assert inc == DEFAULT_INCLUDE and exc == DEFAULT_EXCLUDE
+
+
+def test_non_list_value_falls_back(tmp_path):
+    _write(
+        tmp_path / ".harness/source-paths.yaml",
+        "source_paths:\n  include: 'src/**'\n",
+    )
+    inc, exc = load_source_scope(tmp_path)
+    assert inc == DEFAULT_INCLUDE and exc == DEFAULT_EXCLUDE
