@@ -142,3 +142,16 @@ def supersede_cmd(ctx: click.Context, old_id: str, new_id: str) -> None:
     write_decision(new)
     click.echo(f"superseded {old_id} by {new_id}")
     sys.exit(EXIT_OK)
+
+
+@decision_group.command("retire")
+@click.argument("decision_id")
+@click.pass_context
+def retire_cmd(ctx: click.Context, decision_id: str) -> None:
+    """Retire a decision (tombstone): no successor, not anchorable, not dangling-down."""
+    root = _resolve(ctx, "decision retire")
+    d = _load_one(root, "decision retire", decision_id)
+    d.status = "retired"
+    write_decision(d)
+    click.echo(f"retired {decision_id}")
+    sys.exit(EXIT_OK)

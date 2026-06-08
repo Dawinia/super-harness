@@ -90,3 +90,17 @@ def test_supersede_requires_ratified_successor(tmp_path):
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision",
                                   "supersede", "d-old", "--by", "d-new"])
     assert r.exit_code == 2  # d-new not ratified
+
+
+def test_retire_sets_retired(tmp_path):
+    root = _init(tmp_path)
+    _new_ratified(root, "d-a")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "retire", "d-a"])
+    assert r.exit_code == 0, r.output
+    assert "status: retired" in (root / "docs/decisions/d-a.md").read_text()
+
+
+def test_retire_missing(tmp_path):
+    root = _init(tmp_path)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "retire", "d-x"])
+    assert r.exit_code == 2
