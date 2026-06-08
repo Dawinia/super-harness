@@ -104,3 +104,45 @@ def test_locations_same_anchor_aggregates_across_files_and_lines(tmp_path: Path)
     assert ("a.py", 3) in shared
     assert ("b.py", 1) in shared
     assert len(shared) == 3
+
+
+# --------------------------------------------------------------------------- #
+# Task 3: keyword + exclude_globs params (backward-compatible)
+# --------------------------------------------------------------------------- #
+
+
+def _w(p: Path, text: str) -> None:
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+def test_keyword_param_scans_decision(tmp_path: Path) -> None:
+    _w(tmp_path / "src/a.py", "# @decision:d-foo\n")
+    _w(tmp_path / "src/b.py", "# @capability:cap-foo\n")
+    assert scan_sentinels(tmp_path, keyword="@decision:") == {"d-foo"}
+    # default keyword unchanged:
+    assert scan_sentinels(tmp_path) == {"cap-foo"}
+
+
+def test_exclude_globs_drops_matches(tmp_path: Path) -> None:
+    _w(tmp_path / "src/a.py", "# @decision:d-foo\n")
+    _w(tmp_path / "docs/decisions/d-foo.md", "@decision:d-foo in prose\n")
+    found = scan_sentinels(
+        tmp_path, keyword="@decision:", exclude_globs=["docs/**", "docs/decisions/**"]
+    )
+    assert found == {"d-foo"}  # the docs occurrence is excluded
+
+
+def test_locations_keyword_and_exclude(tmp_path: Path) -> None:
+    _w(tmp_path / "src/a.py", "x = 1  # @decision:d-foo\n")
+    _w(tmp_path / "docs/decisions/d-foo.md", "@decision:d-foo\n")
+    locs = scan_sentinel_locations(
+        tmp_path, keyword="@decision:", exclude_globs=["docs/decisions/**"]
+    )
+    assert locs == {"d-foo": [("src/a.py", 1)]}
+
+
+def test_uppercase_anchor_is_captured(tmp_path: Path) -> None:
+    # fail-open guard: an uppercase id must still be SEEN (so it can dangle-up).
+    _w(tmp_path / "src/a.py", "# @decision:d-Foo\n")
+    assert scan_sentinels(tmp_path, keyword="@decision:") == {"d-Foo"}

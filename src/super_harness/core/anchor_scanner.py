@@ -49,6 +49,20 @@ _SENTINEL_RE = re.compile(r"@capability:([A-Za-z0-9_-]+)")
 # fnmatch / PurePath.match on Python 3.10-3.13).
 _MATCH_ALL_GLOBS = frozenset({"**/*", "**"})
 
+_DEFAULT_KEYWORD = "@capability:"
+_CHARSET = r"([A-Za-z0-9_-]+)"  # permissive/case-preserving (design §3.1)
+
+
+def _build_re(keyword: str) -> "re.Pattern[str]":
+    return re.compile(re.escape(keyword) + _CHARSET)
+
+
+def _excluded(rel_path: Path, exclude_globs: list[str] | None) -> bool:
+    if not exclude_globs:
+        return False
+    rel_str = str(rel_path)
+    return any(fnmatch(rel_str, g) for g in exclude_globs)
+
 
 def _list_files(root: Path) -> list[Path]:
     """Enumerate candidate files under `root`.
@@ -96,15 +110,27 @@ def _matches_any(rel_path: Path, globs: list[str]) -> bool:
 
 
 def scan_sentinel_locations(
-    root: Path, file_globs: list[str] | None = None
+    root: Path,
+    file_globs: list[str] | None = None,
+    *,
+    keyword: str = _DEFAULT_KEYWORD,
+    exclude_globs: list[str] | None = None,
 ) -> dict[str, list[tuple[str, int]]]:
-    """Like scan_sentinels but records WHERE each `@capability:<id>` occurs.
+    """Like scan_sentinels but records WHERE each sentinel occurs.
 
     Returns ``{anchor_id: [(repo_relative_file, 1_based_line), ...]}``. Reuses
-    ``_SENTINEL_RE`` / ``_list_files`` / ``_matches_any`` / binary-skip so the
-    two scanners cannot drift. Files are walked in sorted order (``scan_sentinels``
-    does not) so the index is deterministic.
+    ``_list_files`` / ``_matches_any`` / binary-skip so the two scanners cannot
+    drift. Files are walked in sorted order (``scan_sentinels`` does not) so the
+    index is deterministic.
+
+    Args:
+        root: directory to scan (typically the workspace root).
+        file_globs: optional list of glob patterns to restrict which files are read.
+        keyword: anchor prefix to match (default ``@capability:``).
+        exclude_globs: optional list of glob patterns (relative to ``root``) for
+            files to skip entirely (e.g. ``["docs/decisions/**"]``).
     """
+    pattern = _build_re(keyword)
     locations: dict[str, list[tuple[str, int]]] = {}
     files = _list_files(root)
     if file_globs is not None:
@@ -112,19 +138,28 @@ def scan_sentinel_locations(
     for f in sorted(files):
         if not f.is_file():
             continue
+        rel = f.relative_to(root)
+        if _excluded(rel, exclude_globs):
+            continue
         try:
             text = f.read_text(encoding="utf-8")
         except (UnicodeDecodeError, PermissionError, OSError):
             continue
-        rel = str(f.relative_to(root))
+        rel_str = str(rel)
         for lineno, line in enumerate(text.splitlines(), start=1):
-            for m in _SENTINEL_RE.finditer(line):
-                locations.setdefault(m.group(1), []).append((rel, lineno))
+            for m in pattern.finditer(line):
+                locations.setdefault(m.group(1), []).append((rel_str, lineno))
     return locations
 
 
-def scan_sentinels(root: Path, file_globs: list[str] | None = None) -> set[str]:
-    """Return every `@capability:<id>` sentinel ID found beneath `root`.
+def scan_sentinels(
+    root: Path,
+    file_globs: list[str] | None = None,
+    *,
+    keyword: str = _DEFAULT_KEYWORD,
+    exclude_globs: list[str] | None = None,
+) -> set[str]:
+    """Return every sentinel ID found beneath `root`.
 
     Args:
         root: directory to scan (typically the workspace root containing
@@ -135,12 +170,16 @@ def scan_sentinels(root: Path, file_globs: list[str] | None = None) -> set[str]:
             "filter to nothing" (returns empty set) — pass `None` if you want
             "no filter." The sentinels `"**/*"` and `"**"` are treated as
             "match all" because fnmatch does not implement recursive `**`.
+        keyword: anchor prefix to match (default ``@capability:``).
+        exclude_globs: optional list of glob patterns (relative to ``root``) for
+            files to skip entirely (e.g. ``["docs/decisions/**"]``).
 
     Returns:
-        A set of capability IDs (the `<id>` portion of `@capability:<id>`).
+        A set of anchor IDs (the ``<id>`` portion after the keyword).
         Empty set if nothing is found. Never raises on binary / unreadable
         files — those are silently skipped.
     """
+    pattern = _build_re(keyword)
     found: set[str] = set()
     files = _list_files(root)
     if file_globs is not None:
@@ -148,10 +187,12 @@ def scan_sentinels(root: Path, file_globs: list[str] | None = None) -> set[str]:
     for f in files:
         if not f.is_file():
             continue
+        if _excluded(f.relative_to(root), exclude_globs):
+            continue
         try:
             text = f.read_text(encoding="utf-8")
         except (UnicodeDecodeError, PermissionError, OSError):
             continue
-        for m in _SENTINEL_RE.finditer(text):
+        for m in pattern.finditer(text):
             found.add(m.group(1))
     return found
