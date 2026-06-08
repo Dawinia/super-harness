@@ -4,6 +4,7 @@ One file per decision at ``docs/decisions/<id>.md`` (markdown + YAML
 frontmatter). Pure: parse / validate / load / serialize. No CLI, no events.
 See docs/plans/2026-06-08-decision-records-anchors-design.md §2 / §4.4.
 """
+# @decision:d-decision-records
 from __future__ import annotations
 
 import re

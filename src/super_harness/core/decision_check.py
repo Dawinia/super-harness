@@ -6,6 +6,7 @@ that name no ratified decision; warns about ratified decisions with no anchor.
 ``docs/decisions/**`` is ALWAYS excluded from anchor scanning so records never
 self-match.
 """
+# @decision:d-dangling-check
 from __future__ import annotations
 
 from dataclasses import dataclass
