@@ -475,3 +475,118 @@ subsumed by §12.2–§12.3 — the hard slice *grows* as decisions are made che
 is a ratio to watch (§12.3), not a mechanism to design. §11.6 (migration) is deferred to
 build (must be done against the real codebase). **Design-time brainstorm closed here;
 remaining work is build-time.**
+
+## 13. Foundational reframe — conformance vs sedimentation (the two-arm model)
+
+Added 2026-06-10, grounded in **three adversarially-verified deep-research rounds**
+(see citations). This section answers a question raised while scoping the
+capability-retirement slice: *what is the right doc/knowledge lifecycle once the old
+`@capability` + L1/L2/L3 machinery is retired — and does this design actually solve
+doc-code drift?* It **reframes** the project's inherited three-tier doc model and is the
+SSOT for that reframe; `private/VISION.md` and `private/OPEN-ITEMS.md` carry pointers to
+here.
+
+### 13.1 The split: doc/knowledge work is TWO distinct arms, not one tiered thing
+
+The inherited "three-tier docs" (VISION §1.1: L1 persistent capability / L2 change spec /
+L3 plan) conflated two problems with **opposite lifecycles**. The research verdict
+(round 1) is unambiguous: **conformance and sedimentation are different problems; the
+frontier does not unify them; split them.** They are the two directions of a
+cybernetic-governor harness (Böckeler, *Harness engineering for coding agent users*):
+
+- **ARM 1 — CONFORMANCE (feedback / sensor).** Frozen decision/contract artifacts checked
+  against code to prevent drift. Lifecycle: **frozen-on-ratify**; changed only by
+  supersession (Fowler/AWS: an accepted ADR is immutable, superseded never edited). It has
+  an internal **strength hierarchy** (use the strongest rung available per link):
+  1. **Executable-spec / fitness-function** — the check *is* the artifact, so drift cannot
+     exist. Proven by `oasdiff` (OpenAPI, 474 changes, exit-code gate), `buf` (protobuf, 4
+     compat levels), `Atlas` (DB schema declared-vs-live), `ArchUnit` (architecture rules
+     as unit tests). *This is the target rung* (umbrella §12.2 rung-1).
+  2. **Derivable-doc + regen-and-diff** — e.g. `cli-reference` (already works here).
+  3. **Prose-rationale, human-review only** — the ADR "why". This is the **hard floor**:
+     independently confirmed that design rationale must be human-recreated (Su 2026: LLMs
+     ~90% on code-inferable decisions, *collapse* on implicit/deployment/org; Robillard
+     ESEC/FSE 2021: rationale "must be recreated" on owner turnover; van Heesch & Avgeriou:
+     reasoning knowledge "recorded nowhere"). **No mechanism closes this** — only raise the
+     floor + force re-review + leave a trail.
+
+- **ARM 2 — SEDIMENTATION (feedforward / guide).** Decaying reusable knowledge fed *into*
+  agents/people. Lifecycle: **decay-on-disuse** (Karpathy LLM-Wiki: ingest / query / lint,
+  where Lint = demote contradictions / stale / orphans), governed by context-engineering
+  (Anthropic: context rot, just-in-time retrieval, every token depletes the budget).
+  Formally it is **SECI's Externalization step** (tacit→explicit) — notably the *one*
+  empirically-supported SECI mode (Gourlay 2006), and inherently lossy.
+
+`@capability`+`l1-updater` was a **degenerate sedimentation mechanism welded onto a
+conformance pipeline** (post-merge stub-PR auto-deposit) — exactly the conflation to undo.
+Slice-2 (capability-retirement) executes the removal.
+
+### 13.2 The bridge and the emergent zone (so the arms are not "mutually exclusive")
+
+- **Bridge between arms (promotion/hardening):** a proven sedimentation note
+  (pitfall/guideline) can *harden* into a conformance decision+check; a ratified decision's
+  rationale can *seed* a sedimentation note. The word "decision" legitimately appears in
+  both — as a frozen contract (ARM 1) and as one knowledge type among five (ARM 2,
+  model/decision/guideline/pitfall/process). Same noun, two lifecycles.
+- **The emergent zone (Cynefin complex/chaotic):** brainstorm / exploration / `proposed`
+  is the *unordered* world — probe-sense-respond, cause-effect understood only in
+  retrospect; "best practice is past practice" (sedimentation) *fails* here (Snowden &
+  Boone, HBR 2007). This zone is **NOT managed as an artifact — ephemeral by design**.
+  **Ratification is the emergent→ordered gate**: when judgment crystallizes, it becomes a
+  frozen decision and enters ARM 1. super-harness's existing `proposed → ratified`
+  lifecycle already *is* this gate.
+- **Tacit residue (honest ceiling):** a tool managing docs+checks **structurally cannot**
+  manage tacit knowledge (Polanyi "we know more than we can tell"; SECI's Socialization
+  tacit→tacit and Internalization explicit→tacit are *artifact-free*). The most a harness
+  can do is **flag where human socialization is needed** (thin rationale → pair/mentor;
+  owner-turnover risk). It is out-of-scope, not a TODO.
+
+### 13.3 Extended model (the design foundation)
+
+```
+emergent zone (Cynefin complex/chaotic; brainstorm/proposed) — UNMANAGED, ephemeral, probe-sense-respond
+        │  ratification  (emergent → ordered: a human freezes the judgment)
+        ▼
+ordered world ── ARM 1 Conformance (feedback/sensor): frozen decisions + strength hierarchy
+              └─ ARM 2 Sedimentation (feedforward/guide): SECI-Externalization output, decays
+tacit residue ── structurally OUT OF SCOPE; at most flag "needs human socialization"
+```
+
+### 13.4 Positioning consequence (what super-harness builds vs reuses)
+
+For **code-derivable contracts** (API/schema/arch/CLI-ref), mature tools already solve
+conformance (oasdiff/buf/Atlas/ArchUnit). super-harness should **orchestrate them as
+sensors** (they plug into the existing `verification-runner` baseline/adapter/user layers),
+**not reinvent** them. super-harness's **unique, unmatched niche** (umbrella §9): anchoring
+to a human **decision**, gating the **non-derivable human review**, and tying each sensor's
+verdict back to the decision it serves. The sedimentation arm should **reuse the existing
+feedforward surface** (AGENTS.md injection + the auto-memory system), not spawn a parallel
+KB; its org-scale forms (5-layer federation, cross-project maturity consensus) are deferred.
+
+### 13.5 Honest caveats (do not over-claim the grounding)
+
+- **DIKW must NOT be cited as support** — its own author-critic Frické (J. Information
+  Science 2009) argues the hierarchy is logically unsound and should be abandoned. Use it
+  only as a *negative* example.
+- **SECI's empirical base is weak** (Gourlay 2006: 3 of 4 modes lack convincing evidence) —
+  use it as descriptive vocabulary for the tacit/explicit gap, not as mechanism proof.
+- **tacit/explicit is a contested continuum**, not a clean binary (Tsoukas) — "captured or
+  out-of-scope" is a simplification.
+- Several framework→model bridges ("no executable check captures rationale"; "ARM 2 = past
+  practice that fails in the complex domain") are **this design's own inference** — logically
+  sound, but they are the author's argument, not literal statements by the cited authors.
+
+### 13.6 Citations (primary, adversarially verified)
+
+Böckeler, *Harness engineering for coding agent users* (martinfowler.com). Fowler,
+*ArchitectureDecisionRecord*; AWS Prescriptive Guidance, *ADRs*. Su et al. 2026
+(arXiv:2602.07609). Robillard et al., *Turnover-induced knowledge loss* (ESEC/FSE 2021).
+van Heesch & Avgeriou, *architectural knowledge vaporization* (EuroPLoP 2009). oasdiff.com;
+buf.build/docs/breaking; atlasgo.io/versioned/drift-detection; archunit.org. Karpathy,
+*LLM Wiki* (gist). Anthropic, *Effective context engineering for AI agents*. Nonaka/SECI
+(Frontiers Psychology 2019 synthesis; Gourlay 2006 critique). Frické, *The Knowledge
+Pyramid: a critique of the DIKW hierarchy* (J. Information Science 2009). Snowden & Boone,
+*A Leader's Framework for Decision Making* (HBR 2007). Diátaxis (diataxis.fr). Polanyi,
+*The Tacit Dimension*. archgate/cli (the two-layer ADR-as-check pattern — note its
+"operationalizes ADRs as machine-checked contracts" claim was *refuted*: it checks code
+patterns, never rationale).
