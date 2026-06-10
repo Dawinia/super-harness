@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-state-reducer
 """Full-rebuild reducer per lifecycle-event-model §3.8.
 
 Replays events.jsonl from line 1 to derive `dict[change_id, ChangeState]`.
@@ -39,6 +38,7 @@ log = logging.getLogger("super_harness.reducer")
 CLOCK_DRIFT_WARN_THRESHOLD_S = 60
 
 
+# @decision:d-state-pure-fold
 def derive_state(events_file: Path) -> dict[str, ChangeState]:
     """Full-rebuild reducer: replay events.jsonl → per-change state map.
 

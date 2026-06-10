@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-state-machine
 """Lifecycle state transition table per lifecycle-event-model §3.7 Reachability.
 
 compute_target_state(current_state, event_type) returns:
@@ -25,6 +24,7 @@ _INFORMATIONAL: frozenset[str] = frozenset({
 
 # Per spec §3.7 Reachability table — explicit (current_state, event_type) -> target.
 # Order: happy path → reject/restart loops → terminal.
+# @decision:d-fixed-transition-matrix
 _TRANSITIONS: dict[tuple[str, str], str] = {
     # === Happy path ===
     ("INTENT_DECLARED", "plan_ready"): "AWAITING_PLAN_REVIEW",

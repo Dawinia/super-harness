@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-event-stream
 """Event dataclasses + JSON serialization for super-harness.
 
 Per lifecycle-event-model §2 (events.jsonl format) + §3 (5 core + 18 extension
@@ -69,6 +68,7 @@ class Actor:
     identifier: str
 
 
+# @decision:d-events-append-only
 @dataclass(frozen=True)
 class Event:
     """A single event in events.jsonl. Frozen — events are immutable.
