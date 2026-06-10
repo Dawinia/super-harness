@@ -81,7 +81,7 @@ def render_markdown() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="gen_state_machine")
-    p.add_argument("--emit", action="store_true", help="Print the doc to stdout.")
+    p.add_argument("--emit", action="store_true", required=True, help="Print the doc to stdout.")
     p.parse_args(argv)
     sys.stdout.write(render_markdown())
     return 0

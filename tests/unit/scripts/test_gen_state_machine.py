@@ -23,3 +23,8 @@ def test_render_is_deterministic_and_has_header():
     out = render_markdown()
     assert out == render_markdown()
     assert out.endswith("\n") and "(start)" in out
+
+
+def test_noop_events_match_informational_set():
+    from super_harness.core.transitions import _INFORMATIONAL
+    assert set(NOOP_EVENTS) == _INFORMATIONAL
