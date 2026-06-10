@@ -1,4 +1,4 @@
-"""PreToolUseGate — in-process gate for the 11-state pre-tool-use matrix.
+"""PreToolUseGate — in-process gate for the 10-state pre-tool-use matrix.
 
 Per sensor-gate-architecture §2.2 + lifecycle-event-model §3.7. This gate
 reads the canonical policy from `super_harness.gates.decisions` (the single
@@ -27,7 +27,7 @@ from super_harness.gates.decisions import PRE_TOOL_USE_DECISIONS, SUGGESTIONS
 class PreToolUseGate(Gate):
     """Allow/block an agent's file edit based on the change's lifecycle state.
 
-    Reads the canonical 11-state matrix from `gates.decisions`. With no active
+    Reads the canonical 10-state matrix from `gates.decisions`. With no active
     change (state is None) the gate allows — there is no policy to apply.
     See lifecycle-event-model §3.7 for the per-state rationale.
     """

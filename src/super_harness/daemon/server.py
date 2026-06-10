@@ -5,7 +5,7 @@ Implements daemon-architecture §3.2 (threading model) + §3.4 (request flow) +
 (BrokenPipe survival) + AC-9 (0o600 socket).
 
 The `_PRE_TOOL_USE_DECISIONS` table mirrors lifecycle-event-model §3.7's
-"Gate 矩阵" verbatim: each of the 11 states maps to an `(decision, reason)`
+"Gate 矩阵" verbatim: each of the 10 states maps to an `(decision, reason)`
 pair. The daemon does NOT invent gate policy — it only executes the table.
 """
 from __future__ import annotations
@@ -115,7 +115,7 @@ class DaemonServer:
     Per lifecycle-event-model §3.7 Gate 矩阵.
     """
 
-    # 11-state decision table from lifecycle-event-model §3.7. The literal now
+    # 10-state decision table from lifecycle-event-model §3.7. The literal now
     # lives in `super_harness.gates.decisions` (single source of truth, shared
     # with PreToolUseGate); this alias keeps the historical attribute name so
     # the dispatch site below is unchanged.
