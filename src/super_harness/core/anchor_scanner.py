@@ -1,16 +1,18 @@
-"""Pure `@capability:<id>` sentinel scanner (Task 1.10 / B-5 fix).
+"""Pure, parametrized `<keyword><id>` sentinel scanner.
 
-Phase 8 baseline checks (`anchor-sentinel-presence`) and Phase 11 ambient sensor
-(`freshness-anchor-check`) both need to walk the repo and collect every
-`@capability:<id>` sentinel comment present in source. To avoid forward
-dependency from Phase 8 onto a not-yet-built Phase 11 sensor — and to avoid
-duplicating the regex + git-aware walk in two places — the *pure* scanner lives
-here in core/ now. The Phase 11 Sensor wrapper (event emission, debouncing,
-state.yaml integration) is added in its own phase.
+Walks a workspace and collects every `<keyword><id>` sentinel comment present in
+source, where `<keyword>` is supplied by the caller. The current callers are
+`decision check` and `decision show`, which pass `@decision:` to locate decision
+anchors in the codebase. The keyword is a required argument: the scanner makes no
+assumption about which anchor namespace it is asked to find.
+
+Both the regex and the git-aware file walk live here in core/ so callers cannot
+drift apart. The scanner is intentionally pure — it has no notion of events,
+state, or any particular consumer.
 
 Contract (pure function, no side effects):
-- Input:  workspace root `Path`, optional list of glob patterns to filter files.
-- Output: a `set[str]` of capability IDs found across all matched files.
+- Input:  workspace root `Path`, required `keyword`, optional glob filters.
+- Output: a `set[str]` of anchor IDs found across all matched files.
 - Does NOT emit events, does NOT touch state.yaml, does NOT write any file.
 - Reads files only; safe to call concurrently with other readers.
 
@@ -27,8 +29,8 @@ Glob filtering:
   file" — short-circuited because Python's `fnmatch` / `PurePath.match` do not
   reliably support recursive `**` in 3.10/3.11. Specific patterns (e.g.
   `"*.py"`, `"src/foo/*.ts"`) fall through to `fnmatch.fnmatch` against the
-  path relative to root. Phase 8 / Phase 11 callers pass either `None` (scan
-  everything `git ls-files` returned) or a per-extension list.
+  path relative to root. Callers pass either `None` (scan everything
+  `git ls-files` returned) or a per-extension list.
 - Honoring this parameter is the v0.1 contract; a richer `pathspec`-based
   implementation is a v0.2 candidate if real callers need recursive `**`.
 
@@ -47,7 +49,6 @@ from pathlib import Path
 # fnmatch / PurePath.match on Python 3.10-3.13).
 _MATCH_ALL_GLOBS = frozenset({"**/*", "**"})
 
-_DEFAULT_KEYWORD = "@capability:"
 _CHARSET = r"([A-Za-z0-9_-]+)"  # permissive/case-preserving (design §3.1)
 
 
@@ -111,7 +112,7 @@ def scan_sentinel_locations(
     root: Path,
     file_globs: list[str] | None = None,
     *,
-    keyword: str = _DEFAULT_KEYWORD,
+    keyword: str,
     exclude_globs: list[str] | None = None,
 ) -> dict[str, list[tuple[str, int]]]:
     """Like scan_sentinels but records WHERE each sentinel occurs.
@@ -124,7 +125,7 @@ def scan_sentinel_locations(
     Args:
         root: directory to scan (typically the workspace root).
         file_globs: optional list of glob patterns to restrict which files are read.
-        keyword: anchor prefix to match (default ``@capability:``).
+        keyword: anchor prefix to match (e.g. ``@decision:``).
         exclude_globs: optional list of glob patterns (relative to ``root``) for
             files to skip entirely (e.g. ``["docs/decisions/**"]``).
     """
@@ -154,7 +155,7 @@ def scan_sentinels(
     root: Path,
     file_globs: list[str] | None = None,
     *,
-    keyword: str = _DEFAULT_KEYWORD,
+    keyword: str,
     exclude_globs: list[str] | None = None,
 ) -> set[str]:
     """Return every sentinel ID found beneath `root`.
@@ -168,7 +169,7 @@ def scan_sentinels(
             "filter to nothing" (returns empty set) — pass `None` if you want
             "no filter." The sentinels `"**/*"` and `"**"` are treated as
             "match all" because fnmatch does not implement recursive `**`.
-        keyword: anchor prefix to match (default ``@capability:``).
+        keyword: anchor prefix to match (e.g. ``@decision:``).
         exclude_globs: optional list of glob patterns (relative to ``root``) for
             files to skip entirely (e.g. ``["docs/decisions/**"]``).
 
