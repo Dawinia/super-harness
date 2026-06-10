@@ -126,9 +126,13 @@ jobs:
   on-merge:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    # `on-merge` only emits the `merged` lifecycle event; the l1-updater
+    # follow-up PR (the only writer) was retired, so this job no longer
+    # pushes / commits / creates a PR — read-only perms suffice (the PR
+    # lookup uses `gh api .../commits/<sha>/pulls`, a read).
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
