@@ -194,6 +194,16 @@ def test_template_has_attest_verify_job() -> None:
     assert _load_template().count("super-harness attest verify") == 1
 
 
+def test_template_has_doc_check_job() -> None:
+    """Derivable-doc conformance gate: the template must ship a `doc-check`
+    PR job whose steps run `super-harness doc check` (regen-and-diff)."""
+    parsed = yaml.safe_load(_load_template())
+    assert "doc-check" in parsed["jobs"]
+    job = parsed["jobs"]["doc-check"]
+    runs = [s.get("run", "") for s in job["steps"]]
+    assert any("super-harness doc check" in r for r in runs)
+
+
 def test_workflow_template_guard_does_not_false_fire_on_env_indirection() -> None:
     """Positive control: env-mapped ${{ github.* }} must NOT trip the guard.
 
