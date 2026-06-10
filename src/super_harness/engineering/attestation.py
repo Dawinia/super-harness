@@ -1,4 +1,3 @@
-# L1 anchor (HG-DF C) — @capability:capability-merge-gate
 """Layer-2 CI merge gate (HG-DF item C) — attestation write + verify logic.
 
 Pure-function domain layer. The CLI (`cli/attest.py`) owns the git/filesystem
