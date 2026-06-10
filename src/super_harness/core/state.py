@@ -1,4 +1,4 @@
-"""ChangeState + 11-state constants per lifecycle-event-model §3.7.
+"""ChangeState + 10-state constants per lifecycle-event-model §3.7.
 
 State is a derived value (reducer output, Task 1.6); this module just defines
 the dataclass + constants. Per Axiom 7 (events immutable; state derived), this
@@ -9,7 +9,7 @@ from typing import Any
 
 from super_harness.core.events import Framework
 
-# 11 states per lifecycle-event-model §3.7. Order matches the spec's listing.
+# 10 states per lifecycle-event-model §3.7. Order matches the spec's listing.
 STATES: tuple[str, ...] = (
     "INTENT_DECLARED",
     "AWAITING_PLAN_REVIEW",
@@ -19,7 +19,6 @@ STATES: tuple[str, ...] = (
     "AWAITING_CODE_REVIEW",
     "CODE_REVIEW_REJECTED",
     "READY_TO_MERGE",
-    "MERGED",
     "ARCHIVED",
     "ABANDONED",
 )

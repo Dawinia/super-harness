@@ -1,7 +1,7 @@
-"""Single source of truth for the 11-state pre-tool-use gate matrix.
+"""Single source of truth for the 10-state pre-tool-use gate matrix.
 
 This module is the **canonical** copy of lifecycle-event-model §3.7's "Gate
-矩阵": each of the 11 states maps to an `(decision, reason)` pair. Both the
+矩阵": each of the 10 states maps to an `(decision, reason)` pair. Both the
 daemon (`super_harness.daemon.server.DaemonServer`) and the in-process
 `super_harness.gates.pre_tool_use.PreToolUseGate` read THIS literal so the
 policy lives in exactly one place. The daemon does NOT invent gate policy —
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 __all__ = ["PRE_TOOL_USE_DECISIONS", "SUGGESTIONS"]
 
-# 11-state decision table from lifecycle-event-model §3.7. Verbatim copy —
+# 10-state decision table from lifecycle-event-model §3.7. Verbatim copy —
 # every (decision, reason) pair must match the spec's Gate 矩阵 exactly.
 PRE_TOOL_USE_DECISIONS: dict[str, tuple[str, str]] = {
     "INTENT_DECLARED": ("block", "INTENT_DECLARED: plan not drafted yet"),
@@ -28,7 +28,6 @@ PRE_TOOL_USE_DECISIONS: dict[str, tuple[str, str]] = {
         "CODE_REVIEW_REJECTED: edits permitted to fix review feedback",
     ),
     "READY_TO_MERGE": ("block", "READY_TO_MERGE: ready for merge, no further edits"),
-    "MERGED": ("block", "MERGED: L1 update pending"),
     "ARCHIVED": ("block", "ARCHIVED: terminal state"),
     "ABANDONED": ("block", "ABANDONED: terminal state"),
 }
@@ -43,7 +42,6 @@ SUGGESTIONS: dict[str, str] = {
     "PLAN_REJECTED": "Revise the plan and re-submit, then retry.",
     "AWAITING_CODE_REVIEW": "Code is frozen during review; address feedback once it lands.",
     "READY_TO_MERGE": "Open/merge the PR; do not edit further.",
-    "MERGED": "Run the L1 update step before further edits.",
     "ARCHIVED": "This change is terminal; start a new change.",
     "ABANDONED": "This change is terminal; start a new change.",
 }

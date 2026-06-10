@@ -23,8 +23,7 @@ from super_harness.core.transitions import INVALID, compute_target_state
         ("CODE_REVIEW_REJECTED", "code_review_passed", "READY_TO_MERGE"),
         ("CODE_REVIEW_REJECTED", "code_review_failed", "CODE_REVIEW_REJECTED"),
         ("CODE_REVIEW_REJECTED", "implementation_complete", INVALID),  # NOT a re-submit path
-        ("READY_TO_MERGE", "merged", "MERGED"),
-        ("MERGED", "l1_update_completed", "ARCHIVED"),
+        ("READY_TO_MERGE", "merged", "ARCHIVED"),
         # === Withdraw ===
         ("AWAITING_CODE_REVIEW", "implementation_withdrawn", "READY_TO_MERGE"),
         ("READY_TO_MERGE", "implementation_withdrawn", "READY_TO_MERGE"),
@@ -50,7 +49,7 @@ from super_harness.core.transitions import INVALID, compute_target_state
         ("IMPLEMENTATION_IN_PROGRESS", "verification_failed", "IMPLEMENTATION_IN_PROGRESS"),
         ("IMPLEMENTATION_IN_PROGRESS", "scope_drift_detected", "IMPLEMENTATION_IN_PROGRESS"),
         ("READY_TO_MERGE", "pr_opened", "READY_TO_MERGE"),
-        ("MERGED", "merged_reverted", "MERGED"),
+        ("READY_TO_MERGE", "merged_reverted", "READY_TO_MERGE"),
         ("IMPLEMENTATION_IN_PROGRESS", "sensor_timeout_exceeded", "IMPLEMENTATION_IN_PROGRESS"),
         ("AWAITING_PLAN_REVIEW", "sensor_crashed", "AWAITING_PLAN_REVIEW"),
         # === intent_declared re-emit on active state = description update (no transition) ===
@@ -59,7 +58,6 @@ from super_harness.core.transitions import INVALID, compute_target_state
         # === Illegal transitions ===
         ("INTENT_DECLARED", "implementation_complete", INVALID),
         ("INTENT_DECLARED", "merged", INVALID),
-        ("MERGED", "plan_ready", INVALID),
         ("ARCHIVED", "intent_declared", INVALID),
         ("ARCHIVED", "plan_ready", INVALID),
         ("ABANDONED", "intent_declared", INVALID),

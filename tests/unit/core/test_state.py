@@ -1,7 +1,7 @@
 from super_harness.core.state import STATES, TERMINAL_STATES, ChangeState
 
 
-def test_eleven_states_in_correct_order():
+def test_ten_states_in_correct_order():
     assert STATES == (
         "INTENT_DECLARED",
         "AWAITING_PLAN_REVIEW",
@@ -11,11 +11,11 @@ def test_eleven_states_in_correct_order():
         "AWAITING_CODE_REVIEW",
         "CODE_REVIEW_REJECTED",
         "READY_TO_MERGE",
-        "MERGED",
         "ARCHIVED",
         "ABANDONED",
     )
-    assert len(STATES) == 11
+    assert len(STATES) == 10
+    assert "MERGED" not in STATES
 
 
 def test_terminal_states():

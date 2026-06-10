@@ -1,8 +1,8 @@
-"""`on-merge` command — CI-side `merged` emitter that fires the L1 follow-up workflow.
+"""`on-merge` command — CI-side `merged` emitter.
 
 Per cli-command-surface §`on-merge` + Phase 13 plan Task 13.6 (reconcile #1/#2).
 
-Flow (mirrors verify/done's one-shot dispatcher idiom):
+Flow:
 
 1. `find_harness_root` → exit 3 if no `.harness/`.
 2. Resolve `change_id`: explicit `--change <slug>` (CI passes
@@ -11,26 +11,14 @@ Flow (mirrors verify/done's one-shot dispatcher idiom):
    → unresolved → exit 1 (actionable). NOT ``read_active_change_id`` (meaningless
    in CI; OI-1 branch-inference deferral is scoped to local commands only).
 3. Emit `merged{change_id, merge_commit_sha}` via the strict EventWriter +
-   `refresh_state_after_emit(root)` so the dispatcher's `WorkspaceContext`
-   reflects MERGED.
-4. Construct a one-shot ``SensorDispatcher([L1Updater(), AnchorIndexRebuilder()], …)``
-   and call ``on_event_emit(merged_event)``. The dispatcher emits the sensors'
-   extension events (`l1_update_completed` / `l1_update_failed` from L1Updater;
-   AnchorIndexRebuilder is silent) and refreshes state internally.
-5. Output the **frozen** `data` schema per cli-surface §on-merge data:
-   `commit_sha` / `change_id` / `events_emitted: ["merged"]` /
-   `sensors_triggered: ["l1-updater", "anchor-index-rebuilder"]` (literally the
-   fixed dispatched-sensor list — frozen by the spec) / `l1_followup_pr` (URL
-   walked from L1Updater's SensorResult, else null).
-
-This is the first **production** caller of `SensorDispatcher.on_event_emit`
-(verify/done call `on_activity`).
+   `refresh_state_after_emit(root)`. ``merged`` transitions the change directly
+   to ARCHIVED (the L1 write-back step has been retired — there is no post-merge
+   sensor dispatch).
+4. Output the **frozen** `data` schema per cli-surface §on-merge data:
+   `commit_sha` / `change_id` / `events_emitted: ["merged"]`.
 
 Exit codes (cli-command-surface §`on-merge`):
-- 0 — happy path. INCLUDING the l1-updater-failed-but-handled branch: the merge
-  already happened, the failure landed as `l1_update_failed` + a
-  `.harness/pending-l1-updates/<slug>.md` operator note, and §3.4 declares this
-  MUST NOT interrupt the main flow. `l1_followup_pr` is null in that envelope.
+- 0 — happy path.
 - 1 — change_id resolution failed (neither `--change` nor a parseable merge-commit
   subject). NO `--json` envelope (matches verify's HarnessNotInitialized + Phase
   12 `pr validate`'s 3/4 patterns: 0/2 emit envelope; 1/3/4 do not).
@@ -66,19 +54,6 @@ from super_harness.exit_codes import (
     EXIT_NO_CONFIG,
     EXIT_OK,
 )
-from super_harness.sensors import WorkspaceContext
-from super_harness.sensors.anchor_index_rebuilder import AnchorIndexRebuilder
-from super_harness.sensors.dispatcher import (
-    ONESHOT_DISPATCHER_PARALLELISM,
-    ONESHOT_DISPATCHER_TIMEOUT_S,
-    SensorDispatcher,
-)
-from super_harness.sensors.l1_updater import L1Updater
-
-# Frozen per cli-command-surface §on-merge data: the dispatched-sensor list IS
-# the field's contract, regardless of whether any single sensor was a no-op for
-# this trigger (e.g. AnchorIndexRebuilder is silent).
-_SENSORS_TRIGGERED: list[str] = ["l1-updater", "anchor-index-rebuilder"]
 
 # Subject pattern for the GitHub merge-commit message fallback. The capture is
 # greedy-everything-up-to-trailing-whitespace (NOT split on `/`) so an `/`-
@@ -128,7 +103,7 @@ def _resolve_change_id(root: Path, commit_sha: str, change: str | None) -> str |
     return _parse_merge_commit_branch(root, commit_sha)
 
 
-def _emit_merged(writer: EventWriter, change_id: str, commit_sha: str) -> Event:
+def _emit_merged(writer: EventWriter, change_id: str, commit_sha: str) -> None:
     """Strict-emit a ``merged`` event from the ``ci`` actor.
 
     Payload key is ``merge_commit_sha`` (reducer SSOT — see
@@ -146,25 +121,6 @@ def _emit_merged(writer: EventWriter, change_id: str, commit_sha: str) -> Event:
         payload={"merge_commit_sha": commit_sha},
     )
     writer.emit(ev)
-    return ev
-
-
-def _l1_followup_pr_from_results(results: list[Any]) -> str | None:
-    """Walk dispatcher results for the L1Updater's PR URL.
-
-    L1Updater's pass path emits ONE ``l1_update_completed`` event whose payload
-    carries ``pr_url`` (or ``None`` on the short-circuit "no work" branch).
-    AnchorIndexRebuilder is silent (no emit_events), so we identify the right
-    SensorResult by looking for a result whose ``emit_events`` includes a
-    ``l1_update_completed`` event. If l1-updater failed (``l1_update_failed``
-    emitted instead) OR no l1-updater result is present, return None.
-    """
-    for r in results:
-        for ev in getattr(r, "emit_events", None) or []:
-            if ev.type == "l1_update_completed":
-                url = ev.payload.get("pr_url")  # may itself be None
-                return url if isinstance(url, str) else None
-    return None
 
 
 @click.command("on-merge")
@@ -180,7 +136,7 @@ def _l1_followup_pr_from_results(results: list[Any]) -> str | None:
 )
 @click.pass_context
 def on_merge_cli(ctx: click.Context, commit: str, change: str | None) -> None:
-    """Emit a ``merged`` event and dispatch L1-updater + anchor-index-rebuilder."""
+    """Emit a ``merged`` event (transitions the change to ARCHIVED)."""
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as e:
@@ -217,8 +173,7 @@ def on_merge_cli(ctx: click.Context, commit: str, change: str | None) -> None:
     # Both legs (--change and merge-commit-message fallback) can produce values
     # the rest of the system rejects — e.g. a CI passing `feature/foo` as
     # head_ref. Reject early with an actionable message rather than letting an
-    # invalid slug pollute the L1 follow-up branch name
-    # (`harness/l1-update-<slug>`), the pending-file path, or downstream events.
+    # invalid slug pollute the `merged` event's `change_id` or downstream state.
     try:
         validate_slug(change_id)
     except SlugError as e:
@@ -238,7 +193,7 @@ def on_merge_cli(ctx: click.Context, commit: str, change: str | None) -> None:
 
     writer = EventWriter(events_path(root))
     try:
-        merged_event = _emit_merged(writer, change_id, commit)
+        _emit_merged(writer, change_id, commit)
     except EmitPreconditionError as e:
         # The change is not in READY_TO_MERGE. This is a hard data integrity
         # signal — exit 1 with a clean format_error rather than the strict
@@ -257,35 +212,12 @@ def on_merge_cli(ctx: click.Context, commit: str, change: str | None) -> None:
         sys.exit(EXIT_GENERIC)
     refresh_state_after_emit(root)
 
-    ctx_ws = WorkspaceContext(
-        workspace_root=root, git_branch=None, active_change_id=change_id
-    )
-    dispatcher = SensorDispatcher(
-        [L1Updater(), AnchorIndexRebuilder()],
-        writer=writer,
-        context=ctx_ws,
-        timeout_s=ONESHOT_DISPATCHER_TIMEOUT_S,
-        max_parallelism=ONESHOT_DISPATCHER_PARALLELISM,
-    )
-    # First production caller of on_event_emit (verify/done use on_activity).
-    # The dispatcher routes on event.type only; we reuse the emitted event
-    # (with its stamped event_id / timestamp) — re-emit is NOT triggered.
-    results = dispatcher.on_event_emit(merged_event)
-
-    l1_pr = _l1_followup_pr_from_results(results)
-
     # Frozen output `data` per cli-command-surface §on-merge data.
-    # `sensors_triggered` is the LITERAL fixed dispatched list (spec contract),
-    # not a runtime-observed list — that key is the dispatcher's intent, not its
-    # outcome. `events_emitted` is the on-merge-command's own emit
-    # (`merged`); sensor-emitted events live in events.jsonl, not here, per the
-    # spec example.
+    # `events_emitted` is the on-merge-command's own emit (`merged`).
     data: dict[str, Any] = {
         "commit_sha": commit,
         "change_id": change_id,
         "events_emitted": ["merged"],
-        "sensors_triggered": list(_SENSORS_TRIGGERED),
-        "l1_followup_pr": l1_pr,
     }
 
     if ctx.obj.get("json"):
@@ -298,13 +230,6 @@ def on_merge_cli(ctx: click.Context, commit: str, change: str | None) -> None:
             )
         )
     elif not ctx.obj.get("quiet"):
-        click.echo(
-            f"on-merge: emitted merged for {change_id}; "
-            f"L1 follow-up: {l1_pr or 'n/a'}"
-        )
+        click.echo(f"on-merge: emitted merged for {change_id}")
 
-    # Exit 0 even on l1-updater failure: the merge already happened
-    # (engineering-integration §3.4 — l1-updater failure MUST NOT interrupt the
-    # main flow). The `l1_update_failed` event in events.jsonl + the
-    # `pending-l1-updates/<slug>.md` operator note are the diagnostic surface.
     sys.exit(EXIT_OK)

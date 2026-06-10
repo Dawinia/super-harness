@@ -39,8 +39,7 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     # by re-running code-reviewer which emits new code_review_passed/failed.
     ("CODE_REVIEW_REJECTED", "code_review_passed"): "READY_TO_MERGE",
     ("CODE_REVIEW_REJECTED", "code_review_failed"): "CODE_REVIEW_REJECTED",
-    ("READY_TO_MERGE", "merged"): "MERGED",
-    ("MERGED", "l1_update_completed"): "ARCHIVED",
+    ("READY_TO_MERGE", "merged"): "ARCHIVED",
     # === Withdraw paths (§3.6) ===
     # NOTE: implementation_restarted / implementation_invalidated are universal
     # (`* → PLAN_APPROVED` / `* → IMPLEMENTATION_IN_PROGRESS` per §3.6 lines 373-374)

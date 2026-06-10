@@ -231,7 +231,7 @@ super-harness change list [OPTIONS]
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `--state` | {INTENT_DECLARED\|AWAITING_PLAN_REVIEW\|PLAN_REJECTED\|PLAN_APPROVED\|IMPLEMENTATION_IN_PROGRESS\|AWAITING_CODE_REVIEW\|CODE_REVIEW_REJECTED\|READY_TO_MERGE\|MERGED\|ARCHIVED\|ABANDONED} | — | Show only changes in this state (one of the 11 lifecycle states, uppercase). |
+| `--state` | {INTENT_DECLARED\|AWAITING_PLAN_REVIEW\|PLAN_REJECTED\|PLAN_APPROVED\|IMPLEMENTATION_IN_PROGRESS\|AWAITING_CODE_REVIEW\|CODE_REVIEW_REJECTED\|READY_TO_MERGE\|ARCHIVED\|ABANDONED} | — | Show only changes in this state (one of the 10 lifecycle states, uppercase). |
 | `--active` | flag | `False` | Exclude ARCHIVED + ABANDONED. |
 | `--archived` | flag | `False` | Show only ARCHIVED. |
 | `--abandoned` | flag | `False` | Show only ABANDONED. |
@@ -609,7 +609,7 @@ super-harness init [OPTIONS]
 
 ## super-harness on-merge
 
-Emit a ``merged`` event and dispatch L1-updater + anchor-index-rebuilder.
+Emit a ``merged`` event (transitions the change to ARCHIVED).
 
 ```
 super-harness on-merge [OPTIONS]
