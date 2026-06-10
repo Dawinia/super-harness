@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-framework-adapter-builtin
 """OpenSpecAdapter — FrameworkAdapter for workspaces using the OpenSpec framework."""
 
 from __future__ import annotations

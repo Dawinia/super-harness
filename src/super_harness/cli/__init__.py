@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-cli-surface
 """super-harness CLI root group.
 
 Defines the top-level `super-harness` Click group and wires up all subcommands

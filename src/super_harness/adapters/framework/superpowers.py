@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-framework-adapter-builtin
 """SuperpowersAdapter — FrameworkAdapter for workspaces driven by superpowers.
 
 Discovery is anchored on a super-harness-owned frontmatter marker (`change:` /

@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-sensor-architecture
 """Sensor base architecture for super-harness.
 
 Per sensor-gate-architecture §2.1: Sensors observe lifecycle events / activities and

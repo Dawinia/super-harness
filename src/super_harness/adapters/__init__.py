@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-adapter-protocol
 """Adapter base architecture for super-harness.
 
 Per adapter-architecture §2.2: an AgentAdapter bridges an AI coding agent
