@@ -3,16 +3,23 @@
 The generator walks a click command tree and emits a markdown reference. These
 tests use a minimal hand-rolled click group (decoupled from the real
 super-harness CLI) so the assertions are stable across future CLI surface
-changes — the real-CLI in-sync check is the integration `--check` exit-0 test
+changes — the real-CLI in-sync check is the integration `run_check` exit-0 test
 at the end.
+
+The CLI surface is now `--emit` only: it prints the rendered markdown to stdout
+and the `super-harness doc check` gate owns regen-and-diff. The function-level
+helpers (`render_markdown` / `run_check` / `write_reference`) are retained and
+tested directly.
 
 Coverage:
   1. Minimal click group renders expected markdown shape
   2. ``|`` in help text escapes to ``\\|`` (markdown-injection hardening)
-  3. ``--check`` exits 0 when on-disk file matches generated content
-  4. ``--check`` exits 1 when on-disk file is out-of-sync (drift)
-  5. ``--check`` exits 1 when on-disk file is missing (treated as drift, not crash)
+  3. ``run_check`` exits 0 when on-disk file matches generated content
+  4. ``run_check`` exits 1 when on-disk file is out-of-sync (drift)
+  5. ``run_check`` exits 1 when on-disk file is missing (treated as drift, not crash)
   6. Repeated regeneration is idempotent (running twice produces no diff)
+  7. ``main(["--emit"])`` prints the rendered markdown to stdout and returns 0
+  8. ``_HEADER_NOTICE`` references the live `super-harness doc check --fix` gate
 """
 from __future__ import annotations
 
@@ -161,9 +168,8 @@ def test_write_then_check_is_in_sync(tmp_path) -> None:
 def test_real_cli_reference_is_in_sync() -> None:
     """Integration: the committed docs/cli-reference.md is in sync with the real CLI.
 
-    Re-implements `python -m scripts.gen_cli_reference --check` against the
-    real super-harness CLI surface. If this fails, regenerate by running
-    `python -m scripts.gen_cli_reference` and commit the result.
+    Re-implements the regen-and-diff against the real super-harness CLI surface.
+    If this fails, regenerate via `super-harness doc check --fix` and commit.
     """
     from pathlib import Path
 
@@ -176,5 +182,29 @@ def test_real_cli_reference_is_in_sync() -> None:
     )
     assert code == 0, (
         "docs/cli-reference.md is out of sync with the CLI surface. "
-        "Run: python -m scripts.gen_cli_reference"
+        "Run: super-harness doc check --fix"
     )
+
+
+def test_header_notice_references_doc_check_gate() -> None:
+    """The autogen header points at the live gate, not the dead module command."""
+    notice = gen_cli_reference._HEADER_NOTICE
+    assert "super-harness doc check --fix" in notice
+    # The old module-invocation regen command must be gone.
+    assert "python -m scripts.gen_cli_reference" not in notice
+
+
+def test_emit_mode_prints_rendered_markdown(capsys) -> None:
+    """`main(["--emit"])` prints the real CLI reference to stdout and returns 0."""
+    from super_harness.cli import main as real_main
+
+    code = gen_cli_reference.main(["--emit"])
+    assert code == 0
+
+    captured = capsys.readouterr()
+    expected = gen_cli_reference.render_markdown(
+        real_main, root_name="super-harness"
+    )
+    assert captured.out == expected
+    # No extra trailing newline beyond what render_markdown already emits.
+    assert captured.out.startswith(gen_cli_reference._HEADER_NOTICE)
