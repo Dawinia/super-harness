@@ -8,7 +8,7 @@ import click
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import Status, json_envelope
-from super_harness.core.doc_check import run_doc_check
+from super_harness.core.doc_check import run_doc_check, truncate_diff
 from super_harness.core.paths import HarnessNotInitialized, find_harness_root
 from super_harness.exit_codes import EXIT_NO_CONFIG
 
@@ -43,7 +43,7 @@ def check_cmd(ctx: click.Context, fix: bool) -> None:
             exit_code=result.exit_code,
             data={
                 "in_sync": [d.path for d in result.in_sync],
-                "drift": [{"path": d.path, "diff": d.diff} for d in result.drift],
+                "drift": [{"path": d.path, "diff": truncate_diff(d.diff)} for d in result.drift],
                 "failed": [{"path": f.path, "command": f.command, "error": f.error}
                            for f in result.failed],
             },

@@ -116,7 +116,7 @@ class InSync:
 @dataclass
 class Drift:
     path: str
-    diff: str   # truncated to _DIFF_MAX_LINES for envelopes; full to stderr
+    diff: str   # full unified diff; CLI truncates for the JSON envelope, prints whole to stderr
 
 
 @dataclass
@@ -159,7 +159,7 @@ def _run_generator(workspace_root: Path, command: str) -> tuple[str | None, str]
         return None, "invalid UTF-8 stdout"
 
 
-def _truncate(diff: str) -> str:
+def truncate_diff(diff: str) -> str:
     lines = diff.splitlines(keepends=True)
     if len(lines) <= _DIFF_MAX_LINES:
         return diff
@@ -197,7 +197,7 @@ def run_doc_check(workspace_root: Path, *, fix: bool = False) -> DocCheckResult:
             target.write_text(generated, encoding="utf-8")
             result.in_sync.append(InSync(path=doc.path))
         else:
-            result.drift.append(Drift(path=doc.path, diff=_truncate(diff)))
+            result.drift.append(Drift(path=doc.path, diff=diff))
 
     result.in_sync.sort(key=lambda x: x.path)
     result.drift.sort(key=lambda x: x.path)

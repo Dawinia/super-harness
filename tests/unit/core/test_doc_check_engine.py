@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 from super_harness.core import doc_check
-from super_harness.core.doc_check import run_doc_check
+from super_harness.core.doc_check import run_doc_check, truncate_diff
 
 
 def _w(p: Path, text: str) -> None:
@@ -118,11 +118,14 @@ def test_non_utf8_stdout_is_failed(tmp_path):
 
 
 def test_diff_truncated_at_40_lines(tmp_path):
-    # on-disk has 100 lines, generator emits 0 → unified diff is >40 lines → truncated
+    # on-disk has 100 lines, generator emits 0 → unified diff is >40 lines.
+    # Drift.diff stores the FULL diff; truncate_diff() caps it for the envelope.
     _w(tmp_path / "docs/a.md", "".join(f"line{i}\n" for i in range(100)))
     _reg(tmp_path, [("docs/a.md", _emit(""))])
     r = run_doc_check(tmp_path)
     assert [d.path for d in r.drift] == ["docs/a.md"]
-    diff = r.drift[0].diff
-    assert "more lines; full diff on stderr" in diff
-    assert len(diff.splitlines()) <= 41  # 40 capped lines + 1 sentinel line
+    full = r.drift[0].diff
+    assert len(full.splitlines()) > 40  # stored full, not truncated
+    truncated = truncate_diff(full)
+    assert "more lines; full diff on stderr" in truncated
+    assert len(truncated.splitlines()) <= 41  # 40 capped lines + 1 sentinel line

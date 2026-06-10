@@ -91,3 +91,16 @@ def test_malformed_registry_json(tmp_path):
 def test_no_harness_exit_3(tmp_path):
     r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "doc", "check"])
     assert r.exit_code == 3
+
+
+def test_failed_bucket_json(tmp_path):
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/a.md").write_text("x\n")
+    _ws(tmp_path, [("docs/a.md", f'{sys.executable} -c "import sys;sys.exit(7)"')])
+    r = CliRunner().invoke(main, ["--json", "--workspace", str(tmp_path), "doc", "check"])
+    assert r.exit_code == 4
+    env = json.loads(r.output)
+    assert env["status"] == "fail"
+    assert env["data"]["failed"][0]["path"] == "docs/a.md"
+    assert env["data"]["failed"][0]["error"] == "exit 7"
+    assert "docs/a.md" in [f["path"] for f in env["data"]["failed"]]
