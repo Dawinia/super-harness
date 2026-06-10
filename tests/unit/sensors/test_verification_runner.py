@@ -28,7 +28,6 @@ from super_harness.sensors.verification_runner import (
     CheckTask,
     VerificationRunner,
     _all_pass_must,
-    _baseline_anchor_presence,
     _baseline_lifecycle_ordering,
     _baseline_scope_vs_plan,
     _covered_by_scope,
@@ -354,8 +353,8 @@ def test_build_variables_empty_for_unknown_framework(tmp_path: Path) -> None:
 # --- collect_checks ---------------------------------------------------------
 
 
-def test_collect_checks_baseline_layer_yields_three_baselines(tmp_path: Path) -> None:
-    # Task 8.5: the baseline layer ships 3 in-process checks in fixed order.
+def test_collect_checks_baseline_layer_yields_two_baselines(tmp_path: Path) -> None:
+    # Task 8.5: the baseline layer ships 2 in-process checks in fixed order.
     cfg = _config(layers=Layers(baseline=True, framework_adapter=False, user_checks=False))
     tasks = collect_checks(
         cfg,
@@ -365,13 +364,11 @@ def test_collect_checks_baseline_layer_yields_three_baselines(tmp_path: Path) ->
         layer="baseline",
     )
     assert [t.id for t in tasks] == [
-        "anchor-sentinel-presence-final",
         "lifecycle-ordering",
         "scope-vs-plan-final",
     ]
-    # No events.jsonl → no anchors / clean stream / no scope → all pass.
+    # No events.jsonl → clean stream / no scope → all pass.
     by_id = {t.id: t for t in tasks}
-    assert by_id["anchor-sentinel-presence-final"].must_pass is True  # unknown tier
     assert by_id["lifecycle-ordering"].must_pass is True
     assert by_id["scope-vs-plan-final"].must_pass is False
 
@@ -448,9 +445,8 @@ def test_collect_checks_only_ids_filters_across_layers(tmp_path: Path) -> None:
 # --- collectable_check_ids (FIX 2) ------------------------------------------
 
 
-def test_baseline_check_ids_is_the_three_baselines() -> None:
+def test_baseline_check_ids_is_the_two_baselines() -> None:
     assert set(BASELINE_CHECK_IDS) == {
-        "anchor-sentinel-presence-final",
         "lifecycle-ordering",
         "scope-vs-plan-final",
     }
@@ -461,7 +457,7 @@ def test_collectable_check_ids_all_layers() -> None:
         adapter_provided=[_spec(check_id="a1", command="true")],
         checks=[_spec(check_id="u1", command="true")],
     )
-    # baseline (3) + adapter (a1) + user (u1), all enabled.
+    # baseline (2) + adapter (a1) + user (u1), all enabled.
     assert collectable_check_ids(cfg) == set(BASELINE_CHECK_IDS) | {"a1", "u1"}
 
 
@@ -482,9 +478,7 @@ def test_collectable_check_ids_layer_aware() -> None:
     )
     # A baseline id is NOT collectable under --layer user.
     assert collectable_check_ids(cfg, layer="user") == {"u1"}
-    assert "anchor-sentinel-presence-final" not in collectable_check_ids(
-        cfg, layer="user"
-    )
+    assert "lifecycle-ordering" not in collectable_check_ids(cfg, layer="user")
     assert collectable_check_ids(cfg, layer="baseline") == set(BASELINE_CHECK_IDS)
 
 
@@ -725,7 +719,7 @@ def test_write_summary_json_writes_only_summary(tmp_path: Path) -> None:
 
 
 # Baseline layer DISABLED in this fixture so these config-check end-to-end tests
-# keep their exact `checks_run` counts. The baseline layer (3 in-process checks)
+# keep their exact `checks_run` counts. The baseline layer (2 in-process checks)
 # is exercised separately by `test_runner_check_baselines_*` below.
 _VERIFY_YAML = """\
 layers:
@@ -892,14 +886,11 @@ def _seed_events(root: Path, change_id: str, items: list[tuple[str, dict[str, An
 
 def _plan_items(
     *,
-    anchors: list[str] | None = None,
     scope_files: list[str] | None = None,
     tier: str | None = None,
 ) -> list[tuple[str, dict[str, Any]]]:
-    """A minimal intent_declared → plan_ready stream carrying anchors/scope/tier."""
+    """A minimal intent_declared → plan_ready stream carrying scope/tier."""
     plan_payload: dict[str, Any] = {}
-    if anchors is not None:
-        plan_payload["affected_anchors"] = anchors
     if scope_files is not None:
         plan_payload["scope"] = {"files": scope_files}
     if tier is not None:
@@ -913,87 +904,6 @@ def _plan_items(
 def _harness_root(tmp_path: Path) -> Path:
     (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
     return tmp_path
-
-
-# --- anchor-sentinel-presence-final -----------------------------------------
-
-
-def test_baseline_anchor_present_all_passes(tmp_path: Path) -> None:
-    root = _harness_root(tmp_path)
-    _seed_events(root, "ch", _plan_items(anchors=["cap-a", "cap-b"], tier="Normal"))
-    # Both sentinels present in source.
-    (root / "src.py").write_text("# @capability:cap-a\n# @capability:cap-b\n")
-    res = _baseline_anchor_presence(
-        "ch", context=_ctx(root), archive=tmp_path / "arch", must_pass=True
-    )
-    assert res.status == "pass"
-    assert res.id == "anchor-sentinel-presence-final"
-    assert res.command == "builtin:anchor-sentinel-presence-final"
-
-
-def test_baseline_anchor_missing_fails_with_report(tmp_path: Path) -> None:
-    root = _harness_root(tmp_path)
-    _seed_events(root, "ch", _plan_items(anchors=["cap-a", "cap-b"], tier="Normal"))
-    (root / "src.py").write_text("# @capability:cap-a\n")  # cap-b missing
-    res = _baseline_anchor_presence(
-        "ch", context=_ctx(root), archive=tmp_path / "arch", must_pass=True
-    )
-    assert res.status == "fail"
-    assert res.exit_code == 1
-    assert res.must_pass is True
-    # Missing anchor named in the archived report.
-    assert res.output_path is not None
-    assert "cap-b" in Path(res.output_path).read_text()
-
-
-def test_baseline_anchor_no_declared_anchors_passes(tmp_path: Path) -> None:
-    root = _harness_root(tmp_path)
-    _seed_events(root, "ch", _plan_items(tier="Normal"))  # no anchors declared
-    res = _baseline_anchor_presence(
-        "ch", context=_ctx(root), archive=tmp_path / "arch", must_pass=True
-    )
-    assert res.status == "pass"
-    assert res.output_path is None  # nothing to report
-
-
-def test_baseline_anchor_change_absent_from_state_passes(tmp_path: Path) -> None:
-    root = _harness_root(tmp_path)  # no events at all
-    res = _baseline_anchor_presence(
-        "ghost", context=_ctx(root), archive=tmp_path / "arch", must_pass=True
-    )
-    assert res.status == "pass"
-
-
-def test_baseline_anchor_micro_tier_is_advisory(tmp_path: Path) -> None:
-    # Micro tier downgrades must_pass to False at build time; even when the
-    # anchor is MISSING (status=fail), must_pass=False means it won't fail verdict.
-    root = _harness_root(tmp_path)
-    _seed_events(root, "ch", _plan_items(anchors=["cap-x"], tier="Micro"))
-    tasks = baseline_check_tasks(
-        _config(),
-        context=_ctx(root),
-        archive=tmp_path / "arch",
-        variables={"CHANGE_ID": "ch", "SLUG": "ch"},
-        only_ids=["anchor-sentinel-presence-final"],
-    )
-    assert len(tasks) == 1
-    assert tasks[0].must_pass is False  # Micro → advisory
-    res = tasks[0].run()
-    assert res.status == "fail"  # cap-x has no sentinel
-    assert res.must_pass is False
-
-
-def test_baseline_anchor_normal_tier_is_must_pass(tmp_path: Path) -> None:
-    root = _harness_root(tmp_path)
-    _seed_events(root, "ch", _plan_items(anchors=["cap-x"], tier="Normal"))
-    tasks = baseline_check_tasks(
-        _config(),
-        context=_ctx(root),
-        archive=tmp_path / "arch",
-        variables={"CHANGE_ID": "ch", "SLUG": "ch"},
-        only_ids=["anchor-sentinel-presence-final"],
-    )
-    assert tasks[0].must_pass is True
 
 
 # --- lifecycle-ordering -----------------------------------------------------
@@ -1104,7 +1014,7 @@ def test_covered_by_scope_prefix_is_segment_aware() -> None:
 # --- baseline_check_tasks wiring / only_ids ---------------------------------
 
 
-def test_baseline_check_tasks_all_three_in_order(tmp_path: Path) -> None:
+def test_baseline_check_tasks_all_two_in_order(tmp_path: Path) -> None:
     root = _harness_root(tmp_path)
     tasks = baseline_check_tasks(
         _config(),
@@ -1113,7 +1023,6 @@ def test_baseline_check_tasks_all_three_in_order(tmp_path: Path) -> None:
         variables={"CHANGE_ID": "ch", "SLUG": "ch"},
     )
     assert [t.id for t in tasks] == [
-        "anchor-sentinel-presence-final",
         "lifecycle-ordering",
         "scope-vs-plan-final",
     ]
@@ -1155,15 +1064,14 @@ checks: []
 def test_runner_check_baselines_pass_end_to_end(tmp_path: Path) -> None:
     root = _harness_root(tmp_path)
     (root / ".harness" / "verification.yaml").write_text(_BASELINE_ONLY_YAML)
-    # Clean stream, anchors all present, no scope declared → all 3 baselines pass.
-    _seed_events(root, "ch", _plan_items(anchors=["cap-a"], tier="Normal"))
-    (root / "src.py").write_text("# @capability:cap-a\n")
+    # Clean stream, no scope declared → both baselines pass.
+    _seed_events(root, "ch", _plan_items(tier="Normal"))
     runner = VerificationRunner()
     trigger = Activity(type="cli_verify", change_id="ch", payload={})
     res = runner.check(trigger, WorkspaceContext(workspace_root=root))
     assert res.status == "pass"
     assert res.details is not None
-    assert res.details["checks_run"] == 3
+    assert res.details["checks_run"] == 2
     assert res.emit_events[0].type == "verification_passed"
 
 
@@ -1179,16 +1087,3 @@ def test_runner_check_baselines_lifecycle_failure_fails_verdict(tmp_path: Path) 
     assert res.emit_events[0].type == "verification_failed"
     failed_ids = [fc["id"] for fc in res.emit_events[0].payload["failed_checks"]]
     assert "lifecycle-ordering" in failed_ids
-
-
-def test_runner_check_baselines_anchor_missing_normal_tier_fails(tmp_path: Path) -> None:
-    root = _harness_root(tmp_path)
-    (root / ".harness" / "verification.yaml").write_text(_BASELINE_ONLY_YAML)
-    # Normal-tier anchor declared but no sentinel in source → anchor must_pass fail.
-    _seed_events(root, "ch", _plan_items(anchors=["cap-missing"], tier="Normal"))
-    runner = VerificationRunner()
-    trigger = Activity(type="cli_verify", change_id="ch", payload={})
-    res = runner.check(trigger, WorkspaceContext(workspace_root=root))
-    assert res.status == "fail"
-    failed_ids = [fc["id"] for fc in res.emit_events[0].payload["failed_checks"]]
-    assert "anchor-sentinel-presence-final" in failed_ids

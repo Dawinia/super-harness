@@ -49,10 +49,8 @@ from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
-# tier_hint enum mirrors sensors/_anchor_policy.py (Micro → advisory anchors;
-# Normal/Large → must_pass). Kept as a literal Choice so a typo is rejected at
-# parse time rather than silently writing an unrecognised tier the policy then
-# fail-closes on.
+# tier_hint enum: Micro / Normal / Large. Kept as a literal Choice so a typo is
+# rejected at parse time rather than silently writing an unrecognised tier.
 _TIER_CHOICES = ["Micro", "Normal", "Large"]
 
 
