@@ -1,4 +1,5 @@
 # tests/unit/cli/test_decision.py
+import json
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -147,9 +148,6 @@ def test_show_missing(tmp_path):
     root = _init(tmp_path)
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "show", "d-x"])
     assert r.exit_code == 2
-
-
-import json
 
 
 def test_check_clean_exit0(tmp_path):
