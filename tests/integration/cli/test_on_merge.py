@@ -67,9 +67,7 @@ def _evt(change_id: str, evt_type: str, payload: dict[str, Any] | None = None) -
     )
 
 
-def _drive_to_ready_to_merge(
-    root: Path, change_id: str, *, anchors: list[str] | None = None
-) -> None:
+def _drive_to_ready_to_merge(root: Path, change_id: str) -> None:
     """Drive ``change_id`` to READY_TO_MERGE so a strict ``merged`` emit is legal.
 
     Per transitions: intent_declared → plan_ready → plan_approved →
@@ -81,7 +79,7 @@ def _drive_to_ready_to_merge(
     writer = EventWriter(events_path(root))
     sequence: list[tuple[str, dict[str, Any]]] = [
         ("intent_declared", {"description": "x"}),
-        ("plan_ready", {"affected_anchors": anchors or []}),
+        ("plan_ready", {}),
         ("plan_approved", {}),
         ("implementation_started", {}),
         ("verification_passed", {}),
@@ -299,7 +297,7 @@ def test_emits_merged_event_then_refreshes_state(tmp_path: Path) -> None:
 
 def test_data_schema_pass_path(tmp_path: Path) -> None:
     """``--json`` envelope on the pass path carries the frozen ``data`` schema."""
-    _drive_to_ready_to_merge(tmp_path, CHANGE_ID, anchors=["cap-foo"])
+    _drive_to_ready_to_merge(tmp_path, CHANGE_ID)
 
     r = CliRunner().invoke(
         main,
@@ -354,7 +352,7 @@ def test_no_harness_dir_exits_3(tmp_path: Path) -> None:
 
 def test_human_mode_summary_to_stdout(tmp_path: Path) -> None:
     """Without ``--json``, the pass path prints a brief one-line summary."""
-    _drive_to_ready_to_merge(tmp_path, CHANGE_ID, anchors=["cap-foo"])
+    _drive_to_ready_to_merge(tmp_path, CHANGE_ID)
 
     r = CliRunner().invoke(
         main,

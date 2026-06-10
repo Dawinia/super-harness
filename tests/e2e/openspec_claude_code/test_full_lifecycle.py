@@ -120,14 +120,12 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     proposal_dir.mkdir(parents=True, exist_ok=True)
     (proposal_dir / "proposal.md").write_text("# Demo feature\n")
     (proposal_dir / "tasks.md").write_text(
-        "scope:\n  files: [src/hello.py]\naffected_anchors: [cap-hello]\n"
+        "scope:\n  files: [src/hello.py]\n"
     )
     _run(["super-harness", "adapter", "scan-once", "openspec"], cwd=demo_repo)
     assert _last_event_type(demo_repo) == "plan_ready"
     # State now AWAITING_PLAN_REVIEW (plan §16 reconcile #6) — NOT
-    # PLAN_APPROVED. `affected_anchors` payload is `[]` regardless of
-    # tasks.md content (openspec adapter v0.1 does not extract anchors;
-    # see plan §16 "Honest framing").
+    # PLAN_APPROVED.
     assert _derive_and_read(demo_repo, "demo-feature") == "AWAITING_PLAN_REVIEW"
 
     # === Phase F — GAP-BRIDGE #1: plan_approved =========================
@@ -158,7 +156,7 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     # === Phase H — real local git commit (no mock) ======================
     src = demo_repo / "src"
     src.mkdir(exist_ok=True)
-    (src / "hello.py").write_text("# @capability:cap-hello\nprint('hi')\n")
+    (src / "hello.py").write_text("print('hi')\n")
     git_env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "t",
@@ -190,9 +188,8 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     #      `openspec validate ${SLUG} --strict --json`, which would fail
     #      against our hand-crafted minimal proposal.md (not a real
     #      OpenSpec spec). The lifecycle wiring we're testing here is
-    #      orthogonal to OpenSpec proposal validity; if/when v0.2 wires
-    #      `affected_anchors` we'll either ship a real fixture spec or
-    #      keep this layer off in E2E by policy.
+    #      orthogonal to OpenSpec proposal validity; we either ship a real
+    #      fixture spec or keep this layer off in E2E by policy.
     # NB: load + edit + dump via PyYAML (not string-replace) because
     # `super-harness init` reformats verification.yaml from the inline
     # template style to multi-line block style on write.

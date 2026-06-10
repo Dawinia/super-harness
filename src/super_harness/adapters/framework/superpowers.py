@@ -112,7 +112,7 @@ def _plan_payload(fm: dict[str, Any]) -> dict[str, Any]:
     and only when present + non-null. Absent → empty payload (HG-05 intent).
     """
     payload: dict[str, Any] = {}
-    for key in ("affected_anchors", "scope", "tier_hint"):
+    for key in ("scope", "tier_hint"):
         value = fm.get(key)
         if value is not None:
             payload[key] = value
@@ -269,7 +269,7 @@ class SuperpowersAdapter(FrameworkAdapter):
             "- Mark an artifact for super-harness with YAML frontmatter: "
             "`change: <slug>` (identity) plus optional `stage: design|plan`.\n"
             "  - `stage: design` declares intent; `stage: plan` (or omitted) means "
-            "plan ready. A plan may also carry `affected_anchors` / `scope` / `tier_hint`.\n"
+            "plan ready. A plan may also carry `scope` / `tier_hint`.\n"
             "- Branch naming is yours — the slug travels in the `change:` frontmatter "
             "(and PR metadata), not the branch name.\n"
             "<!-- /super-harness framework: superpowers -->\n"

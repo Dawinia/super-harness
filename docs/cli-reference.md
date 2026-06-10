@@ -605,7 +605,6 @@ super-harness plan ready [OPTIONS] SLUG
 |-------|------|---------|-------------|
 | `SLUG` | text | *required* |  |
 | `--scope` | text | — | scope.files as an inline yaml list, or `@<path>` to read the yaml from a file. |
-| `--anchors` | text | — | affected_anchors as a comma-separated list of L1 capability IDs. |
 | `--tier-hint` | {Micro\|Normal\|Large} | — | Optional tier estimate (Micro/Normal/Large); recorded as tier_hint → cs.tier. |
 
 **Exit codes:**

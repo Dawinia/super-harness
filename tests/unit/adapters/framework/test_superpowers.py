@@ -134,26 +134,21 @@ class TestPlanPayload:
     def _plan_ready(self, ws: Path) -> Event:
         return next(e for e in SuperpowersAdapter().observe(ws) if e.type == "plan_ready")
 
-    def test_anchors_scope_tier_into_payload(self, tmp_path: Path) -> None:
+    def test_scope_tier_into_payload(self, tmp_path: Path) -> None:
         body = (
             "---\n"
             "change: foo\n"
             "stage: plan\n"
-            "affected_anchors:\n  - capability-event-stream\n  - capability-state-reducer\n"
             "scope:\n  files:\n    - src/a.py\n"
             "tier_hint: Normal\n"
             "---\n# Foo\n"
         )
         _write(tmp_path, "docs/plans/2026-06-02-foo.md", body)
         p = self._plan_ready(tmp_path)
-        assert p.payload["affected_anchors"] == [
-            "capability-event-stream",
-            "capability-state-reducer",
-        ]
         assert p.payload["scope"] == {"files": ["src/a.py"]}
         assert p.payload["tier_hint"] == "Normal"
 
-    def test_no_anchors_empty_payload(self, tmp_path: Path) -> None:
+    def test_no_fields_empty_payload(self, tmp_path: Path) -> None:
         _write(tmp_path, "docs/plans/2026-06-02-foo.md", _marked("foo", stage="plan"))
         assert self._plan_ready(tmp_path).payload == {}
 

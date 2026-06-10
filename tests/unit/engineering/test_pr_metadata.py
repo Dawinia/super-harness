@@ -641,58 +641,6 @@ class TestBuildMetadataVerification:
 
 
 # ---------------------------------------------------------------------------
-# build_metadata — Affected anchors
-# ---------------------------------------------------------------------------
-
-
-class TestBuildMetadataAffectedAnchors:
-    def test_affected_anchors_omitted_when_empty(self, tmp_path: Path) -> None:
-        """No affected_anchors in plan_ready → key absent from output."""
-        ep = events_path(tmp_path)
-        w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_ready", payload={}), skip_validation=True)
-        result = build_metadata("c1", tmp_path)
-        block = parse_metadata_block(result)
-        assert "Affected anchors" not in block.fields
-
-    def test_affected_anchors_omitted_when_no_plan_ready(self, tmp_path: Path) -> None:
-        """No plan_ready event → key absent."""
-        result = build_metadata("c1", tmp_path)
-        block = parse_metadata_block(result)
-        assert "Affected anchors" not in block.fields
-
-    def test_affected_anchors_comma_joined_when_non_empty(self, tmp_path: Path) -> None:
-        """affected_anchors list → comma+space joined, round-trip recovers same value."""
-        ep = events_path(tmp_path)
-        w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
-        w.emit(
-            _make_ev(
-                "c1",
-                "plan_ready",
-                payload={"affected_anchors": ["cap-foo", "cap-bar"]},
-            ),
-            skip_validation=True,
-        )
-        result = build_metadata("c1", tmp_path)
-        block = parse_metadata_block(result)
-        assert block.fields["Affected anchors"] == "cap-foo, cap-bar"
-
-    def test_affected_anchors_single_item(self, tmp_path: Path) -> None:
-        ep = events_path(tmp_path)
-        w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
-        w.emit(
-            _make_ev("c1", "plan_ready", payload={"affected_anchors": ["cap-only"]}),
-            skip_validation=True,
-        )
-        result = build_metadata("c1", tmp_path)
-        block = parse_metadata_block(result)
-        assert block.fields["Affected anchors"] == "cap-only"
-
-
-# ---------------------------------------------------------------------------
 # build_metadata — Plan / Spec / Verification details always omitted (v0.1)
 # ---------------------------------------------------------------------------
 

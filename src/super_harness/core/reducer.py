@@ -136,8 +136,6 @@ def derive_state(events_file: Path) -> dict[str, ChangeState]:
         elif ev.type == "plan_ready":
             if "scope" in p:
                 cs.scope = p["scope"]
-            if "affected_anchors" in p:
-                cs.affected_anchors = list(p["affected_anchors"])
             if "tier_hint" in p:
                 cs.tier = p["tier_hint"]
         elif ev.type == "implementation_complete":

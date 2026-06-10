@@ -28,6 +28,5 @@ def test_change_state_default_construction():
     assert cs.current_state == "INTENT_DECLARED"
     assert cs.framework == "plain"
     assert cs.event_counts == {}
-    assert cs.affected_anchors == []
     assert cs.redeclaration_history == []
     assert cs.pr_url is None
