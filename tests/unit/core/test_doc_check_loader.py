@@ -74,3 +74,28 @@ def test_duplicate_path_malformed(tmp_path):
                    "  - path: docs/a.md\n    command: echo 1\n"
                    "  - path: docs/a.md\n    command: echo 2\n")
     assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["duplicate_path"]
+
+
+def test_empty_path_malformed(tmp_path):
+    _reg(tmp_path, "derived_docs:\n  - path: ''\n    command: echo hi\n")
+    assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["malformed_registry"]
+
+
+def test_whitespace_path_malformed(tmp_path):
+    _reg(tmp_path, "derived_docs:\n  - path: '   '\n    command: echo hi\n")
+    assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["malformed_registry"]
+
+
+def test_dot_path_resolves_to_root_malformed(tmp_path):
+    _reg(tmp_path, "derived_docs:\n  - path: '.'\n    command: echo hi\n")
+    assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["malformed_registry"]
+
+
+def test_mixed_valid_and_invalid_aggregates(tmp_path):
+    _reg(tmp_path, "derived_docs:\n"
+                   "  - path: docs/good.md\n    command: echo ok\n"
+                   "  - path: /abs.md\n    command: echo bad\n"
+                   "  - path: docs/good.md\n    command: echo dup\n")
+    docs, errors = load_derived_docs(tmp_path)
+    assert [d.path for d in docs] == ["docs/good.md"]
+    assert [e.code for e in errors] == ["path_escape", "duplicate_path"]

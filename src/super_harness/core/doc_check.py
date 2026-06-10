@@ -24,6 +24,7 @@ class DerivedDoc:
 @dataclass(frozen=True)
 class RegistryError:
     code: str       # malformed_registry | path_escape | duplicate_path
+    # all three codes route to EXIT_NO_CONFIG (exit 3) at the CLI layer
     message: str
     file: str = ".harness/derived-docs.yaml"
 
@@ -74,6 +75,17 @@ def load_derived_docs(
             continue
         if not shlex.split(command):
             errors.append(RegistryError("malformed_registry", f"entry {i} has empty command"))
+            continue
+        if path.strip() == "":
+            errors.append(RegistryError("malformed_registry", f"entry {i} has empty path"))
+            continue
+        if (workspace_root / path).resolve() == workspace_root.resolve():
+            errors.append(
+                RegistryError(
+                    "malformed_registry",
+                    f"entry {i} path resolves to repo root: {path!r}",
+                )
+            )
             continue
         if _escapes_repo(workspace_root, path):
             errors.append(RegistryError("path_escape", f"path escapes repo: {path!r}"))
