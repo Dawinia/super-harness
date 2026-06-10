@@ -100,10 +100,11 @@ def load_derived_docs(
         if _escapes_repo(workspace_root, path):
             errors.append(RegistryError("path_escape", f"path escapes repo: {path!r}"))
             continue
-        if path in seen:
+        resolved = str((workspace_root / path).resolve())
+        if resolved in seen:
             errors.append(RegistryError("duplicate_path", f"duplicate path: {path!r}"))
             continue
-        seen.add(path)
+        seen.add(resolved)
         docs.append(DerivedDoc(path=path, command=command))
     return docs, errors
 

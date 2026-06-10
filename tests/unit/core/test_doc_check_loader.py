@@ -76,6 +76,15 @@ def test_duplicate_path_malformed(tmp_path):
     assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["duplicate_path"]
 
 
+def test_duplicate_path_after_normalization(tmp_path):
+    _reg(tmp_path, "derived_docs:\n"
+                   "  - path: docs/a.md\n    command: echo 1\n"
+                   "  - path: ./docs/a.md\n    command: echo 2\n")
+    docs, errors = load_derived_docs(tmp_path)
+    assert [d.path for d in docs] == ["docs/a.md"]
+    assert [e.code for e in errors] == ["duplicate_path"]
+
+
 def test_empty_path_malformed(tmp_path):
     _reg(tmp_path, "derived_docs:\n  - path: ''\n    command: echo hi\n")
     assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["malformed_registry"]
