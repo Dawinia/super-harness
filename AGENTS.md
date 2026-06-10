@@ -19,7 +19,7 @@ Use your framework's native PR command:
 <!-- super-harness framework: superpowers -->
 - Drive the lifecycle with the superpowers skills (brainstorming → writing-plans → TDD). Plans live under `docs/plans/`.
 - Mark an artifact for super-harness with YAML frontmatter: `change: <slug>` (identity) plus optional `stage: design|plan`.
-  - `stage: design` declares intent; `stage: plan` (or omitted) means plan ready. A plan may also carry `affected_anchors` / `scope` / `tier_hint`.
+  - `stage: design` declares intent; `stage: plan` (or omitted) means plan ready. A plan may also carry `scope` / `tier_hint`.
 - Branch naming is yours — the slug travels in the `change:` frontmatter (and PR metadata), not the branch name.
 <!-- /super-harness framework: superpowers -->
 
@@ -61,13 +61,13 @@ configured **strategy** for that reviewer (`subagent` / `human` / `hybrid`):
 
 Checklists & verdict verbs per review state:
 
-- **`AWAITING_PLAN_REVIEW`** (plan-reviewer) — check spec coverage / design / scope /
-  declared anchors. Record with `super-harness review approve <change> --reviewer
+- **`AWAITING_PLAN_REVIEW`** (plan-reviewer) — check spec coverage / design / scope.
+  Record with `super-harness review approve <change> --reviewer
   plan-reviewer` or `super-harness review reject <change> --reviewer plan-reviewer
   --reason "<why>"`. Approve → `PLAN_APPROVED` (gate then allows edits); reject →
   `PLAN_REJECTED` for a revised plan.
 - **`AWAITING_CODE_REVIEW`** (code-reviewer) — check the diff against the plan (spec
-  compliance / anchors planted / quality). Record with `super-harness review approve
+  compliance / quality). Record with `super-harness review approve
   <change> --reviewer code-reviewer` (or `review reject ...`). Approve → `READY_TO_MERGE`.
 - `super-harness review skip <change> --reviewer <name>` is an escape hatch (records an
   approval with `reason=manual_skip`) for when a reviewer is stuck.
@@ -77,7 +77,7 @@ When you do run a subagent, run a genuinely independent one — don't self-rubbe
 
 ### Before opening PR
 
-Ensure `super-harness verify` passes (tests / lint / build / anchor sentinels).
+Ensure `super-harness verify` passes (tests / lint / build).
 If using a `done` skill, run `super-harness done <slug>` instead—it triggers
 verify and emits the lifecycle event automatically.
 
