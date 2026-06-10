@@ -30,6 +30,22 @@ def test_init_creates_harness_dir(tmp_path: Path):
     assert (tmp_path / ".harness" / "source-paths.yaml").exists()
 
 
+def test_init_scaffolds_derived_docs_skeleton(tmp_path: Path):
+    # doc-leg Task 7: init ships a DISCOVERABLE skeleton derived-docs.yaml so the
+    # doc-check gate is not a silent no-op — an adopter sees how to register docs.
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert r.exit_code == 0
+    f = tmp_path / ".harness" / "derived-docs.yaml"
+    assert f.is_file()
+    # The skeleton must parse as a VALID empty registry (`derived_docs: []` ->
+    # ([], [])), NOT a malformed one.
+    from super_harness.core.doc_check import load_derived_docs
+
+    docs, errors = load_derived_docs(tmp_path)
+    assert docs == []
+    assert errors == []
+
+
 def test_init_idempotent_without_force(tmp_path: Path):
     runner = CliRunner()
     runner.invoke(main, ["--workspace", str(tmp_path), "init"])

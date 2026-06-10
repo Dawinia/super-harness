@@ -1,0 +1,8 @@
+# Register docs your generator can re-emit, so `super-harness doc check` guards
+# them against drift (and `--fix` regenerates them). Each entry: a repo-relative
+# `path` + a `command` that prints the doc's canonical content to stdout.
+#
+# derived_docs:
+#   - path: docs/api-reference.md
+#     command: python -m my_pkg.gen_api --emit
+derived_docs: []
