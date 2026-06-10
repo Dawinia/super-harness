@@ -1,4 +1,3 @@
-# L1 anchor (HG-12 cut 1) — @capability:capability-actor-identity
 """Resolve the identity recorded on emitted events' ``actor.identifier``.
 
 Today every CLI emit uses the placeholder ``"cli"``; this resolves a real
@@ -42,6 +41,7 @@ def _git_config_email(workspace: Path) -> str | None:
     return email or None
 
 
+# @decision:d-identity-resolution-order
 def resolve_identity(workspace: Path, override: str | None = None) -> str:
     """Resolve identity: override > env SUPER_HARNESS_ACTOR > git email > "cli".
 

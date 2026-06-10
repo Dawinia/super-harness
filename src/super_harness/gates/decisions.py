@@ -16,6 +16,7 @@ __all__ = ["PRE_TOOL_USE_DECISIONS", "SUGGESTIONS"]
 
 # 10-state decision table from lifecycle-event-model §3.7. Verbatim copy —
 # every (decision, reason) pair must match the spec's Gate 矩阵 exactly.
+# @decision:d-single-gate-policy
 PRE_TOOL_USE_DECISIONS: dict[str, tuple[str, str]] = {
     "INTENT_DECLARED": ("block", "INTENT_DECLARED: plan not drafted yet"),
     "AWAITING_PLAN_REVIEW": ("block", "AWAITING_PLAN_REVIEW: plan review in progress"),
