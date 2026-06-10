@@ -1,7 +1,7 @@
 # L1 anchor (HG-D self-host) — @capability:capability-ci-templates
 """super-harness init — scaffold the `.harness/` workspace.
 
-Creates the canonical directory layout (6 subdirs + 6 skeleton files) per
+Creates the canonical directory layout (4 subdirs + 6 skeleton files) per
 `engineering-integration` §2.1. Idempotent without `--force`; `--force`
 overwrites all skeleton files including user edits. Per `cli-command-surface` §2.3.
 """
@@ -189,13 +189,11 @@ def init_cmd(
     harness.mkdir(parents=True, exist_ok=True)
     # events.jsonl created empty (writer appends later)
     (harness / "events.jsonl").touch()
-    # N-4 fix: create all 6 sub-directories per engineering-integration §2.1
+    # N-4 fix: create all 4 sub-directories per engineering-integration §2.1
     for subdir in (
-        "anchors",
         "sensor-results",
         "verification-results",
         "operation-logs",
-        "pending-l1-updates",
         "pending-reviews",
     ):
         (harness / subdir).mkdir(exist_ok=True)

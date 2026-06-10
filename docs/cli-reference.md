@@ -106,47 +106,6 @@ super-harness adapter uninstall [OPTIONS] NAME
 - `2` unknown adapter or not installed
 - `3` no `.harness/`
 
-## super-harness anchor
-
-Manage the @capability sentinel location index.
-
-```
-super-harness anchor COMMAND [ARGS...]
-```
-
-## super-harness anchor list
-
-Print a table of anchor_id → file:line rows from the index.
-
-```
-super-harness anchor list [OPTIONS]
-```
-
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `--capability` | text | — | Restrict output to a single anchor id (also scopes --missing-sentinel). |
-| `--missing-sentinel` | flag | `False` | Cross-reference declared anchors (from the active change's affected_anchors) against the index and report any that have no sentinel in the codebase. NOTE: in v0.1 affected_anchors is typically empty because no emitter populates it yet — this flag usually reports nothing on real data. |
-
-**Exit codes:**
-
-- `0` success (or index absent — friendly note)
-- `1` generic error
-- `3` index corrupt / unreadable
-
-## super-harness anchor sync
-
-Rebuild .harness/anchors/index.yaml by scanning all source files.
-
-```
-super-harness anchor sync [OPTIONS]
-```
-
-**Exit codes:**
-
-- `0` success
-- `1` generic error
-- `3` no `.harness/`
-
 ## super-harness attest
 
 Lifecycle attestation: snapshot evidence + verify it covers a diff.

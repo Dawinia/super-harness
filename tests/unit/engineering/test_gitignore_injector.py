@@ -33,8 +33,6 @@ _CANONICAL_PATHS = (
     ".harness/sensor-results/",
     ".harness/verification-results/",
     ".harness/operation-logs/",
-    ".harness/anchors/index.yaml",
-    ".harness/pending-l1-updates/",
     ".harness/pending-reviews/",
     ".harness/gate-disabled",
     ".claude/settings.local.json",

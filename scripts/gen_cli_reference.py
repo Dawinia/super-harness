@@ -187,16 +187,6 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`1` generic error",
         "`3` no `.harness/`",
     ],
-    "anchor list": [
-        "`0` success (or index absent — friendly note)",
-        "`1` generic error",
-        "`3` index corrupt / unreadable",
-    ],
-    "anchor sync": [
-        "`0` success",
-        "`1` generic error",
-        "`3` no `.harness/`",
-    ],
     "sensor list": [
         "`0` success",
         "`1` generic error",
