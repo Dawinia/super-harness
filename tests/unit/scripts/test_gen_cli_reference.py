@@ -114,8 +114,8 @@ def test_md_escape_cell_handles_pipe_and_newline() -> None:
     assert gen_cli_reference._md_escape_cell("`code`") == "`code`"
 
 
-def test_check_mode_exits_zero_when_in_sync(tmp_path, monkeypatch) -> None:
-    """`--check` mode reports exit 0 when committed file matches generated."""
+def test_run_check_exits_zero_when_in_sync(tmp_path, monkeypatch) -> None:
+    """`run_check` reports exit 0 when committed file matches generated."""
     group = _build_fixture_group()
     generated = gen_cli_reference.render_markdown(group, root_name="fixture")
     target = tmp_path / "cli-reference.md"
@@ -125,8 +125,8 @@ def test_check_mode_exits_zero_when_in_sync(tmp_path, monkeypatch) -> None:
     assert code == 0
 
 
-def test_check_mode_exits_one_on_drift(tmp_path) -> None:
-    """`--check` mode reports exit 1 when on-disk content is stale."""
+def test_run_check_exits_one_on_drift(tmp_path) -> None:
+    """`run_check` reports exit 1 when on-disk content is stale."""
     group = _build_fixture_group()
     target = tmp_path / "cli-reference.md"
     target.write_text("# Outdated content\n", encoding="utf-8")
@@ -135,7 +135,7 @@ def test_check_mode_exits_one_on_drift(tmp_path) -> None:
     assert code == 1
 
 
-def test_check_mode_treats_missing_file_as_drift(tmp_path) -> None:
+def test_run_check_treats_missing_file_as_drift(tmp_path) -> None:
     """Missing target file → exit 1 (drift), not a crash."""
     group = _build_fixture_group()
     target = tmp_path / "does-not-exist.md"
@@ -144,7 +144,7 @@ def test_check_mode_treats_missing_file_as_drift(tmp_path) -> None:
     assert code == 1
 
 
-def test_check_mode_treats_undecodable_file_as_drift(tmp_path) -> None:
+def test_run_check_treats_undecodable_file_as_drift(tmp_path) -> None:
     """UnicodeDecodeError on read → exit 1 (drift), not a crash."""
     group = _build_fixture_group()
     target = tmp_path / "binary.md"

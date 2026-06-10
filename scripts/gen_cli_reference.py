@@ -558,11 +558,6 @@ def run_check(
 # CLI entry point
 # ---------------------------------------------------------------------------
 
-def _default_target() -> Path:
-    """Default output: <repo-root>/docs/cli-reference.md."""
-    return Path(__file__).resolve().parent.parent / "docs" / "cli-reference.md"
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="gen_cli_reference",
