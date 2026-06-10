@@ -136,7 +136,7 @@ class DocCheckResult:
 
 
 def _normalize(text: str) -> str:
-    return text.replace("\r\n", "\n")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _run_generator(workspace_root: Path, command: str) -> tuple[str | None, str]:

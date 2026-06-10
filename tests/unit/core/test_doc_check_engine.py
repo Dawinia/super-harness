@@ -97,3 +97,32 @@ def test_timeout_is_failed(tmp_path, monkeypatch):
     _reg(tmp_path, [("docs/a.md", f'{sys.executable} -c "import time;time.sleep(5)"')])
     r = run_doc_check(tmp_path)
     assert [f.path for f in r.failed] == ["docs/a.md"] and r.exit_code == 4
+
+
+def test_multiple_entries_all_in_sync(tmp_path):
+    _w(tmp_path / "docs/a.md", "aaa\n")
+    _w(tmp_path / "docs/b.md", "bbb\n")
+    _reg(tmp_path, [("docs/a.md", _emit("aaa\n")), ("docs/b.md", _emit("bbb\n"))])
+    r = run_doc_check(tmp_path)
+    assert [d.path for d in r.in_sync] == ["docs/a.md", "docs/b.md"]  # sorted
+    assert r.drift == [] and r.failed == [] and r.exit_code == 0
+
+
+def test_non_utf8_stdout_is_failed(tmp_path):
+    _w(tmp_path / "docs/a.md", "x\n")
+    # generator writes a raw non-UTF-8 byte to stdout
+    cmd = f'{sys.executable} -c "import sys;sys.stdout.buffer.write(b\'\\xff\\xfe\')"'
+    _reg(tmp_path, [("docs/a.md", cmd)])
+    r = run_doc_check(tmp_path)
+    assert [f.path for f in r.failed] == ["docs/a.md"] and r.exit_code == 4
+
+
+def test_diff_truncated_at_40_lines(tmp_path):
+    # on-disk has 100 lines, generator emits 0 → unified diff is >40 lines → truncated
+    _w(tmp_path / "docs/a.md", "".join(f"line{i}\n" for i in range(100)))
+    _reg(tmp_path, [("docs/a.md", _emit(""))])
+    r = run_doc_check(tmp_path)
+    assert [d.path for d in r.drift] == ["docs/a.md"]
+    diff = r.drift[0].diff
+    assert "more lines; full diff on stderr" in diff
+    assert len(diff.splitlines()) <= 41  # 40 capped lines + 1 sentinel line
