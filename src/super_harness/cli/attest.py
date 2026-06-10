@@ -119,6 +119,7 @@ def _git_name_status(base: str, head: str, cwd: Path) -> str:
     Raises ``_GitError`` on a non-zero git exit (the CLI translates that into a
     FAIL-CLOSED exit 4 — an unreachable merge-base must never become a pass).
     """
+    # @decision:d-merge-gate-pure-git
     proc = subprocess.run(
         ["git", "-c", "core.quotePath=false", "diff", "--name-status", f"{base}...{head}"],
         cwd=str(cwd),

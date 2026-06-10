@@ -71,23 +71,24 @@ running the flow yourself.
   and lifecycle state, `verify` runs the verification-runner sensor, `done`
   advances a change from `IMPLEMENTATION_IN_PROGRESS` to
   `AWAITING_CODE_REVIEW`, and `on-merge` emits the `merged`
-  event after the PR lands on main and triggers the L1-updater follow-up PR.
+  event after the PR lands on main (advancing the change directly to `ARCHIVED`).
 - **Framework adapters** — OpenSpec (detects `openspec/changes/` and
   `openspec/specs/`, emits `intent_declared` from `proposal.md` and
   `plan_ready` from `tasks.md`, provides verification check `openspec validate
   <slug> --strict --json`), Superpowers (version-agnostic: discovers design/plan
   artifacts by a `change:` frontmatter marker rather than a fixed path, emits
   `intent_declared` from `stage: design` and `plan_ready` from `stage: plan`,
-  lifting `affected_anchors` / `scope` / `tier_hint` from the plan frontmatter),
+  lifting `scope` / `tier_hint` from the plan frontmatter),
   and Plain (fallback for repos without a framework).
 - **Agent adapter** — Claude Code (writes hooks to `.claude/settings.json` for
   PreToolUse + SessionStart and injects an `AGENTS.md` subsection).
-- **Three-layer verification** — baseline checks (anchor-sentinel-presence-final,
-  lifecycle-ordering, scope-vs-plan-final) + adapter-provided checks (e.g.,
+- **Three-layer verification** — baseline checks (lifecycle-ordering,
+  scope-vs-plan-final) + adapter-provided checks (e.g.,
   OpenSpec strict validate) + user-defined `.harness/verification.yaml`.
-- **Anchor system** — `@capability:` sentinel scanning, an
-  `.harness/anchors/index.yaml` rebuilt by `super-harness anchor sync`, and
-  tier-aware enforcement (Micro = warn / Normal + Large = must-pass).
+- **Decision records + anchors** — ratified decision records in `docs/decisions/`
+  with `@decision:<id>` code anchors; `super-harness decision check` enforces
+  referential integrity (a dangling anchor with no ratified record blocks; a
+  ratified record with no anchor warns).
 - **Bundled CI workflow** — `super-harness init --setup-github` deploys
   `.github/workflows/super-harness.yml` (4 jobs: pr-decorate, pr-validate,
   verification, on-merge) and `.github/pull_request_template.md` with the

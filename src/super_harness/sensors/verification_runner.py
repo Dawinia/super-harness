@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-verification-runner
 """Verification runner: the `VerificationRunner` sensor + its execution engine.
 
 Phase 8 tasks 8.3 + 8.4 (engineering-integration §2.3 / §3.6, sensor-gate
@@ -17,11 +16,9 @@ subprocesses (`run_check`); the `baseline` layer is in-process Python. To keep
 `run_checks` agnostic, every layer is reduced to a uniform `CheckTask` (an id, a
 `must_pass` flag, and a zero-arg `run` callable producing a `CheckResult`).
 
-**Baseline layer (Task 8.5)** — `baseline_check_tasks` builds 3 in-process
-baselines: `anchor-sentinel-presence-final` (anchors declared in plan have a
-matching `@capability:` sentinel in source; tier-aware must_pass),
-`lifecycle-ordering` (the change's event stream has no illegal transitions —
-an integrity/tamper check; must_pass), and `scope-vs-plan-final` (changed files
+**Baseline layer (Task 8.5)** — `baseline_check_tasks` builds 2 in-process
+baselines: `lifecycle-ordering` (the change's event stream has no illegal
+transitions — an integrity/tamper check; must_pass), and `scope-vs-plan-final` (changed files
 fall within the declared plan scope; advisory must_pass=False, mirroring the
 `scope_drift_detected` warning nature). `find_ordering_violations` (the
 whole-stream validator powering `lifecycle-ordering`) lives in
@@ -48,7 +45,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from super_harness.core.anchor_scanner import scan_sentinels
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import find_ordering_violations
 from super_harness.core.events import Actor, Event
@@ -72,7 +68,6 @@ from super_harness.sensors import (
     SensorResult,
     WorkspaceContext,
 )
-from super_harness.sensors._anchor_policy import anchor_must_pass_for_tier
 
 if TYPE_CHECKING:
     from super_harness.sensors import SensorStatus
@@ -291,15 +286,13 @@ def build_variables(change_id: str, context: WorkspaceContext) -> dict[str, str]
 
 # Baseline check ids (Task 8.5). Kept as constants so `only_ids` filtering, the
 # CheckTask `id`, and the `command` descriptor never drift out of sync.
-_BASELINE_ANCHOR = "anchor-sentinel-presence-final"
 _BASELINE_LIFECYCLE = "lifecycle-ordering"
 _BASELINE_SCOPE = "scope-vs-plan-final"
 
-# The 3 baseline ids, single-sourced so `baseline_check_tasks` (what runs) and
+# The 2 baseline ids, single-sourced so `baseline_check_tasks` (what runs) and
 # `collectable_check_ids` (what `--check` validation reports as collectable)
-# can never drift. Ordered (anchor → lifecycle → scope) to match build order.
+# can never drift. Ordered (lifecycle → scope) to match build order.
 BASELINE_CHECK_IDS: tuple[str, ...] = (
-    _BASELINE_ANCHOR,
     _BASELINE_LIFECYCLE,
     _BASELINE_SCOPE,
 )
@@ -336,53 +329,6 @@ def _make_baseline_result(
         must_pass=must_pass,
         command=command,
         output_path=output_path,
-    )
-
-
-def _baseline_anchor_presence(
-    change_id: str,
-    *,
-    context: WorkspaceContext,
-    archive: Path,
-    must_pass: bool,
-) -> CheckResult:
-    """Baseline: every anchor the plan declared has a `@capability:` sentinel.
-
-    Reads the change's declared anchors from derived state
-    (`affected_anchors` on its `ChangeState`) and the set of sentinels present in
-    source (`scan_sentinels`). Any declared anchor with no matching sentinel is a
-    failure. No anchors declared (or the change absent from derived state) → pass.
-    """
-    t0 = time.perf_counter()
-    states = derive_state(events_path(context.workspace_root))
-    cs = states.get(change_id)
-    declared = list(cs.affected_anchors) if cs is not None else []
-    if not declared:
-        return _make_baseline_result(
-            _BASELINE_ANCHOR,
-            passed=True,
-            must_pass=must_pass,
-            t0=t0,
-            command=f"builtin:{_BASELINE_ANCHOR}",
-            report=None,
-            archive=archive,
-        )
-    present = scan_sentinels(context.workspace_root)
-    missing = sorted(set(declared) - present)
-    report = None
-    if missing:
-        report = (
-            f"Declared anchors with no @capability:<id> sentinel in source "
-            f"(change {change_id}):\n" + "\n".join(f"  - {a}" for a in missing) + "\n"
-        )
-    return _make_baseline_result(
-        _BASELINE_ANCHOR,
-        passed=not missing,
-        must_pass=must_pass,
-        t0=t0,
-        command=f"builtin:{_BASELINE_ANCHOR}",
-        report=report,
-        archive=archive,
     )
 
 
@@ -547,19 +493,16 @@ def baseline_check_tasks(
     variables: dict[str, str],
     only_ids: list[str] | None = None,
 ) -> list[CheckTask]:
-    """Build the baseline-layer `CheckTask`s (Task 8.5): the 3 in-process checks.
+    """Build the baseline-layer `CheckTask`s (Task 8.5): the 2 in-process checks.
 
-    The 3 baselines are pure-Python (not subprocesses):
-        - `anchor-sentinel-presence-final` — tier-aware must_pass (Micro → warn;
-          Normal/Large/unknown → must_pass).
+    The 2 baselines are pure-Python (not subprocesses):
         - `lifecycle-ordering` — must_pass (integrity/tamper check).
         - `scope-vs-plan-final` — advisory (must_pass=False; scope-drift warning).
 
-    Each baseline's `must_pass` is computed HERE (at build time) — in particular
-    the anchor baseline's tier-aware flag is resolved from the change's derived
-    `tier` — so the `run_checks` scheduler's fail-fast logic sees the correct
-    flag before it ever calls `run`. Each `CheckTask.run` is a zero-arg closure;
-    per-baseline values are bound via default args to dodge late-binding.
+    Each baseline's `must_pass` is computed HERE (at build time) so the
+    `run_checks` scheduler's fail-fast logic sees the correct flag before it ever
+    calls `run`. Each `CheckTask.run` is a zero-arg closure; per-baseline values
+    are bound via default args to dodge late-binding.
 
     `cfg` is accepted (but not read) for call-site uniformity with
     `_config_check_task` and future use (e.g. a future per-repo base-branch
@@ -572,7 +515,7 @@ def baseline_check_tasks(
 
     Returns:
         The baseline `CheckTask`s surviving the `only_ids` filter, in fixed order
-        (anchor → lifecycle → scope).
+        (lifecycle → scope).
     """
     change_id = variables.get("CHANGE_ID") or variables.get("SLUG") or ""
     wanted = set(only_ids) if only_ids is not None else None
@@ -580,33 +523,12 @@ def baseline_check_tasks(
     def _included(check_id: str) -> bool:
         return wanted is None or check_id in wanted
 
-    # Resolve the anchor baseline's tier-aware must_pass at BUILD time so the
-    # scheduler sees the right flag. derive_state is cheap (v0.1 full rebuild);
-    # the lifecycle/scope baselines re-derive inside their own closures.
+    # The lifecycle/scope baselines re-derive state inside their own closures.
     tasks: list[CheckTask] = []
 
     # Each `_run` binds its per-baseline values via default args to dodge
     # late-binding (mirrors `_config_check_task`). Named defs (not lambdas) so
     # mypy can infer the `Callable[[], CheckResult]` type.
-    if _included(_BASELINE_ANCHOR):
-        states = derive_state(events_path(context.workspace_root))
-        cs = states.get(change_id)
-        anchor_must_pass = anchor_must_pass_for_tier(cs.tier if cs is not None else None)
-
-        def _run_anchor(
-            change_id: str = change_id,
-            context: WorkspaceContext = context,
-            archive: Path = archive,
-            must_pass: bool = anchor_must_pass,
-        ) -> CheckResult:
-            return _baseline_anchor_presence(
-                change_id, context=context, archive=archive, must_pass=must_pass
-            )
-
-        tasks.append(
-            CheckTask(id=_BASELINE_ANCHOR, must_pass=anchor_must_pass, run=_run_anchor)
-        )
-
     if _included(_BASELINE_LIFECYCLE):
 
         def _run_lifecycle(

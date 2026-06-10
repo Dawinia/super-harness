@@ -300,17 +300,11 @@ super-harness on-merge --commit ${{ github.sha }}
 What `on-merge` does:
 
 1. Emits a `merged` event tying the change to the merge commit SHA.
-2. Dispatches the L1-updater sensor to compute changes to L1 capability
-   docs (`docs/reference/capabilities/**`) and open a follow-up PR.
-3. Dispatches the anchor-index-rebuilder to refresh
-   `.harness/anchors/index.yaml`.
-4. State advances to `MERGED`, then `ARCHIVED` once the L1 follow-up PR
-   lands.
+2. State advances directly to `ARCHIVED` — the merge is the terminal beat;
+   there is no post-merge follow-up step.
 
-If the L1-updater succeeds, a follow-up PR appears under your account; if
-it fails (e.g. transient `gh` error), a pending file lands at
-`.harness/pending-l1-updates/<slug>.md` so a human can rerun later. Either
-way `on-merge` itself exits 0 — the merge already happened.
+`on-merge` always exits 0 — the merge already happened, so it never blocks
+or fails the merged PR.
 
 ---
 
@@ -318,16 +312,13 @@ way `on-merge` itself exits 0 — the merge already happened.
 
 A few read-only commands that are useful for debugging or auditing:
 
-> Note: `anchor list` reads `.harness/anchors/index.yaml` — run
-> `super-harness anchor sync` first to build the index from L1 capability
-> specs (cold-init repos will show "No anchor index yet" until sync runs).
-
 ```bash
 super-harness status                                  # all active changes
 super-harness status --all                            # include ARCHIVED + ABANDONED
 super-harness event log 2026-06-01-add-greeting      # this change's event history
 super-harness event log --type pr_opened --limit 20  # global filter
-super-harness anchor list                             # all L1 sentinels
+super-harness decision list                           # all ratified decisions
+super-harness decision show d-some-decision           # one decision + its anchors
 super-harness state verify                            # invariant-check events.jsonl
 ```
 
@@ -342,8 +333,8 @@ super-harness state verify                            # invariant-check events.j
   add entries under `user_checks`. They run alongside baseline + adapter
   checks.
 - **Tier-tag your changes**: `Micro` / `Normal` / `Large` tiers change how
-  strictly some checks fail (e.g. anchor-sentinel-presence-final warns on
-  Micro, must-pass on Normal+).
+  strictly some checks fail (more lenient on `Micro`, must-pass on
+  `Normal`+).
 - **Read the full reference**: every command's flags, defaults, and exit
   codes are documented in [`cli-reference.md`](./cli-reference.md).
 

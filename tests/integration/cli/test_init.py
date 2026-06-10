@@ -51,11 +51,9 @@ def test_init_force_overwrites(tmp_path: Path):
 def test_init_creates_all_subdirs(tmp_path: Path):
     CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
     for d in (
-        "anchors",
         "sensor-results",
         "verification-results",
         "operation-logs",
-        "pending-l1-updates",
         "pending-reviews",
     ):
         assert (tmp_path / ".harness" / d).is_dir(), f"missing subdir: {d}"
@@ -432,8 +430,6 @@ _CANONICAL_GITIGNORE_PATHS = (
     ".harness/sensor-results/",
     ".harness/verification-results/",
     ".harness/operation-logs/",
-    ".harness/anchors/index.yaml",
-    ".harness/pending-l1-updates/",
     ".harness/pending-reviews/",
     ".harness/gate-disabled",
     ".claude/settings.local.json",

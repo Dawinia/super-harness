@@ -1,6 +1,6 @@
 """Unit tests for `super-harness plan ready` (HG-13).
 
-`plan ready <slug> [--scope <files-yaml>] [--anchors <ids>] [--tier-hint <t>]`
+`plan ready <slug> [--scope <files-yaml>] [--tier-hint <t>]`
 (cli-command-surface §418) manually emits `plan_ready`, advancing
 INTENT_DECLARED / PLAN_REJECTED → AWAITING_PLAN_REVIEW. It is the plain-mode
 emitter that lets a cold-start change leave the very first lifecycle stage via
@@ -8,7 +8,7 @@ CLI (no framework adapter, no `skip_validation` seeding). Strict emit — an
 illegal transition is rejected and nothing is appended.
 
 The payload carries the lifecycle-event-model §3.2 fields the reducer already
-consumes: `scope` ({files: [...]}), `affected_anchors` (list), `tier_hint`
+consumes: `scope` ({files: [...]}), `tier_hint`
 (Micro/Normal/Large → cs.tier).
 """
 from __future__ import annotations
@@ -93,17 +93,6 @@ def test_ready_scope_at_file_reads_from_disk(tmp_path: Path) -> None:
     assert r.exit_code == EXIT_OK, r.output
     scope = _events(tmp_path)[-1]["payload"].get("scope")
     assert scope == {"files": ["src/x.py", "src/y.py"]}
-
-
-def test_ready_records_anchors_in_payload(tmp_path: Path) -> None:
-    _seed(tmp_path, "c", "intent_declared")
-    r = CliRunner().invoke(
-        main,
-        ["--workspace", str(tmp_path), "plan", "ready", "c", "--anchors", "cap-a, cap-b ,cap-c"],
-    )
-    assert r.exit_code == EXIT_OK, r.output
-    payload = _events(tmp_path)[-1]["payload"]
-    assert payload.get("affected_anchors") == ["cap-a", "cap-b", "cap-c"]
 
 
 def test_ready_records_tier_hint(tmp_path: Path) -> None:

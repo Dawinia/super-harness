@@ -1,6 +1,6 @@
 """`super-harness plan` — plain-mode `plan_ready` emitter (HG-13).
 
-`plan ready <slug> [--scope <files-yaml>] [--anchors <ids>] [--tier-hint <t>]`
+`plan ready <slug> [--scope <files-yaml>] [--tier-hint <t>]`
 (cli-command-surface §418) manually emits `plan_ready`, advancing
 INTENT_DECLARED / PLAN_REJECTED → AWAITING_PLAN_REVIEW. It is the plain-mode
 counterpart to the framework adapters' automatic plan-artifact observation:
@@ -10,12 +10,12 @@ first lifecycle stage (the HG-13 self-host blocker). Emit is STRICT — an illeg
 transition (e.g. from PLAN_APPROVED) is rejected and nothing is appended.
 
 The payload carries the lifecycle-event-model §3.2 fields the reducer already
-consumes (reducer.py): `scope` ({files: [...]}), `affected_anchors` (list),
-`tier_hint` (Micro/Normal/Large → cs.tier). All three are optional and omitted
+consumes (reducer.py): `scope` ({files: [...]}),
+`tier_hint` (Micro/Normal/Large → cs.tier). Both are optional and omitted
 from the payload when not supplied.
 
 Reconcile note: cli-command-surface §418 lists the signature as
-`plan ready <slug> [--scope <files-yaml>] [--anchors <ids>]` and the exit codes
+`plan ready <slug> [--scope <files-yaml>]` and the exit codes
 as 0/1/2/3/5. We additionally expose `--tier-hint` because the lifecycle §3.2
 payload schema includes `tier_hint` and the reducer already maps it onto
 `cs.tier` (consumed by the anchor / verification tier policy) — the spec's CLI
@@ -49,10 +49,8 @@ from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
-# tier_hint enum mirrors sensors/_anchor_policy.py (Micro → advisory anchors;
-# Normal/Large → must_pass). Kept as a literal Choice so a typo is rejected at
-# parse time rather than silently writing an unrecognised tier the policy then
-# fail-closes on.
+# tier_hint enum: Micro / Normal / Large. Kept as a literal Choice so a typo is
+# rejected at parse time rather than silently writing an unrecognised tier.
 _TIER_CHOICES = ["Micro", "Normal", "Large"]
 
 
@@ -101,11 +99,6 @@ def _resolve_scope_files(raw: str) -> list[str]:
     help="scope.files as an inline yaml list, or `@<path>` to read the yaml from a file.",
 )
 @click.option(
-    "--anchors",
-    default=None,
-    help="affected_anchors as a comma-separated list of L1 capability IDs.",
-)
-@click.option(
     "--tier-hint",
     type=click.Choice(_TIER_CHOICES),
     default=None,
@@ -116,7 +109,6 @@ def ready(
     ctx: click.Context,
     slug: str,
     scope_raw: str | None,
-    anchors: str | None,
     tier_hint: str | None,
 ) -> None:
     """Emit `plan_ready` (INTENT_DECLARED / PLAN_REJECTED → AWAITING_PLAN_REVIEW)."""
@@ -143,9 +135,6 @@ def ready(
                 err=True,
             )
             sys.exit(EXIT_VALIDATION)
-    if anchors is not None:
-        # Comma-separated; tolerate stray whitespace and drop empty segments.
-        payload["affected_anchors"] = [a.strip() for a in anchors.split(",") if a.strip()]
     if tier_hint is not None:
         payload["tier_hint"] = tier_hint
 

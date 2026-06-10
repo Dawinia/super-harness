@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-cli-surface
 """super-harness CLI root group.
 
 Defines the top-level `super-harness` Click group and wires up all subcommands
@@ -10,10 +9,10 @@ from __future__ import annotations
 import click
 
 from super_harness.cli.adapter import adapter_group
-from super_harness.cli.anchor import anchor_group
 from super_harness.cli.attest import attest_group
 from super_harness.cli.change import change_group
 from super_harness.cli.daemon import daemon_group
+from super_harness.cli.decision import decision_group
 from super_harness.cli.done import done_cmd
 from super_harness.cli.event import event_group
 from super_harness.cli.gate import gate_group
@@ -92,13 +91,13 @@ main.add_command(verify_cmd)
 main.add_command(done_cmd)
 main.add_command(sync_cmd)
 main.add_command(verification_group)
-main.add_command(anchor_group)
 main.add_command(pr_group)
 main.add_command(review_group)
 main.add_command(plan_group)
 main.add_command(implementation_group)
 main.add_command(on_merge_cli)
 main.add_command(attest_group)
+main.add_command(decision_group)
 
 
 # Rewrap every registered subcommand (and its descendants) so each one is a

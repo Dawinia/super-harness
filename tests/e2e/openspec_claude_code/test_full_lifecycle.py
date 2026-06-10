@@ -3,9 +3,8 @@
 Drives the full openspec + claude-code lifecycle slice using real
 subprocesses for every shipped surface: ``super-harness`` /
 ``super-harness-daemon`` / ``super-harness-hook`` binaries, real local
-``git``, real ``EventWriter`` / reducer / follow-up dispatcher /
-anchor-index-rebuilder. The only mock is ``gh`` (PATH-shim, via the
-``mock_gh`` fixture in ``tests/e2e/conftest.py``).
+``git``, real ``EventWriter`` / reducer. The only mock is ``gh``
+(PATH-shim, via the ``mock_gh`` fixture in ``tests/e2e/conftest.py``).
 
 See plan §16 for the full reconcile notes covering the 10 drift items
 that shaped this test (most notably: no ``review skip``/
@@ -29,7 +28,6 @@ from tests.e2e.conftest import (
     MockGh,
     _derive_and_read,
     _emit_via_writer,
-    _events_contain_type,
     _last_event_type,
     _run,
     _wait_for_completed_process,
@@ -45,12 +43,6 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     ``code_review_passed``) are bridged via ``EventWriter.emit(skip_validation=True)``
     — see plan §16 reconcile #7. These will become reviewer-subagent-
     emitted in v0.2.
-
-    The L1-updater follow-up runs but short-circuits on the no-affected-
-    anchors path (openspec adapter v0.1 emits ``plan_ready`` with empty
-    ``affected_anchors``); the test asserts this short-circuit, NOT a
-    ``gh pr create`` call. See plan §16 "Honest framing" for the v0.2
-    follow-up work that will populate ``affected_anchors``.
     """
     # === Phase A — bootstrap ============================================
     _run(["super-harness", "init"], cwd=demo_repo)
@@ -128,14 +120,12 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     proposal_dir.mkdir(parents=True, exist_ok=True)
     (proposal_dir / "proposal.md").write_text("# Demo feature\n")
     (proposal_dir / "tasks.md").write_text(
-        "scope:\n  files: [src/hello.py]\naffected_anchors: [cap-hello]\n"
+        "scope:\n  files: [src/hello.py]\n"
     )
     _run(["super-harness", "adapter", "scan-once", "openspec"], cwd=demo_repo)
     assert _last_event_type(demo_repo) == "plan_ready"
     # State now AWAITING_PLAN_REVIEW (plan §16 reconcile #6) — NOT
-    # PLAN_APPROVED. `affected_anchors` payload is `[]` regardless of
-    # tasks.md content (openspec adapter v0.1 does not extract anchors;
-    # see plan §16 "Honest framing").
+    # PLAN_APPROVED.
     assert _derive_and_read(demo_repo, "demo-feature") == "AWAITING_PLAN_REVIEW"
 
     # === Phase F — GAP-BRIDGE #1: plan_approved =========================
@@ -166,7 +156,7 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     # === Phase H — real local git commit (no mock) ======================
     src = demo_repo / "src"
     src.mkdir(exist_ok=True)
-    (src / "hello.py").write_text("# @capability:cap-hello\nprint('hi')\n")
+    (src / "hello.py").write_text("print('hi')\n")
     git_env = {
         **os.environ,
         "GIT_AUTHOR_NAME": "t",
@@ -198,9 +188,8 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     #      `openspec validate ${SLUG} --strict --json`, which would fail
     #      against our hand-crafted minimal proposal.md (not a real
     #      OpenSpec spec). The lifecycle wiring we're testing here is
-    #      orthogonal to OpenSpec proposal validity; if/when v0.2 wires
-    #      `affected_anchors` we'll either ship a real fixture spec or
-    #      keep this layer off in E2E by policy.
+    #      orthogonal to OpenSpec proposal validity; we either ship a real
+    #      fixture spec or keep this layer off in E2E by policy.
     # NB: load + edit + dump via PyYAML (not string-replace) because
     # `super-harness init` reformats verification.yaml from the inline
     # template style to multi-line block style on write.
@@ -230,11 +219,10 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     )
     assert _derive_and_read(demo_repo, "demo-feature") == "READY_TO_MERGE"
 
-    # === Phase K — on-merge (real) + L1-updater dispatch (short-circuit) =
-    # `gh` is PATH-shimmed (mock_gh records all calls). `on-merge`
-    # dispatches sensors synchronously and `refresh_state_after_emit`
-    # runs before the subprocess returns (cli/on_merge.py + sensors/
-    # dispatcher.py) — no sleep needed.
+    # === Phase K — on-merge (real) =====================================
+    # `gh` is PATH-shimmed (mock_gh records all calls). `on-merge` emits
+    # `merged` and `refresh_state_after_emit` runs before the subprocess
+    # returns (cli/on_merge.py) — no sleep needed.
     _run(
         [
             "super-harness", "on-merge",
@@ -244,33 +232,9 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
         cwd=demo_repo,
     )
 
-    # === Phase L — final state ARCHIVED + anchor index rebuilt ==========
+    # === Phase L — final state ARCHIVED =================================
     assert _derive_and_read(demo_repo, "demo-feature") == "ARCHIVED", (
-        "shipped lifecycle slice must reach ARCHIVED after on-merge + L1-updater"
-    )
-    idx_path = demo_repo / ".harness" / "anchors" / "index.yaml"
-    assert idx_path.exists(), "anchor-index-rebuilder must produce index.yaml"
-    idx = yaml.safe_load(idx_path.read_text())
-    assert "cap-hello" in idx.get("anchors", {}), (
-        "anchor sentinel from commit must be indexed"
-    )
-
-    # === Phase M — L1-updater short-circuit assertion ===================
-    # Because openspec adapter v0.1 emits `plan_ready` with empty
-    # `affected_anchors` payload, L1Updater short-circuits at
-    # `sensors/l1_updater.py:213` ("no L1 anchors to update" — return summary
-    # at :218) and emits `l1_update_completed{pr_url: None}` WITHOUT calling
-    # `gh pr create`. The test asserts this — wiring `gh pr create` is gated
-    # on v0.2 anchors-payload work (see plan §16 "Honest framing").
-    gh_pr_calls = [c for c in mock_gh.calls if c[:3] == ["gh", "pr", "create"]]
-    assert gh_pr_calls == [], (
-        f"L1-updater MUST short-circuit on no-affected-anchors path "
-        f"(v0.1 honest behavior); saw unexpected gh pr create call(s): {gh_pr_calls}"
-    )
-    # Positive proof L1-updater actually fired (not silently skipped):
-    assert _events_contain_type(demo_repo, "l1_update_completed"), (
-        "L1-updater follow-up must emit l1_update_completed "
-        "(short-circuit still emits the completion event)"
+        "shipped lifecycle slice must reach ARCHIVED after on-merge"
     )
 
     _run(["super-harness", "daemon", "stop"], cwd=demo_repo)

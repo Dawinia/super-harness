@@ -1,10 +1,10 @@
 """Unit tests for engineering.operation_log.write_operation_log.
 
-Rule-of-three factor: the helper was introduced when L1Updater (Phase 13)
-became the second operation-log writer after `init --setup-github` (Phase 12).
-The two writers share the same on-disk mechanism (parent-mkdir + colon-
-sanitized timestamp filename + best-effort swallow on OSError) but compose
-different bodies.
+Rule-of-three factor: the helper was introduced when a second operation-log
+writer was added (Phase 13) after `init --setup-github` (Phase 12). The two
+writers share the same on-disk mechanism (parent-mkdir + colon-sanitized
+timestamp filename + best-effort swallow on OSError) but compose different
+bodies.
 """
 from __future__ import annotations
 

@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-state-machine
 """Lifecycle state transition table per lifecycle-event-model §3.7 Reachability.
 
 compute_target_state(current_state, event_type) returns:
@@ -20,11 +19,12 @@ INVALID: Literal["__INVALID__"] = "__INVALID__"
 _INFORMATIONAL: frozenset[str] = frozenset({
     "verification_passed", "verification_failed",
     "scope_drift_detected", "merged_reverted", "pr_opened",
-    "l1_update_failed", "sensor_timeout_exceeded", "sensor_crashed",
+    "sensor_timeout_exceeded", "sensor_crashed",
 })
 
 # Per spec §3.7 Reachability table — explicit (current_state, event_type) -> target.
 # Order: happy path → reject/restart loops → terminal.
+# @decision:d-fixed-transition-matrix
 _TRANSITIONS: dict[tuple[str, str], str] = {
     # === Happy path ===
     ("INTENT_DECLARED", "plan_ready"): "AWAITING_PLAN_REVIEW",
@@ -39,8 +39,7 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     # by re-running code-reviewer which emits new code_review_passed/failed.
     ("CODE_REVIEW_REJECTED", "code_review_passed"): "READY_TO_MERGE",
     ("CODE_REVIEW_REJECTED", "code_review_failed"): "CODE_REVIEW_REJECTED",
-    ("READY_TO_MERGE", "merged"): "MERGED",
-    ("MERGED", "l1_update_completed"): "ARCHIVED",
+    ("READY_TO_MERGE", "merged"): "ARCHIVED",
     # === Withdraw paths (§3.6) ===
     # NOTE: implementation_restarted / implementation_invalidated are universal
     # (`* → PLAN_APPROVED` / `* → IMPLEMENTATION_IN_PROGRESS` per §3.6 lines 373-374)
@@ -72,7 +71,7 @@ def compute_target_state(current: str | None, event_type: str) -> str:
       373-374, legal from any non-terminal active state → PLAN_APPROVED /
       IMPLEMENTATION_IN_PROGRESS respectively.
     - Informational events (verification_passed/failed, scope_drift_detected,
-      pr_opened, merged_reverted, l1_update_failed, sensor_*): never change state.
+      pr_opened, merged_reverted, sensor_*): never change state.
     - Explicit transitions: looked up in the table.
     - Anything else: INVALID.
     """

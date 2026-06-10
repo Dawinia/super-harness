@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-verification-runner-config
 """Loader + schema for `.harness/verification.yaml` (engineering-integration §2.3).
 
 Hand-rolled, dataclass-based parser — deliberately pydantic-free to avoid an

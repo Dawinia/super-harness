@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-gh-integration
 """Thin subprocess wrapper for the ``gh`` CLI (engineering-integration spec §3.1).
 
 Pure module — no event emission, no operation-log writing, no global state.
@@ -311,6 +310,7 @@ def enable_repo_merge_settings() -> None:
         flip so the caller's advisory can be specific.
     """
     for flag in ("allow_auto_merge=true", "allow_squash_merge=true"):
+        # @decision:d-gh-cli-not-rest
         args = ["gh", "api", "-X", "PATCH", "/repos/{owner}/{repo}", "-f", flag]
         try:
             subprocess.run(args, capture_output=True, text=True, check=True)

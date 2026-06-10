@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-pr-metadata
 """PR description metadata block — parse half + write half (engineering-integration §2.5).
 
 Parse half (``parse_metadata_block``) is pure-function: no I/O, no global state.
@@ -190,20 +189,6 @@ def _derive_tier(events_file: Path, change_id: str) -> str:
     return tier if tier is not None else "unknown"
 
 
-def _derive_affected_anchors(events_file: Path, change_id: str) -> list[str]:
-    """Return affected_anchors from the latest plan_ready event, or empty list."""
-    anchors: list[str] = []
-    for ev in _iter_events(events_file):
-        if ev.get("change_id") != change_id:
-            continue
-        if ev.get("type") == "plan_ready":
-            payload = ev.get("payload") or {}
-            raw = payload.get("affected_anchors")
-            if isinstance(raw, list):
-                anchors = [str(a) for a in raw]
-    return anchors
-
-
 def _derive_verification(events_file: Path, change_id: str) -> str:
     """Return the Verification token from the latest verification_* event.
 
@@ -250,7 +235,7 @@ def build_metadata(change_id: str, root: Path) -> str:
     unreadable events are treated as no events → Tier=unknown, Verification=pending.
 
     Field order matches §2.5 example:
-        Change → Tier → Affected anchors (if non-empty) → Verification
+        Change → Tier → Verification
         → First commit (if present) → Implementation started (if present)
         → super-harness version
 
@@ -267,7 +252,6 @@ def build_metadata(change_id: str, root: Path) -> str:
     ep = events_path(root)
 
     tier = _derive_tier(ep, change_id)
-    anchors = _derive_affected_anchors(ep, change_id)
     verification = _derive_verification(ep, change_id)
     first_commit, impl_ts = _derive_implementation_started(ep, change_id)
 
@@ -275,8 +259,6 @@ def build_metadata(change_id: str, root: Path) -> str:
     lines.append(f"Change: {change_id}")
     lines.append(f"Tier: {tier}")
     # Plan omitted (v0.1 — no provenance source)
-    if anchors:
-        lines.append(f"Affected anchors: {', '.join(anchors)}")
     lines.append(f"Verification: {verification}")
     # Verification details omitted (v0.1 — no stable archive path resolution)
     # Spec omitted (v0.1 — no provenance source)

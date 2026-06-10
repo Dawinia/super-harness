@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-framework-adapter-builtin
 """SuperpowersAdapter — FrameworkAdapter for workspaces driven by superpowers.
 
 Discovery is anchored on a super-harness-owned frontmatter marker (`change:` /
@@ -13,8 +12,6 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, ClassVar
 
-import yaml
-
 from super_harness.adapters import FrameworkAdapter
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.events import (
@@ -24,6 +21,7 @@ from super_harness.core.events import (
     Framework,
     parse_event_line,
 )
+from super_harness.core.frontmatter import split_frontmatter
 from super_harness.core.paths import events_path
 from super_harness.core.ulid import new_event_id
 
@@ -48,20 +46,8 @@ def _parse_frontmatter(text: str) -> dict[str, Any]:
     error, or frontmatter that is not a mapping (e.g. a list/scalar). Never
     raises — a malformed artifact must not crash the read-only scan.
     """
-    lines = text.splitlines()
-    if not lines or lines[0].strip() != "---":
-        return {}
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            block = "\n".join(lines[1:i])
-            break
-    else:
-        return {}  # no closing fence
-    try:
-        data = yaml.safe_load(block)
-    except yaml.YAMLError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    parsed = split_frontmatter(text)
+    return parsed[0] if parsed is not None else {}
 
 
 def _iter_marked(workspace: Path) -> Iterator[tuple[Path, dict[str, Any], str]]:
@@ -125,7 +111,7 @@ def _plan_payload(fm: dict[str, Any]) -> dict[str, Any]:
     and only when present + non-null. Absent → empty payload (HG-05 intent).
     """
     payload: dict[str, Any] = {}
-    for key in ("affected_anchors", "scope", "tier_hint"):
+    for key in ("scope", "tier_hint"):
         value = fm.get(key)
         if value is not None:
             payload[key] = value
@@ -282,7 +268,7 @@ class SuperpowersAdapter(FrameworkAdapter):
             "- Mark an artifact for super-harness with YAML frontmatter: "
             "`change: <slug>` (identity) plus optional `stage: design|plan`.\n"
             "  - `stage: design` declares intent; `stage: plan` (or omitted) means "
-            "plan ready. A plan may also carry `affected_anchors` / `scope` / `tier_hint`.\n"
+            "plan ready. A plan may also carry `scope` / `tier_hint`.\n"
             "- Branch naming is yours — the slug travels in the `change:` frontmatter "
             "(and PR metadata), not the branch name.\n"
             "<!-- /super-harness framework: superpowers -->\n"

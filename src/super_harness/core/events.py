@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-event-stream
 """Event dataclasses + JSON serialization for super-harness.
 
 Per lifecycle-event-model §2 (events.jsonl format) + §3 (5 core + 18 extension
@@ -31,7 +30,6 @@ EXTENSION_EVENT_TYPES: frozenset[str] = frozenset({
     "verification_passed", "verification_failed",
     "code_review_passed", "code_review_failed",
     "scope_drift_detected",
-    "l1_update_completed", "l1_update_failed",
     # user-initiated
     "intent_redeclared", "intent_abandoned",
     "plan_redeclared", "implementation_restarted",
@@ -70,6 +68,7 @@ class Actor:
     identifier: str
 
 
+# @decision:d-events-append-only
 @dataclass(frozen=True)
 class Event:
     """A single event in events.jsonl. Frozen — events are immutable.

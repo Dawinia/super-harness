@@ -40,7 +40,6 @@ def test_extension_includes_required_events():
         "verification_passed", "verification_failed",
         "code_review_passed", "code_review_failed",
         "scope_drift_detected",
-        "l1_update_completed", "l1_update_failed",
         "intent_redeclared", "intent_abandoned",
         "plan_redeclared", "implementation_restarted", "implementation_invalidated",
         "implementation_withdrawn", "merged_reverted", "pr_opened",

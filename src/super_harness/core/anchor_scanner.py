@@ -1,16 +1,18 @@
-"""Pure `@capability:<id>` sentinel scanner (Task 1.10 / B-5 fix).
+"""Pure, parametrized `<keyword><id>` sentinel scanner.
 
-Phase 8 baseline checks (`anchor-sentinel-presence`) and Phase 11 ambient sensor
-(`freshness-anchor-check`) both need to walk the repo and collect every
-`@capability:<id>` sentinel comment present in source. To avoid forward
-dependency from Phase 8 onto a not-yet-built Phase 11 sensor — and to avoid
-duplicating the regex + git-aware walk in two places — the *pure* scanner lives
-here in core/ now. The Phase 11 Sensor wrapper (event emission, debouncing,
-state.yaml integration) is added in its own phase.
+Walks a workspace and collects every `<keyword><id>` sentinel comment present in
+source, where `<keyword>` is supplied by the caller. The current callers are
+`decision check` and `decision show`, which pass `@decision:` to locate decision
+anchors in the codebase. The keyword is a required argument: the scanner makes no
+assumption about which anchor namespace it is asked to find.
+
+Both the regex and the git-aware file walk live here in core/ so callers cannot
+drift apart. The scanner is intentionally pure — it has no notion of events,
+state, or any particular consumer.
 
 Contract (pure function, no side effects):
-- Input:  workspace root `Path`, optional list of glob patterns to filter files.
-- Output: a `set[str]` of capability IDs found across all matched files.
+- Input:  workspace root `Path`, required `keyword`, optional glob filters.
+- Output: a `set[str]` of anchor IDs found across all matched files.
 - Does NOT emit events, does NOT touch state.yaml, does NOT write any file.
 - Reads files only; safe to call concurrently with other readers.
 
@@ -27,8 +29,8 @@ Glob filtering:
   file" — short-circuited because Python's `fnmatch` / `PurePath.match` do not
   reliably support recursive `**` in 3.10/3.11. Specific patterns (e.g.
   `"*.py"`, `"src/foo/*.ts"`) fall through to `fnmatch.fnmatch` against the
-  path relative to root. Phase 8 / Phase 11 callers pass either `None` (scan
-  everything `git ls-files` returned) or a per-extension list.
+  path relative to root. Callers pass either `None` (scan everything
+  `git ls-files` returned) or a per-extension list.
 - Honoring this parameter is the v0.1 contract; a richer `pathspec`-based
   implementation is a v0.2 candidate if real callers need recursive `**`.
 
@@ -43,11 +45,22 @@ import subprocess
 from fnmatch import fnmatch
 from pathlib import Path
 
-_SENTINEL_RE = re.compile(r"@capability:([A-Za-z0-9_-]+)")
-
 # Glob patterns that we treat as "match every file" (avoids `**` quirks in
 # fnmatch / PurePath.match on Python 3.10-3.13).
 _MATCH_ALL_GLOBS = frozenset({"**/*", "**"})
+
+_CHARSET = r"([A-Za-z0-9_-]+)"  # permissive/case-preserving (design §3.1)
+
+
+def _build_re(keyword: str) -> re.Pattern[str]:
+    return re.compile(re.escape(keyword) + _CHARSET)
+
+
+def _excluded(rel_path: Path, exclude_globs: list[str] | None) -> bool:
+    if not exclude_globs:
+        return False
+    rel_str = str(rel_path)
+    return any(fnmatch(rel_str, g) for g in exclude_globs)
 
 
 def _list_files(root: Path) -> list[Path]:
@@ -96,15 +109,27 @@ def _matches_any(rel_path: Path, globs: list[str]) -> bool:
 
 
 def scan_sentinel_locations(
-    root: Path, file_globs: list[str] | None = None
+    root: Path,
+    file_globs: list[str] | None = None,
+    *,
+    keyword: str,
+    exclude_globs: list[str] | None = None,
 ) -> dict[str, list[tuple[str, int]]]:
-    """Like scan_sentinels but records WHERE each `@capability:<id>` occurs.
+    """Like scan_sentinels but records WHERE each sentinel occurs.
 
     Returns ``{anchor_id: [(repo_relative_file, 1_based_line), ...]}``. Reuses
-    ``_SENTINEL_RE`` / ``_list_files`` / ``_matches_any`` / binary-skip so the
-    two scanners cannot drift. Files are walked in sorted order (``scan_sentinels``
-    does not) so the index is deterministic.
+    ``_list_files`` / ``_matches_any`` / binary-skip so the two scanners cannot
+    drift. Files are walked in sorted order (``scan_sentinels`` does not) so the
+    index is deterministic.
+
+    Args:
+        root: directory to scan (typically the workspace root).
+        file_globs: optional list of glob patterns to restrict which files are read.
+        keyword: anchor prefix to match (e.g. ``@decision:``).
+        exclude_globs: optional list of glob patterns (relative to ``root``) for
+            files to skip entirely (e.g. ``["docs/decisions/**"]``).
     """
+    pattern = _build_re(keyword)
     locations: dict[str, list[tuple[str, int]]] = {}
     files = _list_files(root)
     if file_globs is not None:
@@ -112,19 +137,28 @@ def scan_sentinel_locations(
     for f in sorted(files):
         if not f.is_file():
             continue
+        rel = f.relative_to(root)
+        if _excluded(rel, exclude_globs):
+            continue
         try:
             text = f.read_text(encoding="utf-8")
         except (UnicodeDecodeError, PermissionError, OSError):
             continue
-        rel = str(f.relative_to(root))
+        rel_str = str(rel)
         for lineno, line in enumerate(text.splitlines(), start=1):
-            for m in _SENTINEL_RE.finditer(line):
-                locations.setdefault(m.group(1), []).append((rel, lineno))
+            for m in pattern.finditer(line):
+                locations.setdefault(m.group(1), []).append((rel_str, lineno))
     return locations
 
 
-def scan_sentinels(root: Path, file_globs: list[str] | None = None) -> set[str]:
-    """Return every `@capability:<id>` sentinel ID found beneath `root`.
+def scan_sentinels(
+    root: Path,
+    file_globs: list[str] | None = None,
+    *,
+    keyword: str,
+    exclude_globs: list[str] | None = None,
+) -> set[str]:
+    """Return every sentinel ID found beneath `root`.
 
     Args:
         root: directory to scan (typically the workspace root containing
@@ -135,12 +169,16 @@ def scan_sentinels(root: Path, file_globs: list[str] | None = None) -> set[str]:
             "filter to nothing" (returns empty set) — pass `None` if you want
             "no filter." The sentinels `"**/*"` and `"**"` are treated as
             "match all" because fnmatch does not implement recursive `**`.
+        keyword: anchor prefix to match (e.g. ``@decision:``).
+        exclude_globs: optional list of glob patterns (relative to ``root``) for
+            files to skip entirely (e.g. ``["docs/decisions/**"]``).
 
     Returns:
-        A set of capability IDs (the `<id>` portion of `@capability:<id>`).
+        A set of anchor IDs (the ``<id>`` portion after the keyword).
         Empty set if nothing is found. Never raises on binary / unreadable
         files — those are silently skipped.
     """
+    pattern = _build_re(keyword)
     found: set[str] = set()
     files = _list_files(root)
     if file_globs is not None:
@@ -148,10 +186,12 @@ def scan_sentinels(root: Path, file_globs: list[str] | None = None) -> set[str]:
     for f in files:
         if not f.is_file():
             continue
+        if _excluded(f.relative_to(root), exclude_globs):
+            continue
         try:
             text = f.read_text(encoding="utf-8")
         except (UnicodeDecodeError, PermissionError, OSError):
             continue
-        for m in _SENTINEL_RE.finditer(text):
+        for m in pattern.finditer(text):
             found.add(m.group(1))
     return found

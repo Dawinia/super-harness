@@ -118,11 +118,6 @@ def verification_yaml_path(root: Path) -> Path:
     return root / ".harness" / "verification.yaml"
 
 
-def anchors_index_path(root: Path) -> Path:
-    """Path to the auto-generated anchor index (`.harness/anchors/index.yaml`)."""
-    return root / ".harness" / "anchors" / "index.yaml"
-
-
 def verification_results_dir(root: Path, change_id: str, ts: str) -> Path:
     """`.harness/verification-results/<change_id>/<ts>` — per-run output archive.
 

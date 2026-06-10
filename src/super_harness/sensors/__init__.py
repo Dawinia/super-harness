@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-sensor-architecture
 """Sensor base architecture for super-harness.
 
 Per sensor-gate-architecture §2.1: Sensors observe lifecycle events / activities and
@@ -137,18 +136,6 @@ from super_harness.sensors.verification_runner import VerificationRunner  # noqa
 
 register_builtin("verification-runner", VerificationRunner)
 
-from super_harness.sensors.anchor_sentinel_presence import AnchorSentinelPresence  # noqa: E402
-
-register_builtin("anchor-sentinel-presence", AnchorSentinelPresence)
-
-from super_harness.sensors.anchor_index_rebuilder import AnchorIndexRebuilder  # noqa: E402
-
-register_builtin("anchor-index-rebuilder", AnchorIndexRebuilder)
-
 from super_harness.sensors.pr_decorator import PRDecorator  # noqa: E402
 
 register_builtin("PR-decorator", PRDecorator)
-
-from super_harness.sensors.l1_updater import L1Updater  # noqa: E402
-
-register_builtin("l1-updater", L1Updater)

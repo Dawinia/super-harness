@@ -26,7 +26,6 @@ def test_write_then_read_round_trip(tmp_path: Path) -> None:
         description="add foo",
         tier="Normal",
         scope={"files": ["src/foo.ts"]},
-        affected_anchors=["capability-foo"],
     )
     f = tmp_path / "state.yaml"
     write_state_yaml(f, {"c1": cs}, last_reduced_event_id="ev_x")

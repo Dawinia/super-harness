@@ -106,47 +106,6 @@ super-harness adapter uninstall [OPTIONS] NAME
 - `2` unknown adapter or not installed
 - `3` no `.harness/`
 
-## super-harness anchor
-
-Manage the @capability sentinel location index.
-
-```
-super-harness anchor COMMAND [ARGS...]
-```
-
-## super-harness anchor list
-
-Print a table of anchor_id → file:line rows from the index.
-
-```
-super-harness anchor list [OPTIONS]
-```
-
-| Param | Type | Default | Description |
-|-------|------|---------|-------------|
-| `--capability` | text | — | Restrict output to a single anchor id (also scopes --missing-sentinel). |
-| `--missing-sentinel` | flag | `False` | Cross-reference declared anchors (from the active change's affected_anchors) against the index and report any that have no sentinel in the codebase. NOTE: in v0.1 affected_anchors is typically empty because no emitter populates it yet — this flag usually reports nothing on real data. |
-
-**Exit codes:**
-
-- `0` success (or index absent — friendly note)
-- `1` generic error
-- `3` index corrupt / unreadable
-
-## super-harness anchor sync
-
-Rebuild .harness/anchors/index.yaml by scanning all source files.
-
-```
-super-harness anchor sync [OPTIONS]
-```
-
-**Exit codes:**
-
-- `0` success
-- `1` generic error
-- `3` no `.harness/`
-
 ## super-harness attest
 
 Lifecycle attestation: snapshot evidence + verify it covers a diff.
@@ -231,7 +190,7 @@ super-harness change list [OPTIONS]
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `--state` | {INTENT_DECLARED\|AWAITING_PLAN_REVIEW\|PLAN_REJECTED\|PLAN_APPROVED\|IMPLEMENTATION_IN_PROGRESS\|AWAITING_CODE_REVIEW\|CODE_REVIEW_REJECTED\|READY_TO_MERGE\|MERGED\|ARCHIVED\|ABANDONED} | — | Show only changes in this state (one of the 11 lifecycle states, uppercase). |
+| `--state` | {INTENT_DECLARED\|AWAITING_PLAN_REVIEW\|PLAN_REJECTED\|PLAN_APPROVED\|IMPLEMENTATION_IN_PROGRESS\|AWAITING_CODE_REVIEW\|CODE_REVIEW_REJECTED\|READY_TO_MERGE\|ARCHIVED\|ABANDONED} | — | Show only changes in this state (one of the 10 lifecycle states, uppercase). |
 | `--active` | flag | `False` | Exclude ARCHIVED + ABANDONED. |
 | `--archived` | flag | `False` | Show only ARCHIVED. |
 | `--abandoned` | flag | `False` | Show only ABANDONED. |
@@ -330,6 +289,138 @@ super-harness daemon stop [OPTIONS]
 
 - `0` stopped
 - `1` generic error
+
+## super-harness decision
+
+Author, ratify, and check decision records.
+
+```
+super-harness decision COMMAND [ARGS...]
+```
+
+## super-harness decision check
+
+Whole-repo dangling check: up=block(2) / down=warn / record error=3.
+
+```
+super-harness decision check [OPTIONS]
+```
+
+**Exit codes:**
+
+- `0` clean, or only dangling-down warnings
+- `2` one or more dangling-up anchors (gate violation)
+- `3` record/config error (duplicate id / malformed record) or no `.harness/`
+
+## super-harness decision list
+
+List decisions (optionally filtered); --dangling shows the down set.
+
+```
+super-harness decision list [OPTIONS]
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `--status` | {proposed\|ratified\|superseded\|retired} | — |  |
+| `--dangling` | flag | `False` | Show ratified decisions with no code anchor. |
+
+**Exit codes:**
+
+- `0` success
+- `3` no `.harness/`
+
+## super-harness decision new
+
+Create a `proposed` decision at docs/decisions/<id>.md.
+
+```
+super-harness decision new [OPTIONS] DECISION_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `DECISION_ID` | text | *required* |  |
+| `--text` | text | *required* | One-line decision. |
+
+**Exit codes:**
+
+- `0` success
+- `2` invalid id, or id already exists (case-folded)
+- `3` no `.harness/` (run `init` first)
+
+## super-harness decision ratify
+
+Mark a proposed decision ratified (stamps who/when). Ratifies only this one.
+
+```
+super-harness decision ratify [OPTIONS] DECISION_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `DECISION_ID` | text | *required* |  |
+
+**Exit codes:**
+
+- `0` success
+- `2` no such decision, or not in `proposed` state
+- `3` no `.harness/`
+
+## super-harness decision retire
+
+Retire a decision (tombstone): no successor, not anchorable, not dangling-down.
+
+```
+super-harness decision retire [OPTIONS] DECISION_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `DECISION_ID` | text | *required* |  |
+
+**Exit codes:**
+
+- `0` success
+- `2` no such decision
+- `3` no `.harness/`
+
+## super-harness decision show
+
+Show a decision's fields + the code anchors currently pointing at it.
+
+```
+super-harness decision show [OPTIONS] DECISION_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `DECISION_ID` | text | *required* |  |
+
+**Exit codes:**
+
+- `0` success
+- `2` no such decision
+- `3` no `.harness/`
+
+## super-harness decision supersede
+
+Retire <old_id> in favor of a ratified <new_id>; link both directions.
+
+```
+super-harness decision supersede [OPTIONS] OLD_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `OLD_ID` | text | *required* |  |
+| `--by` | text | *required* | The ratified successor id. |
+
+**Exit codes:**
+
+- `0` success
+- `2` missing decision, or successor not ratified
+- `3` no `.harness/`
 
 ## super-harness done
 
@@ -477,7 +568,7 @@ super-harness init [OPTIONS]
 
 ## super-harness on-merge
 
-Emit a ``merged`` event and dispatch L1-updater + anchor-index-rebuilder.
+Emit a ``merged`` event (transitions the change to ARCHIVED).
 
 ```
 super-harness on-merge [OPTIONS]
@@ -514,7 +605,6 @@ super-harness plan ready [OPTIONS] SLUG
 |-------|------|---------|-------------|
 | `SLUG` | text | *required* |  |
 | `--scope` | text | — | scope.files as an inline yaml list, or `@<path>` to read the yaml from a file. |
-| `--anchors` | text | — | affected_anchors as a comma-separated list of L1 capability IDs. |
 | `--tier-hint` | {Micro\|Normal\|Large} | — | Optional tier estimate (Micro/Normal/Large); recorded as tier_hint → cs.tier. |
 
 **Exit codes:**

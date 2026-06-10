@@ -192,7 +192,7 @@ def abandon(ctx: click.Context, slug: str, reason: str) -> None:
     "--state",
     "state_filter",
     type=click.Choice(STATES),
-    help="Show only changes in this state (one of the 11 lifecycle states, uppercase).",
+    help="Show only changes in this state (one of the 10 lifecycle states, uppercase).",
 )
 @click.option("--active", is_flag=True, help="Exclude ARCHIVED + ABANDONED.")
 @click.option("--archived", is_flag=True, help="Show only ARCHIVED.")

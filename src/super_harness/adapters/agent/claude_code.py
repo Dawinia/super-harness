@@ -1,4 +1,3 @@
-# L1 anchor (HG-D self-host) — @capability:capability-agent-adapter-builtin
 """Reference ``AgentAdapter`` for Claude Code (adapter-architecture §3.5).
 
 This is the canonical adapter super-harness ships in v0.1. It bridges Claude
