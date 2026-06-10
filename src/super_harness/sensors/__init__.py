@@ -148,7 +148,3 @@ register_builtin("anchor-index-rebuilder", AnchorIndexRebuilder)
 from super_harness.sensors.pr_decorator import PRDecorator  # noqa: E402
 
 register_builtin("PR-decorator", PRDecorator)
-
-from super_harness.sensors.l1_updater import L1Updater  # noqa: E402
-
-register_builtin("l1-updater", L1Updater)

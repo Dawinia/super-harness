@@ -303,8 +303,8 @@ def pr_emit_opened(ctx: click.Context, pr_number: int, change: str) -> None:
         timeout_s=ONESHOT_DISPATCHER_TIMEOUT_S,
         max_parallelism=ONESHOT_DISPATCHER_PARALLELISM,
     )
-    # PRDecorator does NOT internally swallow gh errors (unlike L1Updater's
-    # AC-7) — a GhError raised inside check() becomes a `sensor_crashed` event
+    # PRDecorator does NOT internally swallow gh errors — a GhError raised
+    # inside check() becomes a `sensor_crashed` event
     # via the dispatcher's `_safe_run`, and the dispatcher returns an empty
     # results list. We translate that to exit 4 + format_error (mirror Phase 12
     # `pr validate`'s exit-4 pattern; NO --json envelope on 4).

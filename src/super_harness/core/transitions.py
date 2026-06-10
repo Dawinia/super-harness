@@ -20,7 +20,7 @@ INVALID: Literal["__INVALID__"] = "__INVALID__"
 _INFORMATIONAL: frozenset[str] = frozenset({
     "verification_passed", "verification_failed",
     "scope_drift_detected", "merged_reverted", "pr_opened",
-    "l1_update_failed", "sensor_timeout_exceeded", "sensor_crashed",
+    "sensor_timeout_exceeded", "sensor_crashed",
 })
 
 # Per spec §3.7 Reachability table — explicit (current_state, event_type) -> target.
@@ -71,7 +71,7 @@ def compute_target_state(current: str | None, event_type: str) -> str:
       373-374, legal from any non-terminal active state → PLAN_APPROVED /
       IMPLEMENTATION_IN_PROGRESS respectively.
     - Informational events (verification_passed/failed, scope_drift_detected,
-      pr_opened, merged_reverted, l1_update_failed, sensor_*): never change state.
+      pr_opened, merged_reverted, sensor_*): never change state.
     - Explicit transitions: looked up in the table.
     - Anything else: INVALID.
     """

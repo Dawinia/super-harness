@@ -11,11 +11,11 @@ escalate to a crash. The shared mechanism is intentionally tiny:
 4. **Swallow ``OSError``** — operation-logging is itself best-effort; a log-write
    failure must NOT turn the original non-fatal degradation into a hard error.
 
-Callers compose the body (call sites have very different schemas: setup-github
-audits gh-api commands; l1-updater audits change_id + files + exception).
+Callers compose the body (call sites have very different schemas: e.g.
+setup-github audits gh-api commands).
 
-History: introduced in Phase 13 Task 13.5 when L1Updater became the second
-operation-log writer after Phase 12's ``init --setup-github`` (cli/init.py).
+History: introduced in Phase 13 Task 13.5 when a second operation-log writer
+was added after Phase 12's ``init --setup-github`` (cli/init.py).
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def write_operation_log(harness: Path, subdir: str, body: str) -> None:
     Args:
         harness: The ``.harness/`` directory of the workspace.
         subdir: Domain-specific subdirectory under ``operation-logs/`` (e.g.
-            ``"setup-github"`` or ``"l1-updater"``).
+            ``"setup-github"``).
         body: Pre-composed log body (caller owns the format).
     """
     try:

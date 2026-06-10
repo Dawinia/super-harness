@@ -145,7 +145,7 @@ jobs:
           slug=$(gh api "/repos/{owner}/{repo}/commits/$COMMIT_SHA/pulls" \
             --jq '.[0].head.ref // empty')
           printf 'slug=%s\n' "$slug" >> "$GITHUB_OUTPUT"
-      - name: Process merged change (trigger l1-updater, etc.)
+      - name: Process merged change
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMIT_SHA: ${{ github.sha }}
