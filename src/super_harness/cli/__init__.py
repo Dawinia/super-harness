@@ -13,6 +13,7 @@ from super_harness.cli.attest import attest_group
 from super_harness.cli.change import change_group
 from super_harness.cli.daemon import daemon_group
 from super_harness.cli.decision import decision_group
+from super_harness.cli.doc import doc_group
 from super_harness.cli.done import done_cmd
 from super_harness.cli.event import event_group
 from super_harness.cli.gate import gate_group
@@ -98,6 +99,7 @@ main.add_command(implementation_group)
 main.add_command(on_merge_cli)
 main.add_command(attest_group)
 main.add_command(decision_group)
+main.add_command(doc_group)
 
 
 # Rewrap every registered subcommand (and its descendants) so each one is a

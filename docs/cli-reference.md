@@ -422,6 +422,31 @@ super-harness decision supersede [OPTIONS] OLD_ID
 - `2` missing decision, or successor not ratified
 - `3` no `.harness/`
 
+## super-harness doc
+
+Check that derivable docs match their generators.
+
+```
+super-harness doc COMMAND [ARGS...]
+```
+
+## super-harness doc check
+
+Regen-and-diff every registered derived doc. Honors global --json.
+
+```
+super-harness doc check [OPTIONS]
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `--fix` | flag | `False` | Regenerate drifted docs in place. |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+
 ## super-harness done
 
 Verify a change and emit implementation_complete on a pass.
