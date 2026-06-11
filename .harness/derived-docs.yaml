@@ -1,0 +1,5 @@
+derived_docs:
+  - path: docs/cli-reference.md
+    command: python -m scripts.gen_cli_reference --emit
+  - path: docs/state-machine.md
+    command: python -m scripts.gen_state_machine --emit

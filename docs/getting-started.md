@@ -151,6 +151,8 @@ What happens:
 The recommended slug shape is `YYYY-MM-DD-<topic>` — it isn't enforced but
 keeps your change list time-sortable.
 
+> For the full lifecycle state/transition reference, see [state-machine.md](state-machine.md).
+
 Check status:
 
 ```bash

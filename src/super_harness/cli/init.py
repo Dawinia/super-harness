@@ -88,6 +88,14 @@ def _source_paths_default() -> str:
     return "source_paths:\n  include:\n    - '**/*'\n  exclude:\n    - 'docs/**'\n"
 
 
+def _derived_docs_default() -> str:
+    src = _TEMPLATES.joinpath("derived_docs_defaults.yaml")
+    try:
+        return src.read_text(encoding="utf-8")
+    except OSError:
+        return "derived_docs: []\n"
+
+
 def _verification_default() -> str:
     # I-1 fix: load lazily (inside init_cmd, not at module import) so that
     # `super-harness --help` and every unrelated subcommand still works even
@@ -130,6 +138,7 @@ def _skeleton_files() -> dict[str, str]:
             "  - pr-merge\n"
         ),
         "source-paths.yaml": _source_paths_default(),
+        "derived-docs.yaml": _derived_docs_default(),
         "verification.yaml": _verification_default(),
         "conventions.md": "# Project conventions (referenced by reviewer sensors)\n",
     }
