@@ -219,9 +219,11 @@ def check_cmd(ctx: click.Context) -> None:
     status: Status
     if result.errors:
         exit_code, status = EXIT_NO_CONFIG, "fail"
+    elif result.integrity_violations:
+        exit_code, status = EXIT_VALIDATION, "fail"
     elif result.dangling_up:
         exit_code, status = EXIT_VALIDATION, "fail"
-    elif result.dangling_down:
+    elif result.dangling_down or result.unhashed_ratified:
         exit_code, status = EXIT_OK, "warning"
     else:
         exit_code, status = EXIT_OK, "pass"
@@ -238,6 +240,11 @@ def check_cmd(ctx: click.Context) -> None:
                         for d in result.dangling_up
                     ],
                     "dangling_down": list(result.dangling_down),
+                    "integrity_violations": [
+                        {"id": v.id, "file": v.file}
+                        for v in result.integrity_violations
+                    ],
+                    "unhashed_ratified": list(result.unhashed_ratified),
                 },
                 errors=[
                     {"code": e.kind, "message": e.detail, "file": e.file}
@@ -248,6 +255,15 @@ def check_cmd(ctx: click.Context) -> None:
     else:
         for e in result.errors:
             click.echo(f"ERROR [{e.kind}] {e.file}: {e.detail}", err=True)
+        for v in result.integrity_violations:
+            click.echo(
+                f"INTEGRITY-LOCK {v.file} @decision:{v.id} "
+                f"(ratified body changed without re-ratification → re-ratify)",
+                err=True,
+            )
+        for did in result.unhashed_ratified:
+            click.echo(f"warning: {did} ratified before text-lock (no hash; "
+                       f"re-ratify to lock)")
         for d in result.dangling_up:
             click.echo(
                 f"DANGLING-UP {d.file}:{d.line} @decision:{d.id} (no ratified decision)",

@@ -220,3 +220,31 @@ def test_ratify_stamps_text_hash(tmp_path):
     d = parse_decision_file(root / "docs/decisions/d-pw.md")
     assert d.status == "ratified"
     assert d.ratified_text_hash == compute_body_hash("Passwords never stored with MD5.")
+
+
+def _w(p, text):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+TAMPERED = ("---\nid: d-pw\nstatus: ratified\nratified_by: a@b.com\n"
+            "ratified_text_hash: sha256:deadbeef\n---\nClaim.\n")
+
+
+def test_check_blocks_on_integrity_violation(tmp_path):
+    root = _init(tmp_path)
+    _w(root / "docs/decisions/d-pw.md", TAMPERED)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 2                       # EXIT_VALIDATION
+    assert "INTEGRITY" in r.output
+
+
+def test_check_json_lists_integrity_violations(tmp_path):
+    root = _init(tmp_path)
+    _w(root / "docs/decisions/d-pw.md", TAMPERED)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "--json", "decision", "check"])
+    payload = json.loads(r.output)
+    assert payload["data"]["integrity_violations"] == [
+        {"id": "d-pw", "file": "docs/decisions/d-pw.md"}
+    ]
+    assert payload["status"] == "fail"
