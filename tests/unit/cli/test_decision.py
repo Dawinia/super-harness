@@ -61,11 +61,20 @@ def test_ratify_missing_decision(tmp_path):
 
 def test_ratify_rejects_superseded_and_retired(tmp_path):
     root = _init(tmp_path)
+    # retired arm
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-a", "--text", "x"])
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "retire", "d-a"])
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
     assert r.exit_code == 2  # retired cannot be re-ratified
+
+    # superseded arm: supersede d-old by a ratified d-new → d-old becomes superseded
+    _new_ratified(root, "d-old")
+    _new_ratified(root, "d-new")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision",
+                              "supersede", "d-old", "--by", "d-new"])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-old"])
+    assert r.exit_code == 2  # superseded cannot be re-ratified
 
 
 def test_reratify_restamps_all_three(tmp_path, monkeypatch):
