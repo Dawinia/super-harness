@@ -7,6 +7,7 @@ See docs/plans/2026-06-08-decision-records-anchors-design.md §2 / §4.4.
 # @decision:d-decision-records
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ class Decision:
     ratified_at: str | None = None
     supersedes: str | None = None
     superseded_by: str | None = None
+    ratified_text_hash: str | None = None
     body: str = ""
     path: Path | None = None
 
@@ -48,6 +50,19 @@ def decisions_dir(workspace_root: Path) -> Path:
 
 def is_valid_id(candidate: str) -> bool:
     return bool(_ID_RE.match(candidate))
+
+
+def normalize_body(body: str) -> str:
+    """Minimal normalization for fingerprinting: line endings, per-line trailing
+    whitespace, leading/trailing blank lines. Nothing else (design §3)."""
+    unified = body.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.rstrip() for ln in unified.split("\n")]
+    return "\n".join(lines).strip()
+
+
+def compute_body_hash(body: str) -> str:
+    digest = hashlib.sha256(normalize_body(body).encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
 
 
 def parse_decision_file(path: Path) -> Decision:
@@ -71,6 +86,7 @@ def parse_decision_file(path: Path) -> Decision:
         ratified_at=data.get("ratified_at"),
         supersedes=data.get("supersedes"),
         superseded_by=data.get("superseded_by"),
+        ratified_text_hash=data.get("ratified_text_hash"),
         body=body,
         path=path,
     )
@@ -130,7 +146,8 @@ def load_decisions(workspace_root: Path) -> tuple[list[Decision], list[RecordErr
 
 def serialize_decision(decision: Decision) -> str:
     fm: dict[str, str] = {"id": decision.id, "status": decision.status}
-    for key in ("ratified_by", "ratified_at", "supersedes", "superseded_by"):
+    for key in ("ratified_by", "ratified_at", "supersedes",
+                "superseded_by", "ratified_text_hash"):
         val = getattr(decision, key)
         if val:
             fm[key] = val

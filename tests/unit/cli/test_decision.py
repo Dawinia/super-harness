@@ -5,6 +5,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from super_harness.cli import main
+from super_harness.core.decisions import compute_body_hash, parse_decision_file
 
 
 def _init(tmp_path: Path) -> Path:
@@ -58,12 +59,40 @@ def test_ratify_missing_decision(tmp_path):
     assert r.exit_code == 2
 
 
-def test_ratify_only_from_proposed(tmp_path):
+def test_ratify_rejects_superseded_and_retired(tmp_path):
     root = _init(tmp_path)
+    # retired arm
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-a", "--text", "x"])
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "retire", "d-a"])
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
-    assert r.exit_code == 2  # already ratified
+    assert r.exit_code == 2  # retired cannot be re-ratified
+
+    # superseded arm: supersede d-old by a ratified d-new → d-old becomes superseded
+    _new_ratified(root, "d-old")
+    _new_ratified(root, "d-new")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision",
+                              "supersede", "d-old", "--by", "d-new"])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-old"])
+    assert r.exit_code == 2  # superseded cannot be re-ratified
+
+
+def test_reratify_restamps_all_three(tmp_path, monkeypatch):
+    root = _init(tmp_path)
+    monkeypatch.setenv("SUPER_HARNESS_ACTOR", "alice@example.com")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-a", "--text", "v1"])
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
+    first = parse_decision_file(root / "docs/decisions/d-a.md")
+    # edit the body, then re-ratify under a different actor → fresh hash + identity + time
+    p = root / "docs/decisions/d-a.md"
+    p.write_text(p.read_text().replace("v1", "v2"), encoding="utf-8")
+    monkeypatch.setenv("SUPER_HARNESS_ACTOR", "bob@example.com")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
+    assert r.exit_code == 0, r.output
+    second = parse_decision_file(p)
+    assert second.ratified_text_hash == compute_body_hash("v2") != first.ratified_text_hash
+    assert second.ratified_by == "bob@example.com"
+    assert second.ratified_at != first.ratified_at
 
 
 def _new_ratified(root, did):
@@ -208,3 +237,82 @@ def test_check_json_envelope(tmp_path):
     assert payload["data"]["dangling_up"] == [{"id": "d-ghost", "file": "src/x.py", "line": 1}]
     assert payload["data"]["dangling_down"] == []
     assert payload["errors"] == []
+
+
+def test_ratify_stamps_text_hash(tmp_path):
+    root = _init(tmp_path)
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new",
+                              "d-pw", "--text", "Passwords never stored with MD5."])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
+    assert r.exit_code == 0, r.output
+    d = parse_decision_file(root / "docs/decisions/d-pw.md")
+    assert d.status == "ratified"
+    assert d.ratified_text_hash == compute_body_hash("Passwords never stored with MD5.")
+
+
+def _w(p, text):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+TAMPERED = ("---\nid: d-pw\nstatus: ratified\nratified_by: a@b.com\n"
+            "ratified_text_hash: sha256:deadbeef\n---\nClaim.\n")
+
+
+def test_check_blocks_on_integrity_violation(tmp_path):
+    root = _init(tmp_path)
+    _w(root / "docs/decisions/d-pw.md", TAMPERED)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 2                       # EXIT_VALIDATION
+    assert "INTEGRITY" in r.output
+
+
+def test_check_json_lists_integrity_violations(tmp_path):
+    root = _init(tmp_path)
+    _w(root / "docs/decisions/d-pw.md", TAMPERED)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "--json", "decision", "check"])
+    payload = json.loads(r.output)
+    assert payload["data"]["integrity_violations"] == [
+        {"id": "d-pw", "file": "docs/decisions/d-pw.md"}
+    ]
+    assert payload["status"] == "fail"
+
+
+UNHASHED = ("---\nid: d-old\nstatus: ratified\nratified_by: a@b.com\n"
+            "---\nlegacy claim.\n")
+
+
+def test_check_warns_not_blocks_on_unhashed_ratified(tmp_path):
+    root = _init(tmp_path)
+    _w(root / "docs/decisions/d-old.md", UNHASHED)
+    # text path: warns, exit 0, mentions the id
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 0, r.output
+    assert "d-old" in r.output and "warning" in r.output.lower()
+    # json path: status warning, key populated, not an integrity violation
+    rj = CliRunner().invoke(main, ["--workspace", str(root), "--json", "decision", "check"])
+    payload = json.loads(rj.output)
+    assert payload["status"] == "warning"
+    assert payload["data"]["unhashed_ratified"] == ["d-old"]
+    assert payload["data"]["integrity_violations"] == []
+
+
+def test_text_lock_full_lifecycle(tmp_path):
+    root = _init(tmp_path)
+    def inv(*a):
+        return CliRunner().invoke(main, ["--workspace", str(root), "decision", *a])
+
+    # 1. author + ratify → clean
+    inv("new", "d-pw", "--text", "Passwords never stored with MD5.")
+    inv("ratify", "d-pw")
+    assert inv("check").exit_code == 0
+
+    # 2. tamper the claim (soften it) → check blocks
+    p = root / "docs/decisions/d-pw.md"
+    p.write_text(p.read_text().replace(
+        "never stored with MD5", "preferably not MD5"), encoding="utf-8")
+    assert inv("check").exit_code == 2
+
+    # 3. human re-ratifies → fresh hash → clean again
+    inv("ratify", "d-pw")
+    assert inv("check").exit_code == 0
