@@ -7,6 +7,7 @@ See docs/plans/2026-06-08-decision-records-anchors-design.md §2 / §4.4.
 # @decision:d-decision-records
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +50,19 @@ def decisions_dir(workspace_root: Path) -> Path:
 
 def is_valid_id(candidate: str) -> bool:
     return bool(_ID_RE.match(candidate))
+
+
+def normalize_body(body: str) -> str:
+    """Minimal normalization for fingerprinting: line endings, per-line trailing
+    whitespace, leading/trailing blank lines. Nothing else (design §3)."""
+    unified = body.replace("\r\n", "\n").replace("\r", "\n")
+    lines = [ln.rstrip() for ln in unified.split("\n")]
+    return "\n".join(lines).strip()
+
+
+def compute_body_hash(body: str) -> str:
+    digest = hashlib.sha256(normalize_body(body).encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
 
 
 def parse_decision_file(path: Path) -> Decision:
