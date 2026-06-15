@@ -299,7 +299,9 @@ def test_check_warns_not_blocks_on_unhashed_ratified(tmp_path):
 
 def test_text_lock_full_lifecycle(tmp_path):
     root = _init(tmp_path)
-    inv = lambda *a: CliRunner().invoke(main, ["--workspace", str(root), "decision", *a])
+    def inv(*a):
+        return CliRunner().invoke(main, ["--workspace", str(root), "decision", *a])
+
     # 1. author + ratify → clean
     inv("new", "d-pw", "--text", "Passwords never stored with MD5.")
     inv("ratify", "d-pw")
