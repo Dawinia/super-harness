@@ -17,6 +17,7 @@ from super_harness.core.clock import utc_now_iso
 from super_harness.core.decision_check import ALWAYS_EXCLUDE, ANCHOR_KEYWORD, run_check
 from super_harness.core.decisions import (
     Decision,
+    compute_body_hash,
     decisions_dir,
     is_valid_id,
     load_decisions,
@@ -113,6 +114,7 @@ def ratify_cmd(ctx: click.Context, decision_id: str) -> None:
     d.status = "ratified"
     d.ratified_by = resolve_identity(root)
     d.ratified_at = utc_now_iso()
+    d.ratified_text_hash = compute_body_hash(d.body)
     write_decision(d)
     click.echo(f"ratified {decision_id} (by {d.ratified_by})")
     sys.exit(EXIT_OK)

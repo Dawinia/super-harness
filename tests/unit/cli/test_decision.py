@@ -5,6 +5,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from super_harness.cli import main
+from super_harness.core.decisions import compute_body_hash, parse_decision_file
 
 
 def _init(tmp_path: Path) -> Path:
@@ -208,3 +209,14 @@ def test_check_json_envelope(tmp_path):
     assert payload["data"]["dangling_up"] == [{"id": "d-ghost", "file": "src/x.py", "line": 1}]
     assert payload["data"]["dangling_down"] == []
     assert payload["errors"] == []
+
+
+def test_ratify_stamps_text_hash(tmp_path):
+    root = _init(tmp_path)
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new",
+                              "d-pw", "--text", "Passwords never stored with MD5."])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
+    assert r.exit_code == 0, r.output
+    d = parse_decision_file(root / "docs/decisions/d-pw.md")
+    assert d.status == "ratified"
+    assert d.ratified_text_hash == compute_body_hash("Passwords never stored with MD5.")
