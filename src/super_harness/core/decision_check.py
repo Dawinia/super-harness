@@ -61,6 +61,11 @@ def run_check(workspace_root: Path) -> CheckResult:
             integrity_violations.append(IntegrityViolation(id=d.id, file=rel))
     integrity_violations.sort(key=lambda v: v.id)
 
+    unhashed_ratified = sorted(
+        d.id for d in decisions
+        if d.status == "ratified" and d.ratified_text_hash is None
+    )
+
     violated = {v.id for v in integrity_violations}
     effective_ratified = ratified - violated
 
@@ -86,4 +91,5 @@ def run_check(workspace_root: Path) -> CheckResult:
         dangling_down=dangling_down,
         errors=errors,
         integrity_violations=integrity_violations,
+        unhashed_ratified=unhashed_ratified,
     )

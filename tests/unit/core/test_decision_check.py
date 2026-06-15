@@ -127,3 +127,12 @@ def test_violated_and_unanchored_shows_both(tmp_path):
     res = run_check(tmp_path)
     assert [v.id for v in res.integrity_violations] == ["d-x"]
     assert "d-x" in res.dangling_down
+
+
+def test_ratified_without_hash_warns_not_blocks(tmp_path):
+    _w(tmp_path / "docs/decisions/d-old.md",
+       "---\nid: d-old\nstatus: ratified\nratified_by: a@b.com\n---\nlegacy.\n")
+    res = run_check(tmp_path)
+    assert res.unhashed_ratified == ["d-old"]
+    assert res.integrity_violations == []
+    assert res.ok is True   # warn-only, must NOT block
