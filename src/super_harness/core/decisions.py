@@ -30,6 +30,7 @@ class Decision:
     ratified_at: str | None = None
     supersedes: str | None = None
     superseded_by: str | None = None
+    ratified_text_hash: str | None = None
     body: str = ""
     path: Path | None = None
 
@@ -71,6 +72,7 @@ def parse_decision_file(path: Path) -> Decision:
         ratified_at=data.get("ratified_at"),
         supersedes=data.get("supersedes"),
         superseded_by=data.get("superseded_by"),
+        ratified_text_hash=data.get("ratified_text_hash"),
         body=body,
         path=path,
     )
@@ -130,7 +132,8 @@ def load_decisions(workspace_root: Path) -> tuple[list[Decision], list[RecordErr
 
 def serialize_decision(decision: Decision) -> str:
     fm: dict[str, str] = {"id": decision.id, "status": decision.status}
-    for key in ("ratified_by", "ratified_at", "supersedes", "superseded_by"):
+    for key in ("ratified_by", "ratified_at", "supersedes",
+                "superseded_by", "ratified_text_hash"):
         val = getattr(decision, key)
         if val:
             fm[key] = val

@@ -98,3 +98,30 @@ def test_is_valid_id():
     assert is_valid_id("d-auth-stateless")
     assert not is_valid_id("d-Auth")
     assert not is_valid_id("d auth")
+
+
+def test_parse_reads_ratified_text_hash(tmp_path):
+    text = (
+        "---\nid: d-x\nstatus: ratified\nratified_by: a@b.com\n"
+        "ratified_at: 2026-06-08T12:00:00Z\n"
+        "ratified_text_hash: sha256:abc123\n---\nbody.\n"
+    )
+    p = _write(tmp_path / "docs/decisions/d-x.md", text)
+    d = parse_decision_file(p)
+    assert d.ratified_text_hash == "sha256:abc123"
+
+
+def test_serialize_round_trips_hash(tmp_path):
+    d = Decision(
+        id="d-x", status="ratified", ratified_by="a@b.com",
+        ratified_at="2026-06-08T12:00:00Z", ratified_text_hash="sha256:abc123",
+        body="body.",
+    )
+    out = serialize_decision(d)
+    assert "ratified_text_hash: sha256:abc123" in out
+
+
+def test_parse_missing_hash_is_none(tmp_path):
+    p = _write(tmp_path / "docs/decisions/d-y.md",
+               "---\nid: d-y\nstatus: ratified\nratified_by: a@b.com\n---\nb\n")
+    assert parse_decision_file(p).ratified_text_hash is None
