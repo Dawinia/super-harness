@@ -248,3 +248,22 @@ def test_check_json_lists_integrity_violations(tmp_path):
         {"id": "d-pw", "file": "docs/decisions/d-pw.md"}
     ]
     assert payload["status"] == "fail"
+
+
+UNHASHED = ("---\nid: d-old\nstatus: ratified\nratified_by: a@b.com\n"
+            "---\nlegacy claim.\n")
+
+
+def test_check_warns_not_blocks_on_unhashed_ratified(tmp_path):
+    root = _init(tmp_path)
+    _w(root / "docs/decisions/d-old.md", UNHASHED)
+    # text path: warns, exit 0, mentions the id
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 0, r.output
+    assert "d-old" in r.output and "warning" in r.output.lower()
+    # json path: status warning, key populated, not an integrity violation
+    rj = CliRunner().invoke(main, ["--workspace", str(root), "--json", "decision", "check"])
+    payload = json.loads(rj.output)
+    assert payload["status"] == "warning"
+    assert payload["data"]["unhashed_ratified"] == ["d-old"]
+    assert payload["data"]["integrity_violations"] == []
