@@ -295,3 +295,22 @@ def test_check_warns_not_blocks_on_unhashed_ratified(tmp_path):
     assert payload["status"] == "warning"
     assert payload["data"]["unhashed_ratified"] == ["d-old"]
     assert payload["data"]["integrity_violations"] == []
+
+
+def test_text_lock_full_lifecycle(tmp_path):
+    root = _init(tmp_path)
+    inv = lambda *a: CliRunner().invoke(main, ["--workspace", str(root), "decision", *a])
+    # 1. author + ratify → clean
+    inv("new", "d-pw", "--text", "Passwords never stored with MD5.")
+    inv("ratify", "d-pw")
+    assert inv("check").exit_code == 0
+
+    # 2. tamper the claim (soften it) → check blocks
+    p = root / "docs/decisions/d-pw.md"
+    p.write_text(p.read_text().replace(
+        "never stored with MD5", "preferably not MD5"), encoding="utf-8")
+    assert inv("check").exit_code == 2
+
+    # 3. human re-ratifies → fresh hash → clean again
+    inv("ratify", "d-pw")
+    assert inv("check").exit_code == 0
