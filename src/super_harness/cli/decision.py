@@ -103,11 +103,11 @@ def ratify_cmd(ctx: click.Context, decision_id: str) -> None:
     """Mark a proposed decision ratified (stamps who/when). Ratifies only this one."""
     root = _resolve(ctx, "decision ratify")
     d = _load_one(root, "decision ratify", decision_id)
-    if d.status != "proposed":
+    if d.status not in ("proposed", "ratified"):
         click.echo(
             format_error(subcommand="decision ratify",
-                         message=f"{decision_id!r} is {d.status}, not proposed",
-                         hint="Only a proposed decision can be ratified."),
+                         message=f"{decision_id!r} is {d.status}, not proposed/ratified",
+                         hint="Only a proposed or already-ratified decision can be ratified."),
             err=True,
         )
         sys.exit(EXIT_VALIDATION)

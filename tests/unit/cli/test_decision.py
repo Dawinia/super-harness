@@ -59,12 +59,31 @@ def test_ratify_missing_decision(tmp_path):
     assert r.exit_code == 2
 
 
-def test_ratify_only_from_proposed(tmp_path):
+def test_ratify_rejects_superseded_and_retired(tmp_path):
     root = _init(tmp_path)
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-a", "--text", "x"])
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "retire", "d-a"])
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
-    assert r.exit_code == 2  # already ratified
+    assert r.exit_code == 2  # retired cannot be re-ratified
+
+
+def test_reratify_restamps_all_three(tmp_path, monkeypatch):
+    root = _init(tmp_path)
+    monkeypatch.setenv("SUPER_HARNESS_ACTOR", "alice@example.com")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-a", "--text", "v1"])
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
+    first = parse_decision_file(root / "docs/decisions/d-a.md")
+    # edit the body, then re-ratify under a different actor → fresh hash + identity + time
+    p = root / "docs/decisions/d-a.md"
+    p.write_text(p.read_text().replace("v1", "v2"), encoding="utf-8")
+    monkeypatch.setenv("SUPER_HARNESS_ACTOR", "bob@example.com")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-a"])
+    assert r.exit_code == 0, r.output
+    second = parse_decision_file(p)
+    assert second.ratified_text_hash == compute_body_hash("v2") != first.ratified_text_hash
+    assert second.ratified_by == "bob@example.com"
+    assert second.ratified_at != first.ratified_at
 
 
 def _new_ratified(root, did):
