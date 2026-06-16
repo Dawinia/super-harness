@@ -57,7 +57,8 @@ def parse_check(body: str) -> str | None:
         return None
     if len(ms) > 1:
         raise ValueError("at most one ```check block per decision")
-    return ms[0].group("inner").strip()
+    stripped = ms[0].group("inner").strip()
+    return stripped or None
 
 
 def parse_counterexample(body: str) -> Counterexample | None:

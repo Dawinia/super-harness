@@ -7,6 +7,7 @@ from super_harness.core.decisions import (
     compute_body_hash,
     load_decisions,
     normalize_body,
+    parse_check,
     parse_decision_file,
     serialize_decision,
 )
@@ -187,6 +188,15 @@ def test_indented_fence_is_not_a_check():
     # CommonMark allows indented fences; this parser intentionally does not -> tier-3.
     from super_harness.core.decisions import parse_check
     assert parse_check("   ```check\n! grep x\n   ```\n") is None
+
+
+def test_whitespace_only_check_is_none():
+    assert parse_check("```check\n   \n```\n") is None
+
+
+def test_bodyless_check_fence_is_none():
+    # a fence with no inner line at all does not match -> None (locks existing behavior)
+    assert parse_check("```check\n```\n") is None
 
 
 def test_decision_file_carries_parsed_check(tmp_path):
