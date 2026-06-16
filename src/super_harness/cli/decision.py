@@ -271,7 +271,7 @@ def check_cmd(ctx: click.Context, changed: bool) -> None:
             amap = scan_sentinel_locations(root, file_globs=include, keyword=ANCHOR_KEYWORD,
                                            exclude_globs=exclude + ALWAYS_EXCLUDE)
             to_run = select_changed(ratified_tier1, amap, cf)
-    check_failures = run_executable_checks(root, to_run)
+    check_failures = run_executable_checks(root, to_run) if not result.errors else []
 
     hard = len(ratified_tier1)
     context = sum(1 for d in decisions if d.status == "ratified" and not d.check)

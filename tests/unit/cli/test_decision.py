@@ -477,3 +477,12 @@ def test_changed_runs_touched_anchor_and_skips_untouched(tmp_path):
     assert r.exit_code == 2 and "d-a" in r.output       # touched anchor's check ran + caught
     assert "d-b" not in r.output                         # committed (untouched vs HEAD) -> skipped
     assert "d-b" in inv("check").output                  # full run catches both
+
+
+def test_check_ratio_zero_when_no_ratified(tmp_path):
+    root = _init(tmp_path)
+    # a proposed (not ratified) decision -> hard=0, context=0
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-x", "--text", "x"])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert "hard:context = 0:0" in r.output
+    assert "% hard" not in r.output   # no percent suffix when total is zero
