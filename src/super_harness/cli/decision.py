@@ -94,7 +94,15 @@ def _load_one(root: Path, sub: str, decision_id: str) -> Decision:
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
-    return parse_decision_file(path)
+    try:
+        return parse_decision_file(path)
+    except ValueError as e:
+        click.echo(
+            format_error(subcommand=sub, message=f"{decision_id!r} is malformed: {e}",
+                         hint="Fix the decision file (frontmatter or check/counterexample block)."),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
 
 
 @decision_group.command("ratify")
@@ -114,6 +122,9 @@ def ratify_cmd(ctx: click.Context, decision_id: str, dry_run: bool) -> None:
         )
         sys.exit(EXIT_VALIDATION)
 
+    # Re-ratify re-runs the bite-test on purpose: a tier-1 decision cannot be
+    # (re-)ratified while its current code violates the check (ratification attests
+    # the decision currently holds in full, so the pass side must pass right now).
     if d.check is not None:                       # tier-1 -> must prove it bites
         if d.counterexample is None:
             click.echo(format_error(subcommand="decision ratify",

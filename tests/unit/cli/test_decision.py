@@ -13,11 +13,6 @@ def _init(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _w(p, text):
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8")
-
-
 def _seed_clean_src(root):
     (root / "src").mkdir(parents=True, exist_ok=True)
     (root / "src/app.py").write_text("clean = True\n", encoding="utf-8")
@@ -37,6 +32,28 @@ def test_ratify_accepts_when_check_bites(tmp_path):
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
     assert r.exit_code == 0, r.output
     assert parse_decision_file(root / "docs/decisions/d-pw.md").status == "ratified"
+
+
+def test_reratify_tier1_rejected_when_code_now_violates(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    _w(root / "docs/decisions/d-pw.md", f"---\nid: d-pw\nstatus: proposed\n---\n{TIER1}")
+    ok = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
+    assert ok.exit_code == 0
+    # code now violates the check
+    (root / "src/legacy.py").write_text("pw = md5(user.password)\n")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
+    assert r.exit_code == 2 and "current code" in r.output
+
+
+def test_ratify_rejects_malformed_counterexample_path(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    body = ("x.\n\n```check\n! grep -rIn md5 src/\n```\n\n"
+            "```counterexample path=../escape.py\nbad\n```\n")
+    _w(root / "docs/decisions/d-bad.md", f"---\nid: d-bad\nstatus: proposed\n---\n{body}")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-bad"])
+    assert r.exit_code == 2 and "malformed" in r.output  # clean error, NOT a traceback
 
 
 def test_ratify_rejects_hollow_check(tmp_path):
