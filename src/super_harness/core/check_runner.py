@@ -114,11 +114,13 @@ def bite_test(
     if not p.satisfied:
         return BiteVerdict(False, f"check fails on current code ({p.detail}) - fix the "
                                   f"code, or scope the check away from the counterexample",
-                           p, CheckRun(False, p.exit_code, ""))
+                           p, CheckRun(False, -1, "not run (pass side failed)"))
     # Bite side: sandbox with the counterexample injected.
     with build_sandbox(workspace_root, counterexample) as sb:
         b = run_one_check(command, cwd=sb, timeout=timeout)
     if b.satisfied:
-        return BiteVerdict(False, "check did not bite the counterexample "
-                                  "(it passed with the bad snippet present)", p, b)
+        return BiteVerdict(False, "check did not bite: it still passed with the "
+                                  "counterexample present - either the check is too weak "
+                                  "or the counterexample snippet doesn't contain what the "
+                                  "check looks for", p, b)
     return BiteVerdict(True, "bites", p, b)
