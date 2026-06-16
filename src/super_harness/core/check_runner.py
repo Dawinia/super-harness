@@ -85,3 +85,40 @@ def build_sandbox(workspace_root: Path, counterexample: Counterexample) -> Itera
         yield tmp
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+@dataclass
+class BiteVerdict:
+    ok: bool
+    reason: str
+    pass_side: CheckRun
+    bite_side: CheckRun
+
+
+def bite_test(
+    workspace_root: Path, command: str, counterexample: Counterexample,
+    *, timeout: int = DEFAULT_TIMEOUT,
+) -> BiteVerdict:
+    """Two-sided anti-hollow proof run at ratify (design §4.2 - the crux).
+
+    A decision's check must (a) PASS on the current real code AND (b) FAIL when
+    the counterexample is present. The two sides are deliberately asymmetric.
+    """
+    # Pass side: run the RAW command on the UNFILTERED real tree, read-only
+    # (cwd=repo_root, no source_scope). This is deliberate - it is the ONLY
+    # reason pollution self-detection works: an over-wide check (e.g. `grep . `)
+    # scans the inline counterexample sitting in docs/decisions/<id>.md and
+    # fails here. Do NOT add source_scope filtering to the pass side. (Same run
+    # a normal `decision check` does - the runner is shared.)
+    p = run_one_check(command, cwd=workspace_root, timeout=timeout)
+    if not p.satisfied:
+        return BiteVerdict(False, f"check fails on current code ({p.detail}) - fix the "
+                                  f"code, or scope the check away from the counterexample",
+                           p, CheckRun(False, p.exit_code, ""))
+    # Bite side: sandbox with the counterexample injected.
+    with build_sandbox(workspace_root, counterexample) as sb:
+        b = run_one_check(command, cwd=sb, timeout=timeout)
+    if b.satisfied:
+        return BiteVerdict(False, "check did not bite the counterexample "
+                                  "(it passed with the bad snippet present)", p, b)
+    return BiteVerdict(True, "bites", p, b)
