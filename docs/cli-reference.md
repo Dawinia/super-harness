@@ -351,7 +351,7 @@ super-harness decision new [OPTIONS] DECISION_ID
 
 ## super-harness decision ratify
 
-Mark a proposed decision ratified (stamps who/when). Ratifies only this one.
+Mark a proposed decision ratified (stamps who/when + bite-tests its check).
 
 ```
 super-harness decision ratify [OPTIONS] DECISION_ID
@@ -360,6 +360,7 @@ super-harness decision ratify [OPTIONS] DECISION_ID
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `DECISION_ID` | text | *required* |  |
+| `--dry-run` | flag | `False` | Run the bite-test only; do not ratify. |
 
 **Exit codes:**
 

@@ -13,6 +13,71 @@ def _init(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _w(p, text):
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+
+
+def _seed_clean_src(root):
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src/app.py").write_text("clean = True\n", encoding="utf-8")
+
+
+TIER1 = (
+    "Passwords never stored with MD5.\n\n"
+    "```check\n! grep -rIn \"md5(.*password\" src/\n```\n\n"
+    "```counterexample path=src/legacy.py\npw = md5(user.password)\n```\n"
+)
+
+
+def test_ratify_accepts_when_check_bites(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    _w(root / "docs/decisions/d-pw.md", f"---\nid: d-pw\nstatus: proposed\n---\n{TIER1}")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
+    assert r.exit_code == 0, r.output
+    assert parse_decision_file(root / "docs/decisions/d-pw.md").status == "ratified"
+
+
+def test_ratify_rejects_hollow_check(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    body = "Be safe.\n\n```check\ntrue\n```\n\n```counterexample path=src/x.py\nbad\n```\n"
+    _w(root / "docs/decisions/d-h.md", f"---\nid: d-h\nstatus: proposed\n---\n{body}")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-h"])
+    assert r.exit_code == 2
+    assert "did not bite" in r.output
+    assert parse_decision_file(root / "docs/decisions/d-h.md").status == "proposed"
+
+
+def test_ratify_rejects_check_without_counterexample(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    body = "No md5.\n\n```check\n! grep -rIn md5 src/\n```\n"
+    _w(root / "docs/decisions/d-n.md", f"---\nid: d-n\nstatus: proposed\n---\n{body}")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-n"])
+    assert r.exit_code == 2 and "counterexample" in r.output
+
+
+def test_dry_run_does_not_change_status(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    _w(root / "docs/decisions/d-pw.md", f"---\nid: d-pw\nstatus: proposed\n---\n{TIER1}")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "ratify", "d-pw", "--dry-run"])
+    assert r.exit_code == 0 and "bites" in r.output
+    assert parse_decision_file(root / "docs/decisions/d-pw.md").status == "proposed"
+
+
+def test_tier3_decision_ratifies_without_bite_test(tmp_path):
+    root = _init(tmp_path)
+    CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "new", "d-c",
+               "--text", "Code should be elegant."])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-c"])
+    assert r.exit_code == 0
+
+
 def test_new_creates_proposed(tmp_path):
     root = _init(tmp_path)
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "new",

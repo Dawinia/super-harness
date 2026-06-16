@@ -13,6 +13,7 @@ import click
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import Status, json_envelope
 from super_harness.core.anchor_scanner import scan_sentinel_locations
+from super_harness.core.check_runner import bite_test
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.decision_check import ALWAYS_EXCLUDE, ANCHOR_KEYWORD, run_check
 from super_harness.core.decisions import (
@@ -98,9 +99,10 @@ def _load_one(root: Path, sub: str, decision_id: str) -> Decision:
 
 @decision_group.command("ratify")
 @click.argument("decision_id")
+@click.option("--dry-run", is_flag=True, help="Run the bite-test only; do not ratify.")
 @click.pass_context
-def ratify_cmd(ctx: click.Context, decision_id: str) -> None:
-    """Mark a proposed decision ratified (stamps who/when). Ratifies only this one."""
+def ratify_cmd(ctx: click.Context, decision_id: str, dry_run: bool) -> None:
+    """Mark a proposed decision ratified (stamps who/when + bite-tests its check)."""
     root = _resolve(ctx, "decision ratify")
     d = _load_one(root, "decision ratify", decision_id)
     if d.status not in ("proposed", "ratified"):
@@ -111,6 +113,31 @@ def ratify_cmd(ctx: click.Context, decision_id: str) -> None:
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
+
+    if d.check is not None:                       # tier-1 -> must prove it bites
+        if d.counterexample is None:
+            click.echo(format_error(subcommand="decision ratify",
+                       message=f"{decision_id!r} has a check but no counterexample",
+                       hint="Add a ```counterexample path=<rel> block, or remove the check."),
+                       err=True)
+            sys.exit(EXIT_VALIDATION)
+        try:
+            verdict = bite_test(root, d.check, d.counterexample)
+        except ValueError as e:                   # malformed counterexample (e.g. bad path)
+            click.echo(format_error(subcommand="decision ratify",
+                       message=f"bite-test could not run: {e}",
+                       hint="Fix the counterexample block."), err=True)
+            sys.exit(EXIT_VALIDATION)
+        if not verdict.ok:
+            click.echo(f"BITE-TEST FAILED: {verdict.reason}", err=True)
+            sys.exit(EXIT_VALIDATION)
+        click.echo(f"bite-test: {verdict.reason}")
+        if dry_run:
+            sys.exit(EXIT_OK)
+    elif dry_run:
+        click.echo("no check block (tier-3 context) - nothing to bite-test")
+        sys.exit(EXIT_OK)
+
     d.status = "ratified"
     d.ratified_by = resolve_identity(root)
     d.ratified_at = utc_now_iso()
