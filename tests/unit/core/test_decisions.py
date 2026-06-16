@@ -184,6 +184,18 @@ def test_counterexample_requires_path():
         parse_counterexample("```counterexample\npw = bad\n```\n")
 
 
+def test_counterexample_rejects_absolute_path():
+    from super_harness.core.decisions import parse_counterexample
+    with pytest.raises(ValueError, match="inside the repo"):
+        parse_counterexample("```counterexample path=/etc/passwd\nx\n```\n")
+
+
+def test_counterexample_rejects_dotdot_escape():
+    from super_harness.core.decisions import parse_counterexample
+    with pytest.raises(ValueError, match="inside the repo"):
+        parse_counterexample("```counterexample path=../escape.py\nx\n```\n")
+
+
 def test_indented_fence_is_not_a_check():
     # CommonMark allows indented fences; this parser intentionally does not -> tier-3.
     from super_harness.core.decisions import parse_check

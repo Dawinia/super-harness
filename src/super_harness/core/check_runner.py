@@ -63,6 +63,9 @@ def build_sandbox(workspace_root: Path, counterexample: Counterexample) -> Itera
     sandbox. The bite side still works (the counterexample is injected
     explicitly) and the pass side (Task 4) runs on the real tree anyway; CI runs
     against the committed PR tree, where the file is tracked.
+
+    Symlink note: `shutil.copy2` follows symlinks (copies the target's content,
+    not the link itself); acceptable for v0.1.
     """
     include, exclude = load_source_scope(workspace_root)
     tmp = Path(tempfile.mkdtemp(prefix="sh-bite-"))
@@ -75,6 +78,8 @@ def build_sandbox(workspace_root: Path, counterexample: Counterexample) -> Itera
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dest)          # fcopyfile/COW on APFS, plain copy elsewhere
         ce_path = tmp / counterexample.path
+        if not ce_path.resolve().is_relative_to(tmp.resolve()):
+            raise ValueError(f"counterexample path escapes sandbox: {counterexample.path!r}")
         ce_path.parent.mkdir(parents=True, exist_ok=True)
         ce_path.write_text(counterexample.content + "\n", encoding="utf-8")
         yield tmp

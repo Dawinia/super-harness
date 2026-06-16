@@ -71,7 +71,13 @@ def parse_counterexample(body: str) -> Counterexample | None:
     m = re.search(r"\bpath=(\S+)", info)
     if not m:
         raise ValueError("```counterexample block needs path=<relative-path>")
-    return Counterexample(path=m.group(1), content=ms[0].group("inner").strip())
+    from pathlib import PurePosixPath
+    raw = m.group(1)
+    pp = PurePosixPath(raw)
+    if pp.is_absolute() or ".." in pp.parts:
+        raise ValueError("counterexample path must be relative and stay inside the repo "
+                         "(no absolute paths, no '..')")
+    return Counterexample(path=raw, content=ms[0].group("inner").strip())
 
 
 @dataclass

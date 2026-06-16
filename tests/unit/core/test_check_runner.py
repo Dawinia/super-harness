@@ -53,3 +53,24 @@ def test_sandbox_excludes_dot_dirs(tmp_path):
     ce = Counterexample(path="src/bad.py", content="bad")
     with build_sandbox(tmp_path, ce) as sb:
         assert not (sb / ".venv").exists()
+
+
+def test_sandbox_excludes_docs_via_exclude_glob(tmp_path):
+    import subprocess
+
+    def sh(*a):
+        return subprocess.run(["git", *a], cwd=tmp_path, capture_output=True, check=True)
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("ok\n")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/foo.md").write_text("```counterexample\nbad\n```\n")
+    sh("init")
+    sh("config", "user.email", "t@t")
+    sh("config", "user.name", "t")
+    sh("add", "-A")
+    sh("commit", "-m", "x")
+    ce = Counterexample(path="src/bad.py", content="bad")
+    with build_sandbox(tmp_path, ce) as sb:
+        assert (sb / "src/app.py").exists()          # in-scope copied
+        assert not (sb / "docs/foo.md").exists()     # excluded by docs/** glob (the linchpin)
