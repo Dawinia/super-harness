@@ -433,6 +433,25 @@ def test_check_json_has_failures_and_ratio(tmp_path):
     assert payload["status"] == "fail"
 
 
+def test_check_skips_executable_check_for_tampered_decision(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    _w(root / "docs/decisions/d-pw.md", f"---\nid: d-pw\nstatus: proposed\n---\n{TIER1}")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
+    # tamper the body so the stored hash no longer matches (integrity violation)
+    p = root / "docs/decisions/d-pw.md"
+    p.write_text(p.read_text().replace("Passwords never stored with MD5.",
+                                       "Passwords PREFERABLY not MD5."), encoding="utf-8")
+    # also make the code violate the check, to prove the check is SKIPPED (not the block reason)
+    (root / "src/bad.py").write_text("pw = md5(user.password)\n")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "--json", "decision", "check"])
+    payload = json.loads(r.output)
+    assert payload["data"]["integrity_violations"][0]["id"] == "d-pw"
+    assert payload["data"]["check_failures"] == []          # check NOT run for tampered decision
+    assert payload["data"]["hard_context"]["hard"] == 0     # violated not counted as hard
+    assert r.exit_code == 2
+
+
 def test_changed_nongit_falls_back_to_full(tmp_path):
     root = _init(tmp_path)
     _ratify_tier1(root)

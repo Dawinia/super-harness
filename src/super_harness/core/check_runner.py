@@ -64,14 +64,16 @@ def build_sandbox(workspace_root: Path, counterexample: Counterexample) -> Itera
     explicitly) and the pass side (Task 4) runs on the real tree anyway; CI runs
     against the committed PR tree, where the file is tracked.
 
-    Symlink note: `shutil.copy2` follows symlinks (copies the target's content,
-    not the link itself); acceptable for v0.1.
+    Symlink note: symlinks and non-regular files are skipped (only regular
+    files are copied).
     """
     include, exclude = load_source_scope(workspace_root)
     tmp = Path(tempfile.mkdtemp(prefix="sh-bite-"))
     try:
         for f in _list_files(workspace_root):
             rel = f.relative_to(workspace_root)
+            if f.is_symlink() or not f.is_file():
+                continue
             if not _matches_any(rel, include) or _matches_any(rel, exclude):
                 continue
             dest = tmp / rel

@@ -139,7 +139,7 @@ def ratify_cmd(ctx: click.Context, decision_id: str, dry_run: bool) -> None:
             sys.exit(EXIT_VALIDATION)
         try:
             verdict = bite_test(root, d.check, d.counterexample)
-        except ValueError as e:                   # malformed counterexample (e.g. bad path)
+        except (ValueError, OSError) as e:        # malformed counterexample / residual fs error
             click.echo(format_error(subcommand="decision ratify",
                        message=f"bite-test could not run: {e}",
                        hint="Fix the counterexample block."), err=True)
@@ -262,7 +262,9 @@ def check_cmd(ctx: click.Context, changed: bool) -> None:
     result = run_check(root)                       # pure layer, unchanged
 
     decisions, _ = load_decisions(root)
-    ratified_tier1 = [d for d in decisions if d.status == "ratified" and d.check]
+    violated = {v.id for v in result.integrity_violations}
+    ratified_tier1 = [d for d in decisions
+                      if d.status == "ratified" and d.check and d.id not in violated]
     to_run = ratified_tier1
     if changed:
         cf = changed_files(root)

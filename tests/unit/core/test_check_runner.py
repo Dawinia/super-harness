@@ -101,6 +101,28 @@ def test_sandbox_copies_inscope_and_injects(tmp_path):
     assert not sb.exists()        # cleaned up on context exit
 
 
+def test_sandbox_skips_symlinks(tmp_path):
+    import os
+    import subprocess
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("ok\n")
+    (tmp_path / "realdir").mkdir()
+    (tmp_path / "realdir/x.py").write_text("y\n")
+    os.symlink(tmp_path / "realdir", tmp_path / "src/linkdir")   # symlink-to-dir
+
+    def sh(*a):
+        return subprocess.run(["git", *a], cwd=tmp_path, capture_output=True, check=True)
+    sh("init")
+    sh("config", "user.email", "t@t")
+    sh("config", "user.name", "t")
+    sh("add", "-A")
+    sh("commit", "-m", "x")
+    ce = Counterexample(path="src/bad.py", content="bad")
+    with build_sandbox(tmp_path, ce) as sb:           # must NOT raise
+        assert (sb / "src/app.py").exists()
+        assert not (sb / "src/linkdir").exists()      # symlink skipped
+
+
 def test_sandbox_excludes_dot_dirs(tmp_path):
     (tmp_path / ".venv").mkdir()
     (tmp_path / ".venv/x.py").write_text("junk\n")
