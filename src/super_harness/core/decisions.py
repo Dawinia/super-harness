@@ -24,6 +24,12 @@ _RESERVED_NAMES = frozenset({"README.md"})
 
 
 @dataclass
+class Counterexample:
+    path: str
+    content: str
+
+
+@dataclass
 class Decision:
     id: str
     status: DecisionStatus
@@ -34,6 +40,37 @@ class Decision:
     ratified_text_hash: str | None = None
     body: str = ""
     path: Path | None = None
+    check: str | None = None
+    counterexample: Counterexample | None = None
+
+
+_FENCE_RE = re.compile(r"^```(?P<info>[^\n]*)\n(?P<inner>.*?)\n```", re.DOTALL | re.MULTILINE)
+
+
+def _blocks(body: str, kind: str) -> list[re.Match[str]]:
+    return [m for m in _FENCE_RE.finditer(body) if m.group("info").split()[:1] == [kind]]
+
+
+def parse_check(body: str) -> str | None:
+    ms = _blocks(body, "check")
+    if not ms:
+        return None
+    if len(ms) > 1:
+        raise ValueError("at most one ```check block per decision")
+    return ms[0].group("inner").strip()
+
+
+def parse_counterexample(body: str) -> Counterexample | None:
+    ms = _blocks(body, "counterexample")
+    if not ms:
+        return None
+    if len(ms) > 1:
+        raise ValueError("at most one ```counterexample block per decision")
+    info = ms[0].group("info")
+    m = re.search(r"\bpath=(\S+)", info)
+    if not m:
+        raise ValueError("```counterexample block needs path=<relative-path>")
+    return Counterexample(path=m.group(1), content=ms[0].group("inner").strip())
 
 
 @dataclass
@@ -89,6 +126,8 @@ def parse_decision_file(path: Path) -> Decision:
         ratified_text_hash=data.get("ratified_text_hash"),
         body=body,
         path=path,
+        check=parse_check(body),
+        counterexample=parse_counterexample(body),
     )
 
 

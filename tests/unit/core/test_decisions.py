@@ -144,3 +144,54 @@ def test_hash_is_stable_and_prefixed():
 def test_hash_changes_on_wording():
     # punctuation/wording is NOT normalized away — it must move the hash
     assert compute_body_hash("never MD5.") != compute_body_hash("prefer bcrypt.")
+
+
+BODY = (
+    "Passwords must be stored with bcrypt - never MD5.\n\n"
+    "```check\n! grep -rIn \"md5(.*password\" src/\n```\n\n"
+    "```counterexample path=src/auth/legacy.py\npw = md5(user.password)\n```\n"
+)
+
+
+def test_parse_check_extracts_command():
+    from super_harness.core.decisions import parse_check
+    assert parse_check(BODY) == '! grep -rIn "md5(.*password" src/'
+
+
+def test_parse_counterexample_extracts_path_and_content():
+    from super_harness.core.decisions import Counterexample, parse_counterexample
+    ce = parse_counterexample(BODY)
+    assert ce == Counterexample(path="src/auth/legacy.py", content="pw = md5(user.password)")
+
+
+def test_no_blocks_returns_none():
+    from super_harness.core.decisions import parse_check, parse_counterexample
+    assert parse_check("just prose, tier-3 context.") is None
+    assert parse_counterexample("just prose.") is None
+
+
+def test_more_than_one_check_block_raises():
+    from super_harness.core.decisions import parse_check
+    two = "```check\na\n```\n```check\nb\n```\n"
+    with pytest.raises(ValueError, match="at most one"):
+        parse_check(two)
+
+
+def test_counterexample_requires_path():
+    from super_harness.core.decisions import parse_counterexample
+    with pytest.raises(ValueError, match="path="):
+        parse_counterexample("```counterexample\npw = bad\n```\n")
+
+
+def test_indented_fence_is_not_a_check():
+    # CommonMark allows indented fences; this parser intentionally does not -> tier-3.
+    from super_harness.core.decisions import parse_check
+    assert parse_check("   ```check\n! grep x\n   ```\n") is None
+
+
+def test_decision_file_carries_parsed_check(tmp_path):
+    p = _write(tmp_path / "docs/decisions/d-pw.md",
+               f"---\nid: d-pw\nstatus: proposed\n---\n{BODY}")
+    d = parse_decision_file(p)
+    assert d.check == '! grep -rIn "md5(.*password" src/'
+    assert d.counterexample.path == "src/auth/legacy.py"
