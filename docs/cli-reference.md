@@ -300,11 +300,15 @@ super-harness decision COMMAND [ARGS...]
 
 ## super-harness decision check
 
-Whole-repo dangling check: up=block(2) / down=warn / record error=3.
+Whole-repo dangling check + executable checks: up=block(2) / down=warn / record error=3.
 
 ```
 super-harness decision check [OPTIONS]
 ```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `--changed` | flag | `False` | Only run checks whose anchored files moved. |
 
 **Exit codes:**
 
@@ -351,7 +355,7 @@ super-harness decision new [OPTIONS] DECISION_ID
 
 ## super-harness decision ratify
 
-Mark a proposed decision ratified (stamps who/when). Ratifies only this one.
+Mark a proposed decision ratified (stamps who/when + bite-tests its check).
 
 ```
 super-harness decision ratify [OPTIONS] DECISION_ID
@@ -360,6 +364,7 @@ super-harness decision ratify [OPTIONS] DECISION_ID
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `DECISION_ID` | text | *required* |  |
+| `--dry-run` | flag | `False` | Run the bite-test only; do not ratify. |
 
 **Exit codes:**
 

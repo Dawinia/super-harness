@@ -13,6 +13,88 @@ def _init(tmp_path: Path) -> Path:
     return tmp_path
 
 
+def _seed_clean_src(root):
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src/app.py").write_text("clean = True\n", encoding="utf-8")
+
+
+TIER1 = (
+    "Passwords never stored with MD5.\n\n"
+    "```check\n! grep -rIn \"md5(.*password\" src/\n```\n\n"
+    "```counterexample path=src/legacy.py\npw = md5(user.password)\n```\n"
+)
+
+
+def test_ratify_accepts_when_check_bites(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    _w(root / "docs/decisions/d-pw.md", f"---\nid: d-pw\nstatus: proposed\n---\n{TIER1}")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
+    assert r.exit_code == 0, r.output
+    assert parse_decision_file(root / "docs/decisions/d-pw.md").status == "ratified"
+
+
+def test_reratify_tier1_rejected_when_code_now_violates(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    _w(root / "docs/decisions/d-pw.md", f"---\nid: d-pw\nstatus: proposed\n---\n{TIER1}")
+    ok = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
+    assert ok.exit_code == 0
+    # code now violates the check
+    (root / "src/legacy.py").write_text("pw = md5(user.password)\n")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
+    assert r.exit_code == 2 and "current code" in r.output
+
+
+def test_ratify_rejects_malformed_counterexample_path(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    body = ("x.\n\n```check\n! grep -rIn md5 src/\n```\n\n"
+            "```counterexample path=../escape.py\nbad\n```\n")
+    _w(root / "docs/decisions/d-bad.md", f"---\nid: d-bad\nstatus: proposed\n---\n{body}")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-bad"])
+    assert r.exit_code == 2 and "malformed" in r.output  # clean error, NOT a traceback
+
+
+def test_ratify_rejects_hollow_check(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    body = "Be safe.\n\n```check\ntrue\n```\n\n```counterexample path=src/x.py\nbad\n```\n"
+    _w(root / "docs/decisions/d-h.md", f"---\nid: d-h\nstatus: proposed\n---\n{body}")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-h"])
+    assert r.exit_code == 2
+    assert "did not bite" in r.output
+    assert parse_decision_file(root / "docs/decisions/d-h.md").status == "proposed"
+
+
+def test_ratify_rejects_check_without_counterexample(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    body = "No md5.\n\n```check\n! grep -rIn md5 src/\n```\n"
+    _w(root / "docs/decisions/d-n.md", f"---\nid: d-n\nstatus: proposed\n---\n{body}")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-n"])
+    assert r.exit_code == 2 and "counterexample" in r.output
+
+
+def test_dry_run_does_not_change_status(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    _w(root / "docs/decisions/d-pw.md", f"---\nid: d-pw\nstatus: proposed\n---\n{TIER1}")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "ratify", "d-pw", "--dry-run"])
+    assert r.exit_code == 0 and "bites" in r.output
+    assert parse_decision_file(root / "docs/decisions/d-pw.md").status == "proposed"
+
+
+def test_tier3_decision_ratifies_without_bite_test(tmp_path):
+    root = _init(tmp_path)
+    CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "new", "d-c",
+               "--text", "Code should be elegant."])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-c"])
+    assert r.exit_code == 0
+
+
 def test_new_creates_proposed(tmp_path):
     root = _init(tmp_path)
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "new",
@@ -315,4 +397,130 @@ def test_text_lock_full_lifecycle(tmp_path):
 
     # 3. human re-ratifies → fresh hash → clean again
     inv("ratify", "d-pw")
+    assert inv("check").exit_code == 0
+
+
+def _ratify_tier1(root, did="d-pw"):
+    _seed_clean_src(root)
+    _w(root / f"docs/decisions/{did}.md", f"---\nid: {did}\nstatus: proposed\n---\n{TIER1}")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", did])
+
+
+def test_check_blocks_when_code_violates_decision(tmp_path):
+    root = _init(tmp_path)
+    _ratify_tier1(root)
+    (root / "src/bad.py").write_text("pw = md5(user.password)\n")   # violate
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 2
+    assert "CHECK-FAILED" in r.output and "d-pw" in r.output
+
+
+def test_check_green_when_code_honors_decision(tmp_path):
+    root = _init(tmp_path)
+    _ratify_tier1(root)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 0
+
+
+def test_check_json_has_failures_and_ratio(tmp_path):
+    root = _init(tmp_path)
+    _ratify_tier1(root)
+    (root / "src/bad.py").write_text("pw = md5(user.password)\n")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "--json", "decision", "check"])
+    payload = json.loads(r.output)
+    assert payload["data"]["check_failures"][0]["id"] == "d-pw"
+    assert payload["data"]["hard_context"] == {"hard": 1, "context": 0}
+    assert payload["status"] == "fail"
+
+
+def test_check_skips_executable_check_for_tampered_decision(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    _w(root / "docs/decisions/d-pw.md", f"---\nid: d-pw\nstatus: proposed\n---\n{TIER1}")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-pw"])
+    # tamper the body so the stored hash no longer matches (integrity violation)
+    p = root / "docs/decisions/d-pw.md"
+    p.write_text(p.read_text().replace("Passwords never stored with MD5.",
+                                       "Passwords PREFERABLY not MD5."), encoding="utf-8")
+    # also make the code violate the check, to prove the check is SKIPPED (not the block reason)
+    (root / "src/bad.py").write_text("pw = md5(user.password)\n")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "--json", "decision", "check"])
+    payload = json.loads(r.output)
+    assert payload["data"]["integrity_violations"][0]["id"] == "d-pw"
+    assert payload["data"]["check_failures"] == []          # check NOT run for tampered decision
+    assert payload["data"]["hard_context"]["hard"] == 0     # violated not counted as hard
+    assert r.exit_code == 2
+
+
+def test_changed_nongit_falls_back_to_full(tmp_path):
+    root = _init(tmp_path)
+    _ratify_tier1(root)
+    (root / "src/bad.py").write_text("pw = md5(user.password)\n")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check", "--changed"])
+    assert r.exit_code == 2   # fallback-to-full caught it
+
+
+def test_changed_runs_touched_anchor_and_skips_untouched(tmp_path):
+    """Real git --changed: a per-file check anchored in a-file runs only when a-file
+    moved; a violation committed (untouched vs HEAD) is skipped (the honest miss)."""
+    import subprocess
+    root = _init(tmp_path)
+    (root / "src").mkdir()
+
+    def mk(did, fname):
+        body = (f"No BAD in {fname}.\n\n```check\n! grep -rIn BAD src/{fname}\n```\n\n"
+                f"```counterexample path=src/{fname}\nBAD\n```\n")
+        (root / f"src/{fname}").write_text(f"# @decision:{did}\nclean = True\n")
+        _w(root / f"docs/decisions/{did}.md", f"---\nid: {did}\nstatus: proposed\n---\n{body}")
+
+    def sh(*a):
+        return subprocess.run(["git", *a], cwd=root, capture_output=True, check=True)
+
+    def inv(*a):
+        return CliRunner().invoke(main, ["--workspace", str(root), "decision", *a])
+
+    mk("d-a", "a.py")
+    mk("d-b", "b.py")
+    sh("init")
+    sh("config", "user.email", "t@t")
+    sh("config", "user.name", "t")
+    sh("add", "-A")
+    sh("commit", "-m", "clean")
+    inv("ratify", "d-a")
+    inv("ratify", "d-b")
+    (root / "src/b.py").write_text("# @decision:d-b\nBAD\n")
+    sh("add", "src/b.py")
+    sh("commit", "-m", "b")
+    (root / "src/a.py").write_text("# @decision:d-a\nBAD\n")          # uncommitted -> in diff HEAD
+    r = inv("check", "--changed")
+    assert r.exit_code == 2 and "d-a" in r.output       # touched anchor's check ran + caught
+    assert "d-b" not in r.output                         # committed (untouched vs HEAD) -> skipped
+    assert "d-b" in inv("check").output                  # full run catches both
+
+
+def test_check_ratio_zero_when_no_ratified(tmp_path):
+    root = _init(tmp_path)
+    # a proposed (not ratified) decision -> hard=0, context=0
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-x", "--text", "x"])
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert "hard:context = 0:0" in r.output
+    assert "% hard" not in r.output   # no percent suffix when total is zero
+
+
+def test_executable_check_full_lifecycle(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    def inv(*a):
+        return CliRunner().invoke(main, ["--workspace", str(root), "decision", *a])
+    # 1. author a tier-1 decision (prose + check + counterexample) + ratify -> bite-test passes
+    _w(root / "docs/decisions/d-pw.md", f"---\nid: d-pw\nstatus: proposed\n---\n{TIER1}")
+    assert inv("ratify", "d-pw").exit_code == 0
+    assert inv("check").exit_code == 0                      # code honors it
+
+    # 2. code starts violating the decision -> check blocks
+    (root / "src/bad.py").write_text("pw = md5(user.password)\n")
+    assert inv("check").exit_code == 2
+
+    # 3. fix the code -> green again (no re-ratify needed; the claim never changed)
+    (root / "src/bad.py").write_text("pw = bcrypt(user.password)\n")
     assert inv("check").exit_code == 0

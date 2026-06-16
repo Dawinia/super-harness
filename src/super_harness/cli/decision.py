@@ -13,6 +13,12 @@ import click
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import Status, json_envelope
 from super_harness.core.anchor_scanner import scan_sentinel_locations
+from super_harness.core.check_runner import (
+    bite_test,
+    changed_files,
+    run_executable_checks,
+    select_changed,
+)
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.decision_check import ALWAYS_EXCLUDE, ANCHOR_KEYWORD, run_check
 from super_harness.core.decisions import (
@@ -93,14 +99,23 @@ def _load_one(root: Path, sub: str, decision_id: str) -> Decision:
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
-    return parse_decision_file(path)
+    try:
+        return parse_decision_file(path)
+    except ValueError as e:
+        click.echo(
+            format_error(subcommand=sub, message=f"{decision_id!r} is malformed: {e}",
+                         hint="Fix the decision file (frontmatter or check/counterexample block)."),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
 
 
 @decision_group.command("ratify")
 @click.argument("decision_id")
+@click.option("--dry-run", is_flag=True, help="Run the bite-test only; do not ratify.")
 @click.pass_context
-def ratify_cmd(ctx: click.Context, decision_id: str) -> None:
-    """Mark a proposed decision ratified (stamps who/when). Ratifies only this one."""
+def ratify_cmd(ctx: click.Context, decision_id: str, dry_run: bool) -> None:
+    """Mark a proposed decision ratified (stamps who/when + bite-tests its check)."""
     root = _resolve(ctx, "decision ratify")
     d = _load_one(root, "decision ratify", decision_id)
     if d.status not in ("proposed", "ratified"):
@@ -111,6 +126,34 @@ def ratify_cmd(ctx: click.Context, decision_id: str) -> None:
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
+
+    # Re-ratify re-runs the bite-test on purpose: a tier-1 decision cannot be
+    # (re-)ratified while its current code violates the check (ratification attests
+    # the decision currently holds in full, so the pass side must pass right now).
+    if d.check is not None:                       # tier-1 -> must prove it bites
+        if d.counterexample is None:
+            click.echo(format_error(subcommand="decision ratify",
+                       message=f"{decision_id!r} has a check but no counterexample",
+                       hint="Add a ```counterexample path=<rel> block, or remove the check."),
+                       err=True)
+            sys.exit(EXIT_VALIDATION)
+        try:
+            verdict = bite_test(root, d.check, d.counterexample)
+        except (ValueError, OSError) as e:        # malformed counterexample / residual fs error
+            click.echo(format_error(subcommand="decision ratify",
+                       message=f"bite-test could not run: {e}",
+                       hint="Fix the counterexample block."), err=True)
+            sys.exit(EXIT_VALIDATION)
+        if not verdict.ok:
+            click.echo(f"BITE-TEST FAILED: {verdict.reason}", err=True)
+            sys.exit(EXIT_VALIDATION)
+        click.echo(f"bite-test: {verdict.reason}")
+        if dry_run:
+            sys.exit(EXIT_OK)
+    elif dry_run:
+        click.echo("no check block (tier-3 context) - nothing to bite-test")
+        sys.exit(EXIT_OK)
+
     d.status = "ratified"
     d.ratified_by = resolve_identity(root)
     d.ratified_at = utc_now_iso()
@@ -208,20 +251,37 @@ def show_cmd(ctx: click.Context, decision_id: str) -> None:
 
 
 @decision_group.command("check")
+@click.option("--changed", is_flag=True, help="Only run checks whose anchored files moved.")
 @click.pass_context
-def check_cmd(ctx: click.Context) -> None:
-    """Whole-repo dangling check: up=block(2) / down=warn / record error=3.
+def check_cmd(ctx: click.Context, changed: bool) -> None:
+    """Whole-repo dangling check + executable checks: up=block(2) / down=warn / record error=3.
 
     Honors the GLOBAL --json flag (ctx.obj["json"]) → frozen json_envelope shape.
     """
     root = _resolve(ctx, "decision check")
-    result = run_check(root)
+    result = run_check(root)                       # pure layer, unchanged
+
+    decisions, _ = load_decisions(root)
+    violated = {v.id for v in result.integrity_violations}
+    ratified_tier1 = [d for d in decisions
+                      if d.status == "ratified" and d.check and d.id not in violated]
+    to_run = ratified_tier1
+    if changed:
+        cf = changed_files(root)
+        if cf is not None:                        # None -> not a git repo -> FULL (never under-run)
+            include, exclude = load_source_scope(root)
+            amap = scan_sentinel_locations(root, file_globs=include, keyword=ANCHOR_KEYWORD,
+                                           exclude_globs=exclude + ALWAYS_EXCLUDE)
+            to_run = select_changed(ratified_tier1, amap, cf)
+    check_failures = run_executable_checks(root, to_run) if not result.errors else []
+
+    hard = len(ratified_tier1)
+    context = sum(1 for d in decisions if d.status == "ratified" and not d.check)
+
     status: Status
     if result.errors:
         exit_code, status = EXIT_NO_CONFIG, "fail"
-    elif result.integrity_violations:
-        exit_code, status = EXIT_VALIDATION, "fail"
-    elif result.dangling_up:
+    elif result.integrity_violations or check_failures or result.dangling_up:
         exit_code, status = EXIT_VALIDATION, "fail"
     elif result.dangling_down or result.unhashed_ratified:
         exit_code, status = EXIT_OK, "warning"
@@ -245,6 +305,11 @@ def check_cmd(ctx: click.Context) -> None:
                         for v in result.integrity_violations
                     ],
                     "unhashed_ratified": list(result.unhashed_ratified),
+                    "check_failures": [
+                        {"id": f.id, "exit_code": f.exit_code, "detail": f.detail}
+                        for f in check_failures
+                    ],
+                    "hard_context": {"hard": hard, "context": context},
                 },
                 errors=[
                     {"code": e.kind, "message": e.detail, "file": e.file}
@@ -261,6 +326,9 @@ def check_cmd(ctx: click.Context) -> None:
                 f"(ratified body changed without re-ratification → re-ratify)",
                 err=True,
             )
+        for f in check_failures:
+            click.echo(f"CHECK-FAILED @decision:{f.id} (exit {f.exit_code}: {f.detail})",
+                       err=True)
         for did in result.unhashed_ratified:
             click.echo(f"warning: {did} ratified before text-lock (no hash; "
                        f"re-ratify to lock)")
@@ -271,6 +339,8 @@ def check_cmd(ctx: click.Context) -> None:
             )
         for did in result.dangling_down:
             click.echo(f"warning: dangling-down {did} (ratified, no code anchor)")
+        ratio = f" ({round(100 * hard / (hard + context))}% hard)" if hard + context else ""
+        click.echo(f"hard:context = {hard}:{context}{ratio}")
         if status == "pass":
             click.echo("decision check: clean")
     sys.exit(exit_code)

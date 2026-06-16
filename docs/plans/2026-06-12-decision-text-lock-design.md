@@ -1,8 +1,10 @@
 # Design: The weldable hard teeth — decision text-lock + executable checks
 
-Date: 2026-06-12 (scope expanded 2026-06-14; local-sensor + inline-check refinement 2026-06-15)
+Date: 2026-06-12 (scope expanded 2026-06-14; local-sensor + inline-check refinement
+2026-06-15; **Tool B counterexample mechanism resolved 2026-06-16**, §4.2)
 Status: converged (brainstorm) — aligned interactively with the user (product owner).
-Buildable; no TDD/task breakdown yet.
+Both tools buildable; Tool A shipped (PR #40). Tool B mechanism now resolved (§4.2);
+no TDD/task breakdown yet.
 
 > NOTE: like the sibling design docs in this folder, this file carries **NO**
 > `change:` / `stage:` frontmatter — the repo self-hosts on the SuperpowersAdapter,
@@ -142,20 +144,31 @@ rename/reformat never trips it.
 - **Birth + ratify together:** when the AI authors a decision it proposes a check —
   a runnable command/test/rule that exits zero (satisfied) / non-zero (violated). The
   human ratifies **decision + check as one unit**.
-- **Storage — inline in the decision body, not a sidecar file:** the check (usually one
-  line — often a pointer to an *existing* test / lint rule / grep, not a bespoke script)
-  and a **small** counterexample live **inside the decision `.md`**. Two payoffs: (a) no
-  repo bloat — one file per decision, and only tier-1 decisions carry a check at all;
-  (b) the body fingerprint (§3) locks the check for free — no second hash. Only when a
-  counterexample is too large to inline does it spill to a fixture file.
+- **Storage — inline in the decision body, two fenced blocks (resolved §4.2):** the check
+  (usually one line — often a pointer to an *existing* test / lint rule / grep, not a
+  bespoke script) lives in a ` ```check ` block; the counterexample in a
+  ` ```counterexample path=<rel> ` block, **both inside the decision `.md` body**. Two
+  payoffs: (a) no repo bloat — one file per decision, and only tier-1 decisions carry a
+  check at all; (b) the body fingerprint (§3) locks **both** the check and the
+  counterexample for free — no second hash. **This slice is inline-only**; spill-to-fixture
+  is deferred (it would move the counterexample out of the body-hash's reach → a weaker,
+  rot-able lock that needs its own digest mechanism — §4.2, and a markdown block has no
+  size limit, so "too large to inline" is aesthetic, not a capability wall).
 - **Anti-hollow ("show it biting"):** an always-passing check is worthless. Require
   the AI to supply a **counterexample** the check **demonstrably fails on**. At ratify
-  time the tool verifies: check passes on current code **and** fails on the
-  counterexample. A check that can't be shown to bite is rejected — it cannot become a
-  hard anchor. *Worked example* — decision "passwords never stored with MD5"; check
-  `! grep -rn "md5(.*password" src/`; counterexample a snippet `pw = md5(user.password)`.
-  Ratify runs the check on real code (must pass) **and** on the counterexample (must
-  fail) — proving the check actually catches the thing the decision forbids.
+  time the tool runs the **two-sided bite-test** (§4.2): check **passes on current code**
+  **and** **fails with the counterexample materialized** at its declared path. A check
+  that can't be shown to bite is rejected — it cannot become a hard anchor. The
+  counterexample is a **(relative path, content) pair**, not a bare snippet — placement
+  must be deterministic since an opaque check command's scan scope can't be inferred.
+  *Worked example* — decision "passwords never stored with MD5"; check
+  `! grep -rIn "md5(.*password" src/`; counterexample `path=src/auth/legacy.py`,
+  content `pw = md5(user.password)`. Ratify runs the check on real code (must pass) **and**
+  in a sandbox with that file injected (must fail) — proving the check catches the thing
+  the decision forbids. **The two-sided test self-detects counterexample pollution**: if a
+  check's scope is so wide it scans the inline counterexample in the `.md` itself (e.g.
+  `grep . ` instead of `grep src/`), the **pass side fails at ratify** → rejected with
+  "scope your check or relocate the counterexample" — no need to parse the opaque command.
 - **Run + gate (two layers, §4.1):** `decision check` runs each decision's check;
   non-zero → block. Run *locally* by the agent for fast feedback; run in *CI* as the
   hard, un-bypassable gate.
@@ -194,6 +207,95 @@ a hole.
 running executable checks (can be slow). For high-frequency local use, `--changed` runs
 **only** the checks whose anchored files moved (git diff × the slice-1 anchor map) — sub-
 second feedback at each checkpoint. CI runs the **full** set so nothing is missed.
+
+### 4.2 The counterexample mechanism — resolved (brainstorm 2026-06-16)
+
+The one open design hole (per the Tool A plan's closing section): *a check is repo-level
+(`! grep -rIn "md5(.*password" src/`) but a counterexample is an isolated bad snippet —
+how does a repo-wide check get shown to "bite" a hypothetical snippet?* Resolved below.
+
+**The real crux is pollution, not injection.** A counterexample is by construction a thing
+the check fails on. If it persists anywhere the check's own scope reaches, every *real*
+`decision check` finds it and fails forever. The inline counterexample lives in the `.md`
+under `docs/decisions/`; a narrowly-scoped check (`grep … src/`) never sees it, but a
+whole-repo check (`grep … .`) would. So the mechanism must guarantee the counterexample is
+seen by the check **only transiently at ratify, in isolation** — and do so for an *opaque*
+command whose scan scope we cannot parse.
+
+**Resolution — a two-sided bite-test in a temp sandbox (call sites stay trivial):**
+
+1. **Two asymmetric sides — pass on the real tree, bite in a sandbox.**
+   - **Pass side:** run the check against the **real working tree** (`cwd=repo_root`,
+     **read-only — no copy**) → must exit 0. This is *identical to a normal
+     `decision check` run* of that check, so the runner is shared. Running on the real
+     tree is what makes pollution self-detection work (below): the real tree contains the
+     decision `.md`, so an over-wide check scans its own inline counterexample.
+   - **Bite side:** build a temp sandbox = copy the **in-scope** working tree
+     (`source_scope` include set; **not** `.git` / `.venv` / `node_modules`) into a temp
+     dir, then materialize the counterexample at its declared relative path → run the check
+     (`cwd=sandbox`) → must exit non-zero. Sandbox discarded after. On APFS `shutil.copy2`
+     uses `fcopyfile` (COW) — a free speedup; correctness does not depend on it.
+   - Both sides required. The **real working tree is never mutated** — a crash can never
+     leave a poison snippet in `src/`, and concurrent reads never see a dirty tree (the
+     rejected `real-tree-write-then-revert` alternative fails on both).
+2. **Self-detecting pollution (no command parsing).** If a check's scope is wide enough to
+   scan the inline counterexample in the `.md` (it lives under `docs/`, which the *default*
+   `source_scope` excludes — so a scoped `src/` check never sees it, but a whole-repo
+   `grep … .` does), its **pass side fails at ratify** (the real tree holds the `.md`) →
+   ratify rejects with "scope your check or relocate the counterexample". The contract
+   catches over-wide scope for free, without parsing the opaque command.
+3. **Sandbox is ratify-only — never on the agent hot path.** The frequent
+   `decision check [--changed]` an agent runs mid-work executes checks **directly against
+   the live tree, read-only, zero copy**. The sandbox copy is paid once per decision
+   birth/ratify (human moment, or agent `--dry-run` self-test before proposing) — invisible
+   to the work loop.
+
+**Architecture (resolved: Y — keep the pure layer pure).** `core/decision_check.py::
+run_check` stays **pure** (referential integrity + Tool A hash integrity; all existing
+tests untouched). A new `core/check_runner.py` owns the impure execution (subprocess,
+timeout, sandbox, `--changed` scoping). `cli/decision.py::check_cmd` **composes both into
+one `decision check`** — one command for all three callers (agent / human / CI). This maps
+cleanly to *structural integrity* (pure) vs *behavioral conformance* (impure).
+
+**Run semantics.** `sh -c <command>`, `cwd=repo_root` (real runs) / sandbox root
+(bite-test), `timeout=30s` (per-check override deferred), `capture_output`. Exit 0 =
+satisfied; **non-zero — including timeout, command-not-found, or a broken check — is
+fail-closed → block** (`EXIT_VALIDATION=2`, same code as integrity/dangling-up, so the
+agent's "non-zero = I broke something" model holds). Checks **should** be read-only;
+this is **recommended, not enforced** — a mutating check is the author's risk (bedrock
+ceiling §6: no sandbox isolation, only the timeout).
+
+**Three callers, one command, scope via `--changed`:**
+
+| Caller | Command | Scope | Sandbox? |
+|---|---|---|---|
+| code agent (mid-work, high-freq) | `decision check --changed --json` | only checks whose anchored files moved | no |
+| human (manual harness check) | `decision check` | full | no |
+| CI (un-bypassable gate) | `decision check` | full | no |
+
+The **correctness default is full** (`--changed` is opt-in) — never default the guarantee
+to a narrow subset, or CI could silently under-check.
+
+**`--changed` baseline.** Working tree vs `HEAD` ∪ untracked-not-ignored
+(`git diff --name-only HEAD` plus untracked) — "what I'm working on now", matching the
+pre-commit checkpoint. Mapped to checks via the slice-1 anchor map (id → anchored files);
+a tier-1 decision runs iff one of its anchored files is in the changed set.
+**Honest limit:** `--changed` scopes by *anchor* files, but a check's real scan scope can
+be wider than its anchors (`grep src/` vs a single anchored file) → `--changed` **can
+miss**. It is a local speed heuristic; CI's full run is the guarantee. Do not mistake it
+for soundness. (`--changed-since <ref>` override deferred.)
+
+**hard:context ratio report.** Over **ratified** decisions only: `check` block present =
+hard (tier-1), absent (incl. legacy/unhashed) = context (tier-3); proposed/superseded/
+retired excluded. Pure counting (no subprocess) → **always computed and shown**, even
+under `--changed`. Text: one line `hard:context = 3:7 (30% hard)`; JSON: `{"hard": 3,
+"context": 7}`. **Not a gate** — visibility only (§6: keeps "how much is still un-welded"
+in plain sight; never affects exit code).
+
+**Counterexample shape & cardinality.** A `(path, content)` pair. This slice: **at most one
+`check` and one `counterexample` per decision**; a `check` with no `counterexample` is
+rejected at ratify (can't show biting). Inline-only (above); multi-file / binary / large
+counterexamples → fixture, deferred.
 
 - **Reviewable anchors (tier 2)** — the independent re-review against a written
   acceptance criterion, for decisions too prose-y for a runnable check.
@@ -281,12 +383,24 @@ cost-raising-and-visible vs a determined one.
   computes hash, registers + bite-tests the check), `core/decision_check.py`
   (`integrity_violations`; run executable checks; `--changed` scoping; hard:context ratio
   report).
-- **Resolved this session (2026-06-15):** check-storage shape → **inline in the decision
-  body** (locked by the body hash, no sidecar/second hash; large counterexample spills to
-  a fixture). `decision check` → **local-sensor-first + CI backstop**, with `--changed`
-  for cheap local runs. Existing-decision migration → **lazy-warn** (no hash/check →
-  warn, fill in on the next natural `ratify`; do not force a re-ratify storm on upgrade).
-- Open at build time: how a check is sandboxed/run in CI — **this slice does no real
-  sandbox** (solo-owner bedrock: owner can run anything in CI anyway), only a timeout +
-  honest limit in §6; container/resource isolation is a separate future item.
+- **Resolved 2026-06-15:** check-storage shape → **inline in the decision body** (locked
+  by the body hash, no sidecar/second hash). `decision check` → **local-sensor-first + CI
+  backstop**, with `--changed` for cheap local runs. Existing-decision migration →
+  **lazy-warn** (no hash/check → warn, fill in on the next natural `ratify`).
+- **Resolved 2026-06-16 (§4.2 — the last open hole):** counterexample = `(path, content)`
+  pair; storage = two fenced body blocks (` ```check ` / ` ```counterexample path= `);
+  bite-test = **two-sided test in a temp sandbox** (clonefile on APFS), self-detecting
+  pollution; architecture = **Y** (`run_check` stays pure, new `core/check_runner.py` for
+  execution, CLI composes one `decision check`); default full, `--changed` opt-in (base =
+  working tree vs HEAD ∪ untracked); run via `sh -c`, `timeout=30s`, non-zero fail-closed
+  → exit 2; ratio report over ratified (always shown, not a gate); `--dry-run` agent
+  self-test. **Inline-only**; fixture spill (+ its weaker lock / digest mechanism) deferred.
+- Tool B build-time file map (first pass): `core/decisions.py` (parse the two body blocks →
+  `check` / `counterexample` fields), `core/check_runner.py` (new — sandbox bite-test +
+  live-tree run + `--changed`), `cli/decision.py` (`ratify` runs bite-test + `--dry-run`;
+  `check` composes + ratio + new JSON keys), `core/decision_check.py` (unchanged — stays
+  pure).
+- Sandbox is **not** resource-isolated (solo-owner bedrock: owner can run anything in CI
+  anyway), only a timeout + honest limit §6; the temp sandbox exists for *correctness*
+  (never mutate the real tree), not security. Container/resource isolation is future.
 - Dogfood the full lifecycle on the branch before the PR (project discipline).
