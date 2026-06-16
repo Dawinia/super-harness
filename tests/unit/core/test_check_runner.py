@@ -39,6 +39,13 @@ def test_run_executable_checks_clean_is_empty(tmp_path):
     assert run_executable_checks(tmp_path, decisions) == []
 
 
+def test_run_executable_checks_sorts_failures_by_id(tmp_path):
+    (tmp_path / "src").mkdir()
+    decisions = [_ratified("d-b", "false"), _ratified("d-a", "false")]  # both fail, reverse order
+    failures = run_executable_checks(tmp_path, decisions)
+    assert [f.id for f in failures] == ["d-a", "d-b"]
+
+
 def test_only_ratified_tier1_run(tmp_path):
     proposed = Decision(id="d-p", status="proposed", check="false",
                         counterexample=Counterexample("src/x.py", "b"))

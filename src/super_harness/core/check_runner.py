@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from super_harness.core.anchor_scanner import _list_files, _matches_any
-from super_harness.core.decisions import Counterexample
+from super_harness.core.decisions import Counterexample, Decision
 from super_harness.core.source_scope import load_source_scope
 
 DEFAULT_TIMEOUT = 30  # seconds (per-check override deferred, design §4.2)
@@ -94,16 +94,36 @@ class CheckFailure:
     detail: str
 
 
-def select_changed(decisions, anchor_map, changed_files):
-    out = []
+def select_changed(
+    decisions: list[Decision],
+    anchor_map: dict[str, list[tuple[str, int]]],
+    changed: set[str],
+) -> list[Decision]:
+    """Decisions whose anchored files intersect `changed` (the --changed subset).
+
+    Heuristic, deliberately UNSOUND: a check's real scan scope can be wider than
+    its anchors, so this can MISS a violation in a non-anchored file. The full run
+    (no --changed) is the soundness backstop. See design §4.2.
+    """
+    out: list[Decision] = []
     for d in decisions:
         files = {f for f, _ln in anchor_map.get(d.id, [])}
-        if files & changed_files:
+        if files & changed:
             out.append(d)
     return out
 
 
-def run_executable_checks(workspace_root, decisions, *, timeout=DEFAULT_TIMEOUT):
+def run_executable_checks(
+    workspace_root: Path,
+    decisions: list[Decision],
+    *,
+    timeout: int = DEFAULT_TIMEOUT,
+) -> list[CheckFailure]:
+    """Run each ratified tier-1 decision's check on the real tree (read-only).
+
+    Skips non-ratified and tier-3 (no check). Non-satisfied (incl. timeout/broken
+    -> -1 sentinel) becomes a CheckFailure. Returns failures sorted by id (stable).
+    """
     failures: list[CheckFailure] = []
     for d in decisions:
         if d.status != "ratified" or d.check is None:
