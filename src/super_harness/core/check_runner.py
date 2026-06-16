@@ -20,14 +20,22 @@ class CheckRun:
 
 
 def run_one_check(command: str, *, cwd: Path, timeout: int = DEFAULT_TIMEOUT) -> CheckRun:
+    """Run a single executable check and report whether it is satisfied.
+
+    `command` MUST be a ratified, body-hash-locked check (Tool A text-lock).
+    `shell=True` is intentional: checks are deliberately shell snippets like
+    `! grep ... | ...`. The trust boundary is the ratify-time bite-test + hash
+    lock, NOT this primitive, which runs any string it is handed.
+    """
     try:
         proc = subprocess.run(
             command, shell=True, cwd=str(cwd),
-            capture_output=True, text=True, timeout=timeout,
+            capture_output=True, text=True, errors="replace", timeout=timeout,
         )
     except subprocess.TimeoutExpired:
         return CheckRun(False, -1, f"timeout after {timeout}s")
-    except OSError as e:  # shell missing etc.
+    except OSError as e:  # shell missing, bad cwd, etc.
         return CheckRun(False, -1, f"could not run: {e}")
     detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-    return CheckRun(proc.returncode == 0, proc.returncode, detail[-1] if detail else "")
+    tail = detail[-1] if detail else f"exited {proc.returncode}"
+    return CheckRun(proc.returncode == 0, proc.returncode, tail)

@@ -21,3 +21,14 @@ def test_grep_runs_in_given_cwd(tmp_path):
 def test_timeout_is_not_satisfied(tmp_path):
     r = run_one_check("sleep 5", cwd=tmp_path, timeout=1)
     assert r.satisfied is False and "timeout" in r.detail.lower()
+
+
+def test_non_utf8_output_is_not_satisfied(tmp_path):
+    # a check emitting invalid UTF-8 must NOT raise -> fail-closed
+    r = run_one_check(r"printf '\xff\xfe' >&2; exit 1", cwd=tmp_path)
+    assert r.satisfied is False
+
+
+def test_bad_cwd_is_not_satisfied(tmp_path):
+    r = run_one_check("true", cwd=tmp_path / "nope")
+    assert r.satisfied is False and r.exit_code == -1
