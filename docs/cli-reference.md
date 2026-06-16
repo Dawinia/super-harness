@@ -300,11 +300,15 @@ super-harness decision COMMAND [ARGS...]
 
 ## super-harness decision check
 
-Whole-repo dangling check: up=block(2) / down=warn / record error=3.
+Whole-repo dangling check + executable checks: up=block(2) / down=warn / record error=3.
 
 ```
 super-harness decision check [OPTIONS]
 ```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `--changed` | flag | `False` | Only run checks whose anchored files moved. |
 
 **Exit codes:**
 
