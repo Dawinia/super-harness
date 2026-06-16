@@ -486,3 +486,22 @@ def test_check_ratio_zero_when_no_ratified(tmp_path):
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
     assert "hard:context = 0:0" in r.output
     assert "% hard" not in r.output   # no percent suffix when total is zero
+
+
+def test_executable_check_full_lifecycle(tmp_path):
+    root = _init(tmp_path)
+    _seed_clean_src(root)
+    def inv(*a):
+        return CliRunner().invoke(main, ["--workspace", str(root), "decision", *a])
+    # 1. author a tier-1 decision (prose + check + counterexample) + ratify -> bite-test passes
+    _w(root / "docs/decisions/d-pw.md", f"---\nid: d-pw\nstatus: proposed\n---\n{TIER1}")
+    assert inv("ratify", "d-pw").exit_code == 0
+    assert inv("check").exit_code == 0                      # code honors it
+
+    # 2. code starts violating the decision -> check blocks
+    (root / "src/bad.py").write_text("pw = md5(user.password)\n")
+    assert inv("check").exit_code == 2
+
+    # 3. fix the code -> green again (no re-ratify needed; the claim never changed)
+    (root / "src/bad.py").write_text("pw = bcrypt(user.password)\n")
+    assert inv("check").exit_code == 0
