@@ -1,4 +1,5 @@
-from super_harness.core.check_runner import CheckRun, run_one_check
+from super_harness.core.check_runner import CheckRun, build_sandbox, run_one_check
+from super_harness.core.decisions import Counterexample
 
 
 def test_zero_exit_is_satisfied(tmp_path):
@@ -32,3 +33,23 @@ def test_non_utf8_output_is_not_satisfied(tmp_path):
 def test_bad_cwd_is_not_satisfied(tmp_path):
     r = run_one_check("true", cwd=tmp_path / "nope")
     assert r.satisfied is False and r.exit_code == -1
+
+
+def test_sandbox_copies_inscope_and_injects(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("clean = True\n")
+    ce = Counterexample(path="src/auth/legacy.py", content="pw = md5(user.password)")
+    with build_sandbox(tmp_path, ce) as sb:
+        assert (sb / "src/app.py").read_text() == "clean = True\n"   # copied
+        assert (sb / "src/auth/legacy.py").read_text() == "pw = md5(user.password)\n"
+    assert not sb.exists()        # cleaned up on context exit
+
+
+def test_sandbox_excludes_dot_dirs(tmp_path):
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv/x.py").write_text("junk\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/app.py").write_text("ok\n")
+    ce = Counterexample(path="src/bad.py", content="bad")
+    with build_sandbox(tmp_path, ce) as sb:
+        assert not (sb / ".venv").exists()

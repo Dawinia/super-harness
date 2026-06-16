@@ -5,9 +5,17 @@ machinery lives here so the structural-integrity layer never imports subprocess.
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+
+from super_harness.core.anchor_scanner import _list_files, _matches_any
+from super_harness.core.decisions import Counterexample
+from super_harness.core.source_scope import load_source_scope
 
 DEFAULT_TIMEOUT = 30  # seconds (per-check override deferred, design §4.2)
 
@@ -39,3 +47,36 @@ def run_one_check(command: str, *, cwd: Path, timeout: int = DEFAULT_TIMEOUT) ->
     detail = (proc.stderr or proc.stdout or "").strip().splitlines()
     tail = detail[-1] if detail else f"exited {proc.returncode}"
     return CheckRun(proc.returncode == 0, proc.returncode, tail)
+
+
+@contextmanager
+def build_sandbox(workspace_root: Path, counterexample: Counterexample) -> Iterator[Path]:
+    """Copy the in-scope working tree to a tempdir + inject the counterexample.
+
+    The bite side of the bite-test must let the check see a bad snippet WITHOUT
+    mutating the real working tree, so a crash mid-run never leaves a poison file
+    in src/. We copy in-scope files into a tempdir, write the counterexample
+    there, yield the tempdir (use as cwd), then discard it on exit.
+
+    Known limitation: `_list_files` lists *tracked* files (`git ls-files`), so a
+    brand-new untracked source file the agent just created is NOT copied into the
+    sandbox. The bite side still works (the counterexample is injected
+    explicitly) and the pass side (Task 4) runs on the real tree anyway; CI runs
+    against the committed PR tree, where the file is tracked.
+    """
+    include, exclude = load_source_scope(workspace_root)
+    tmp = Path(tempfile.mkdtemp(prefix="sh-bite-"))
+    try:
+        for f in _list_files(workspace_root):
+            rel = f.relative_to(workspace_root)
+            if not _matches_any(rel, include) or _matches_any(rel, exclude):
+                continue
+            dest = tmp / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(f, dest)          # fcopyfile/COW on APFS, plain copy elsewhere
+        ce_path = tmp / counterexample.path
+        ce_path.parent.mkdir(parents=True, exist_ok=True)
+        ce_path.write_text(counterexample.content + "\n", encoding="utf-8")
+        yield tmp
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
