@@ -88,6 +88,49 @@ def build_sandbox(workspace_root: Path, counterexample: Counterexample) -> Itera
 
 
 @dataclass
+class CheckFailure:
+    id: str
+    exit_code: int
+    detail: str
+
+
+def select_changed(decisions, anchor_map, changed_files):
+    out = []
+    for d in decisions:
+        files = {f for f, _ln in anchor_map.get(d.id, [])}
+        if files & changed_files:
+            out.append(d)
+    return out
+
+
+def run_executable_checks(workspace_root, decisions, *, timeout=DEFAULT_TIMEOUT):
+    failures: list[CheckFailure] = []
+    for d in decisions:
+        if d.status != "ratified" or d.check is None:
+            continue
+        run = run_one_check(d.check, cwd=workspace_root, timeout=timeout)
+        if not run.satisfied:
+            failures.append(CheckFailure(id=d.id, exit_code=run.exit_code, detail=run.detail))
+    failures.sort(key=lambda f: f.id)
+    return failures
+
+
+def changed_files(workspace_root: Path) -> set[str] | None:
+    """Working-tree changes vs HEAD plus untracked-not-ignored (design §4.2).
+
+    Returns None if not a git repo / git unavailable -> caller falls back to FULL
+    (never silently under-run; full is the safe direction)."""
+    try:
+        diff = subprocess.run(["git", "diff", "--name-only", "HEAD"], cwd=str(workspace_root),
+                              capture_output=True, text=True, check=True)
+        others = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"],
+                                cwd=str(workspace_root), capture_output=True, text=True, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+    return {ln for ln in (diff.stdout + others.stdout).splitlines() if ln.strip()}
+
+
+@dataclass
 class BiteVerdict:
     ok: bool
     reason: str

@@ -1,10 +1,54 @@
 from super_harness.core.check_runner import (
+    CheckFailure,
     CheckRun,
     bite_test,
     build_sandbox,
+    run_executable_checks,
     run_one_check,
+    select_changed,
 )
-from super_harness.core.decisions import Counterexample
+from super_harness.core.decisions import Counterexample, Decision
+
+
+def _ratified(did, check):
+    return Decision(id=did, status="ratified", check=check,
+                    counterexample=Counterexample(path="src/x.py", content="bad"))
+
+
+def test_select_changed_keeps_only_touched_anchors():
+    decisions = [_ratified("d-a", "true"), _ratified("d-b", "true")]
+    anchor_map = {"d-a": [("src/a.py", 1)], "d-b": [("src/b.py", 1)]}
+    changed = {"src/a.py"}
+    ids = {d.id for d in select_changed(decisions, anchor_map, changed)}
+    assert ids == {"d-a"}
+
+
+def test_run_executable_checks_flags_violation(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/bad.py").write_text("pw = md5(user.password)\n")
+    decisions = [_ratified("d-pw", '! grep -rIn "md5(.*password" src/')]
+    failures = run_executable_checks(tmp_path, decisions)
+    assert [f.id for f in failures] == ["d-pw"]
+    assert isinstance(failures[0], CheckFailure)
+
+
+def test_run_executable_checks_clean_is_empty(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/ok.py").write_text("clean = True\n")
+    decisions = [_ratified("d-pw", '! grep -rIn "md5(.*password" src/')]
+    assert run_executable_checks(tmp_path, decisions) == []
+
+
+def test_only_ratified_tier1_run(tmp_path):
+    proposed = Decision(id="d-p", status="proposed", check="false",
+                        counterexample=Counterexample("src/x.py", "b"))
+    tier3 = Decision(id="d-c", status="ratified", check=None)
+    assert run_executable_checks(tmp_path, [proposed, tier3]) == []
+
+
+def test_changed_files_none_on_non_git(tmp_path):
+    from super_harness.core.check_runner import changed_files
+    assert changed_files(tmp_path) is None
 
 
 def test_zero_exit_is_satisfied(tmp_path):
