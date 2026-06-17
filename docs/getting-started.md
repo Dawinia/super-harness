@@ -59,8 +59,9 @@ What `init --setup-github` does:
    - If a `.claude/` directory is detected, `init` also auto-installs the
      Claude Code agent adapter's gate hook (see step 3). Pass `init
      --no-agent` to skip this.
-3. Writes `.github/workflows/super-harness.yml` — the 4-job CI workflow
-   (pr-decorate / pr-validate / verification / on-merge).
+3. Writes `.github/workflows/super-harness.yml` — the 7-job CI workflow
+   (pr-decorate / pr-validate / verification / attest-verify / decision-check /
+   doc-check / on-merge).
 4. Writes `.github/pull_request_template.md` with the required metadata
    block that links a PR to a change.
 5. Best-effort enables repo `auto-merge` + `squash` settings on GitHub
@@ -272,7 +273,7 @@ Change: 2026-06-01-add-greeting
 Make sure the `Change:` line names your slug. The bundled CI workflow uses
 this to link the PR to the change.
 
-When the PR opens, the CI workflow runs four jobs:
+When the PR opens, the CI workflow runs seven jobs:
 
 1. **`pr-decorate`** — calls `super-harness pr emit-opened` to emit a
    `pr_opened` event and inject the metadata block if missing.
@@ -281,12 +282,19 @@ When the PR opens, the CI workflow runs four jobs:
 3. **`verification`** — runs `super-harness verify <slug>` (same checks as
    the local `verify` you ran in step 6, but in CI for reviewer
    confidence).
-4. **`on-merge`** — gated on the merge event; runs `super-harness on-merge`
+4. **`attest-verify`** — runs `super-harness attest verify --base ... --head ...`;
+   blocks unless every changed file is covered by a complete, ordered lifecycle
+   attestation (see [§10](#10-bind-decisions-to-code-optional) on the attestation
+   trail).
+5. **`decision-check`** — runs `super-harness decision check` (referential
+   integrity + text-lock + executable checks; see §10).
+6. **`doc-check`** — runs `super-harness doc check`; blocks if a derivable doc
+   drifted from its generator.
+7. **`on-merge`** — gated on the merge event; runs `super-harness on-merge`
    after the PR lands.
 
-If any of the first three fail, the PR cannot be merged (assuming you've
-enabled branch protection). All four jobs are visible as required checks
-on the PR.
+If any non-`on-merge` job fails, the PR cannot be merged (assuming you've
+enabled branch protection). All jobs are visible as required checks on the PR.
 
 ---
 
@@ -326,7 +334,69 @@ super-harness state verify                            # invariant-check events.j
 
 ---
 
-## 10. Next steps
+## 10. Bind decisions to code (optional)
+
+The lifecycle above governs *how a change moves*. A second, independent layer
+governs *whether the code honors the decisions a human ratified* — so a decision
+can't be silently overturned and the code can't silently violate it. It runs
+through one command, `super-harness decision check` (a local sensor your agent can
+call at any checkpoint, and the CI `decision-check` job as the un-bypassable
+backstop).
+
+**1. Record + ratify a decision.**
+
+```bash
+super-harness decision new d-passwords --text "Passwords must be stored with bcrypt — never MD5."
+super-harness decision ratify d-passwords      # stamps who/when + freezes a body hash
+```
+
+**2. Anchor the code to it.** Drop a `# @decision:d-passwords` comment next to the
+code that implements it. Now `decision check` enforces **referential integrity**: an
+anchor naming no ratified decision blocks; a ratified decision with no anchor warns.
+
+**3. (text-lock) The ratified text can't be silently rewritten.** `ratify` froze a
+hash of the body. If anyone edits a ratified decision's body without re-ratifying,
+`decision check` blocks — re-ratify (which re-stamps identity + time, all visible in
+the git diff) is the only unlock.
+
+**4. (executable check) The code can't silently violate the decision.** Give the
+decision a runnable check + a counterexample, inline in its `.md` body:
+
+````markdown
+```check
+! grep -rIn "md5(.*password" src/
+```
+
+```counterexample path=src/legacy.py
+pw = md5(user.password)
+```
+````
+
+At `ratify`, super-harness proves the check *bites* — it must pass on your current
+code **and** fail with the counterexample injected — or it refuses to ratify
+(no hollow checks). Then `decision check` runs it on every invocation; code that
+trips it is blocked (exit 2). Test a check before proposing it with
+`super-harness decision ratify <id> --dry-run`, and run only the checks whose
+anchored files changed with `super-harness decision check --changed` (CI runs the
+full set).
+
+```bash
+super-harness decision check            # referential + text-lock + executable, full
+super-harness decision check --changed  # local fast path: only touched anchors
+```
+
+> Decisions you can't reduce to a runnable check are recorded as **context** — they
+> show up in the `hard:context` ratio `decision check` prints, but never gate. This
+> is deliberate: there is no ground truth to mechanically judge prose intent against.
+
+**Attestation trail.** When you open a PR, the CI `attest-verify` job requires every
+changed file to be covered by a complete, ordered lifecycle attestation
+(`super-harness attest write <slug>` snapshots it to `.harness/attestations/`). This
+is what makes the merge gate refuse work that skipped a lifecycle step.
+
+---
+
+## 11. Next steps
 
 - **Adapt for your framework**: if you don't use OpenSpec, install the
   `plain` framework adapter instead and define your own verification checks

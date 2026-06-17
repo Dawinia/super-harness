@@ -54,10 +54,11 @@ running the flow yourself.
 
 ## What v0.1 ships
 
-- **18 CLI commands** spanning lifecycle (`init` / `change` / `review` /
-  `implementation` / `status` / `sync` / `on-merge`), gating (`verify` / `done` /
-  `gate` / `pr validate`), sensors (`anchor` / `verification`), and infrastructure
-  (`daemon` / `event` / `state` / `adapter` / `sensor`).
+- **21 CLI command groups** spanning lifecycle (`init` / `change` / `plan` /
+  `review` / `implementation` / `done` / `on-merge` / `status` / `sync`), gating
+  (`verify` / `gate` / `pr` / `attest`), decision conformance (`decision` / `doc`),
+  and infrastructure (`daemon` / `event` / `state` / `adapter` / `sensor` /
+  `verification`).
 - **Reviewer verdict verbs** — `review approve | reject | skip` (emit
   `plan_approved` / `plan_rejected` / `code_review_passed` / `code_review_failed`)
   and `implementation start` (emits `implementation_started`). These advance the
@@ -85,15 +86,32 @@ running the flow yourself.
 - **Three-layer verification** — baseline checks (lifecycle-ordering,
   scope-vs-plan-final) + adapter-provided checks (e.g.,
   OpenSpec strict validate) + user-defined `.harness/verification.yaml`.
-- **Decision records + anchors** — ratified decision records in `docs/decisions/`
-  with `@decision:<id>` code anchors; `super-harness decision check` enforces
-  referential integrity (a dangling anchor with no ratified record blocks; a
-  ratified record with no anchor warns).
+- **Decision conformance — make a human decision actually bind the AI's code.**
+  Ratified decision records live in `docs/decisions/` with `@decision:<id>` code
+  anchors. `super-harness decision check` enforces three layers, deepest first:
+  - **Referential integrity** — a code anchor naming no ratified record blocks;
+    a ratified record with no anchor warns.
+  - **Text-lock (the decision can't be silently rewritten)** — `ratify` freezes a
+    hash of the decision body; if a ratified body later changes without a fresh
+    re-ratify, `decision check` blocks. Re-ratify (re-stamping identity + time, all
+    in the git diff) is the only unlock — an AI cannot self-clear.
+  - **Executable checks (the code can't silently violate the decision)** — a
+    decision may carry an inline runnable check + a counterexample; `ratify` proves
+    the check *bites* (passes on current code, fails on the counterexample) before
+    accepting it, and `decision check` runs it so violating code is blocked (exit 2).
+    `--changed` runs only the checks whose anchored files moved (local speed; CI runs
+    the full set); a `hard:context` ratio reports how much is mechanically enforced
+    vs recorded-as-context-only.
+- **Derivable-doc drift gate** — `super-harness doc check` regenerates docs that
+  have a generator (e.g. the CLI reference, the state-machine diagram) and blocks
+  if the committed copy drifted; `--fix` rewrites them. Registered in
+  `.harness/derived-docs.yaml`. (Prose docs without a generator are out of scope by
+  design — there is no ground truth to diff them against.)
 - **Bundled CI workflow** — `super-harness init --setup-github` deploys
-  `.github/workflows/super-harness.yml` (4 jobs: pr-decorate, pr-validate,
-  verification, on-merge) and `.github/pull_request_template.md` with the
-  required metadata block. All GitHub operations go through `gh` — no
-  webhooks, no PATs, no bot account.
+  `.github/workflows/super-harness.yml` (7 jobs: pr-decorate, pr-validate,
+  verification, attest-verify, decision-check, doc-check, on-merge) and
+  `.github/pull_request_template.md` with the required metadata block. All GitHub
+  operations go through `gh` — no webhooks, no PATs, no bot account.
 
 ## What v0.1 does NOT ship yet
 
@@ -156,6 +174,7 @@ agent-wrapping projects in the ecosystem:
 ## Links
 
 - [Getting started](docs/getting-started.md)
+- [Architecture](docs/ARCHITECTURE.md)
 - [CLI reference](docs/cli-reference.md)
 - [Adapter docs](docs/adapters/)
 - [Demo: OpenSpec + Claude Code](examples/demo-openspec-claude/)
