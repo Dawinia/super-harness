@@ -114,6 +114,27 @@ def test_corrupt_adapters_yaml_wrong_shape_is_nonfatal(tmp_path: Path) -> None:
     assert "<!-- super-harness no-agent-adapter-installed -->" in text
 
 
+def test_outer_section_has_decision_conformance(tmp_path: Path) -> None:
+    """The outer framework section teaches the portable §4.1 local sensor: run
+    `decision check` at checkpoints, self-test a check with `ratify --dry-run`,
+    keep `decision check` / `doc check` green locally. Lives in the OUTER section
+    (not a CC-specific adapter block) because these are plain CLI commands any
+    agent runs."""
+    agents = tmp_path / "AGENTS.md"
+
+    render_super_harness_section(tmp_path, agents, "0.1.0")
+
+    text = agents.read_text()
+    assert "### Decision conformance" in text
+    assert "super-harness decision check --changed" in text
+    assert "super-harness decision ratify <id> --dry-run" in text
+    assert "super-harness doc check" in text
+    # The section sits inside the managed outer block (before the end marker).
+    assert text.index("### Decision conformance") < text.index(
+        "<!-- super-harness section end -->"
+    )
+
+
 def test_corrupt_adapters_yaml_broken_syntax_is_nonfatal(tmp_path: Path) -> None:
     """A syntactically-broken adapters.yaml raises yaml.YAMLError inside
     load_adapters; render swallows it (advisory on stderr) and still writes a
