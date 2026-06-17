@@ -859,6 +859,7 @@ super-harness sync [OPTIONS]
 | `--adapter` | text | — | Re-inject ONLY this adapter's subsection (no outer version bump). Wins over --agents-md / --gitignore if combined. |
 | `--gitignore` | flag | `False` | Re-render ONLY the managed .gitignore block (no AGENTS.md change). Picks up `_CANONICAL_PATHS` additions from a super-harness upgrade without re-running init. |
 | `--yes`, `-y` | flag | `False` | Skip the overwrite-confirm prompt. |
+| `--check` | flag | `False` | Dry-run: report drift between the managed artifacts and the super-harness template WITHOUT writing. Exit 2 on drift. Composes with --agents-md / --gitignore; not supported with --adapter. |
 
 **Exit codes:**
 
