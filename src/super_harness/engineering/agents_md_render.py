@@ -89,6 +89,26 @@ verify and emits the lifecycle event automatically.
 When implementing a change, edit only files in the declared `scope.files`
 (see the plan artifact). Edits outside scope trigger drift warnings.
 
+### Decision conformance
+
+Ratified decisions under `docs/decisions/` are binding: super-harness
+hash-locks each decision's text and, where configured, attaches an executable
+check. Treat `super-harness decision check` as a LOCAL SENSOR you consult while
+you work — CI runs it too as the un-bypassable floor, so keep it green locally.
+
+- **At natural checkpoints** (a chunk done, before you commit) run
+  `super-harness decision check --changed`. A non-zero exit means you violated a
+  ratified decision or edited a ratified decision's body text — fix it before
+  continuing; don't push the drift downstream to CI.
+- **Don't hand-edit the body of a ratified decision.** Its text is hash-locked;
+  re-ratifying (`super-harness decision ratify <id>`) is the only unlock, and is
+  a deliberate, recorded act.
+- **Attaching an executable check to a decision?** Before you propose it, run
+  `super-harness decision ratify <id> --dry-run` to confirm the check actually
+  bites (runs the bite-test without ratifying).
+- `super-harness decision check` (full) and `super-harness doc check` are also
+  CI gates — keep both green locally so a push never bounces.
+
 <!-- super-harness section end -->"""
 
 

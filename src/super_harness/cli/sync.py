@@ -60,6 +60,7 @@ from super_harness.core.paths import (
     adapters_yaml_path,
     find_harness_root,
 )
+from super_harness.core.sync_check import run_sync_check
 from super_harness.engineering.agents_md import (
     AgentsMdInjectionError,
     inject_agent_subsection,
@@ -71,7 +72,12 @@ from super_harness.engineering.gitignore_injector import (
     GitignoreInjectionError,
     inject_gitignore_block,
 )
-from super_harness.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
+from super_harness.exit_codes import (
+    EXIT_GENERIC,
+    EXIT_NO_CONFIG,
+    EXIT_OK,
+    EXIT_VALIDATION,
+)
 from super_harness.version import __version__
 
 # Shared AGENTS.md error envelope (mirrors init / adapter install): an OSError
@@ -120,6 +126,14 @@ _GITIGNORE_WRITE_HINT = (
     is_flag=True,
     help="Skip the overwrite-confirm prompt.",
 )
+@click.option(
+    "--check",
+    "check",
+    is_flag=True,
+    help="Dry-run: report drift between the managed artifacts and the "
+    "super-harness template WITHOUT writing. Exit 2 on drift. Composes with "
+    "--agents-md / --gitignore; not supported with --adapter.",
+)
 @click.pass_context
 def sync_cmd(
     ctx: click.Context,
@@ -127,6 +141,7 @@ def sync_cmd(
     adapter_name: str | None,
     gitignore: bool,
     assume_yes: bool,
+    check: bool,
 ) -> None:
     """Re-render the managed super-harness artifacts without re-running init.
 
@@ -139,6 +154,25 @@ def sync_cmd(
     root = _resolve_root(ctx, "sync")
     agents_path = root / "AGENTS.md"
     quiet = bool(ctx.obj.get("quiet"))
+
+    if check:
+        if adapter_name is not None:
+            click.echo(
+                format_error(
+                    subcommand="sync",
+                    message="`sync --check` does not support `--adapter`",
+                    hint="Use `sync --agents-md --check` to verify the whole "
+                    "AGENTS.md section (it already covers every adapter subsection).",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_GENERIC)
+        # No scope flag → check both; a single scope flag narrows.
+        check_agents = agents_md or not gitignore
+        check_gitignore = gitignore or not agents_md
+        _sync_check(
+            root, check_agents=check_agents, check_gitignore=check_gitignore, quiet=quiet
+        )
 
     if adapter_name is not None:
         _sync_adapter(root, agents_path, adapter_name, quiet=quiet, assume_yes=assume_yes)
@@ -198,6 +232,55 @@ def _sync_full(
         click.echo(
             f"Synced AGENTS.md super-harness section (v{__version__}) "
             f"and .gitignore block."
+        )
+    sys.exit(EXIT_OK)
+
+
+def _sync_check(
+    root: Path, *, check_agents: bool, check_gitignore: bool, quiet: bool
+) -> None:
+    """Report drift for the in-scope managed artifacts; never writes.
+
+    Exit: drift → EXIT_VALIDATION (2, matches `doc check`); clean → EXIT_OK;
+    a render/IO failure → EXIT_GENERIC via the shared AGENTS.md error envelope.
+    """
+    try:
+        result = run_sync_check(
+            root, __version__, check_agents=check_agents, check_gitignore=check_gitignore
+        )
+    except (OSError, AgentsMdInjectionError, GitignoreInjectionError) as e:
+        click.echo(
+            format_error(
+                subcommand="sync",
+                message=f"failed to compute drift: {e}",
+                hint=_AGENTS_MD_WRITE_HINT,
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    if result.drift:
+        for artifact in result.drift:
+            click.echo(artifact.diff, err=True)
+        names = ", ".join(artifact.name for artifact in result.drift)
+        click.echo(
+            format_error(
+                subcommand="sync",
+                message=f"{names} out of sync with the super-harness template",
+                hint="Run `super-harness sync` to regenerate, then commit the result.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+
+    if not quiet:
+        checked = []
+        if check_agents:
+            checked.append("AGENTS.md")
+        if check_gitignore:
+            checked.append(".gitignore")
+        click.echo(
+            f"{' and '.join(checked)} in sync with the super-harness template."
         )
     sys.exit(EXIT_OK)
 

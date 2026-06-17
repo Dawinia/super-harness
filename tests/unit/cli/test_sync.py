@@ -14,6 +14,9 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from super_harness.cli import main
+from super_harness.engineering.agents_md_render import render_super_harness_section
+from super_harness.engineering.gitignore_injector import inject_gitignore_block
+from super_harness.version import __version__
 
 
 def test_sync_adapter_corrupt_adapters_yaml_exits_no_config(tmp_path: Path) -> None:
@@ -117,3 +120,59 @@ def test_sync_full_gitignore_leg_failure_after_agents_md_exits_generic(
     assert "failed to update .gitignore" in r.stderr
     # The AGENTS.md leg ran first and succeeded (file now exists).
     assert (tmp_path / "AGENTS.md").is_file()
+
+
+def _init_harness(root: Path) -> None:
+    (root / ".harness").mkdir()
+
+
+def test_sync_check_clean_repo_exits_ok(tmp_path: Path) -> None:
+    """`sync --check` on a freshly-rendered repo → exit 0, no diff written."""
+    _init_harness(tmp_path)
+    render_super_harness_section(tmp_path, tmp_path / "AGENTS.md", __version__)
+    inject_gitignore_block(tmp_path / ".gitignore")
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "sync", "--check"])
+    assert r.exit_code == 0, r.output
+
+
+def test_sync_check_drifted_agents_md_exits_validation(tmp_path: Path) -> None:
+    """A hand-mutated AGENTS.md managed section → exit 2 (EXIT_VALIDATION) + diff,
+    file unchanged."""
+    _init_harness(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+    render_super_harness_section(tmp_path, agents, __version__)
+    mutated = agents.read_text().replace("### File scope", "### File scope EDITED")
+    agents.write_text(mutated)
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "sync", "--check"])
+    assert r.exit_code == 2, r.output
+    assert "AGENTS.md" in r.stderr
+    assert agents.read_text() == mutated  # never written
+
+
+def test_sync_check_with_adapter_is_rejected(tmp_path: Path) -> None:
+    """`--adapter` + `--check` is rejected (the --agents-md check already covers
+    adapter subsections); exit is NOT 2 (that means drift), so use EXIT_GENERIC."""
+    _init_harness(tmp_path)
+
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "sync", "--check", "--adapter", "claude-code"],
+    )
+    assert r.exit_code == 1, r.output
+    assert "does not support `--adapter`" in r.stderr
+    assert "Traceback" not in r.stderr
+
+
+def test_sync_check_agents_only_scope(tmp_path: Path) -> None:
+    """`sync --agents-md --check` checks ONLY AGENTS.md: a drifted .gitignore does
+    not fail the agents-only check."""
+    _init_harness(tmp_path)
+    render_super_harness_section(tmp_path, tmp_path / "AGENTS.md", __version__)
+    # .gitignore intentionally absent → would drift if checked, but scope excludes it.
+
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "sync", "--agents-md", "--check"]
+    )
+    assert r.exit_code == 0, r.output

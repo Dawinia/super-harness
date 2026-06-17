@@ -16,6 +16,10 @@ the change with zero config, but it is optional, not required.
 
 Use your framework's native PR command:
 
+<!-- super-harness framework: plain -->
+- No framework: drive lifecycle via `super-harness change start <slug>` / `super-harness plan ready <slug>` / `super-harness done <slug>`.
+<!-- /super-harness framework: plain -->
+
 <!-- super-harness framework: superpowers -->
 - Drive the lifecycle with the superpowers skills (brainstorming → writing-plans → TDD). Plans live under `docs/plans/`.
 - Mark an artifact for super-harness with YAML frontmatter: `change: <slug>` (identity) plus optional `stage: design|plan`.
@@ -61,13 +65,13 @@ configured **strategy** for that reviewer (`subagent` / `human` / `hybrid`):
 
 Checklists & verdict verbs per review state:
 
-- **`AWAITING_PLAN_REVIEW`** (plan-reviewer) — check spec coverage / design / scope.
-  Record with `super-harness review approve <change> --reviewer
+- **`AWAITING_PLAN_REVIEW`** (plan-reviewer) — check spec coverage / design / scope /
+  declared anchors. Record with `super-harness review approve <change> --reviewer
   plan-reviewer` or `super-harness review reject <change> --reviewer plan-reviewer
   --reason "<why>"`. Approve → `PLAN_APPROVED` (gate then allows edits); reject →
   `PLAN_REJECTED` for a revised plan.
 - **`AWAITING_CODE_REVIEW`** (code-reviewer) — check the diff against the plan (spec
-  compliance / quality). Record with `super-harness review approve
+  compliance / anchors planted / quality). Record with `super-harness review approve
   <change> --reviewer code-reviewer` (or `review reject ...`). Approve → `READY_TO_MERGE`.
 - `super-harness review skip <change> --reviewer <name>` is an escape hatch (records an
   approval with `reason=manual_skip`) for when a reviewer is stuck.
@@ -77,7 +81,7 @@ When you do run a subagent, run a genuinely independent one — don't self-rubbe
 
 ### Before opening PR
 
-Ensure `super-harness verify` passes (tests / lint / build).
+Ensure `super-harness verify` passes (tests / lint / build / anchor sentinels).
 If using a `done` skill, run `super-harness done <slug>` instead—it triggers
 verify and emits the lifecycle event automatically.
 
@@ -85,5 +89,25 @@ verify and emits the lifecycle event automatically.
 
 When implementing a change, edit only files in the declared `scope.files`
 (see the plan artifact). Edits outside scope trigger drift warnings.
+
+### Decision conformance
+
+Ratified decisions under `docs/decisions/` are binding: super-harness
+hash-locks each decision's text and, where configured, attaches an executable
+check. Treat `super-harness decision check` as a LOCAL SENSOR you consult while
+you work — CI runs it too as the un-bypassable floor, so keep it green locally.
+
+- **At natural checkpoints** (a chunk done, before you commit) run
+  `super-harness decision check --changed`. A non-zero exit means you violated a
+  ratified decision or edited a ratified decision's body text — fix it before
+  continuing; don't push the drift downstream to CI.
+- **Don't hand-edit the body of a ratified decision.** Its text is hash-locked;
+  re-ratifying (`super-harness decision ratify <id>`) is the only unlock, and is
+  a deliberate, recorded act.
+- **Attaching an executable check to a decision?** Before you propose it, run
+  `super-harness decision ratify <id> --dry-run` to confirm the check actually
+  bites (runs the bite-test without ratifying).
+- `super-harness decision check` (full) and `super-harness doc check` are also
+  CI gates — keep both green locally so a push never bounces.
 
 <!-- super-harness section end -->

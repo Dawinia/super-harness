@@ -14,3 +14,5 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Derivable-doc conformance (regen-and-diff)
         run: super-harness doc check
+      - name: Managed-artifact drift (sync --check)
+        run: super-harness sync --check
