@@ -11,6 +11,7 @@ from pathlib import Path
 
 from super_harness.core.sync_check import run_sync_check
 from super_harness.engineering.agents_md_render import render_super_harness_section
+from super_harness.engineering.gitignore_injector import inject_gitignore_block
 
 
 def test_freshly_rendered_agents_md_is_in_sync(tmp_path: Path) -> None:
@@ -84,3 +85,50 @@ def test_absent_agents_md_is_drift(tmp_path: Path) -> None:
 
     assert not result.in_sync
     assert result.drift[0].name == "AGENTS.md"
+
+
+def test_freshly_injected_gitignore_is_in_sync(tmp_path: Path) -> None:
+    """A .gitignore whose block was just injected shows NO .gitignore drift."""
+    inject_gitignore_block(tmp_path / ".gitignore")
+
+    result = run_sync_check(
+        tmp_path, "0.1.0", check_agents=False, check_gitignore=True
+    )
+
+    assert result.in_sync
+
+
+def test_mutated_gitignore_block_is_drift(tmp_path: Path) -> None:
+    """Editing inside the managed .gitignore block is reported as drift; the file
+    on disk is NOT modified by the check."""
+    gi = tmp_path / ".gitignore"
+    inject_gitignore_block(gi)
+    original = gi.read_text()
+    # Drop a real canonical path line from inside the managed block.
+    # `.harness/state.yaml` IS in `_CANONICAL_PATHS` (verified); the socket path
+    # is NOT, so do not use it here.
+    mutated = "\n".join(
+        line for line in original.splitlines() if line != ".harness/state.yaml"
+    ) + "\n"
+    assert mutated != original, "test bug: nothing removed — path not in block"
+    gi.write_text(mutated)
+
+    result = run_sync_check(
+        tmp_path, "0.1.0", check_agents=False, check_gitignore=True
+    )
+
+    assert not result.in_sync
+    assert result.drift[0].name == ".gitignore"
+    assert gi.read_text() == mutated
+
+
+def test_both_artifacts_checked_together(tmp_path: Path) -> None:
+    """With both legs enabled and both freshly rendered, the repo is in sync."""
+    render_super_harness_section(tmp_path, tmp_path / "AGENTS.md", "0.1.0")
+    inject_gitignore_block(tmp_path / ".gitignore")
+
+    result = run_sync_check(
+        tmp_path, "0.1.0", check_agents=True, check_gitignore=True
+    )
+
+    assert result.in_sync

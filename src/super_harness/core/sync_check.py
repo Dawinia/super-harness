@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from super_harness.engineering.agents_md_render import render_super_harness_section
+from super_harness.engineering.gitignore_injector import inject_gitignore_block
 
 # Bound a runaway diff (mirrors core/doc_check's _DIFF_MAX_LINES).
 _DIFF_MAX_LINES = 40
@@ -79,6 +80,20 @@ def _check_agents_md(root: Path, version: str, tmp: Path) -> ArtifactDrift | Non
     return ArtifactDrift(name="AGENTS.md", diff=_bounded_diff(on_disk, canonical, "AGENTS.md"))
 
 
+def _check_gitignore(root: Path, tmp: Path) -> ArtifactDrift | None:
+    """Inject the canonical block into a temp copy of .gitignore and diff."""
+    gi = root / ".gitignore"
+    tmp_gi = tmp / ".gitignore"
+    if gi.exists():
+        shutil.copyfile(gi, tmp_gi)
+    inject_gitignore_block(tmp_gi)
+    canonical = _read(tmp_gi)
+    on_disk = _read(gi)
+    if canonical == on_disk:
+        return None
+    return ArtifactDrift(name=".gitignore", diff=_bounded_diff(on_disk, canonical, ".gitignore"))
+
+
 def run_sync_check(
     root: Path,
     version: str,
@@ -99,5 +114,8 @@ def run_sync_check(
             drift = _check_agents_md(root, version, tmp)
             if drift is not None:
                 result.drift.append(drift)
-        # .gitignore leg added in Task 3.
+        if check_gitignore:
+            drift = _check_gitignore(root, tmp)
+            if drift is not None:
+                result.drift.append(drift)
     return result
