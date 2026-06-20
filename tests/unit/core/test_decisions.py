@@ -12,6 +12,7 @@ from super_harness.core.decisions import (
     parse_decision_file,
     parse_review,
     serialize_decision,
+    write_decision,
 )
 
 
@@ -253,3 +254,45 @@ def test_tier2_when_review_only():
 def test_tier3_when_neither():
     d = Decision(id="d", status="ratified")
     assert decision_tier(d) == 3
+
+
+def test_reconcile_fields_roundtrip(tmp_path):
+    p = tmp_path / "d-x.md"
+    d = Decision(
+        id="d-x", status="ratified", body="Body.\n\n```review\ncrit\n```",
+        path=p,
+        reconciled_anchors={"src/a.py": "sha256:aaa", "src/b.py": "sha256:bbb"},
+        last_reconciled_by="alice@example.com",
+        last_reconciled_at="2026-06-20T00:00:00Z",
+        last_reconcile_kind="self",
+    )
+    write_decision(d)
+    back = parse_decision_file(p)
+    assert back.reconciled_anchors == {"src/a.py": "sha256:aaa", "src/b.py": "sha256:bbb"}
+    assert back.last_reconciled_by == "alice@example.com"
+    assert back.last_reconcile_kind == "self"
+
+
+def test_betray_fields_roundtrip(tmp_path):
+    p = tmp_path / "d-y.md"
+    d = Decision(id="d-y", status="ratified", body="b", path=p,
+                 last_betrayed_by="bob@x.com", last_betrayed_at="2026-06-20T00:00:00Z",
+                 last_betray_justification="no longer masks 500s")
+    write_decision(d)
+    back = parse_decision_file(p)
+    assert back.last_betray_justification == "no longer masks 500s"
+
+
+def test_frontmatter_additions_do_not_change_body_hash():
+    body = "Body.\n\n```review\ncrit\n```"
+    h1 = compute_body_hash(body)
+    Decision(id="d", status="ratified", body=body,
+             reconciled_anchors={"src/a.py": "sha256:aaa"})
+    assert compute_body_hash(body) == h1
+
+
+def test_malformed_reconciled_anchors_rejected(tmp_path):
+    p = tmp_path / "d-z.md"
+    p.write_text("---\nid: d-z\nstatus: ratified\nreconciled_anchors: not-a-map\n---\nbody\n")
+    with pytest.raises(ValueError):
+        parse_decision_file(p)

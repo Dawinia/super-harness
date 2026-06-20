@@ -43,6 +43,13 @@ class Decision:
     check: str | None = None
     counterexample: Counterexample | None = None
     acceptance: str | None = None
+    reconciled_anchors: dict[str, str] | None = None
+    last_reconciled_by: str | None = None
+    last_reconciled_at: str | None = None
+    last_reconcile_kind: str | None = None
+    last_betrayed_by: str | None = None
+    last_betrayed_at: str | None = None
+    last_betray_justification: str | None = None
 
 
 _FENCE_RE = re.compile(r"^```(?P<info>[^\n]*)\n(?P<inner>.*?)\n```", re.DOTALL | re.MULTILINE)
@@ -143,6 +150,9 @@ def parse_decision_file(path: Path) -> Decision:
     status = data.get("status")
     if status not in _VALID_STATUSES:
         raise ValueError(f"invalid status {status!r}")
+    raw_anchors = data.get("reconciled_anchors")
+    if raw_anchors is not None and not isinstance(raw_anchors, dict):
+        raise ValueError("reconciled_anchors must be a mapping of file -> fingerprint")
     return Decision(
         id=did,
         status=status,
@@ -156,6 +166,13 @@ def parse_decision_file(path: Path) -> Decision:
         check=parse_check(body),
         counterexample=parse_counterexample(body),
         acceptance=parse_review(body),
+        reconciled_anchors=raw_anchors,
+        last_reconciled_by=data.get("last_reconciled_by"),
+        last_reconciled_at=data.get("last_reconciled_at"),
+        last_reconcile_kind=data.get("last_reconcile_kind"),
+        last_betrayed_by=data.get("last_betrayed_by"),
+        last_betrayed_at=data.get("last_betrayed_at"),
+        last_betray_justification=data.get("last_betray_justification"),
     )
 
 
@@ -212,12 +229,16 @@ def load_decisions(workspace_root: Path) -> tuple[list[Decision], list[RecordErr
 
 
 def serialize_decision(decision: Decision) -> str:
-    fm: dict[str, str] = {"id": decision.id, "status": decision.status}
-    for key in ("ratified_by", "ratified_at", "supersedes",
-                "superseded_by", "ratified_text_hash"):
+    fm: dict[str, object] = {"id": decision.id, "status": decision.status}
+    for key in ("ratified_by", "ratified_at", "supersedes", "superseded_by",
+                "ratified_text_hash", "last_reconciled_by", "last_reconciled_at",
+                "last_reconcile_kind", "last_betrayed_by", "last_betrayed_at",
+                "last_betray_justification"):
         val = getattr(decision, key)
         if val:
             fm[key] = val
+    if decision.reconciled_anchors:
+        fm["reconciled_anchors"] = dict(decision.reconciled_anchors)
     fm_text = yaml.safe_dump(fm, sort_keys=False).strip()
     return f"---\n{fm_text}\n---\n{decision.body}\n"
 
