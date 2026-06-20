@@ -222,6 +222,10 @@ def betray_cmd(ctx: click.Context, decision_id: str, justification: str) -> None
                    hint="betray applies only to a ratified decision with a ```review block."),
                    err=True)
         sys.exit(EXIT_VALIDATION)
+    # Deliberate asymmetry with `reconcile`: betray does NOT require code anchors.
+    # You may record a betrayal on an anchor-less tier-2 (it's dangling-down, never
+    # suspect, so the stamp is inert until code anchors + a reconcile clears it) —
+    # declaring "this no longer holds" should not be blocked on the code being present.
     d.last_betrayed_by = resolve_identity(root)
     d.last_betrayed_at = utc_now_iso()
     d.last_betray_justification = justification

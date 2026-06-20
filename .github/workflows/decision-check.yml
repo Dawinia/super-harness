@@ -12,5 +12,10 @@ jobs:
         with: { python-version: "3.12" }
       - name: Install package
         run: pip install -e ".[dev]"
-      - name: Decision conformance (dangling check)
-        run: super-harness decision check
+      - name: Decision conformance (dangling check + tier-2 reconcile gate)
+        # Merge-boundary invocation: --gate-reconcile blocks (exit 2) on any suspect /
+        # unreconciled tier-2 decision (anchored code changed without a recorded
+        # re-review), in addition to the tier-1 dangling/integrity/check gates. The
+        # local feedforward sensor (AGENTS.md) stays plain `decision check` (warn-only) —
+        # routing locally, teeth at the merge boundary (design §5 / §7.3).
+        run: super-harness decision check --gate-reconcile
