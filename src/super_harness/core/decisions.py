@@ -47,6 +47,7 @@ class Decision:
     last_reconciled_by: str | None = None
     last_reconciled_at: str | None = None
     last_reconcile_kind: str | None = None
+    last_reconcile_justification: str | None = None
     last_betrayed_by: str | None = None
     last_betrayed_at: str | None = None
     last_betray_justification: str | None = None
@@ -170,6 +171,7 @@ def parse_decision_file(path: Path) -> Decision:
         last_reconciled_by=data.get("last_reconciled_by"),
         last_reconciled_at=data.get("last_reconciled_at"),
         last_reconcile_kind=data.get("last_reconcile_kind"),
+        last_reconcile_justification=data.get("last_reconcile_justification"),
         last_betrayed_by=data.get("last_betrayed_by"),
         last_betrayed_at=data.get("last_betrayed_at"),
         last_betray_justification=data.get("last_betray_justification"),
@@ -232,7 +234,8 @@ def serialize_decision(decision: Decision) -> str:
     fm: dict[str, object] = {"id": decision.id, "status": decision.status}
     for key in ("ratified_by", "ratified_at", "supersedes", "superseded_by",
                 "ratified_text_hash", "last_reconciled_by", "last_reconciled_at",
-                "last_reconcile_kind", "last_betrayed_by", "last_betrayed_at",
+                "last_reconcile_kind", "last_reconcile_justification",
+                "last_betrayed_by", "last_betrayed_at",
                 "last_betray_justification"):
         val = getattr(decision, key)
         if val:

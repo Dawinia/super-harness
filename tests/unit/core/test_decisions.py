@@ -296,3 +296,13 @@ def test_malformed_reconciled_anchors_rejected(tmp_path):
     p.write_text("---\nid: d-z\nstatus: ratified\nreconciled_anchors: not-a-map\n---\nbody\n")
     with pytest.raises(ValueError):
         parse_decision_file(p)
+
+
+def test_reconcile_justification_roundtrip(tmp_path):
+    from super_harness.core.decisions import decisions_dir
+    (tmp_path / "docs" / "decisions").mkdir(parents=True, exist_ok=True)
+    p = decisions_dir(tmp_path) / "d-j.md"
+    d = Decision(id="d-j", status="ratified", body="b", path=p,
+                 last_reconcile_justification="still masks 500s correctly")
+    write_decision(d)
+    assert parse_decision_file(p).last_reconcile_justification == "still masks 500s correctly"

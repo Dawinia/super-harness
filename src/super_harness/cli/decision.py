@@ -198,6 +198,7 @@ def reconcile_cmd(ctx: click.Context, decision_id: str, justification: str, kind
     d.last_reconciled_by = resolve_identity(root)
     d.last_reconciled_at = utc_now_iso()
     d.last_reconcile_kind = kind
+    d.last_reconcile_justification = justification or None
     d.last_betrayed_by = d.last_betrayed_at = d.last_betray_justification = None
     write_decision(d)
     click.echo(f"reconciled {decision_id} ({len(anchored)} file(s), kind={kind}, "

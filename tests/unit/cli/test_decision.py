@@ -663,3 +663,13 @@ def test_reconcile_clears_betray_stamps(tmp_path):
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2"])
     d = parse_decision_file(root / "docs/decisions/d-t2.md")
     assert d.last_betrayed_by is None
+
+
+def test_reconcile_persists_justification_and_stamps(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="none")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2",
+                                  "--justification", "criterion still holds"])
+    assert r.exit_code == 0
+    d = parse_decision_file(root / "docs/decisions/d-t2.md")
+    assert d.last_reconcile_justification == "criterion still holds"
+    assert d.last_reconciled_by and d.last_reconciled_at  # stamps populated
