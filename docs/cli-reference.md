@@ -298,6 +298,25 @@ Author, ratify, and check decision records.
 super-harness decision COMMAND [ARGS...]
 ```
 
+## super-harness decision betray
+
+Record that the anchored code no longer satisfies D. Does NOT advance the baseline (D stays suspect); resolution is human-only (re-ratify or fix the code).
+
+```
+super-harness decision betray [OPTIONS] DECISION_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `DECISION_ID` | text | *required* |  |
+| `--justification` | text | *required* | Why the changed code no longer satisfies the criterion. |
+
+**Exit codes:**
+
+- `0` success
+- `2` not a ratified tier-2 decision (or missing --justification)
+- `3` no `.harness/`
+
 ## super-harness decision check
 
 Whole-repo dangling check + executable checks: up=block(2) / down=warn / record error=3.
@@ -309,12 +328,13 @@ super-harness decision check [OPTIONS]
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `--changed` | flag | `False` | Only run checks whose anchored files moved. |
+| `--gate-reconcile` | flag | `False` | Merge-boundary teeth: exit 2 on any suspect/unreconciled tier-2 decision (default mode only warns). |
 
 **Exit codes:**
 
-- `0` clean, or only dangling-down warnings
-- `2` one or more dangling-up anchors (gate violation)
-- `3` record/config error (duplicate id / malformed record) or no `.harness/`
+- `0` clean, or only warnings (dangling-down / tier-2 review-needed)
+- `2` dangling-up / integrity / tier-1 check failure; or (with --gate-reconcile) a suspect/unreconciled tier-2 decision
+- `3` record/config error or no `.harness/`
 
 ## super-harness decision list
 
@@ -370,6 +390,26 @@ super-harness decision ratify [OPTIONS] DECISION_ID
 
 - `0` success
 - `2` no such decision, or not in `proposed` state
+- `3` no `.harness/`
+
+## super-harness decision reconcile
+
+Record a tier-2 re-review verdict (code still satisfies D); re-stamp the baseline.
+
+```
+super-harness decision reconcile [OPTIONS] DECISION_ID
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `DECISION_ID` | text | *required* |  |
+| `--justification` | text | `''` | Why the code still satisfies the criterion. |
+| `--kind` | {self\|independent} | `'self'` | Disclosure: self-review (same actor as the change) or independent reviewer. |
+
+**Exit codes:**
+
+- `0` success
+- `2` not a ratified tier-2 decision, or no code anchors
 - `3` no `.harness/`
 
 ## super-harness decision retire
