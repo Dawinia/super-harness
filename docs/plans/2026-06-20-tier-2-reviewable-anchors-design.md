@@ -254,7 +254,9 @@ New verbs under the `decision` group:
 
 - `decision reconcile <id> [--justification TEXT] [--kind self|independent]` — the "still
   satisfies" path. Re-stamps `reconciled_anchors` to current fingerprints + stamps
-  `last_reconciled_by` (`resolve_identity`) / `last_reconciled_at` / `last_reconcile_kind`.
+  `last_reconciled_by` (`resolve_identity`) / `last_reconciled_at` / `last_reconcile_kind` /
+  `last_reconcile_justification` (persisted symmetrically with betray's, per §1 step 5 +
+  §7.2c "the re-check must produce a justification referencing D's specific claims").
   Writes via `write_decision` (CLI side effect, like `ratify` — not intercepted by the
   PreToolUse gate; `reconcile`/`betray` must be on the same allowlist as the other
   `decision` verbs, else the agent's own self-sensor flow is blocked). Requires D to be
