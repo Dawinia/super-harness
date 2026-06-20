@@ -202,6 +202,26 @@ def test_retired_tier2_never_suspect(tmp_path):
     assert not res.suspect_tier2 and not res.unreconciled_tier2
 
 
+def test_tier1_to_tier2_body_edit_is_integrity_violation(tmp_path):
+    # A ratified tier-1 (```check) decision whose body is edited to drop ```check
+    # and add ```review changes the body hash. Without re-ratify, run_check must
+    # flag the body-hash mismatch as an integrity violation (the tier flip cannot
+    # silently bypass the ratified claim).
+    tier1_body = "```check\ntrue\n```"
+    _w(tmp_path / "docs/decisions/d-flip.md",
+       f"---\nid: d-flip\nstatus: ratified\nratified_by: a@b.com\n"
+       f"ratified_text_hash: {compute_body_hash(tier1_body)}\n---\n{tier1_body}\n")
+    res = run_check(tmp_path)
+    assert all(v.id != "d-flip" for v in res.integrity_violations)  # clean first
+    # rewrite the FILE body to a ```review block WITHOUT updating ratified_text_hash
+    _w(tmp_path / "docs/decisions/d-flip.md",
+       f"---\nid: d-flip\nstatus: ratified\nratified_by: a@b.com\n"
+       f"ratified_text_hash: {compute_body_hash(tier1_body)}\n---\n"
+       f"```review\nthe author must hand-review this.\n```\n")
+    res = run_check(tmp_path)
+    assert any(v.id == "d-flip" for v in res.integrity_violations)
+
+
 def test_tier1_and_tier3_untouched_by_suspect_logic(tmp_path):
     # tier-1: ```check block
     _w(tmp_path / "docs/decisions/d-c.md",

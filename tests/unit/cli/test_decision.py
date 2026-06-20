@@ -697,3 +697,30 @@ def test_betray_rejects_non_tier2(tmp_path):
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "betray", "d-tier1",
                                   "--justification", "x"])
     assert r.exit_code == 2
+
+
+# --- Task 9: lifecycle interactions ------------------------------------------
+def test_ratify_does_not_auto_reconcile(tmp_path):
+    # ratify must NOT stamp a baseline → a ratified tier-2 with a code anchor
+    # stays UNRECONCILED, so the first re-review is still forced.
+    root = tmp_path
+    (root / ".harness").mkdir(parents=True, exist_ok=True)
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "x.py").write_text("v = 1  # @decision:d-t2\n", encoding="utf-8")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-t2",
+                              "--text", "Body.\n\n```review\ncrit\n```"])
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-t2"])
+    from super_harness.core.decision_check import run_check
+    res = run_check(root)
+    assert "d-t2" in res.unreconciled_tier2  # ratify did NOT baseline it
+
+
+def test_reconcile_idempotent_noop(tmp_path):
+    # reconcile twice with no code change between → second is a clean no-op that
+    # leaves the recorded fingerprints unchanged (no drift introduced).
+    root = _seed_tier2(tmp_path, baseline="none")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2"])
+    a = parse_decision_file(root / "docs/decisions/d-t2.md").reconciled_anchors
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2"])
+    b = parse_decision_file(root / "docs/decisions/d-t2.md").reconciled_anchors
+    assert a == b  # same fingerprints, no drift introduced
