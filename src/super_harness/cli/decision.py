@@ -20,10 +20,16 @@ from super_harness.core.check_runner import (
     select_changed,
 )
 from super_harness.core.clock import utc_now_iso
-from super_harness.core.decision_check import ALWAYS_EXCLUDE, ANCHOR_KEYWORD, run_check
+from super_harness.core.decision_check import (
+    ALWAYS_EXCLUDE,
+    ANCHOR_KEYWORD,
+    fingerprint_file,
+    run_check,
+)
 from super_harness.core.decisions import (
     Decision,
     compute_body_hash,
+    decision_tier,
     decisions_dir,
     is_valid_id,
     load_decisions,
@@ -160,6 +166,42 @@ def ratify_cmd(ctx: click.Context, decision_id: str, dry_run: bool) -> None:
     d.ratified_text_hash = compute_body_hash(d.body)
     write_decision(d)
     click.echo(f"ratified {decision_id} (by {d.ratified_by})")
+    sys.exit(EXIT_OK)
+
+
+@decision_group.command("reconcile")
+@click.argument("decision_id")
+@click.option("--justification", default="", help="Why the code still satisfies the criterion.")
+@click.option("--kind", type=click.Choice(["self", "independent"]), default="self",
+              help="Disclosure: self-review (same actor as the change) or independent reviewer.")
+@click.pass_context
+def reconcile_cmd(ctx: click.Context, decision_id: str, justification: str, kind: str) -> None:
+    """Record a tier-2 re-review verdict (code still satisfies D); re-stamp the baseline."""
+    root = _resolve(ctx, "decision reconcile")
+    d = _load_one(root, "decision reconcile", decision_id)
+    if d.status != "ratified" or decision_tier(d) != 2:
+        click.echo(format_error(subcommand="decision reconcile",
+                   message=f"{decision_id!r} is not a ratified tier-2 (reviewable) decision",
+                   hint="reconcile applies only to a ratified decision with a ```review block."),
+                   err=True)
+        sys.exit(EXIT_VALIDATION)
+    include, exclude = load_source_scope(root)
+    locs = scan_sentinel_locations(root, file_globs=include, keyword=ANCHOR_KEYWORD,
+                                   exclude_globs=exclude + ALWAYS_EXCLUDE).get(decision_id, [])
+    anchored = sorted({f for f, _ln in locs})
+    if not anchored:
+        click.echo(format_error(subcommand="decision reconcile",
+                   message=f"{decision_id!r} has no code anchors to reconcile",
+                   hint=f"Anchor the code with `# @decision:{decision_id}` first."), err=True)
+        sys.exit(EXIT_VALIDATION)
+    d.reconciled_anchors = {f: fingerprint_file(root, f) for f in anchored}
+    d.last_reconciled_by = resolve_identity(root)
+    d.last_reconciled_at = utc_now_iso()
+    d.last_reconcile_kind = kind
+    d.last_betrayed_by = d.last_betrayed_at = d.last_betray_justification = None
+    write_decision(d)
+    click.echo(f"reconciled {decision_id} ({len(anchored)} file(s), kind={kind}, "
+               f"by {d.last_reconciled_by})")
     sys.exit(EXIT_OK)
 
 
