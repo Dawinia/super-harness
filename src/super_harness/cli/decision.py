@@ -206,6 +206,31 @@ def reconcile_cmd(ctx: click.Context, decision_id: str, justification: str, kind
     sys.exit(EXIT_OK)
 
 
+@decision_group.command("betray")
+@click.argument("decision_id")
+@click.option("--justification", required=True,
+              help="Why the changed code no longer satisfies the criterion.")
+@click.pass_context
+def betray_cmd(ctx: click.Context, decision_id: str, justification: str) -> None:
+    """Record that the anchored code no longer satisfies D. Does NOT advance the
+    baseline (D stays suspect); resolution is human-only (re-ratify or fix the code)."""
+    root = _resolve(ctx, "decision betray")
+    d = _load_one(root, "decision betray", decision_id)
+    if d.status != "ratified" or decision_tier(d) != 2:
+        click.echo(format_error(subcommand="decision betray",
+                   message=f"{decision_id!r} is not a ratified tier-2 (reviewable) decision",
+                   hint="betray applies only to a ratified decision with a ```review block."),
+                   err=True)
+        sys.exit(EXIT_VALIDATION)
+    d.last_betrayed_by = resolve_identity(root)
+    d.last_betrayed_at = utc_now_iso()
+    d.last_betray_justification = justification
+    write_decision(d)
+    click.echo(f"betrayed {decision_id} (by {d.last_betrayed_by}) — stays suspect until a "
+               f"human re-ratifies an updated decision or the code is fixed + reconciled")
+    sys.exit(EXIT_OK)
+
+
 @decision_group.command("supersede")
 @click.argument("old_id")
 @click.option("--by", "new_id", required=True, help="The ratified successor id.")

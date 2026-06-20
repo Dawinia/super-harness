@@ -2,7 +2,6 @@
 import json
 from pathlib import Path
 
-import pytest
 from click.testing import CliRunner
 
 from super_harness.cli import main
@@ -655,7 +654,6 @@ def test_reconcile_rejects_tier3(tmp_path):
     assert r.exit_code == 2
 
 
-@pytest.mark.skip(reason="depends on decision betray — Task 7")  # un-skip in Task 7
 def test_reconcile_clears_betray_stamps(tmp_path):
     root = _seed_tier2(tmp_path, baseline="match", changed=True)
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "betray", "d-t2",
@@ -673,3 +671,29 @@ def test_reconcile_persists_justification_and_stamps(tmp_path):
     d = parse_decision_file(root / "docs/decisions/d-t2.md")
     assert d.last_reconcile_justification == "criterion still holds"
     assert d.last_reconciled_by and d.last_reconciled_at  # stamps populated
+
+
+def test_betray_stamps_fields_and_stays_suspect(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "betray", "d-t2",
+                                  "--justification", "no longer masks 500s"])
+    assert r.exit_code == 0
+    d = parse_decision_file(root / "docs/decisions/d-t2.md")
+    assert d.last_betray_justification == "no longer masks 500s"
+    # baseline NOT advanced → still blocks the gate
+    chk = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check",
+                                    "--gate-reconcile"])
+    assert chk.exit_code == 2
+
+
+def test_betray_requires_justification(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "betray", "d-t2"])
+    assert r.exit_code == 2  # click missing required option
+
+
+def test_betray_rejects_non_tier2(tmp_path):
+    root = _seed_tier1(tmp_path, "d-tier1")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "betray", "d-tier1",
+                                  "--justification", "x"])
+    assert r.exit_code == 2
