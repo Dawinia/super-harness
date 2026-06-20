@@ -283,7 +283,8 @@ def check_cmd(ctx: click.Context, changed: bool) -> None:
         exit_code, status = EXIT_NO_CONFIG, "fail"
     elif result.integrity_violations or check_failures or result.dangling_up:
         exit_code, status = EXIT_VALIDATION, "fail"
-    elif result.dangling_down or result.unhashed_ratified:
+    elif (result.dangling_down or result.unhashed_ratified
+          or result.suspect_tier2 or result.unreconciled_tier2):
         exit_code, status = EXIT_OK, "warning"
     else:
         exit_code, status = EXIT_OK, "pass"
@@ -309,6 +310,11 @@ def check_cmd(ctx: click.Context, changed: bool) -> None:
                         {"id": f.id, "exit_code": f.exit_code, "detail": f.detail}
                         for f in check_failures
                     ],
+                    "suspect_tier2": [
+                        {"id": s.id, "changed_files": s.changed_files}
+                        for s in result.suspect_tier2
+                    ],
+                    "unreconciled_tier2": list(result.unreconciled_tier2),
                     "hard_context": {"hard": hard, "context": context},
                 },
                 errors=[
@@ -339,6 +345,13 @@ def check_cmd(ctx: click.Context, changed: bool) -> None:
             )
         for did in result.dangling_down:
             click.echo(f"warning: dangling-down {did} (ratified, no code anchor)")
+        for did in result.unreconciled_tier2:
+            click.echo(f"REVIEW-NEEDED {did} (tier-2, never reconciled — run "
+                       f"`decision reconcile {did}`)")
+        for s in result.suspect_tier2:
+            files = ", ".join(s.changed_files)
+            click.echo(f"REVIEW-NEEDED {s.id} (tier-2, anchored code changed: {files} — "
+                       f"re-review then `decision reconcile {s.id}` / `decision betray {s.id}`)")
         ratio = f" ({round(100 * hard / (hard + context))}% hard)" if hard + context else ""
         click.echo(f"hard:context = {hard}:{context}{ratio}")
         if status == "pass":

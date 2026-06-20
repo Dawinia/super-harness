@@ -5,7 +5,14 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.core.decisions import compute_body_hash, parse_decision_file
+from super_harness.core.decision_check import fingerprint_file
+from super_harness.core.decisions import (
+    Decision,
+    compute_body_hash,
+    decisions_dir,
+    parse_decision_file,
+    write_decision,
+)
 
 
 def _init(tmp_path: Path) -> Path:
@@ -505,6 +512,43 @@ def test_check_ratio_zero_when_no_ratified(tmp_path):
     r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
     assert "hard:context = 0:0" in r.output
     assert "% hard" not in r.output   # no percent suffix when total is zero
+
+
+def _seed_tier2(root, *, baseline="none", changed=False):
+    (root / ".harness").mkdir(parents=True, exist_ok=True)
+    (root / "docs" / "decisions").mkdir(parents=True, exist_ok=True)
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    src = root / "src" / "x.py"
+    src.write_text("v = 1  # @decision:d-t2\n", encoding="utf-8")
+    anchors = None
+    if baseline == "match":
+        anchors = {"src/x.py": fingerprint_file(root, "src/x.py")}
+    elif baseline == "stale":
+        anchors = {"src/x.py": "sha256:" + "0" * 64}
+    body = "Body.\n\n```review\ncrit\n```"
+    d = Decision(id="d-t2", status="ratified", ratified_by="seed@x",
+                 ratified_at="2026-06-20T00:00:00Z", body=body,
+                 path=decisions_dir(root) / "d-t2.md", reconciled_anchors=anchors,
+                 ratified_text_hash=compute_body_hash(body))
+    write_decision(d)
+    if changed:
+        src.write_text("v = 2  # @decision:d-t2\n", encoding="utf-8")
+    return root
+
+
+def test_check_warns_on_suspect_tier2_exit0(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)  # suspect
+    result = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert result.exit_code == 0
+    assert "REVIEW-NEEDED" in result.output and "d-t2" in result.output
+
+
+def test_check_json_exposes_tier2(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    result = CliRunner().invoke(main, ["--workspace", str(root), "--json", "decision", "check"])
+    data = json.loads(result.output)["data"]
+    assert data["suspect_tier2"] and data["suspect_tier2"][0]["id"] == "d-t2"
+    assert "unreconciled_tier2" in data
 
 
 def test_executable_check_full_lifecycle(tmp_path):
