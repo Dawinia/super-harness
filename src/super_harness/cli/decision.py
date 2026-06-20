@@ -252,8 +252,11 @@ def show_cmd(ctx: click.Context, decision_id: str) -> None:
 
 @decision_group.command("check")
 @click.option("--changed", is_flag=True, help="Only run checks whose anchored files moved.")
+@click.option("--gate-reconcile", is_flag=True,
+              help="Merge-boundary teeth: exit 2 on any suspect/unreconciled tier-2 "
+                   "decision (default mode only warns).")
 @click.pass_context
-def check_cmd(ctx: click.Context, changed: bool) -> None:
+def check_cmd(ctx: click.Context, changed: bool, gate_reconcile: bool) -> None:
     """Whole-repo dangling check + executable checks: up=block(2) / down=warn / record error=3.
 
     Honors the GLOBAL --json flag (ctx.obj["json"]) → frozen json_envelope shape.
@@ -282,6 +285,8 @@ def check_cmd(ctx: click.Context, changed: bool) -> None:
     if result.errors:
         exit_code, status = EXIT_NO_CONFIG, "fail"
     elif result.integrity_violations or check_failures or result.dangling_up:
+        exit_code, status = EXIT_VALIDATION, "fail"
+    elif gate_reconcile and (result.suspect_tier2 or result.unreconciled_tier2):
         exit_code, status = EXIT_VALIDATION, "fail"
     elif (result.dangling_down or result.unhashed_ratified
           or result.suspect_tier2 or result.unreconciled_tier2):
@@ -352,6 +357,12 @@ def check_cmd(ctx: click.Context, changed: bool) -> None:
             files = ", ".join(s.changed_files)
             click.echo(f"REVIEW-NEEDED {s.id} (tier-2, anchored code changed: {files} — "
                        f"re-review then `decision reconcile {s.id}` / `decision betray {s.id}`)")
+        if gate_reconcile:
+            for did in result.unreconciled_tier2:
+                click.echo(f"GATE-RECONCILE {did}: tier-2 never reconciled", err=True)
+            for s in result.suspect_tier2:
+                click.echo(f"GATE-RECONCILE {s.id}: tier-2 anchored code changed, no reconcile",
+                           err=True)
         ratio = f" ({round(100 * hard / (hard + context))}% hard)" if hard + context else ""
         click.echo(f"hard:context = {hard}:{context}{ratio}")
         if status == "pass":

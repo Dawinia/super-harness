@@ -568,3 +568,32 @@ def test_executable_check_full_lifecycle(tmp_path):
     # 3. fix the code -> green again (no re-ratify needed; the claim never changed)
     (root / "src/bad.py").write_text("pw = bcrypt(user.password)\n")
     assert inv("check").exit_code == 0
+
+
+def _check_gate_reconcile(root):
+    return CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "check", "--gate-reconcile"])
+
+
+def test_gate_reconcile_blocks_suspect_tier2(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    r = _check_gate_reconcile(root)
+    assert r.exit_code == 2
+
+
+def test_gate_reconcile_blocks_unreconciled_tier2(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="none")
+    r = _check_gate_reconcile(root)
+    assert r.exit_code == 2
+
+
+def test_gate_reconcile_passes_clean_tree(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match")
+    r = _check_gate_reconcile(root)
+    assert r.exit_code == 0
+
+
+def test_default_check_still_exit0_on_same_suspect_tree(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 0  # routing, not gate
