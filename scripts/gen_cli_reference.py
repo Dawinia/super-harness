@@ -234,10 +234,21 @@ _EXIT_CODES: dict[str, list[str]] = {
     ],
     "decision list": ["`0` success", "`3` no `.harness/`"],
     "decision show": ["`0` success", "`2` no such decision", "`3` no `.harness/`"],
+    "decision reconcile": [
+        "`0` success",
+        "`2` not a ratified tier-2 decision, or no code anchors",
+        "`3` no `.harness/`",
+    ],
+    "decision betray": [
+        "`0` success",
+        "`2` not a ratified tier-2 decision (or missing --justification)",
+        "`3` no `.harness/`",
+    ],
     "decision check": [
-        "`0` clean, or only dangling-down warnings",
-        "`2` one or more dangling-up anchors (gate violation)",
-        "`3` record/config error (duplicate id / malformed record) or no `.harness/`",
+        "`0` clean, or only warnings (dangling-down / tier-2 review-needed)",
+        "`2` dangling-up / integrity / tier-1 check failure; or (with --gate-reconcile) "
+        "a suspect/unreconciled tier-2 decision",
+        "`3` record/config error or no `.harness/`",
     ],
     "doc check": [
         "`0` all derived docs in sync (or registry absent)",

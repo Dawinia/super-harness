@@ -20,10 +20,16 @@ from super_harness.core.check_runner import (
     select_changed,
 )
 from super_harness.core.clock import utc_now_iso
-from super_harness.core.decision_check import ALWAYS_EXCLUDE, ANCHOR_KEYWORD, run_check
+from super_harness.core.decision_check import (
+    ALWAYS_EXCLUDE,
+    ANCHOR_KEYWORD,
+    fingerprint_file,
+    run_check,
+)
 from super_harness.core.decisions import (
     Decision,
     compute_body_hash,
+    decision_tier,
     decisions_dir,
     is_valid_id,
     load_decisions,
@@ -163,6 +169,72 @@ def ratify_cmd(ctx: click.Context, decision_id: str, dry_run: bool) -> None:
     sys.exit(EXIT_OK)
 
 
+@decision_group.command("reconcile")
+@click.argument("decision_id")
+@click.option("--justification", default="", help="Why the code still satisfies the criterion.")
+@click.option("--kind", type=click.Choice(["self", "independent"]), default="self",
+              help="Disclosure: self-review (same actor as the change) or independent reviewer.")
+@click.pass_context
+def reconcile_cmd(ctx: click.Context, decision_id: str, justification: str, kind: str) -> None:
+    """Record a tier-2 re-review verdict (code still satisfies D); re-stamp the baseline."""
+    root = _resolve(ctx, "decision reconcile")
+    d = _load_one(root, "decision reconcile", decision_id)
+    if d.status != "ratified" or decision_tier(d) != 2:
+        click.echo(format_error(subcommand="decision reconcile",
+                   message=f"{decision_id!r} is not a ratified tier-2 (reviewable) decision",
+                   hint="reconcile applies only to a ratified decision with a ```review block."),
+                   err=True)
+        sys.exit(EXIT_VALIDATION)
+    include, exclude = load_source_scope(root)
+    locs = scan_sentinel_locations(root, file_globs=include, keyword=ANCHOR_KEYWORD,
+                                   exclude_globs=exclude + ALWAYS_EXCLUDE).get(decision_id, [])
+    anchored = sorted({f for f, _ln in locs})
+    if not anchored:
+        click.echo(format_error(subcommand="decision reconcile",
+                   message=f"{decision_id!r} has no code anchors to reconcile",
+                   hint=f"Anchor the code with `# @decision:{decision_id}` first."), err=True)
+        sys.exit(EXIT_VALIDATION)
+    d.reconciled_anchors = {f: fingerprint_file(root, f) for f in anchored}
+    d.last_reconciled_by = resolve_identity(root)
+    d.last_reconciled_at = utc_now_iso()
+    d.last_reconcile_kind = kind
+    d.last_reconcile_justification = justification or None
+    d.last_betrayed_by = d.last_betrayed_at = d.last_betray_justification = None
+    write_decision(d)
+    click.echo(f"reconciled {decision_id} ({len(anchored)} file(s), kind={kind}, "
+               f"by {d.last_reconciled_by})")
+    sys.exit(EXIT_OK)
+
+
+@decision_group.command("betray")
+@click.argument("decision_id")
+@click.option("--justification", required=True,
+              help="Why the changed code no longer satisfies the criterion.")
+@click.pass_context
+def betray_cmd(ctx: click.Context, decision_id: str, justification: str) -> None:
+    """Record that the anchored code no longer satisfies D. Does NOT advance the
+    baseline (D stays suspect); resolution is human-only (re-ratify or fix the code)."""
+    root = _resolve(ctx, "decision betray")
+    d = _load_one(root, "decision betray", decision_id)
+    if d.status != "ratified" or decision_tier(d) != 2:
+        click.echo(format_error(subcommand="decision betray",
+                   message=f"{decision_id!r} is not a ratified tier-2 (reviewable) decision",
+                   hint="betray applies only to a ratified decision with a ```review block."),
+                   err=True)
+        sys.exit(EXIT_VALIDATION)
+    # Deliberate asymmetry with `reconcile`: betray does NOT require code anchors.
+    # You may record a betrayal on an anchor-less tier-2 (it's dangling-down, never
+    # suspect, so the stamp is inert until code anchors + a reconcile clears it) —
+    # declaring "this no longer holds" should not be blocked on the code being present.
+    d.last_betrayed_by = resolve_identity(root)
+    d.last_betrayed_at = utc_now_iso()
+    d.last_betray_justification = justification
+    write_decision(d)
+    click.echo(f"betrayed {decision_id} (by {d.last_betrayed_by}) — stays suspect until a "
+               f"human re-ratifies an updated decision or the code is fixed + reconciled")
+    sys.exit(EXIT_OK)
+
+
 @decision_group.command("supersede")
 @click.argument("old_id")
 @click.option("--by", "new_id", required=True, help="The ratified successor id.")
@@ -252,8 +324,11 @@ def show_cmd(ctx: click.Context, decision_id: str) -> None:
 
 @decision_group.command("check")
 @click.option("--changed", is_flag=True, help="Only run checks whose anchored files moved.")
+@click.option("--gate-reconcile", is_flag=True,
+              help="Merge-boundary teeth: exit 2 on any suspect/unreconciled tier-2 "
+                   "decision (default mode only warns).")
 @click.pass_context
-def check_cmd(ctx: click.Context, changed: bool) -> None:
+def check_cmd(ctx: click.Context, changed: bool, gate_reconcile: bool) -> None:
     """Whole-repo dangling check + executable checks: up=block(2) / down=warn / record error=3.
 
     Honors the GLOBAL --json flag (ctx.obj["json"]) → frozen json_envelope shape.
@@ -283,7 +358,10 @@ def check_cmd(ctx: click.Context, changed: bool) -> None:
         exit_code, status = EXIT_NO_CONFIG, "fail"
     elif result.integrity_violations or check_failures or result.dangling_up:
         exit_code, status = EXIT_VALIDATION, "fail"
-    elif result.dangling_down or result.unhashed_ratified:
+    elif gate_reconcile and (result.suspect_tier2 or result.unreconciled_tier2):
+        exit_code, status = EXIT_VALIDATION, "fail"
+    elif (result.dangling_down or result.unhashed_ratified
+          or result.suspect_tier2 or result.unreconciled_tier2):
         exit_code, status = EXIT_OK, "warning"
     else:
         exit_code, status = EXIT_OK, "pass"
@@ -309,6 +387,11 @@ def check_cmd(ctx: click.Context, changed: bool) -> None:
                         {"id": f.id, "exit_code": f.exit_code, "detail": f.detail}
                         for f in check_failures
                     ],
+                    "suspect_tier2": [
+                        {"id": s.id, "changed_files": s.changed_files}
+                        for s in result.suspect_tier2
+                    ],
+                    "unreconciled_tier2": list(result.unreconciled_tier2),
                     "hard_context": {"hard": hard, "context": context},
                 },
                 errors=[
@@ -339,6 +422,19 @@ def check_cmd(ctx: click.Context, changed: bool) -> None:
             )
         for did in result.dangling_down:
             click.echo(f"warning: dangling-down {did} (ratified, no code anchor)")
+        for did in result.unreconciled_tier2:
+            click.echo(f"REVIEW-NEEDED {did} (tier-2, never reconciled — run "
+                       f"`decision reconcile {did}`)")
+        for s in result.suspect_tier2:
+            files = ", ".join(s.changed_files)
+            click.echo(f"REVIEW-NEEDED {s.id} (tier-2, anchored code changed: {files} — "
+                       f"re-review then `decision reconcile {s.id}` / `decision betray {s.id}`)")
+        if gate_reconcile:
+            for did in result.unreconciled_tier2:
+                click.echo(f"GATE-RECONCILE {did}: tier-2 never reconciled", err=True)
+            for s in result.suspect_tier2:
+                click.echo(f"GATE-RECONCILE {s.id}: tier-2 anchored code changed, no reconcile",
+                           err=True)
         ratio = f" ({round(100 * hard / (hard + context))}% hard)" if hard + context else ""
         click.echo(f"hard:context = {hard}:{context}{ratio}")
         if status == "pass":

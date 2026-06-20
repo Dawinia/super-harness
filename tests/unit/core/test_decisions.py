@@ -5,11 +5,14 @@ import pytest
 from super_harness.core.decisions import (
     Decision,
     compute_body_hash,
+    decision_tier,
     load_decisions,
     normalize_body,
     parse_check,
     parse_decision_file,
+    parse_review,
     serialize_decision,
+    write_decision,
 )
 
 
@@ -217,3 +220,89 @@ def test_decision_file_carries_parsed_check(tmp_path):
     d = parse_decision_file(p)
     assert d.check == '! grep -rIn "md5(.*password" src/'
     assert d.counterexample.path == "src/auth/legacy.py"
+
+
+def test_parse_review_extracts_criterion():
+    body = "Prose.\n\n```review\nError responses must not leak stack traces.\n```\n"
+    assert parse_review(body) == "Error responses must not leak stack traces."
+
+
+def test_parse_review_absent_returns_none():
+    assert parse_review("just prose, no block") is None
+
+
+def test_parse_review_empty_block_returns_none():
+    assert parse_review("```review\n\n```") is None
+
+
+def test_parse_review_rejects_two_blocks():
+    body = "```review\na\n```\n```review\nb\n```"
+    with pytest.raises(ValueError):
+        parse_review(body)
+
+
+def test_tier1_when_check_present_even_with_review():
+    d = Decision(id="d", status="ratified", check="echo ok", acceptance="crit")
+    assert decision_tier(d) == 1
+
+
+def test_tier2_when_review_only():
+    d = Decision(id="d", status="ratified", acceptance="crit")
+    assert decision_tier(d) == 2
+
+
+def test_tier3_when_neither():
+    d = Decision(id="d", status="ratified")
+    assert decision_tier(d) == 3
+
+
+def test_reconcile_fields_roundtrip(tmp_path):
+    p = tmp_path / "d-x.md"
+    d = Decision(
+        id="d-x", status="ratified", body="Body.\n\n```review\ncrit\n```",
+        path=p,
+        reconciled_anchors={"src/a.py": "sha256:aaa", "src/b.py": "sha256:bbb"},
+        last_reconciled_by="alice@example.com",
+        last_reconciled_at="2026-06-20T00:00:00Z",
+        last_reconcile_kind="self",
+    )
+    write_decision(d)
+    back = parse_decision_file(p)
+    assert back.reconciled_anchors == {"src/a.py": "sha256:aaa", "src/b.py": "sha256:bbb"}
+    assert back.last_reconciled_by == "alice@example.com"
+    assert back.last_reconcile_kind == "self"
+
+
+def test_betray_fields_roundtrip(tmp_path):
+    p = tmp_path / "d-y.md"
+    d = Decision(id="d-y", status="ratified", body="b", path=p,
+                 last_betrayed_by="bob@x.com", last_betrayed_at="2026-06-20T00:00:00Z",
+                 last_betray_justification="no longer masks 500s")
+    write_decision(d)
+    back = parse_decision_file(p)
+    assert back.last_betray_justification == "no longer masks 500s"
+
+
+def test_frontmatter_additions_do_not_change_body_hash():
+    body = "Body.\n\n```review\ncrit\n```"
+    h1 = compute_body_hash(body)
+    Decision(id="d", status="ratified", body=body,
+             reconciled_anchors={"src/a.py": "sha256:aaa"})
+    assert compute_body_hash(body) == h1
+
+
+def test_malformed_reconciled_anchors_rejected(tmp_path):
+    p = tmp_path / "d-z.md"
+    p.write_text("---\nid: d-z\nstatus: ratified\nreconciled_anchors: not-a-map\n---\nbody\n")
+    with pytest.raises(ValueError):
+        parse_decision_file(p)
+
+
+def test_reconcile_justification_roundtrip(tmp_path):
+    from super_harness.core.decisions import decisions_dir
+    (tmp_path / "docs" / "decisions").mkdir(parents=True, exist_ok=True)
+    p = decisions_dir(tmp_path) / "d-j.md"
+    d = Decision(id="d-j", status="ratified", body="b", path=p,
+                 last_reconcile_justification="still masks 500s correctly")
+    write_decision(d)
+    assert parse_decision_file(p).last_reconcile_justification == "still masks 500s correctly"

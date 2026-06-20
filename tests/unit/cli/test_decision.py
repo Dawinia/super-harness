@@ -5,7 +5,14 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.core.decisions import compute_body_hash, parse_decision_file
+from super_harness.core.decision_check import fingerprint_file
+from super_harness.core.decisions import (
+    Decision,
+    compute_body_hash,
+    decisions_dir,
+    parse_decision_file,
+    write_decision,
+)
 
 
 def _init(tmp_path: Path) -> Path:
@@ -507,6 +514,43 @@ def test_check_ratio_zero_when_no_ratified(tmp_path):
     assert "% hard" not in r.output   # no percent suffix when total is zero
 
 
+def _seed_tier2(root, *, baseline="none", changed=False):
+    (root / ".harness").mkdir(parents=True, exist_ok=True)
+    (root / "docs" / "decisions").mkdir(parents=True, exist_ok=True)
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    src = root / "src" / "x.py"
+    src.write_text("v = 1  # @decision:d-t2\n", encoding="utf-8")
+    anchors = None
+    if baseline == "match":
+        anchors = {"src/x.py": fingerprint_file(root, "src/x.py")}
+    elif baseline == "stale":
+        anchors = {"src/x.py": "sha256:" + "0" * 64}
+    body = "Body.\n\n```review\ncrit\n```"
+    d = Decision(id="d-t2", status="ratified", ratified_by="seed@x",
+                 ratified_at="2026-06-20T00:00:00Z", body=body,
+                 path=decisions_dir(root) / "d-t2.md", reconciled_anchors=anchors,
+                 ratified_text_hash=compute_body_hash(body))
+    write_decision(d)
+    if changed:
+        src.write_text("v = 2  # @decision:d-t2\n", encoding="utf-8")
+    return root
+
+
+def test_check_warns_on_suspect_tier2_exit0(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)  # suspect
+    result = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert result.exit_code == 0
+    assert "REVIEW-NEEDED" in result.output and "d-t2" in result.output
+
+
+def test_check_json_exposes_tier2(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    result = CliRunner().invoke(main, ["--workspace", str(root), "--json", "decision", "check"])
+    data = json.loads(result.output)["data"]
+    assert data["suspect_tier2"] and data["suspect_tier2"][0]["id"] == "d-t2"
+    assert "unreconciled_tier2" in data
+
+
 def test_executable_check_full_lifecycle(tmp_path):
     root = _init(tmp_path)
     _seed_clean_src(root)
@@ -524,3 +568,159 @@ def test_executable_check_full_lifecycle(tmp_path):
     # 3. fix the code -> green again (no re-ratify needed; the claim never changed)
     (root / "src/bad.py").write_text("pw = bcrypt(user.password)\n")
     assert inv("check").exit_code == 0
+
+
+def _check_gate_reconcile(root):
+    return CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "check", "--gate-reconcile"])
+
+
+def test_gate_reconcile_blocks_suspect_tier2(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    r = _check_gate_reconcile(root)
+    assert r.exit_code == 2
+
+
+def test_gate_reconcile_blocks_unreconciled_tier2(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="none")
+    r = _check_gate_reconcile(root)
+    assert r.exit_code == 2
+
+
+def test_gate_reconcile_passes_clean_tree(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match")
+    r = _check_gate_reconcile(root)
+    assert r.exit_code == 0
+
+
+def test_default_check_still_exit0_on_same_suspect_tree(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check"])
+    assert r.exit_code == 0  # routing, not gate
+
+
+# --- Task 6: decision reconcile ----------------------------------------------
+def _seed_tier1(root, did="d-tier1"):
+    (root / ".harness").mkdir(parents=True, exist_ok=True)
+    (root / "docs" / "decisions").mkdir(parents=True, exist_ok=True)
+    body = "Body.\n\n```check\ntrue\n```\n\n```counterexample path=cx.txt\nx\n```"
+    d = Decision(id=did, status="ratified", ratified_by="s@x",
+                 ratified_at="2026-06-20T00:00:00Z", body=body,
+                 path=decisions_dir(root) / f"{did}.md",
+                 ratified_text_hash=compute_body_hash(body))
+    write_decision(d)
+    return root
+
+
+def _seed_tier3(root, did="d-ctx"):
+    (root / ".harness").mkdir(parents=True, exist_ok=True)
+    (root / "docs" / "decisions").mkdir(parents=True, exist_ok=True)
+    body = "Just prose, no block."
+    d = Decision(id=did, status="ratified", ratified_by="s@x",
+                 ratified_at="2026-06-20T00:00:00Z", body=body,
+                 path=decisions_dir(root) / f"{did}.md",
+                 ratified_text_hash=compute_body_hash(body))
+    write_decision(d)
+    return root
+
+
+def test_reconcile_sets_baseline_and_clears_suspect(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)  # suspect
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2"])
+    assert r.exit_code == 0
+    chk = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check",
+                                    "--gate-reconcile"])
+    assert chk.exit_code == 0
+
+
+def test_reconcile_first_time_on_unreconciled(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="none")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2",
+                                  "--kind", "independent"])
+    assert r.exit_code == 0
+    d = parse_decision_file(root / "docs/decisions/d-t2.md")
+    assert d.reconciled_anchors and d.last_reconcile_kind == "independent"
+
+
+def test_reconcile_rejects_non_tier2(tmp_path):
+    root = _seed_tier1(tmp_path, "d-tier1")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-tier1"])
+    assert r.exit_code == 2
+
+
+def test_reconcile_rejects_tier3(tmp_path):
+    root = _seed_tier3(tmp_path, "d-ctx")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-ctx"])
+    assert r.exit_code == 2
+
+
+def test_reconcile_clears_betray_stamps(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "betray", "d-t2",
+                              "--justification", "x"])
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2"])
+    d = parse_decision_file(root / "docs/decisions/d-t2.md")
+    assert d.last_betrayed_by is None
+
+
+def test_reconcile_persists_justification_and_stamps(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="none")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2",
+                                  "--justification", "criterion still holds"])
+    assert r.exit_code == 0
+    d = parse_decision_file(root / "docs/decisions/d-t2.md")
+    assert d.last_reconcile_justification == "criterion still holds"
+    assert d.last_reconciled_by and d.last_reconciled_at  # stamps populated
+
+
+def test_betray_stamps_fields_and_stays_suspect(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "betray", "d-t2",
+                                  "--justification", "no longer masks 500s"])
+    assert r.exit_code == 0
+    d = parse_decision_file(root / "docs/decisions/d-t2.md")
+    assert d.last_betray_justification == "no longer masks 500s"
+    # baseline NOT advanced → still blocks the gate
+    chk = CliRunner().invoke(main, ["--workspace", str(root), "decision", "check",
+                                    "--gate-reconcile"])
+    assert chk.exit_code == 2
+
+
+def test_betray_requires_justification(tmp_path):
+    root = _seed_tier2(tmp_path, baseline="match", changed=True)
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "betray", "d-t2"])
+    assert r.exit_code == 2  # click missing required option
+
+
+def test_betray_rejects_non_tier2(tmp_path):
+    root = _seed_tier1(tmp_path, "d-tier1")
+    r = CliRunner().invoke(main, ["--workspace", str(root), "decision", "betray", "d-tier1",
+                                  "--justification", "x"])
+    assert r.exit_code == 2
+
+
+# --- Task 9: lifecycle interactions ------------------------------------------
+def test_ratify_does_not_auto_reconcile(tmp_path):
+    # ratify must NOT stamp a baseline → a ratified tier-2 with a code anchor
+    # stays UNRECONCILED, so the first re-review is still forced.
+    root = tmp_path
+    (root / ".harness").mkdir(parents=True, exist_ok=True)
+    (root / "src").mkdir(parents=True, exist_ok=True)
+    (root / "src" / "x.py").write_text("v = 1  # @decision:d-t2\n", encoding="utf-8")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "new", "d-t2",
+                              "--text", "Body.\n\n```review\ncrit\n```"])
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "ratify", "d-t2"])
+    from super_harness.core.decision_check import run_check
+    res = run_check(root)
+    assert "d-t2" in res.unreconciled_tier2  # ratify did NOT baseline it
+
+
+def test_reconcile_idempotent_noop(tmp_path):
+    # reconcile twice with no code change between → second is a clean no-op that
+    # leaves the recorded fingerprints unchanged (no drift introduced).
+    root = _seed_tier2(tmp_path, baseline="none")
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2"])
+    a = parse_decision_file(root / "docs/decisions/d-t2.md").reconciled_anchors
+    CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2"])
+    b = parse_decision_file(root / "docs/decisions/d-t2.md").reconciled_anchors
+    assert a == b  # same fingerprints, no drift introduced

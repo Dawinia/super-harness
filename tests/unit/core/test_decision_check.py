@@ -1,7 +1,10 @@
 # tests/unit/core/test_decision_check.py
 from pathlib import Path
 
-from super_harness.core.decision_check import run_check
+import yaml
+
+from super_harness.core.decision_check import fingerprint_file, run_check
+from super_harness.core.decisions import compute_body_hash
 
 
 def _w(p: Path, text: str) -> None:
@@ -136,3 +139,96 @@ def test_ratified_without_hash_warns_not_blocks(tmp_path):
     assert res.unhashed_ratified == ["d-old"]
     assert res.integrity_violations == []
     assert res.ok is True   # warn-only, must NOT block
+
+
+# --- tier-2 reviewable-anchor suspect invariant ----------------------------
+
+def _write_tier2(ws: Path, *, reconciled_anchors=None, status="ratified",
+                 anchor_src="src/x.py") -> None:
+    """Emit a well-formed ratified tier-2 record (``review`` block, valid
+    body hash) + anchor a source file with ``# @decision:d-t2``."""
+    body = "```review\nthe author must hand-review this.\n```"
+    fm: dict[str, object] = {"id": "d-t2", "status": status,
+                             "ratified_text_hash": compute_body_hash(body)}
+    if reconciled_anchors is not None:
+        fm["reconciled_anchors"] = dict(reconciled_anchors)
+    fm_text = yaml.safe_dump(fm, sort_keys=False).strip()
+    _w(ws / "docs/decisions/d-t2.md", f"---\n{fm_text}\n---\n{body}\n")
+    _w(ws / anchor_src, "# @decision:d-t2\nx = 1\n")
+
+
+def test_tier2_unreconciled_when_anchored_but_no_baseline(tmp_path):
+    _write_tier2(tmp_path)  # NO reconciled_anchors
+    res = run_check(tmp_path)
+    assert "d-t2" in res.unreconciled_tier2
+    assert not res.suspect_tier2
+
+
+def test_tier2_clean_when_baseline_matches(tmp_path):
+    _write_tier2(tmp_path, reconciled_anchors={})  # placeholder, fixed below
+    baseline = {"src/x.py": fingerprint_file(tmp_path, "src/x.py")}
+    _write_tier2(tmp_path, reconciled_anchors=baseline)
+    res = run_check(tmp_path)
+    assert not res.suspect_tier2 and not res.unreconciled_tier2
+
+
+def test_tier2_suspect_when_anchored_file_changes(tmp_path):
+    _write_tier2(tmp_path)
+    baseline = {"src/x.py": fingerprint_file(tmp_path, "src/x.py")}
+    _write_tier2(tmp_path, reconciled_anchors=baseline)
+    # mutate the anchored file AFTER recording the baseline
+    _w(tmp_path / "src/x.py", "# @decision:d-t2\nx = 1\ny = 2\n")
+    res = run_check(tmp_path)
+    assert [s.id for s in res.suspect_tier2] == ["d-t2"]
+    assert "src/x.py" in res.suspect_tier2[0].changed_files
+
+
+def test_tier2_suspect_on_new_anchor_not_in_baseline(tmp_path):
+    _write_tier2(tmp_path)
+    baseline = {"src/x.py": fingerprint_file(tmp_path, "src/x.py")}
+    _write_tier2(tmp_path, reconciled_anchors=baseline)
+    # a second anchored file absent from the baseline
+    _w(tmp_path / "src/y.py", "# @decision:d-t2\nz = 3\n")
+    res = run_check(tmp_path)
+    assert "src/y.py" in res.suspect_tier2[0].changed_files
+
+
+def test_retired_tier2_never_suspect(tmp_path):
+    _write_tier2(tmp_path, status="retired")
+    baseline = {"src/x.py": fingerprint_file(tmp_path, "src/x.py")}
+    _write_tier2(tmp_path, reconciled_anchors=baseline, status="retired")
+    _w(tmp_path / "src/x.py", "# @decision:d-t2\nx = 1\ny = 2\n")
+    res = run_check(tmp_path)
+    assert not res.suspect_tier2 and not res.unreconciled_tier2
+
+
+def test_tier1_to_tier2_body_edit_is_integrity_violation(tmp_path):
+    # A ratified tier-1 (```check) decision whose body is edited to drop ```check
+    # and add ```review changes the body hash. Without re-ratify, run_check must
+    # flag the body-hash mismatch as an integrity violation (the tier flip cannot
+    # silently bypass the ratified claim).
+    tier1_body = "```check\ntrue\n```"
+    _w(tmp_path / "docs/decisions/d-flip.md",
+       f"---\nid: d-flip\nstatus: ratified\nratified_by: a@b.com\n"
+       f"ratified_text_hash: {compute_body_hash(tier1_body)}\n---\n{tier1_body}\n")
+    res = run_check(tmp_path)
+    assert all(v.id != "d-flip" for v in res.integrity_violations)  # clean first
+    # rewrite the FILE body to a ```review block WITHOUT updating ratified_text_hash
+    _w(tmp_path / "docs/decisions/d-flip.md",
+       f"---\nid: d-flip\nstatus: ratified\nratified_by: a@b.com\n"
+       f"ratified_text_hash: {compute_body_hash(tier1_body)}\n---\n"
+       f"```review\nthe author must hand-review this.\n```\n")
+    res = run_check(tmp_path)
+    assert any(v.id == "d-flip" for v in res.integrity_violations)
+
+
+def test_tier1_and_tier3_untouched_by_suspect_logic(tmp_path):
+    # tier-1: ```check block
+    _w(tmp_path / "docs/decisions/d-c.md",
+       "---\nid: d-c\nstatus: ratified\n---\n```check\ntrue\n```\n")
+    _w(tmp_path / "src/c.py", "# @decision:d-c\n")
+    # tier-3: no fenced block at all
+    _ratified(tmp_path, "d-ctx")
+    _w(tmp_path / "src/ctx.py", "# @decision:d-ctx\n")
+    res = run_check(tmp_path)
+    assert not res.suspect_tier2 and not res.unreconciled_tier2
