@@ -9,11 +9,17 @@ self-match.
 # @decision:d-dangling-check
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from super_harness.core.anchor_scanner import scan_sentinel_locations
-from super_harness.core.decisions import RecordError, compute_body_hash, load_decisions
+from super_harness.core.decisions import (
+    RecordError,
+    compute_body_hash,
+    decision_tier,
+    load_decisions,
+)
 from super_harness.core.source_scope import load_source_scope
 
 ANCHOR_KEYWORD = "@decision:"
@@ -34,12 +40,28 @@ class IntegrityViolation:
 
 
 @dataclass
+class SuspectDecision:
+    id: str
+    changed_files: list[str]
+
+
+def fingerprint_file(workspace_root: Path, rel: str) -> str:
+    """sha256 of raw file bytes (byte-exact, binary-safe, subprocess/git-free).
+    Deliberately NOT normalized (unlike compute_body_hash) — any byte change to
+    anchored code should re-route the review (design coarse-by-construction)."""
+    digest = hashlib.sha256((workspace_root / rel).read_bytes()).hexdigest()
+    return f"sha256:{digest}"
+
+
+@dataclass
 class CheckResult:
     dangling_up: list[DanglingUp]
     dangling_down: list[str]
     errors: list[RecordError]
     integrity_violations: list[IntegrityViolation] = field(default_factory=list)
     unhashed_ratified: list[str] = field(default_factory=list)
+    suspect_tier2: list[SuspectDecision] = field(default_factory=list)
+    unreconciled_tier2: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -86,10 +108,37 @@ def run_check(workspace_root: Path) -> CheckResult:
     dangling_up.sort(key=lambda d: (d.id, d.file, d.line))
 
     dangling_down = sorted(ratified - anchored_ids)
+
+    # Standing tier-2 suspect invariant: a ratified reviewable decision whose
+    # anchored source files drifted from the recorded baseline is "suspect"
+    # (routing, not a gate — does NOT touch .ok).
+    suspect_tier2: list[SuspectDecision] = []
+    unreconciled_tier2: list[str] = []
+    by_id = {d.id: d for d in decisions}
+    for did in sorted(effective_ratified):
+        d = by_id[did]
+        if decision_tier(d) != 2:
+            continue
+        anchored = sorted({f for f, _ln in locations.get(did, [])})
+        if not anchored:
+            continue  # dangling-down already warned; nothing to reconcile
+        baseline = d.reconciled_anchors or {}
+        if not baseline:
+            unreconciled_tier2.append(did)
+            continue
+        changed = [
+            f for f in anchored
+            if fingerprint_file(workspace_root, f) != baseline.get(f)
+        ]
+        if changed:
+            suspect_tier2.append(SuspectDecision(id=did, changed_files=changed))
+
     return CheckResult(
         dangling_up=dangling_up,
         dangling_down=dangling_down,
         errors=errors,
         integrity_violations=integrity_violations,
         unhashed_ratified=unhashed_ratified,
+        suspect_tier2=suspect_tier2,
+        unreconciled_tier2=unreconciled_tier2,
     )
