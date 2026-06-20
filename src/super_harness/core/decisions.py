@@ -42,6 +42,7 @@ class Decision:
     path: Path | None = None
     check: str | None = None
     counterexample: Counterexample | None = None
+    acceptance: str | None = None
 
 
 _FENCE_RE = re.compile(r"^```(?P<info>[^\n]*)\n(?P<inner>.*?)\n```", re.DOTALL | re.MULTILINE)
@@ -78,6 +79,25 @@ def parse_counterexample(body: str) -> Counterexample | None:
         raise ValueError("counterexample path must be relative and stay inside the repo "
                          "(no absolute paths, no '..')")
     return Counterexample(path=raw, content=ms[0].group("inner").strip())
+
+
+def parse_review(body: str) -> str | None:
+    ms = _blocks(body, "review")
+    if not ms:
+        return None
+    if len(ms) > 1:
+        raise ValueError("at most one ```review block per decision")
+    stripped = ms[0].group("inner").strip()
+    return stripped or None
+
+
+def decision_tier(d: Decision) -> int:
+    """1 = executable check (hard); 2 = reviewable acceptance criterion; 3 = context."""
+    if d.check is not None:
+        return 1
+    if d.acceptance is not None:
+        return 2
+    return 3
 
 
 @dataclass
@@ -135,6 +155,7 @@ def parse_decision_file(path: Path) -> Decision:
         path=path,
         check=parse_check(body),
         counterexample=parse_counterexample(body),
+        acceptance=parse_review(body),
     )
 
 

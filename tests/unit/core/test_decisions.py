@@ -5,10 +5,12 @@ import pytest
 from super_harness.core.decisions import (
     Decision,
     compute_body_hash,
+    decision_tier,
     load_decisions,
     normalize_body,
     parse_check,
     parse_decision_file,
+    parse_review,
     serialize_decision,
 )
 
@@ -217,3 +219,37 @@ def test_decision_file_carries_parsed_check(tmp_path):
     d = parse_decision_file(p)
     assert d.check == '! grep -rIn "md5(.*password" src/'
     assert d.counterexample.path == "src/auth/legacy.py"
+
+
+def test_parse_review_extracts_criterion():
+    body = "Prose.\n\n```review\nError responses must not leak stack traces.\n```\n"
+    assert parse_review(body) == "Error responses must not leak stack traces."
+
+
+def test_parse_review_absent_returns_none():
+    assert parse_review("just prose, no block") is None
+
+
+def test_parse_review_empty_block_returns_none():
+    assert parse_review("```review\n\n```") is None
+
+
+def test_parse_review_rejects_two_blocks():
+    body = "```review\na\n```\n```review\nb\n```"
+    with pytest.raises(ValueError):
+        parse_review(body)
+
+
+def test_tier1_when_check_present_even_with_review():
+    d = Decision(id="d", status="ratified", check="echo ok", acceptance="crit")
+    assert decision_tier(d) == 1
+
+
+def test_tier2_when_review_only():
+    d = Decision(id="d", status="ratified", acceptance="crit")
+    assert decision_tier(d) == 2
+
+
+def test_tier3_when_neither():
+    d = Decision(id="d", status="ratified")
+    assert decision_tier(d) == 3
