@@ -163,14 +163,21 @@ is exactly what anti-hollow rejects. **tier-2 reviewable is the honest fit:** a
 human-reviewable acceptance criterion + a reconcile baseline, so any change to
 `reducer.py` routes a recorded re-review at the merge boundary.
 
-**`review` block (becomes `acceptance`):**
+**`review` block (becomes `acceptance`)** — the criterion gives the reviewer BOTH exits
+(reconcile if it still holds, betray if purity was broken), so a tripped reviewer is not
+nudged into reconcile-anyway (this betray-path + the logging clarification were folded in
+during code review):
 ````
 ```review
 reducer.derive_state is a pure left-fold over the event log: it constructs and
-returns a fresh state and never mutates its inputs or any module-level state in
-place. On any change to reducer.py, re-review the anchored fold: confirm no in-place
+returns a fresh state and never mutates its inputs or any module-level global in
+place (logging is permitted; referential transparency is about the returned value).
+On any change to reducer.py, re-review the anchored fold: confirm no in-place
 mutation of the accumulator or inputs was introduced and that it stays referentially
-transparent (same events → same state). Then `decision reconcile d-state-pure-fold`.
+transparent (same events -> same state). If it still holds, `decision reconcile
+d-state-pure-fold`. If purity was broken (in-place mutation or non-determinism
+introduced), do NOT reconcile -- `decision betray d-state-pure-fold` with a
+justification instead.
 ```
 ````
 - Anchor already at `reducer.py:41`.
