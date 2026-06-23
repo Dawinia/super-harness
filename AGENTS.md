@@ -119,9 +119,9 @@ yours, not the tool's — and the recipe is:
   (`^import requests`, not `requests`, which also hits prose / yaml).
 - Prefer import/access patterns over bare substrings to dodge prose false positives.
 - The check runs through the host's `/bin/sh` and `grep`, so prefer portable
-  POSIX BRE/ERE; it **must exit nonzero on violation** (`! grep ...` inverts
-  grep's exit).
-- A denylist is coarse by construction (`^import` misses `as` / `from` forms);
+  patterns (avoid GNU-only `grep` extensions); it **must exit nonzero on
+  violation** (`! grep ...` inverts grep's exit).
+- A denylist is coarse by construction (`^import` misses `from X import …` forms);
   widen deliberately and record the ceiling in the decision body.
 - **Scope the grep to source paths (e.g. `src/`), never `.`** — at ratify the
   check runs over the whole tree, so a bare `.` scans the decision file itself
