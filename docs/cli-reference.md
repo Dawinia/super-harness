@@ -819,13 +819,15 @@ super-harness review skip [OPTIONS] CHANGE
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--reason` | text | `'manual_skip'` | Audit reason recorded on the event. |
+| `--reason` | text | — | Audit reason recorded on the event (default: manual_skip; REQUIRED with --override). |
+| `--override` | flag | `False` | Deliberate, disclosed override: a bare skip blocks at the merge gate; --override (with --reason) passes-with-disclosure. |
 | `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
-- `0` success
-- `1` generic error
+- `0` skip recorded (`code_review_passed` / `plan_approved` emitted, `skipped=True`)
+- `2` --override without --reason
+- `3` no `.harness/`
 
 ## super-harness sensor
 

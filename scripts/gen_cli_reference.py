@@ -267,6 +267,11 @@ _EXIT_CODES: dict[str, list[str]] = {
         "or malformed `--verdict-file`",
         "`3` no `.harness/`",
     ],
+    "review skip": [
+        "`0` skip recorded (`code_review_passed` / `plan_approved` emitted, `skipped=True`)",
+        "`2` --override without --reason",
+        "`3` no `.harness/`",
+    ],
 }
 
 

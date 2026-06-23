@@ -86,10 +86,15 @@ Checklists & verdict verbs per review state:
      if the verdict is missing/incomplete (a checklist item uncovered) or stale (its
      digest no longer matches the current in-scope committed diff). Approve →
      `READY_TO_MERGE`. (`review reject ... [--verdict-file <path>]` records a fail.)
+     If the approval comes out of a REJECTED review, the verdict's `prior_findings` must
+     dispose EVERY open finding from the prior `code_review_failed` verdicts
+     (`disposition: resolved | wontfix`; `wontfix` needs a `note`) or the approve is refused.
   - plan-reviewer is UNCHANGED this slice: its approve/reject take an optional
     `--verdict-file` (inlined when present) but never require one.
-- `super-harness review skip <change> --reviewer <name>` is an escape hatch (records an
-  approval with `reason=manual_skip`) for when a reviewer is stuck.
+- `super-harness review skip <change> --reviewer <name>` PASSes a stuck reviewer, but for
+  `code-reviewer` a BARE skip is a MERGE-GATE BLOCKER (`attest verify` fails). To merge with
+  a skip you must record a deliberate, disclosed override:
+  `review skip <change> --reviewer code-reviewer --override --reason "<why>"`.
 
 When you do run a subagent, run a genuinely independent one — don't self-rubber-stamp.
 <!-- /super-harness agent: claude-code -->
