@@ -127,3 +127,9 @@ def verification_results_dir(root: Path, change_id: str, ts: str) -> Path:
     change never clobber each other.
     """
     return root / ".harness" / "verification-results" / change_id / ts
+
+
+def pending_reviews_dir(root: Path, change_id: str) -> Path:
+    """Per-change directory for transient review bundles (gitignored — input aid,
+    NOT the record of review; the record is the inlined verdict in the event)."""
+    return root / ".harness" / "pending-reviews" / change_id
