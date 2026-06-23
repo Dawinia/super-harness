@@ -1,0 +1,102 @@
+"""Emit-time verdict teeth for `review approve --reviewer code-reviewer`."""
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+
+from click.testing import CliRunner
+
+from super_harness.cli import main
+from super_harness.core.paths import events_path
+from super_harness.exit_codes import EXIT_OK, EXIT_VALIDATION
+
+
+def _git(ws: Path, *a: str) -> None:
+    subprocess.run(["git", *a], cwd=ws, check=True, capture_output=True, text=True)
+
+
+def _repo_change(tmp_path: Path) -> Path:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("v1\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    _git(tmp_path, "checkout", "-qb", "feat")
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "work")
+    (tmp_path / ".harness").mkdir(parents=True, exist_ok=True)
+    for t, p in [("intent_declared", {}), ("plan_ready", {"scope": {"files": ["src/"]}}),
+                 ("plan_approved", {}), ("implementation_started", {}),
+                 ("verification_passed", {}), ("implementation_complete", {})]:
+        EventWriter(events_path(tmp_path)).emit(Event(
+            event_id=new_event_id(), type=t, change_id="c",
+            timestamp="2026-06-23T00:00:00Z",
+            actor=Actor(type="human", identifier="cli"), framework="plain", payload=p))
+    refresh_state_after_emit(tmp_path)
+    return tmp_path
+
+
+def _good_verdict(ws: Path, digest: str) -> Path:
+    p = ws / "verdict.yaml"
+    items = "\n".join(f"  - item: {i}\n    status: pass"
+                      for i in ["spec-compliance", "scope-adherence", "code-quality", "edge-cases"])
+    p.write_text(f"bundle_digest: {digest}\nchecklist:\n{items}\nfindings: []\n")
+    return p
+
+
+def _prepare_digest(ws: Path) -> str:
+    r = CliRunner().invoke(main, ["--json", "--workspace", str(ws), "review", "prepare", "c",
+                                  "--reviewer", "code-reviewer"])
+    return json.loads(r.output)["data"]["bundle_digest"]
+
+
+def test_bare_approve_rejected(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
+                                  "--reviewer", "code-reviewer"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "verdict" in r.output.lower()
+
+
+def test_incomplete_checklist_rejected(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    digest = _prepare_digest(ws)
+    p = ws / "v.yaml"
+    p.write_text(
+        f"bundle_digest: {digest}\nchecklist:\n"
+        "  - item: spec-compliance\n    status: pass\nfindings: []\n")
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
+                                  "--reviewer", "code-reviewer", "--verdict-file", str(p)])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "scope-adherence" in r.output  # names a missing item
+
+
+def test_stale_digest_rejected(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    _prepare_digest(ws)
+    p = _good_verdict(ws, "stale-does-not-match")
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
+                                  "--reviewer", "code-reviewer", "--verdict-file", str(p)])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "stale" in r.output.lower() or "digest" in r.output.lower()
+
+
+def test_complete_fresh_verdict_passes_and_inlines(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    digest = _prepare_digest(ws)
+    p = _good_verdict(ws, digest)
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
+                                  "--reviewer", "code-reviewer", "--verdict-file", str(p)])
+    assert r.exit_code == EXIT_OK, r.output
+    # verdict inlined into the emitted event payload
+    last = [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()][-1]
+    assert last["type"] == "code_review_passed"
+    assert last["payload"]["verdict"]["bundle_digest"] == digest

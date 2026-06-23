@@ -60,3 +60,9 @@ def test_verification_path_helpers(tmp_path: Path):
     assert verification_results_dir(tmp_path, "my-change", "2026-05-29T00:00:00Z") == (
         tmp_path / ".harness" / "verification-results" / "my-change" / "2026-05-29T00:00:00Z"
     )
+
+
+def test_pending_reviews_dir(tmp_path):
+    from super_harness.core.paths import pending_reviews_dir
+    p = pending_reviews_dir(tmp_path, "2026-06-23-foo")
+    assert p == tmp_path / ".harness" / "pending-reviews" / "2026-06-23-foo"

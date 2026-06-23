@@ -4,7 +4,13 @@ Per sensor-gate-architecture §2.3 + §3.5. Supports two entry shapes:
 
 - Built-in by name (registered via `register_builtin`):
     sensors:
-      - plan-reviewer
+      - verification-runner
+
+  (Note: review is NOT a daemon sensor — there is no `plan-reviewer` /
+  `code-reviewer` builtin. Review judgement is inferential and stays on the
+  `review` CLI verbs, per the auto-review-hardening design §7; an in-daemon
+  reviewer would mean the harness running an LLM, which it never does. A real
+  reviewer sensor remains an unbuilt v0.2 question.)
 
 - Plugin via dynamic import (path + class):
     sensors:

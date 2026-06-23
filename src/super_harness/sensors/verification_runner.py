@@ -54,6 +54,7 @@ from super_harness.core.paths import (
     verification_yaml_path,
 )
 from super_harness.core.reducer import derive_state
+from super_harness.core.scope_match import covered_by_scope as _covered_by_scope
 from super_harness.engineering.verification_config import (
     CheckSpec,
     VerificationConfig,
@@ -465,24 +466,6 @@ def _baseline_scope_vs_plan(
         report=report,
         archive=archive,
     )
-
-
-def _covered_by_scope(changed_file: str, declared_files: list[str]) -> bool:
-    """True if `changed_file` is covered by any declared scope entry.
-
-    v0.1 matching is SEGMENT-AWARE: exact path equality OR a prefix that lands on
-    a path boundary. A declared directory entry like `src/foo/` (or `src/foo`)
-    covers everything under it (`src/foo/x.py`) but NOT a sibling that merely
-    shares the textual prefix (`src/foobar.py`) — avoiding the naive-`startswith`
-    false-negative where real out-of-scope drift would be missed.
-    """
-    for entry in declared_files:
-        if changed_file == entry:
-            return True
-        prefix = entry if entry.endswith("/") else entry + "/"
-        if changed_file.startswith(prefix):
-            return True
-    return False
 
 
 def baseline_check_tasks(

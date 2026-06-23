@@ -756,12 +756,35 @@ super-harness review approve [OPTIONS] CHANGE
 | `CHANGE` | text | *required* |  |
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
 | `--reason` | text | `'approved'` | Audit reason recorded on the event. |
+| `--verdict-file` | text | — | Structured verdict file (REQUIRED for code-reviewer; see `review prepare`). |
+| `--base` | text | — | Base branch for freshness check (default: policy.yaml review.base_branch, else main). |
 | `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
-- `0` success
-- `1` generic error
+- `0` verdict recorded (`plan_approved` / `code_review_passed` emitted)
+- `2` code-review verdict gate failed (bare / incomplete checklist / stale digest), or malformed `--verdict-file`
+- `3` no `.harness/`
+
+## super-harness review prepare
+
+Assemble the review bundle (diff∩scope + checklist + digest) → disk.
+
+```
+super-harness review prepare [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--base` | text | — | Base branch for the in-scope diff (default: .harness/policy.yaml review.base_branch, else main). |
+
+**Exit codes:**
+
+- `0` bundle written
+- `2` validation error (dirty in-scope tree / git failure — fail-closed)
+- `3` no `.harness/`
 
 ## super-harness review reject
 
@@ -776,6 +799,7 @@ super-harness review reject [OPTIONS] CHANGE
 | `CHANGE` | text | *required* |  |
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
 | `--reason` | text | `'rejected'` | Audit reason recorded on the event. |
+| `--verdict-file` | text | — | Structured verdict file (inlined if provided; never required for reject). |
 | `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
