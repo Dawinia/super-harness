@@ -18,6 +18,7 @@ that omits the EmitPreconditionError path — house convention is EXIT_VALIDATIO
 """
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -33,9 +34,11 @@ from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
     find_harness_root,
+    pending_reviews_dir,
 )
 from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.reducer import derive_state
+from super_harness.core.review_bundle import BundleError, assemble_bundle
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
@@ -183,3 +186,47 @@ def skip(ctx: click.Context, change: str, reviewer: str, reason: str,
         event_type=_REVIEWER_PASS[reviewer], reason=reason, as_identity=as_identity,
         extra_payload={"skipped": True},
     )
+
+
+@review_group.command("prepare")
+@click.argument("change")
+@_reviewer_opt
+@click.option("--base", default=None, help="Base branch for the in-scope diff "
+              "(default: .harness/policy.yaml review.base_branch, else main).")
+@click.pass_context
+def prepare(ctx: click.Context, change: str, reviewer: str, base: str | None) -> None:
+    """Assemble the review bundle (diff∩scope + checklist + digest) → disk.
+
+    The harness does NOT review — this hands the reviewer subagent a complete,
+    deterministic context to review against. Requires a clean in-scope tree.
+    """
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as e:
+        click.echo(format_error(subcommand="review prepare", message=e.message, hint=e.hint),
+                   err=True)
+        sys.exit(EXIT_NO_CONFIG)
+    try:
+        bundle = assemble_bundle(root, change_id=change, reviewer=reviewer, base=base)
+    except BundleError as e:
+        click.echo(format_error(subcommand="review prepare", message=str(e),
+                                hint="Commit the in-scope changes, then re-run review prepare."),
+                   err=True)
+        sys.exit(EXIT_VALIDATION)
+    out_dir = pending_reviews_dir(root, change)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    bundle_path = out_dir / f"{reviewer}.bundle.json"
+    bundle_path.write_text(json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    if ctx.obj.get("json"):
+        click.echo(json_envelope(command="review prepare", status="pass", exit_code=EXIT_OK,
+                                 data={"change": change, "reviewer": reviewer,
+                                       "bundle_path": str(bundle_path),
+                                       "bundle_digest": bundle["bundle_digest"],
+                                       "diff_in_scope": bundle["diff_in_scope"],
+                                       "out_of_scope": bundle["out_of_scope"]}))
+    elif not ctx.obj.get("quiet"):
+        click.echo(f"super-harness: wrote review bundle for {change} ({reviewer}) → {bundle_path}")
+        if bundle["out_of_scope"]:
+            click.echo("  out-of-scope changes (review carefully):\n    "
+                       + "\n    ".join(bundle["out_of_scope"]))
+    sys.exit(EXIT_OK)
