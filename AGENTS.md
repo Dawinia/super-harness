@@ -70,9 +70,24 @@ Checklists & verdict verbs per review state:
   plan-reviewer` or `super-harness review reject <change> --reviewer plan-reviewer
   --reason "<why>"`. Approve → `PLAN_APPROVED` (gate then allows edits); reject →
   `PLAN_REJECTED` for a revised plan.
-- **`AWAITING_CODE_REVIEW`** (code-reviewer) — check the diff against the plan (spec
-  compliance / anchors planted / quality). Record with `super-harness review approve
-  <change> --reviewer code-reviewer` (or `review reject ...`). Approve → `READY_TO_MERGE`.
+- **`AWAITING_CODE_REVIEW`** (code-reviewer) — a code-review approval now REQUIRES a
+  structured verdict; a bare `super-harness review approve <change> --reviewer
+  code-reviewer` is rejected. The flow:
+  1. Commit the in-scope files first — the review digest is taken over the committed
+     HEAD diff, so an uncommitted in-scope tree is refused.
+  2. `super-harness review prepare <change> --reviewer code-reviewer` — assembles the
+     bundle (in-scope diff ∩ scope, out-of-scope drift, spec/plan paths, checklist,
+     committed-HEAD digest) to `.harness/pending-reviews/<change>/code-reviewer.bundle.json`.
+  3. Hand that bundle to a genuinely independent reviewer **subagent** to run the
+     checklist and produce a verdict file (every checklist item gets a status;
+     findings required when any item fails; verdict carries the bundle's digest).
+  4. `super-harness review approve <change> --reviewer code-reviewer --verdict-file
+     <path>` — the verdict is inlined into the emitted event. The approval is refused
+     if the verdict is missing/incomplete (a checklist item uncovered) or stale (its
+     digest no longer matches the current in-scope committed diff). Approve →
+     `READY_TO_MERGE`. (`review reject ... [--verdict-file <path>]` records a fail.)
+  - plan-reviewer is UNCHANGED this slice: its approve/reject take an optional
+    `--verdict-file` (inlined when present) but never require one.
 - `super-harness review skip <change> --reviewer <name>` is an escape hatch (records an
   approval with `reason=manual_skip`) for when a reviewer is stuck.
 

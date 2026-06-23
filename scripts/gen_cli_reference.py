@@ -256,6 +256,17 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`3` registry malformed or `.harness/` missing",
         "`4` a generator command failed",
     ],
+    "review prepare": [
+        "`0` bundle written",
+        "`2` validation error (dirty in-scope tree / git failure — fail-closed)",
+        "`3` no `.harness/`",
+    ],
+    "review approve": [
+        "`0` verdict recorded (`plan_approved` / `code_review_passed` emitted)",
+        "`2` code-review verdict gate failed (bare / incomplete checklist / stale digest), "
+        "or malformed `--verdict-file`",
+        "`3` no `.harness/`",
+    ],
 }
 
 
