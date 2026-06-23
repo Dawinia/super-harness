@@ -225,6 +225,12 @@ def verify_attestations(root: Path, diff_entries: list[DiffEntry]) -> Attestatio
             continue
         covered |= this_covered
         validated.append(slug)
+        cr = independence_for_attestation(att_path)["code_review"]
+        if cr["skipped"] and not cr["override"]:
+            blockers.append(
+                f"attestation {slug}: code review was skipped without --override "
+                "(a deliberate `review skip --override --reason ...` is required to merge)"
+            )
 
     for f in sorted(subjects - covered):
         blockers.append(f"changed file not covered by any complete lifecycle: {f}")
