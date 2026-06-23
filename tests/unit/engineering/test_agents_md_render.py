@@ -135,6 +135,17 @@ def test_outer_section_has_decision_conformance(tmp_path: Path) -> None:
     )
 
 
+def test_decision_conformance_has_arming_recipe(tmp_path: Path) -> None:
+    agents = tmp_path / "AGENTS.md"
+    render_super_harness_section(tmp_path, agents, "0.1.0")
+    text = agents.read_text(encoding="utf-8")
+    assert "Arming a decision" in text
+    assert "brittle one-token signature" in text
+    assert "context-only (tier-3)" in text  # the do-NOT-arm rung
+    assert "```check" in text
+    assert "```counterexample" in text
+
+
 def test_corrupt_adapters_yaml_broken_syntax_is_nonfatal(tmp_path: Path) -> None:
     """A syntactically-broken adapters.yaml raises yaml.YAMLError inside
     load_adapters; render swallows it (advisory on stderr) and still writes a

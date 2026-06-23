@@ -141,6 +141,11 @@ independent re-review — deferred); tier-3 (nothing checkable → recorded as *
 never gates). `decision check` prints a `hard:context` ratio so the system can't
 quietly decay into all-advisory.
 
+The craft of *writing* a check that bites without false positives (brittle
+one-token signatures, scoping the grep to source paths, when to leave a decision
+context-only) is taught in the **"Arming a decision"** recipe in the rendered
+`AGENTS.md` super-harness section — not duplicated here.
+
 ## 8. Derivable-doc drift
 
 Docs that have a generator (the CLI reference, the state-machine table) are the

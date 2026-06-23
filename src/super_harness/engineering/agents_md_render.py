@@ -109,6 +109,36 @@ you work — CI runs it too as the un-bypassable floor, so keep it green locally
 - `super-harness decision check` (full) and `super-harness doc check` are also
   CI gates — keep both green locally so a push never bounces.
 
+**Arming a decision with a check (the craft).** A check is a shell snippet that
+exits nonzero when a decision is violated; `ratify` bite-tests it so it can't be
+hollow. Writing one that catches violations without false positives is judgment —
+yours, not the tool's — and the recipe is:
+
+- Pick the **brittle one-token signature** of a violation, not a broad word
+  (`^import requests`, not `requests`, which also hits prose / yaml).
+- Prefer import/access patterns over bare substrings to dodge prose false positives.
+- The check runs through the host's `/bin/sh` and `grep`, so prefer portable
+  POSIX BRE/ERE; it **must exit nonzero on violation** (`! grep ...` inverts
+  grep's exit).
+- A denylist is coarse by construction (`^import` misses `as` / `from` forms);
+  widen deliberately and record the ceiling in the decision body.
+- **Scope the grep to source paths (e.g. `src/`), never `.`** — at ratify the
+  check runs over the whole tree, so a bare `.` scans the decision file itself
+  (which holds the counterexample) and reports "check fails on current code".
+- Add a check + a minimal counterexample, then
+  `super-harness decision ratify <id> --dry-run` until it reports `bites`:
+
+  ```check
+  ! grep -rn '<brittle pattern>' <scoped paths>
+  ```
+
+  ```counterexample path=<relative/path>
+  <one minimal violating line the check above must catch>
+  ```
+
+- **If there is no brittle signature, leave it context-only (tier-3)** — do not
+  invent a hollow check just to have one.
+
 <!-- super-harness section end -->"""
 
 
