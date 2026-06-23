@@ -261,11 +261,13 @@ def derive_independence(events: list[Event]) -> dict[str, Any]:
     )
     reviews = [e for e in events if e.type == "code_review_passed"]
     if not reviews:
-        cls, reviewer, skipped = "unattributed", None, False
+        cls, reviewer, skipped, override, reason = "unattributed", None, False, False, None
     else:
         r = reviews[-1]  # last wins (reject → re-review cycles)
         reviewer = r.actor.identifier
         skipped = r.payload.get("skipped") is True
+        override = r.payload.get("override") is True
+        reason = r.payload.get("reason")
         if r.actor.type == "ci":
             cls = "ci"
         elif skipped:
@@ -278,7 +280,10 @@ def derive_independence(events: list[Event]) -> dict[str, Any]:
             cls = "independent"
     return {
         "author": author,
-        "code_review": {"classification": cls, "reviewer": reviewer, "skipped": skipped},
+        "code_review": {
+            "classification": cls, "reviewer": reviewer, "skipped": skipped,
+            "override": override, "reason": reason,
+        },
     }
 
 

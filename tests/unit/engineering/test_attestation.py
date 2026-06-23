@@ -383,3 +383,35 @@ def test_independence_for_attestation_tolerates_malformed_line(tmp_path: Path) -
     )
     # tolerant parse: malformed line skipped, never raises
     assert independence_for_attestation(p)["code_review"]["classification"] == "independent"
+
+
+def _events(*specs):
+    """Build a list[Event] from (type, payload) specs for change 'c'."""
+    out = []
+    for etype, payload in specs:
+        out.append(Event(
+            event_id=new_event_id(), type=etype, change_id="c",
+            timestamp=utc_now_iso(), actor=Actor(type="human", identifier="t"),
+            framework="plain", payload=payload or {}))
+    return out
+
+
+def test_derive_independence_surfaces_override_and_reason():
+    evs = _events(
+        ("intent_declared", {}),
+        ("code_review_passed", {"reviewer": "code-reviewer", "reason": "deadlock",
+                                "skipped": True, "override": True}))
+    cr = derive_independence(evs)["code_review"]
+    assert cr["skipped"] is True
+    assert cr["override"] is True
+    assert cr["reason"] == "deadlock"
+
+
+def test_derive_independence_bare_skip_no_override():
+    evs = _events(
+        ("intent_declared", {}),
+        ("code_review_passed", {"reviewer": "code-reviewer", "reason": "manual_skip",
+                                "skipped": True}))
+    cr = derive_independence(evs)["code_review"]
+    assert cr["skipped"] is True
+    assert cr["override"] is False
