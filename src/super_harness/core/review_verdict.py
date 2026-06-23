@@ -108,6 +108,31 @@ def read_change_events(events_file: Path, change_id: str) -> list[Event]:
     return out
 
 
+def derive_open_findings(events: list[Event], change_id: str) -> list[str]:
+    """Open-finding ids the next approve must dispose, in append order.
+
+    Walk every `code_review_failed` verdict for the change in append order; per
+    verdict dispose its `prior_findings` ids FIRST, then add its `findings` ids
+    (discard-then-add → a resolved finding re-listed by a later reject reopens).
+    Tolerant: entries with a missing/non-string `id` are skipped (the raw stream
+    can carry pre-validation payloads). See design slice-2 §4.D.
+    """
+    open_ids: dict[str, None] = {}  # ordered set: insertion-order preserved
+    for ev in events:
+        if ev.change_id != change_id or ev.type != "code_review_failed":
+            continue
+        verdict = (ev.payload or {}).get("verdict") or {}
+        for pf in verdict.get("prior_findings") or []:
+            pid = pf.get("id") if isinstance(pf, dict) else None
+            if isinstance(pid, str):
+                open_ids.pop(pid, None)
+        for f in verdict.get("findings") or []:
+            fid = f.get("id") if isinstance(f, dict) else None
+            if isinstance(fid, str):
+                open_ids[fid] = None
+    return list(open_ids)
+
+
 def check_coverage(verdict: dict[str, Any], required_items: list[str]) -> list[str]:
     """Return the required checklist item ids NOT covered by the verdict (in order)."""
     covered = {e["item"] for e in verdict["checklist"]}

@@ -143,3 +143,48 @@ def test_prior_findings_shape_validated(tmp_path: Path) -> None:
     missing_id = _OK + "prior_findings:\n  - disposition: resolved\n"
     with pytest.raises(VerdictError, match="id"):
         parse_verdict_file(_write(tmp_path, missing_id))
+
+
+def _failed(slug: str, findings: list[str], prior: list[tuple[str, str]] | None = None):
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.ulid import new_event_id
+
+    verdict = {
+        "findings": [{"id": i, "severity": "major", "file": "x", "summary": "s"} for i in findings],
+        "prior_findings": [{"id": i, "disposition": d, "note": "n"} for i, d in (prior or [])],
+    }
+    return Event(
+        event_id=new_event_id(), type="code_review_failed", change_id=slug,
+        timestamp="2026-06-23T00:00:00Z",
+        actor=Actor(type="human", identifier="t"), framework="plain",
+        payload={"verdict": verdict},
+    )
+
+
+def test_open_findings_single_reject() -> None:
+    from super_harness.core.review_verdict import derive_open_findings
+    assert derive_open_findings([_failed("c", ["f1", "f2"])], "c") == ["f1", "f2"]
+
+
+def test_open_findings_resolved_in_later_reject() -> None:
+    from super_harness.core.review_verdict import derive_open_findings
+    evs = [_failed("c", ["f1", "f2"]), _failed("c", ["f3"], prior=[("f1", "resolved")])]
+    assert derive_open_findings(evs, "c") == ["f2", "f3"]
+
+
+def test_open_findings_resolved_then_reopened() -> None:
+    from super_harness.core.review_verdict import derive_open_findings
+    # reject2 disposes f1 AND re-lists it → reopened, stays open
+    evs = [_failed("c", ["f1"]), _failed("c", ["f1"], prior=[("f1", "resolved")])]
+    assert derive_open_findings(evs, "c") == ["f1"]
+
+
+def test_open_findings_dispose_unknown_id_is_noop() -> None:
+    from super_harness.core.review_verdict import derive_open_findings
+    evs = [_failed("c", ["f1"], prior=[("ghost", "resolved")])]
+    assert derive_open_findings(evs, "c") == ["f1"]
+
+
+def test_open_findings_ignores_other_change_and_non_failed() -> None:
+    from super_harness.core.review_verdict import derive_open_findings
+    assert derive_open_findings([_failed("other", ["f1"])], "c") == []
