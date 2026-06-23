@@ -93,6 +93,12 @@ def new_cmd(ctx: click.Context, decision_id: str, text: str) -> None:
     path = decisions_dir(root) / f"{decision_id}.md"
     write_decision(Decision(id=decision_id, status="proposed", body=text, path=path))
     click.echo(f"created {path.relative_to(root)} (proposed)")
+    click.echo(
+        'Note: most decisions stay context-only — that is the norm. If this one '
+        'states a brittle mechanical invariant, the "Arming a decision" recipe in '
+        "AGENTS.md shows how to add an executable check.",
+        err=True,
+    )
     sys.exit(EXIT_OK)
 
 
@@ -158,6 +164,12 @@ def ratify_cmd(ctx: click.Context, decision_id: str, dry_run: bool) -> None:
             sys.exit(EXIT_OK)
     elif dry_run:
         click.echo("no check block (tier-3 context) - nothing to bite-test")
+        click.echo(
+            '(context-only is a valid outcome; if this states a mechanical '
+            'invariant, see the "Arming a decision" recipe in AGENTS.md, then '
+            "re-run --dry-run to confirm the check bites.)",
+            err=True,
+        )
         sys.exit(EXIT_OK)
 
     d.status = "ratified"
