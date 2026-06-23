@@ -24,6 +24,8 @@ from typing import Any
 
 import yaml
 
+from super_harness.core.events import Event, EventSchemaError, parse_event_line
+
 _STATUSES = {"pass", "fail", "na"}
 _SEVERITIES = {"blocker", "major", "minor"}
 
@@ -66,6 +68,29 @@ def parse_verdict_file(path: Path) -> dict[str, Any]:
     if any_fail and not findings:
         raise VerdictError("a checklist item is `fail` but findings is empty")
     return parsed
+
+
+def read_change_events(events_file: Path, change_id: str) -> list[Event]:
+    """Read the parsed events for one change, in append order (TOLERANT).
+
+    Mirrors the reducer's read-tolerant policy: malformed lines are skipped, never
+    raised — events.jsonl may carry lines from older tool versions or partial
+    writes, and an emit-time check that crashes on those would be fail-open.
+    Returns an empty list if the file does not exist.
+    """
+    if not events_file.exists():
+        return []
+    out: list[Event] = []
+    for line in events_file.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            ev = parse_event_line(line)
+        except EventSchemaError:
+            continue
+        if ev.change_id == change_id:
+            out.append(ev)
+    return out
 
 
 def check_coverage(verdict: dict[str, Any], required_items: list[str]) -> list[str]:

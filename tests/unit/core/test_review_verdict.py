@@ -80,3 +80,29 @@ def test_check_coverage_complete(tmp_path: Path) -> None:
     v = parse_verdict_file(_write(tmp_path, _OK))
     assert check_coverage(v, ["spec-compliance", "scope-adherence",
                               "code-quality", "edge-cases"]) == []
+
+
+def test_read_change_events_filters_and_tolerates(tmp_path: Path) -> None:
+    from super_harness.core.review_verdict import read_change_events
+
+    f = tmp_path / "events.jsonl"
+    f.write_text(
+        '{"event_id":"e1","type":"intent_declared","change_id":"c",'
+        '"timestamp":"2026-06-23T00:00:00Z",'
+        '"actor":{"type":"human","identifier":"t"},"framework":"plain","payload":{}}\n'
+        "this is not json\n"
+        '{"event_id":"e2","type":"code_review_failed","change_id":"other",'
+        '"timestamp":"2026-06-23T00:00:01Z",'
+        '"actor":{"type":"human","identifier":"t"},"framework":"plain","payload":{}}\n'
+        '{"event_id":"e3","type":"code_review_failed","change_id":"c",'
+        '"timestamp":"2026-06-23T00:00:02Z",'
+        '"actor":{"type":"human","identifier":"t"},"framework":"plain","payload":{}}\n'
+    )
+    evs = read_change_events(f, "c")
+    assert [e.event_id for e in evs] == ["e1", "e3"]  # malformed skipped, "other" filtered
+
+
+def test_read_change_events_missing_file_returns_empty(tmp_path: Path) -> None:
+    from super_harness.core.review_verdict import read_change_events
+
+    assert read_change_events(tmp_path / "nope.jsonl", "c") == []
