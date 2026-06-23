@@ -106,3 +106,40 @@ def test_read_change_events_missing_file_returns_empty(tmp_path: Path) -> None:
     from super_harness.core.review_verdict import read_change_events
 
     assert read_change_events(tmp_path / "nope.jsonl", "c") == []
+
+
+# NOTE: severity FIRST so `id:` is on its own 4-space-indented line and the
+# string-replace below actually strips it (B1 fix — a `- id:` inline list item
+# cannot be stripped by line).
+_FAIL_NO_ID = """
+bundle_digest: abc123
+checklist:
+  - item: spec-compliance
+    status: fail
+findings:
+  - severity: blocker
+    file: src/x.py
+    summary: boom
+"""
+
+
+def test_findings_require_id(tmp_path: Path) -> None:
+    with pytest.raises(VerdictError, match="id"):
+        parse_verdict_file(_write(tmp_path, _FAIL_NO_ID))
+
+
+def test_prior_findings_shape_validated(tmp_path: Path) -> None:
+    base = _OK + "prior_findings:\n  - id: f-001\n    disposition: resolved\n"
+    assert parse_verdict_file(_write(tmp_path, base))  # resolved needs no note → ok
+
+    bad_disp = _OK + "prior_findings:\n  - id: f-001\n    disposition: bogus\n"
+    with pytest.raises(VerdictError, match="disposition"):
+        parse_verdict_file(_write(tmp_path, bad_disp))
+
+    wontfix_no_note = _OK + "prior_findings:\n  - id: f-001\n    disposition: wontfix\n"
+    with pytest.raises(VerdictError, match="note"):
+        parse_verdict_file(_write(tmp_path, wontfix_no_note))
+
+    missing_id = _OK + "prior_findings:\n  - disposition: resolved\n"
+    with pytest.raises(VerdictError, match="id"):
+        parse_verdict_file(_write(tmp_path, missing_id))

@@ -28,6 +28,7 @@ from super_harness.core.events import Event, EventSchemaError, parse_event_line
 
 _STATUSES = {"pass", "fail", "na"}
 _SEVERITIES = {"blocker", "major", "minor"}
+_DISPOSITIONS = {"resolved", "wontfix"}
 
 
 class VerdictError(ValueError):
@@ -65,8 +66,22 @@ def parse_verdict_file(path: Path) -> dict[str, Any]:
     for f in findings:
         if not isinstance(f, dict) or f.get("severity") not in _SEVERITIES:
             raise VerdictError(f"each finding needs severity in {sorted(_SEVERITIES)}: {f!r}")
+        if not isinstance(f.get("id"), str) or not f["id"]:
+            raise VerdictError(f"each finding needs a non-empty string `id`: {f!r}")
     if any_fail and not findings:
         raise VerdictError("a checklist item is `fail` but findings is empty")
+    prior = parsed.get("prior_findings") or []
+    if not isinstance(prior, list):
+        raise VerdictError("verdict.prior_findings must be a list")
+    for pf in prior:
+        if not isinstance(pf, dict) or not isinstance(pf.get("id"), str) or not pf["id"]:
+            raise VerdictError(f"each prior_finding needs a non-empty string `id`: {pf!r}")
+        if pf.get("disposition") not in _DISPOSITIONS:
+            raise VerdictError(
+                f"prior_finding[{pf['id']!r}].disposition must be one of {sorted(_DISPOSITIONS)}"
+            )
+        if pf["disposition"] == "wontfix" and not (isinstance(pf.get("note"), str) and pf["note"]):
+            raise VerdictError(f"prior_finding[{pf['id']!r}] disposition=wontfix requires a note")
     return parsed
 
 
