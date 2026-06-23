@@ -59,6 +59,8 @@ def _independence_line(item: dict[str, Any]) -> str:
     if cls == "independent":
         return f"review independence: independent — {who}"
     if cls == "skipped":
+        if item.get("override"):
+            return f"review independence: skipped (OVERRIDE: {item.get('reason')}) — {who}"
         return f"review independence: skipped — {who}"
     if cls == "ci":
         return "review independence: ci"
