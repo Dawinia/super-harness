@@ -43,7 +43,10 @@ from super_harness.core.review_checklist import resolve_checklist
 from super_harness.core.review_verdict import (
     VerdictError,
     check_coverage,
+    check_disposed,
+    derive_open_findings,
     parse_verdict_file,
+    read_change_events,
 )
 from super_harness.core.scope_match import (
     GitScopeError,
@@ -199,6 +202,19 @@ def _validate_code_review_verdict(
             message="verdict is stale — its bundle_digest does not match the in-scope diff.",
             hint="The code changed since `review prepare`; re-prepare and re-review."), err=True)
         sys.exit(EXIT_VALIDATION)
+
+    # D (slice-2): an approve emitted FROM CODE_REVIEW_REJECTED must dispose every
+    # open finding from prior code_review_failed verdicts. Inert otherwise.
+    if cs is not None and cs.current_state == "CODE_REVIEW_REJECTED":
+        events = read_change_events(events_path(root), change)
+        open_ids = derive_open_findings(events, change)
+        undisposed = check_disposed(verdict, open_ids)
+        if undisposed:
+            click.echo(format_error(subcommand=subcommand,
+                message=f"approve does not dispose prior open finding(s): {', '.join(undisposed)}",
+                hint="Add a prior_findings entry (resolved | wontfix+note) for each open finding."),
+                err=True)
+            sys.exit(EXIT_VALIDATION)
     return verdict
 
 

@@ -100,3 +100,58 @@ def test_complete_fresh_verdict_passes_and_inlines(tmp_path: Path) -> None:
     last = [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()][-1]
     assert last["type"] == "code_review_passed"
     assert last["payload"]["verdict"]["bundle_digest"] == digest
+
+
+def _to_rejected(ws: Path, finding_id: str = "f-001") -> None:
+    """Drive c from AWAITING_CODE_REVIEW into CODE_REVIEW_REJECTED with one finding."""
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    EventWriter(events_path(ws)).emit(Event(
+        event_id=new_event_id(), type="code_review_failed", change_id="c",
+        timestamp="2026-06-23T00:01:00Z",
+        actor=Actor(type="human", identifier="cli"), framework="plain",
+        payload={"verdict": {"findings": [
+            {"id": finding_id, "severity": "blocker", "file": "src/a.py", "summary": "boom"}]}}))
+    refresh_state_after_emit(ws)
+
+
+def _verdict_with_prior(ws: Path, digest: str, prior: str) -> Path:
+    p = ws / "v_prior.yaml"
+    items = "\n".join(f"  - item: {i}\n    status: pass"
+                      for i in ["spec-compliance", "scope-adherence", "code-quality", "edge-cases"])
+    p.write_text(f"bundle_digest: {digest}\nchecklist:\n{items}\nfindings: []\n{prior}")
+    return p
+
+
+def test_approve_from_rejected_blocks_undisposed_finding(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    digest = _prepare_digest(ws)
+    _to_rejected(ws)
+    p = _good_verdict(ws, digest)  # no prior_findings → f-001 undisposed
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
+                                  "--reviewer", "code-reviewer", "--verdict-file", str(p)])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "f-001" in r.output
+
+
+def test_approve_from_rejected_passes_when_disposed(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    digest = _prepare_digest(ws)
+    _to_rejected(ws)
+    p = _verdict_with_prior(
+        ws, digest, "prior_findings:\n  - id: f-001\n    disposition: resolved\n")
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
+                                  "--reviewer", "code-reviewer", "--verdict-file", str(p)])
+    assert r.exit_code == EXIT_OK, r.output
+
+
+def test_approve_from_awaiting_does_not_require_prior(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)  # state AWAITING_CODE_REVIEW, no reject
+    digest = _prepare_digest(ws)
+    p = _good_verdict(ws, digest)
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
+                                  "--reviewer", "code-reviewer", "--verdict-file", str(p)])
+    assert r.exit_code == EXIT_OK, r.output  # D inert from AWAITING_CODE_REVIEW
