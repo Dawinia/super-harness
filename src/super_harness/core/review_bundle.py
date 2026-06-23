@@ -47,8 +47,10 @@ def load_base_branch(root: Path) -> str:
     if not isinstance(parsed, dict):
         return _DEFAULT_BASE
     review = parsed.get("review")
-    if isinstance(review, dict) and isinstance(review.get("base_branch"), str):
-        return review["base_branch"]
+    if isinstance(review, dict):
+        base = review.get("base_branch")
+        if isinstance(base, str):
+            return base
     return _DEFAULT_BASE
 
 

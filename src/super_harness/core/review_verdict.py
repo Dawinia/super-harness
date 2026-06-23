@@ -53,7 +53,9 @@ def parse_verdict_file(path: Path) -> dict[str, Any]:
             raise VerdictError(f"each checklist entry needs a string `item`: {entry!r}")
         status = entry.get("status")
         if status not in _STATUSES:
-            raise VerdictError(f"checklist[{entry.get('item')!r}].status must be one of {sorted(_STATUSES)}")
+            raise VerdictError(
+                f"checklist[{entry.get('item')!r}].status must be one of {sorted(_STATUSES)}"
+            )
         any_fail = any_fail or status == "fail"
     findings = parsed.get("findings") or []
     if not isinstance(findings, list):
