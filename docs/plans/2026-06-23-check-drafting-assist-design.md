@@ -104,8 +104,10 @@ the block format inline (the part that closes A/C):
 - Prefer import/access patterns over bare substrings to dodge prose/yaml false
   positives.
 - The check runs through the **host's `/bin/sh` and `grep`** (the runner enforces
-  no regex flavor), so prefer portable **POSIX BRE/ERE** across BSD/macOS, GNU,
-  and ugrep.
+  no regex flavor), so prefer portable patterns. (Implementation note: the shipped
+  recipe phrases this as "avoid GNU-only `grep` extensions" rather than the
+  jargon "POSIX BRE/ERE" — deliberate de-jargon per the project's plain-language
+  rule.)
 - The check **must exit nonzero on violation**; `! grep ...` inverts grep's exit.
 - Know the **denylist ceiling** (`^import` misses `as` / `from` forms) and record
   it in the decision body.
