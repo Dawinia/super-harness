@@ -182,3 +182,12 @@ def test_verify_quiet_suppresses_disclosure(tmp_path, monkeypatch):
         "attest", "verify", "--base", "main", "--head", "HEAD"])
     assert r.exit_code == 0
     assert "review independence:" not in r.output
+
+
+def test_independence_line_override_skip():
+    from super_harness.cli.attest import _independence_line
+    line = _independence_line(
+        {"classification": "skipped", "reviewer": "t", "skipped": True,
+         "override": True, "reason": "deadlock"})
+    assert "OVERRIDE" in line
+    assert "deadlock" in line

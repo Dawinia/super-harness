@@ -43,7 +43,10 @@ from super_harness.core.review_checklist import resolve_checklist
 from super_harness.core.review_verdict import (
     VerdictError,
     check_coverage,
+    check_disposed,
+    derive_open_findings,
     parse_verdict_file,
+    read_change_events,
 )
 from super_harness.core.scope_match import (
     GitScopeError,
@@ -199,6 +202,19 @@ def _validate_code_review_verdict(
             message="verdict is stale — its bundle_digest does not match the in-scope diff.",
             hint="The code changed since `review prepare`; re-prepare and re-review."), err=True)
         sys.exit(EXIT_VALIDATION)
+
+    # D (slice-2): an approve emitted FROM CODE_REVIEW_REJECTED must dispose every
+    # open finding from prior code_review_failed verdicts. Inert otherwise.
+    if cs is not None and cs.current_state == "CODE_REVIEW_REJECTED":
+        events = read_change_events(events_path(root), change)
+        open_ids = derive_open_findings(events, change)
+        undisposed = check_disposed(verdict, open_ids)
+        if undisposed:
+            click.echo(format_error(subcommand=subcommand,
+                message=f"approve does not dispose prior open finding(s): {', '.join(undisposed)}",
+                hint="Add a prior_findings entry (resolved | wontfix+note) for each open finding."),
+                err=True)
+            sys.exit(EXIT_VALIDATION)
     return verdict
 
 
@@ -267,21 +283,35 @@ def reject(ctx: click.Context, change: str, reviewer: str, reason: str,
 @review_group.command("skip")
 @click.argument("change")
 @_reviewer_opt
-@click.option("--reason", default="manual_skip", help="Audit reason recorded on the event.")
+@click.option("--reason", default=None, help="Audit reason recorded on the event "
+              "(default: manual_skip; REQUIRED with --override).")
+@click.option("--override", is_flag=True, default=False,
+              help="Deliberate, disclosed override: a bare skip blocks at the merge "
+                   "gate; --override (with --reason) passes-with-disclosure.")
 @_as_opt
 @click.pass_context
-def skip(ctx: click.Context, change: str, reviewer: str, reason: str,
-         as_identity: str | None) -> None:
+def skip(ctx: click.Context, change: str, reviewer: str, reason: str | None,
+         override: bool, as_identity: str | None) -> None:
     """Escape hatch — PASS a stuck reviewer (== approve with reason=manual_skip).
 
-    Stamps a structured ``payload["skipped"] = True`` marker so the merge-boundary
-    independence disclosure can distinguish a *skipped* review from a real one,
-    independent of the free-text ``--reason`` (HG-12 cut 1).
+    Stamps ``payload["skipped"]=True`` so the merge-boundary disclosure can tell a
+    skipped review from a real one. A bare skip of ``code-reviewer`` is a merge-gate
+    blocker (``attest verify``); ``--override --reason "<why>"`` stamps
+    ``payload["override"]=True`` and is treated as pass-with-disclosure (slice-2 E).
     """
+    if override and not reason:
+        click.echo(format_error(subcommand="review skip",
+            message="--override requires --reason explaining the deliberate skip.",
+            hint='e.g. review skip <c> --reviewer code-reviewer --override --reason "why".'),
+            err=True)
+        sys.exit(EXIT_VALIDATION)
+    extra: dict[str, object] = {"skipped": True}
+    if override:
+        extra["override"] = True
     _emit_verdict(
         ctx, subcommand="review skip", change=change, reviewer=reviewer,
-        event_type=_REVIEWER_PASS[reviewer], reason=reason, as_identity=as_identity,
-        extra_payload={"skipped": True},
+        event_type=_REVIEWER_PASS[reviewer], reason=reason or "manual_skip",
+        as_identity=as_identity, extra_payload=extra,
     )
 
 

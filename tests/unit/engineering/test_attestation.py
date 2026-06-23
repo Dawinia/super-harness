@@ -383,3 +383,66 @@ def test_independence_for_attestation_tolerates_malformed_line(tmp_path: Path) -
     )
     # tolerant parse: malformed line skipped, never raises
     assert independence_for_attestation(p)["code_review"]["classification"] == "independent"
+
+
+def _events(*specs):
+    """Build a list[Event] from (type, payload) specs for change 'c'."""
+    out = []
+    for etype, payload in specs:
+        out.append(Event(
+            event_id=new_event_id(), type=etype, change_id="c",
+            timestamp=utc_now_iso(), actor=Actor(type="human", identifier="t"),
+            framework="plain", payload=payload or {}))
+    return out
+
+
+def test_derive_independence_surfaces_override_and_reason():
+    evs = _events(
+        ("intent_declared", {}),
+        ("code_review_passed", {"reviewer": "code-reviewer", "reason": "deadlock",
+                                "skipped": True, "override": True}))
+    cr = derive_independence(evs)["code_review"]
+    assert cr["skipped"] is True
+    assert cr["override"] is True
+    assert cr["reason"] == "deadlock"
+
+
+def test_derive_independence_bare_skip_no_override():
+    evs = _events(
+        ("intent_declared", {}),
+        ("code_review_passed", {"reviewer": "code-reviewer", "reason": "manual_skip",
+                                "skipped": True}))
+    cr = derive_independence(evs)["code_review"]
+    assert cr["skipped"] is True
+    assert cr["override"] is False
+
+
+def _ready_skip_scope(root: Path, slug: str, files: list[str], *, override: bool) -> None:
+    att_dir = root / ".harness" / "attestations"
+    att_dir.mkdir(parents=True, exist_ok=True)
+    w = EventWriter(att_dir / f"{slug}.jsonl")
+    _emit(w, "intent_declared", slug)
+    _emit(w, "plan_ready", slug, {"scope": {"files": files}})
+    _emit(w, "plan_approved", slug)
+    _emit(w, "implementation_started", slug)
+    _emit(w, "verification_passed", slug)
+    _emit(w, "implementation_complete", slug)
+    pay = {"reviewer": "code-reviewer", "reason": "why", "skipped": True}
+    if override:
+        pay["override"] = True
+    _emit(w, "code_review_passed", slug, pay)
+
+
+def test_verify_bare_skip_blocks(tmp_path):
+    _ready_skip_scope(tmp_path, "s", ["src/x.py"], override=False)
+    diff = [DiffEntry("A", (".harness/attestations/s.jsonl",)), DiffEntry("M", ("src/x.py",))]
+    v = verify_attestations(tmp_path, diff)
+    assert not v.ok
+    assert any("skipped without --override" in b for b in v.blockers)
+
+
+def test_verify_override_skip_passes(tmp_path):
+    _ready_skip_scope(tmp_path, "s", ["src/x.py"], override=True)
+    diff = [DiffEntry("A", (".harness/attestations/s.jsonl",)), DiffEntry("M", ("src/x.py",))]
+    v = verify_attestations(tmp_path, diff)
+    assert v.ok, v.blockers
