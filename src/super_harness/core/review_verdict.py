@@ -133,6 +133,15 @@ def derive_open_findings(events: list[Event], change_id: str) -> list[str]:
     return list(open_ids)
 
 
+def check_disposed(verdict: dict[str, Any], open_ids: list[str]) -> list[str]:
+    """Return the open ids the verdict's `prior_findings` does NOT dispose (in order)."""
+    disposed = {
+        pf["id"] for pf in (verdict.get("prior_findings") or [])
+        if isinstance(pf, dict) and isinstance(pf.get("id"), str)
+    }
+    return [i for i in open_ids if i not in disposed]
+
+
 def check_coverage(verdict: dict[str, Any], required_items: list[str]) -> list[str]:
     """Return the required checklist item ids NOT covered by the verdict (in order)."""
     covered = {e["item"] for e in verdict["checklist"]}

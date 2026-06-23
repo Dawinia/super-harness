@@ -188,3 +188,12 @@ def test_open_findings_dispose_unknown_id_is_noop() -> None:
 def test_open_findings_ignores_other_change_and_non_failed() -> None:
     from super_harness.core.review_verdict import derive_open_findings
     assert derive_open_findings([_failed("other", ["f1"])], "c") == []
+
+
+def test_check_disposed() -> None:
+    from super_harness.core.review_verdict import check_disposed
+
+    verdict = {"prior_findings": [{"id": "f1", "disposition": "resolved"}]}
+    assert check_disposed(verdict, ["f1"]) == []
+    assert check_disposed(verdict, ["f1", "f2"]) == ["f2"]  # order preserved
+    assert check_disposed({}, ["f1"]) == ["f1"]  # no prior_findings → all undisposed
