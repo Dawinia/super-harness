@@ -724,3 +724,43 @@ def test_reconcile_idempotent_noop(tmp_path):
     CliRunner().invoke(main, ["--workspace", str(root), "decision", "reconcile", "d-t2"])
     b = parse_decision_file(root / "docs/decisions/d-t2.md").reconciled_anchors
     assert a == b  # same fingerprints, no drift introduced
+
+
+def test_new_prints_birth_advisory_on_stderr(tmp_path):
+    root = _init(tmp_path)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "new", "d-a", "--text", "x"])
+    assert r.exit_code == 0, r.output
+    assert "created docs/decisions/d-a.md (proposed)" in r.stdout
+    assert "context-only" in r.stderr
+    assert "Arming a decision" in r.stderr
+    assert "--dry-run" not in r.stderr
+    assert "Arming a decision" not in r.stdout
+    # lead-with the valid-outcome framing: position, not just presence
+    assert r.stderr.index("context-only") < r.stderr.index("Arming a decision")
+
+
+def test_dry_run_tier3_keeps_stdout_line_and_adds_stderr_pointer(tmp_path):
+    root = _init(tmp_path)
+    CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "new", "d-c", "--text", "ctx"])
+    r = CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "ratify", "d-c", "--dry-run"])
+    assert r.exit_code == 0, r.output
+    assert "no check block (tier-3 context) - nothing to bite-test" in r.stdout
+    assert "valid outcome" in r.stderr
+    assert "Arming a decision" in r.stderr
+    assert r.stderr.index("valid outcome") < r.stderr.index("Arming a decision")
+    assert "Arming a decision" not in r.stdout
+
+
+def test_committing_ratify_of_tier3_prints_no_advisory(tmp_path):
+    root = _init(tmp_path)
+    CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "new", "d-c", "--text", "ctx"])
+    r = CliRunner().invoke(
+        main, ["--workspace", str(root), "decision", "ratify", "d-c"])
+    assert r.exit_code == 0, r.output
+    assert "ratified d-c" in r.stdout
+    assert "Arming a decision" not in r.stdout
+    assert "Arming a decision" not in r.stderr
