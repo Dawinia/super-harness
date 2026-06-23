@@ -213,3 +213,37 @@ def test_review_approve_default_identity_via_resolver(tmp_path: Path, monkeypatc
     assert r.exit_code == EXIT_OK, r.output
     ev = _last(tmp_path, type="plan_approved", change_id="c")
     assert ev["actor"]["identifier"] == "git@x"
+
+
+def test_skip_override_requires_reason(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_approved",
+          "implementation_started", "verification_passed", "implementation_complete")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "review", "skip", "c",
+                                  "--reviewer", "code-reviewer", "--override"])
+    assert r.exit_code == 2, r.output
+    assert "reason" in r.output.lower()
+    assert _event_types(tmp_path)[-1] == "implementation_complete"  # nothing emitted
+
+
+def test_skip_override_stamps_payload(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_approved",
+          "implementation_started", "verification_passed", "implementation_complete")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "review", "skip", "c",
+                                  "--reviewer", "code-reviewer", "--override",
+                                  "--reason", "deadlocked CI"])
+    assert r.exit_code == 0, r.output
+    last = json.loads(events_path(tmp_path).read_text().splitlines()[-1])
+    assert last["payload"]["skipped"] is True
+    assert last["payload"]["override"] is True
+    assert last["payload"]["reason"] == "deadlocked CI"
+
+
+def test_bare_skip_defaults_reason_no_override(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_approved",
+          "implementation_started", "verification_passed", "implementation_complete")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "review", "skip", "c",
+                                  "--reviewer", "code-reviewer"])
+    assert r.exit_code == 0, r.output
+    last = json.loads(events_path(tmp_path).read_text().splitlines()[-1])
+    assert last["payload"]["reason"] == "manual_skip"
+    assert "override" not in last["payload"]
