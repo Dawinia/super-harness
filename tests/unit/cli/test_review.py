@@ -172,12 +172,12 @@ def _last(ws: Path, *, type: str, change_id: str) -> dict:
 
 
 def test_review_approve_records_as_identity(tmp_path: Path) -> None:
-    _seed(tmp_path, "c", *_PREFIX)
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
     r = CliRunner().invoke(main, [
         "--workspace", str(tmp_path), "review", "approve", "c",
-        "--reviewer", "code-reviewer", "--as", "bob@example.com"])
+        "--reviewer", "plan-reviewer", "--as", "bob@example.com"])
     assert r.exit_code == EXIT_OK, r.output
-    ev = _last(tmp_path, type="code_review_passed", change_id="c")
+    ev = _last(tmp_path, type="plan_approved", change_id="c")
     assert ev["actor"]["identifier"] == "bob@example.com"
     assert "skipped" not in ev["payload"]  # approve must NOT set the skip marker
 
@@ -204,12 +204,12 @@ def test_review_skip_sets_structured_marker(tmp_path: Path) -> None:
 
 
 def test_review_approve_default_identity_via_resolver(tmp_path: Path, monkeypatch) -> None:
-    _seed(tmp_path, "c", *_PREFIX)
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
     monkeypatch.setattr(
         "super_harness.cli.review.resolve_identity", lambda ws, override=None: "git@x"
     )
     r = CliRunner().invoke(main, [
-        "--workspace", str(tmp_path), "review", "approve", "c", "--reviewer", "code-reviewer"])
+        "--workspace", str(tmp_path), "review", "approve", "c", "--reviewer", "plan-reviewer"])
     assert r.exit_code == EXIT_OK, r.output
-    ev = _last(tmp_path, type="code_review_passed", change_id="c")
+    ev = _last(tmp_path, type="plan_approved", change_id="c")
     assert ev["actor"]["identifier"] == "git@x"
