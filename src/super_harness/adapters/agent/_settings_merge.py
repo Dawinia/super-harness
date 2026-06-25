@@ -60,7 +60,13 @@ _SESSION_OURS_MARKER = "change resume"
 _SESSION_TIMEOUT = 10
 
 
-def merge_pre_tool_use_hook(settings_path: Path, *, command: str) -> None:
+def merge_pre_tool_use_hook(
+    settings_path: Path,
+    *,
+    command: str,
+    matcher: str = _MATCHER,
+    marker: str = _OURS_MARKER,
+) -> None:
     """Register super-harness's PreToolUse hook in ``settings_path``, safely.
 
     Computes the desired settings (existing config with any prior super-harness
@@ -87,8 +93,8 @@ def merge_pre_tool_use_hook(settings_path: Path, *, command: str) -> None:
     hooks = _ensure_hooks_dict(settings)
     pre_tool_use = _ensure_pre_tool_use_list(hooks)
 
-    _strip_super_harness_entries(pre_tool_use)
-    pre_tool_use.append(_hook_entry(command))
+    _strip_entries(pre_tool_use, marker)
+    pre_tool_use.append(_hook_entry(command, matcher))
 
     # `_ensure_hooks_dict` / `_ensure_pre_tool_use_list` use setdefault, which
     # can add empty "hooks"/"PreToolUse" scaffolding to `settings` that was not
@@ -106,7 +112,12 @@ def merge_pre_tool_use_hook(settings_path: Path, *, command: str) -> None:
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
 
 
-def merge_session_start_hook(settings_path: Path, *, command: str) -> None:
+def merge_session_start_hook(
+    settings_path: Path,
+    *,
+    command: str,
+    marker: str = _SESSION_OURS_MARKER,
+) -> None:
     """Register super-harness's SessionStart hook in ``settings_path``, safely.
 
     Symmetric with :func:`merge_pre_tool_use_hook`: computes the desired settings
@@ -140,7 +151,7 @@ def merge_session_start_hook(settings_path: Path, *, command: str) -> None:
     hooks = _ensure_hooks_dict(settings)
     session_start = _ensure_session_start_list(hooks)
 
-    _strip_session_start_entries(session_start)
+    _strip_entries(session_start, marker)
     session_start.append(_session_start_entry(command))
 
     if settings == original:
@@ -219,24 +230,6 @@ def _ensure_event_list(hooks: dict[str, Any], event: str) -> list[Any]:
     return entries
 
 
-def _strip_super_harness_entries(pre_tool_use: list[Any]) -> None:
-    """Remove super-harness's own prior PreToolUse hooks, in place.
-
-    Identified by the stable ``--agent claude-code`` marker (regardless of
-    binary path). See :func:`_strip_entries` for the per-entry pruning rule.
-    """
-    _strip_entries(pre_tool_use, _OURS_MARKER)
-
-
-def _strip_session_start_entries(session_start: list[Any]) -> None:
-    """Remove super-harness's own prior SessionStart hooks, in place.
-
-    Identified by the stable ``change resume`` marker (regardless of binary
-    path). See :func:`_strip_entries` for the per-entry pruning rule.
-    """
-    _strip_entries(session_start, _SESSION_OURS_MARKER)
-
-
 def _strip_entries(entries: list[Any], marker: str) -> None:
     """Remove hooks whose ``command`` contains ``marker``, in place.
 
@@ -275,9 +268,9 @@ def _command_contains(hook: Any, marker: str) -> bool:
     return isinstance(command, str) and marker in command
 
 
-def _hook_entry(command: str) -> dict[str, Any]:
+def _hook_entry(command: str, matcher: str = _MATCHER) -> dict[str, Any]:
     return {
-        "matcher": _MATCHER,
+        "matcher": matcher,
         "hooks": [{"type": "command", "command": command, "timeout": _TIMEOUT}],
     }
 
