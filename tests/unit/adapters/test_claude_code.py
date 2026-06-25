@@ -375,3 +375,11 @@ def test_on_uninstall_no_backup_is_noop(tmp_path: Path) -> None:
     ClaudeCodeAdapter().on_uninstall(tmp_path)
 
     assert json.loads(settings_path.read_text()) == {"model": "keep"}
+
+
+def test_claude_adapter_install_detail_strings():
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
+    a = ClaudeCodeAdapter()
+    assert a.local_config_relpath() == ".claude/settings.local.json"
+    assert a.installed_detail() == "PreToolUse gate hook registered in .claude/settings.local.json"
