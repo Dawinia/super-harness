@@ -368,3 +368,9 @@ def test_load_class_from_path_wrong_base(tmp_path: Path) -> None:
             mod, "NotAnAdapter", base,
             module_name="super_harness_user.t_bad", error_label="lbl",
         )
+
+
+def test_codex_is_registered():
+    from super_harness.adapters.registry import get_builtin
+    from super_harness.adapters.agent.codex import CodexAdapter
+    assert get_builtin("codex") is CodexAdapter
