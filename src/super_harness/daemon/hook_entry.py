@@ -179,6 +179,7 @@ def _decide(tool: str, file: str | None) -> tuple[Literal["allow", "block"], str
     # (`touch .harness/gate-disabled` / `rm`). Robust where `daemon stop` is not
     # — the unreachable path respawns the daemon, so stop only reprieves one edit.
     if (root / ".harness" / "gate-disabled").exists():
+        _record_bypass(root, tool=tool, file=file)
         return "allow", "gate disabled (.harness/gate-disabled present)"
 
     # Resolve change_id: env override > derived active change > None.
@@ -195,6 +196,36 @@ def _decide(tool: str, file: str | None) -> tuple[Literal["allow", "block"], str
     return supervisor.gate_pre_tool_use(
         root, tool=tool, file=file, change_id=change_id
     )
+
+
+def _record_bypass(root: Path, *, tool: str, file: str | None) -> None:
+    """Best-effort record a `gate_bypassed` audit event. NEVER raises — recording
+    must not break the safety path. Skips when no active change (a bypass with no
+    change has no merge gate to disclose at; design §4)."""
+    try:
+        import os
+
+        from super_harness.core.clock import utc_now_iso
+        from super_harness.core.events import Actor, Event
+        from super_harness.core.paths import events_path
+        from super_harness.core.ulid import new_event_id
+        from super_harness.core.writer import EventWriter
+
+        change_id = os.environ.get("SUPER_HARNESS_CHANGE_ID") or _read_active_change_id(root)
+        if not change_id:
+            return
+        ev = Event(
+            event_id=new_event_id(),
+            type="gate_bypassed",
+            change_id=change_id,
+            timestamp=utc_now_iso(),
+            actor=Actor(type="sensor", identifier="gate"),
+            framework="plain",
+            payload={"tool": tool, "file": file or ""},
+        )
+        EventWriter(events_path(root)).emit(ev, skip_validation=True)
+    except Exception:
+        pass
 
 
 def _read_active_change_id(root: Path) -> str | None:
