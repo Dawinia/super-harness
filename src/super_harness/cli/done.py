@@ -358,7 +358,7 @@ def done_cmd(
     # refreshed). Emit implementation_complete through the strict writer.
     if not _emit_implementation_complete(ctx, root, writer, resolved, pr):
         return  # error already reported + sys.exit()'d inside
-    _report_done_success(ctx, resolved, result.details)
+    _report_done_success(ctx, root, resolved, result.details)
 
 
 def _done_skip_verify(
@@ -396,7 +396,7 @@ def _done_skip_verify(
 
     if not _emit_implementation_complete(ctx, root, writer, slug, pr):
         return  # error already reported + sys.exit()'d inside
-    _report_done_success(ctx, slug, data=None)
+    _report_done_success(ctx, root, slug, data=None)
 
 
 def _emit_implementation_complete(
@@ -438,10 +438,27 @@ def _emit_implementation_complete(
     return True
 
 
+def _warn_dead_refs(root: Path) -> None:
+    """Non-blocking heads-up: print any dead doc code-refs to stderr. Never raises/exits."""
+    from super_harness.core.doc_refs import scan_doc_refs
+
+    try:
+        findings = scan_doc_refs(root).findings
+    except Exception:  # a warn must never break `done`
+        return
+    for f in findings:
+        click.echo(
+            f"warning: dead-ref {f.doc_file}:{f.line} `{f.symbol}` "
+            f"(does not resolve in source; fix before review)",
+            err=True,
+        )
+
+
 def _report_done_success(
-    ctx: click.Context, slug: str, data: dict[str, Any] | None
+    ctx: click.Context, root: Path, slug: str, data: dict[str, Any] | None
 ) -> None:
     """Emit the success envelope / line and `sys.exit(EXIT_OK)`."""
+    _warn_dead_refs(root)
     if ctx.obj.get("json"):
         click.echo(
             json_envelope(

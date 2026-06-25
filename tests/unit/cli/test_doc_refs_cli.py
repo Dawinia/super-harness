@@ -48,3 +48,12 @@ def test_doc_refs_gate_clean_exit_0(tmp_path: Path) -> None:
     )
     res = CliRunner().invoke(main, ["--workspace", str(root), "doc", "refs", "--gate"])
     assert res.exit_code == 0
+
+
+def test_done_warn_helper_prints_findings(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    from super_harness.cli.done import _warn_dead_refs
+
+    root = _repo_with_dead_ref(tmp_path)
+    _warn_dead_refs(root)  # must not raise, must not sys.exit
+    err = capsys.readouterr().err
+    assert "_format_rows" in err
