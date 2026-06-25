@@ -47,7 +47,8 @@ def _repo_change(tmp_path: Path) -> Path:
 def _good_verdict(ws: Path, digest: str) -> Path:
     p = ws / "verdict.yaml"
     items = "\n".join(f"  - item: {i}\n    status: pass"
-                      for i in ["spec-compliance", "scope-adherence", "code-quality", "edge-cases"])
+                      for i in ["spec-compliance", "scope-adherence", "code-quality",
+                                "edge-cases", "doc-impact"])
     p.write_text(f"bundle_digest: {digest}\nchecklist:\n{items}\nfindings: []\n")
     return p
 
@@ -121,7 +122,8 @@ def _to_rejected(ws: Path, finding_id: str = "f-001") -> None:
 def _verdict_with_prior(ws: Path, digest: str, prior: str) -> Path:
     p = ws / "v_prior.yaml"
     items = "\n".join(f"  - item: {i}\n    status: pass"
-                      for i in ["spec-compliance", "scope-adherence", "code-quality", "edge-cases"])
+                      for i in ["spec-compliance", "scope-adherence", "code-quality",
+                                "edge-cases", "doc-impact"])
     p.write_text(f"bundle_digest: {digest}\nchecklist:\n{items}\nfindings: []\n{prior}")
     return p
 

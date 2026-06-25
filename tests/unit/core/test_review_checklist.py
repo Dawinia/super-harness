@@ -20,7 +20,9 @@ def _harness(tmp_path: Path) -> Path:
 
 def test_default_when_no_config(tmp_path: Path) -> None:
     _harness(tmp_path)
-    assert resolve_checklist(tmp_path, "code-reviewer") == DEFAULT_CHECKLISTS["code-reviewer"]
+    items = resolve_checklist(tmp_path, "code-reviewer")
+    assert items == DEFAULT_CHECKLISTS["code-reviewer"]
+    assert "doc-impact" in items  # C-layer: semantic doc-impact must be disposed
 
 
 def test_config_override(tmp_path: Path) -> None:

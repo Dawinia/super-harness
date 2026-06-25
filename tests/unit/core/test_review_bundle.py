@@ -70,7 +70,9 @@ def test_assemble_bundle_happy(tmp_path: Path) -> None:
     b = assemble_bundle(ws, change_id="c", reviewer="code-reviewer", base="main")
     assert b["diff_in_scope"] == ["src/a.py"]
     assert b["out_of_scope"] == ["other.py"]
-    assert b["checklist"] == ["spec-compliance", "scope-adherence", "code-quality", "edge-cases"]
+    assert b["checklist"] == [
+        "spec-compliance", "scope-adherence", "code-quality", "edge-cases", "doc-impact",
+    ]
     assert b["bundle_digest"]  # non-empty
     assert b["base"] == "main"
 
