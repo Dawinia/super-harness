@@ -9,8 +9,9 @@ import click
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import Status, json_envelope
 from super_harness.core.doc_check import run_doc_check, truncate_diff
+from super_harness.core.doc_refs import scan_doc_refs
 from super_harness.core.paths import HarnessNotInitialized, find_harness_root
-from super_harness.exit_codes import EXIT_NO_CONFIG
+from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
 
 def _resolve(ctx: click.Context, sub: str) -> Path:
@@ -61,3 +62,49 @@ def check_cmd(ctx: click.Context, fix: bool) -> None:
         if status == "pass":
             click.echo("doc check: clean" if not fix else "doc check: fixed")
     sys.exit(result.exit_code)
+
+
+@doc_group.command("refs")
+@click.option("--gate", is_flag=True,
+              help="Merge-boundary teeth: exit 2 on any high-confidence (backtick) "
+                   "dead code-reference (default mode only warns).")
+@click.pass_context
+def refs_cmd(ctx: click.Context, gate: bool) -> None:
+    """Flag backtick code-symbols in prose docs that no longer resolve in source.
+
+    Default: warn (exit 0). `--gate`: block (exit 2) on any high-confidence finding.
+    Honors the global --json flag.
+    """
+    root = _resolve(ctx, "doc refs")
+    result = scan_doc_refs(root)
+    high = [f for f in result.findings if f.confidence == "high"]
+
+    status: Status
+    if gate and high:
+        exit_code, status = EXIT_VALIDATION, "fail"
+    elif result.findings:
+        exit_code, status = EXIT_OK, "warning"
+    else:
+        exit_code, status = EXIT_OK, "pass"
+
+    if ctx.obj.get("json"):
+        click.echo(json_envelope(
+            command="doc refs",
+            status=status,
+            exit_code=exit_code,
+            data={"findings": [
+                {"doc_file": f.doc_file, "line": f.line,
+                 "symbol": f.symbol, "confidence": f.confidence}
+                for f in result.findings
+            ]},
+        ))
+    else:
+        for f in result.findings:
+            label = "DEAD-REF" if (gate and f.confidence == "high") else "warning: dead-ref"
+            click.echo(
+                f"{label} {f.doc_file}:{f.line} `{f.symbol}` (does not resolve in source)",
+                err=True,
+            )
+        if status == "pass":
+            click.echo("doc refs: clean")
+    sys.exit(exit_code)
