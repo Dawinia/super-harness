@@ -61,4 +61,6 @@ __pycache__/
 .harness/gate-disabled
 .claude/settings.local.json
 .claude/*.super-harness-backup.*
+.codex/hooks.json
+.codex/*.super-harness-backup.*
 # <<< super-harness gitignore

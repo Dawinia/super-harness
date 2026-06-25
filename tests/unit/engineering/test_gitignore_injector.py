@@ -37,6 +37,8 @@ _CANONICAL_PATHS = (
     ".harness/gate-disabled",
     ".claude/settings.local.json",
     ".claude/*.super-harness-backup.*",
+    ".codex/hooks.json",
+    ".codex/*.super-harness-backup.*",
 )
 
 
@@ -333,3 +335,10 @@ def test_committed_repo_gitignore_block_matches_injector() -> None:
         "Committed .gitignore super-harness block has drifted from "
         "_CANONICAL_PATHS. Run `super-harness sync --gitignore` and commit."
     )
+
+
+def test_canonical_block_covers_codex_hook_config():
+    from super_harness.engineering.gitignore_injector import _render_block
+    body = _render_block()
+    assert ".codex/hooks.json" in body
+    assert ".codex/*.super-harness-backup.*" in body
