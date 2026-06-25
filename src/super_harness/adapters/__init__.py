@@ -131,6 +131,17 @@ class AgentAdapter(ABC):
         """
         pass
 
+    def local_config_relpath(self) -> str:
+        """Workspace-relative path of the per-machine hook config this adapter
+        writes (e.g. ``.claude/settings.local.json``). Default ``""`` = none.
+        Used only for CLI install messaging."""
+        return ""
+
+    def installed_detail(self) -> str:
+        """One-line post-install summary for the CLI (e.g. where the gate hook
+        landed + any required follow-up). Default is generic."""
+        return "agent hooks registered"
+
 
 class FrameworkAdapter(ABC):
     """Bridge to a spec-driven framework (OpenSpec / Spec Kit / Superpowers / Plain).

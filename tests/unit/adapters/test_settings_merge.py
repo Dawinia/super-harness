@@ -378,3 +378,43 @@ def test_session_start_idempotent_reinstall_writes_no_new_backup(
 
     assert sorted(glob.glob(pattern)) == backups_before
     assert settings_path.read_bytes() == bytes_before
+
+
+def test_merge_pre_tool_use_respects_custom_matcher_and_marker(tmp_path):
+    import json
+
+    from super_harness.adapters.agent._settings_merge import merge_pre_tool_use_hook
+
+    p = tmp_path / "hooks.json"
+    merge_pre_tool_use_hook(
+        p,
+        command="/abs/super-harness-hook --agent codex",
+        matcher="^(apply_patch|Edit|Write)$",
+        marker="--agent codex",
+    )
+    data = json.loads(p.read_text())
+    entry = data["hooks"]["PreToolUse"][0]
+    assert entry["matcher"] == "^(apply_patch|Edit|Write)$"
+    assert entry["hooks"][0]["command"] == "/abs/super-harness-hook --agent codex"
+
+
+def test_codex_marker_does_not_strip_claude_pre_tool_use(tmp_path):
+    """A codex re-merge must not remove a co-resident claude-code entry."""
+    import json
+
+    from super_harness.adapters.agent._settings_merge import merge_pre_tool_use_hook
+
+    p = tmp_path / "hooks.json"
+    # Pre-seed a claude-code entry (foreign marker).
+    p.write_text(json.dumps({"hooks": {"PreToolUse": [
+        {"matcher": "Edit", "hooks": [
+            {"type": "command", "command": "/x super-harness-hook --agent claude-code"}]}
+    ]}}))
+    merge_pre_tool_use_hook(
+        p, command="/abs/h --agent codex",
+        matcher="^(apply_patch|Edit|Write)$", marker="--agent codex",
+    )
+    cmds = [h["command"] for e in json.loads(p.read_text())["hooks"]["PreToolUse"]
+            for h in e["hooks"]]
+    assert any("--agent claude-code" in c for c in cmds)  # foreign preserved
+    assert any("--agent codex" in c for c in cmds)        # ours added

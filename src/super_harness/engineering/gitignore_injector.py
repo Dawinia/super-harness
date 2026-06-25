@@ -62,8 +62,11 @@ GITIGNORE_END_MARKER = "# <<< super-harness gitignore"
 #     a machine-specific absolute path, so it must never be committed) and
 #     makes a timestamped backup of `.claude/settings.local.json` before
 #     merging the PreToolUse / SessionStart hooks (defense for safe rollback
-#     per Phase 5 `_settings_merge` design). Without these gitignore lines,
-#     the per-machine settings file and every run's backup file get
+#     per Phase 5 `_settings_merge` design). `adapter install codex` does the
+#     same into `.codex/hooks.json` (+ its timestamped backups); we ignore only
+#     `hooks.json` (+ backups), NEVER `.codex/` wholesale — `.codex/config.toml`
+#     may hold the user's own committed Codex settings. Without these gitignore
+#     lines, the per-machine settings file and every run's backup file get
 #     accidentally committed via `git add -A`. Smoke walkthrough v3 caught
 #     the backup regression (S13). Add new patterns here when other agent
 #     adapters ship a similar local-settings / backup scheme.
@@ -77,6 +80,8 @@ _CANONICAL_PATHS: tuple[str, ...] = (
     ".harness/gate-disabled",
     ".claude/settings.local.json",
     ".claude/*.super-harness-backup.*",
+    ".codex/hooks.json",
+    ".codex/*.super-harness-backup.*",
 )
 
 

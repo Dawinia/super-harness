@@ -1,6 +1,7 @@
 """Unit tests for hook_entry._decide's file-based kill switch."""
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 import pytest
@@ -60,3 +61,54 @@ def test_gate_disabled_sentinel_allows_with_corrupt_state(
 
     assert decision == "allow"
     assert "gate-disabled" in reason
+
+
+def test_codex_shim_blocks_with_deny_json(monkeypatch, capsys):
+    import json
+
+    from super_harness.daemon import hook_entry
+
+    monkeypatch.setattr(hook_entry, "_decide", lambda tool, file: ("block", "plan not approved"))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"tool_name": "apply_patch", "tool_input": {"command": "*** patch"}})))
+    with pytest.raises(SystemExit) as exc:
+        hook_entry._run_codex_shim()
+    assert exc.value.code == 0  # Codex deny is in the JSON, NOT the exit code
+    out = json.loads(capsys.readouterr().out)
+    hso = out["hookSpecificOutput"]
+    assert hso["hookEventName"] == "PreToolUse"
+    assert hso["permissionDecision"] == "deny"
+    assert "plan not approved" in hso["permissionDecisionReason"]
+
+
+def test_codex_shim_allows_silently(monkeypatch, capsys):
+    import json
+
+    from super_harness.daemon import hook_entry
+
+    monkeypatch.setattr(hook_entry, "_decide", lambda tool, file: ("allow", "ok"))
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(
+        {"tool_name": "apply_patch", "tool_input": {"command": "x"}})))
+    with pytest.raises(SystemExit) as exc:
+        hook_entry._run_codex_shim()
+    assert exc.value.code == 0
+    assert capsys.readouterr().out == ""  # no deny JSON on allow
+
+
+def test_codex_shim_malformed_stdin_fails_open(monkeypatch):
+    from super_harness.daemon import hook_entry
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+    with pytest.raises(SystemExit) as exc:
+        hook_entry._run_codex_shim()
+    assert exc.value.code == 0  # fail-open ALLOW
+
+
+def test_main_routes_agent_codex(monkeypatch):
+    from super_harness.daemon import hook_entry
+
+    called = {}
+    monkeypatch.setattr(hook_entry, "_run_codex_shim", lambda: called.setdefault("yes", True))
+    monkeypatch.setattr("sys.argv", ["super-harness-hook", "--agent", "codex"])
+    hook_entry.main()
+    assert called.get("yes")

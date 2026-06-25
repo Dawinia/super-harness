@@ -8,6 +8,7 @@ is registered in pyproject.toml. Tests skip if the binary isn't on PATH.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -224,6 +225,26 @@ def test_claude_code_shim_exits_2_on_block(workspace: Path) -> None:
         )
         assert result.returncode == 2, result.stderr.decode()
         assert b"AWAITING_PLAN_REVIEW" in result.stderr
+    finally:
+        kill_daemon(workspace)
+
+
+def test_codex_shim_denies_via_stdout_json_on_block(workspace: Path) -> None:
+    """Codex shim: blocking state → exit 0 + deny JSON on STDOUT (not stderr/exit-2)."""
+    write_state(workspace, "c1", "AWAITING_PLAN_REVIEW")
+    _start_daemon(workspace)
+    try:
+        env = {**os.environ, "SUPER_HARNESS_CHANGE_ID": "c1"}
+        stdin = '{"tool_name":"apply_patch","tool_input":{"command":"*** patch"}}'
+        result = subprocess.run(
+            ["super-harness-hook", "--agent", "codex"],
+            cwd=workspace, capture_output=True, env=env,
+            input=stdin.encode(), timeout=5.0,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        out = json.loads(result.stdout.decode())
+        assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+        assert "AWAITING_PLAN_REVIEW" in out["hookSpecificOutput"]["permissionDecisionReason"]
     finally:
         kill_daemon(workspace)
 

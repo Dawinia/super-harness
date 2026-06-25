@@ -33,6 +33,7 @@ import yaml
 
 from super_harness.adapters import AgentAdapter, FrameworkAdapter
 from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+from super_harness.adapters.agent.codex import CodexAdapter
 from super_harness.adapters.framework.openspec import OpenSpecAdapter
 from super_harness.adapters.framework.plain import PlainAdapter
 from super_harness.adapters.framework.superpowers import SuperpowersAdapter
@@ -258,5 +259,6 @@ def activate_with_fallback(
 # --- Built-in registrations (bottom-of-module, after the table + helpers) ---
 register_builtin("plain", PlainAdapter)
 register_builtin("claude-code", ClaudeCodeAdapter)
+register_builtin("codex", CodexAdapter)
 register_builtin("openspec", OpenSpecAdapter)
 register_builtin("superpowers", SuperpowersAdapter)

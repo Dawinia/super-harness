@@ -138,11 +138,11 @@ def adapter_install(ctx: click.Context, name: str) -> None:
 
     # Agent adapters install hooks BEFORE we persist the yaml so a failed
     # install_hooks never leaves a stale adapters.yaml entry behind.
-    created_claude_dir = False
+    created_config_dir = False
     if isinstance(adapter, AgentAdapter):
-        # `.claude/`-absent is fine — install creates it (decision (a)). Note it
-        # so the user knows a new dir appeared (Phase-5 behaviour preserved).
-        created_claude_dir = not adapter.detect(root)
+        # The agent's config dir absent is fine — install creates it (decision
+        # (a)). Note it so the user knows a new dir appeared (Phase-5 preserved).
+        created_config_dir = not adapter.detect(root)
         try:
             adapter.install_hooks(root)
         except RuntimeError as e:
@@ -214,10 +214,12 @@ def adapter_install(ctx: click.Context, name: str) -> None:
             sys.exit(EXIT_GENERIC)
 
     if not ctx.obj.get("quiet"):
-        if created_claude_dir:
-            click.echo("Created .claude/settings.local.json (no .claude/ existed).")
         if isinstance(adapter, AgentAdapter):
-            detail = "PreToolUse gate hook registered in .claude/settings.local.json"
+            rel = adapter.local_config_relpath()
+            if created_config_dir and rel:
+                parent = rel.rsplit("/", 1)[0] if "/" in rel else rel
+                click.echo(f"Created {rel} (no {parent}/ existed).")
+            detail = adapter.installed_detail()
         else:
             detail = "framework adapter registered"
         click.echo(

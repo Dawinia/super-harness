@@ -5,8 +5,8 @@ PreToolUse hook script invokes this binary; the click-less import chain
 saves ~10ms of cold-start cost vs invoking `super-harness gate check`
 (per sensor-gate-architecture §3.6 #5 / daemon-architecture §3.5).
 
-Two invocation modes share ONE decision core (`_decide`); only input
-parsing + the block exit-code differ:
+Three invocation modes share ONE decision core (`_decide`); only input
+parsing + the block signalling differ:
 
   1. Positional (default — generic / shell PreToolUse scripts):
         super-harness-hook <tool> [file]
@@ -22,6 +22,16 @@ parsing + the block exit-code differ:
      block (stderr is fed back to the model) and exit 1 as a NON-blocking
      error (the tool would proceed!) — so the shim MUST exit 2, not 1, on
      block, else blocking silently fails open.
+
+  3. Codex shim:
+        super-harness-hook --agent codex
+     Reads a JSON object from STDIN (Codex delivers PreToolUse input as JSON
+     on stdin) with keys `tool_name` + `tool_input.command`. Codex blocks via
+     a stdout JSON `hookSpecificOutput.permissionDecision: "deny"` (the
+     decision lives in the JSON, NOT the exit code) — so this shim ALWAYS
+     exits 0 and prints the deny object on block, nothing on allow. Codex
+     gives a `command`, not a `file_path`, so the gate decides on lifecycle
+     state with `file=None`.
 
 env SUPER_HARNESS_CHANGE_ID  optional override (both modes); default derives
                               the active (first non-terminal) change from the
@@ -47,6 +57,9 @@ def main() -> None:  # console_script entry
         agent = argv[1] if len(argv) > 1 else ""
         if agent == "claude-code":
             _run_claude_code_shim()
+            return
+        if agent == "codex":
+            _run_codex_shim()
             return
         # Fail-open: never block on a shim contract we don't understand.
         sys.stderr.write(f"super-harness-hook: unknown --agent {agent!r}\n")
@@ -100,6 +113,47 @@ def _run_claude_code_shim() -> None:
             f"  escape hatch: touch .harness/gate-disabled to disable the gate\n"
         )
         sys.exit(2)  # Claude Code: exit 2 = block + stderr → model
+    sys.exit(0)
+
+
+def _run_codex_shim() -> None:
+    """Codex mode: stdin JSON in; deny via stdout JSON `permissionDecision`.
+
+    Codex feeds PreToolUse input as a JSON object on stdin (`tool_name`,
+    `tool_input.command`) and treats `hookSpecificOutput.permissionDecision:
+    "deny"` printed on stdout as a block (the decision lives in the JSON, not the
+    exit code — so we exit 0). Malformed / non-object / missing tool → fail-open
+    ALLOW (exit 0, no output). Codex gives a `command`, not a `file_path`, so the
+    gate decides on lifecycle state with `file=None`.
+    """
+    import json
+
+    try:
+        data = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        sys.exit(0)
+    if not isinstance(data, dict):
+        sys.exit(0)
+    tool = data.get("tool_name") or ""
+    if not tool:
+        sys.exit(0)
+
+    decision, reason = _decide(tool, None)
+    if decision == "block":
+        json.dump(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": (
+                        f"super-harness: {reason} — escape hatch: "
+                        f"touch .harness/gate-disabled to disable the gate"
+                    ),
+                }
+            },
+            sys.stdout,
+        )
+        sys.exit(0)
     sys.exit(0)
 
 
