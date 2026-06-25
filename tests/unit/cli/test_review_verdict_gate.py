@@ -157,3 +157,31 @@ def test_approve_from_awaiting_does_not_require_prior(tmp_path: Path) -> None:
     r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
                                   "--reviewer", "code-reviewer", "--verdict-file", str(p)])
     assert r.exit_code == EXIT_OK, r.output  # D inert from AWAITING_CODE_REVIEW
+
+
+def test_dead_doc_ref_blocks_code_review_approve(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    # commit a doc with a backtick symbol that resolves nowhere in source scope
+    (ws / "docs").mkdir()
+    (ws / "docs" / "guide.md").write_text("the old `_totally_gone` helper is removed\n")
+    _git(ws, "add", "docs/guide.md")
+    _git(ws, "commit", "-qm", "doc")
+    digest = _prepare_digest(ws)   # digest is over in-scope src/ diff, unaffected by the doc
+    p = _good_verdict(ws, digest)  # full verdict → only the dead ref can fail it
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
+                                  "--reviewer", "code-reviewer", "--verdict-file", str(p)])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "_totally_gone" in r.output    # blocked specifically on the dead ref
+
+
+def test_clean_docs_allow_code_review_approve(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    (ws / "docs").mkdir()
+    (ws / "docs" / "guide.md").write_text("see `src` for details\n")  # no code-shaped symbol
+    _git(ws, "add", "docs/guide.md")
+    _git(ws, "commit", "-qm", "doc")
+    digest = _prepare_digest(ws)
+    p = _good_verdict(ws, digest)
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
+                                  "--reviewer", "code-reviewer", "--verdict-file", str(p)])
+    assert r.exit_code == EXIT_OK, r.output

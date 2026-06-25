@@ -27,6 +27,7 @@ import click
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
 from super_harness.core.clock import utc_now_iso
+from super_harness.core.doc_refs import scan_doc_refs
 from super_harness.core.emit_validation import EmitPreconditionError
 from super_harness.core.events import Actor, Event
 from super_harness.core.identity import resolve_identity
@@ -215,6 +216,18 @@ def _validate_code_review_verdict(
                 hint="Add a prior_findings entry (resolved | wontfix+note) for each open finding."),
                 err=True)
             sys.exit(EXIT_VALIDATION)
+
+    # B-layer (design 2026-06-25 §5.1): a high-confidence dead doc code-reference
+    # blocks the code-review approve emit (the primary ③ gate). Last check before
+    # return, after coverage / freshness / dispose.
+    dead = [f for f in scan_doc_refs(root).findings if f.confidence == "high"]
+    if dead:
+        listing = "; ".join(f"{f.doc_file}:{f.line} `{f.symbol}`" for f in dead)
+        click.echo(format_error(subcommand=subcommand,
+            message=f"docs reference code symbol(s) that no longer resolve in source: {listing}",
+            hint="Fix or remove the dead reference(s); `super-harness doc refs` lists them."),
+            err=True)
+        sys.exit(EXIT_VALIDATION)
     return verdict
 
 
