@@ -113,3 +113,18 @@ def test_install_no_harness_exits_3(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert r.exit_code == 3
     assert "super-harness adapter install:" in r.stderr
     assert "Hint:" in r.stderr
+
+
+def test_install_message_is_adapter_driven_not_claude_hardcoded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex install announces .codex/hooks.json, never .claude/ paths."""
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".codex").mkdir()  # codex adapter detect()s on .codex/
+    monkeypatch.setattr(shutil, "which", lambda _name: f"/usr/local/bin/{_name}")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "adapter", "install", "codex"],
+    )
+    assert r.exit_code == 0, r.output
+    assert ".codex/hooks.json" in r.output
+    assert ".claude/" not in r.output
