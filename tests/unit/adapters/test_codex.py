@@ -68,3 +68,5 @@ def test_agents_md_subsection_does_not_teach_kill_switch():
     assert "gate-disabled" not in sub
     assert "surface" in sub.lower()
     assert "human" in sub.lower()
+    assert "kill-switch always works" not in sub
+    assert "kill switch always works" not in sub.lower()

@@ -37,7 +37,7 @@ _AGENTS_MD_SUBSECTION = f"""{_AGENTS_MD_BEGIN}
 
 A **PreToolUse** hook gates this workspace. `apply_patch` edits are blocked by
 super-harness when the current change state forbids the mutation (deterministic
-gate enforcement). `Bash` is never gated, so the kill-switch always works.
+gate enforcement). `Bash` is never gated (see the coverage caveat below).
 
 **REQUIRED trust step:** after `adapter install codex`, the gate is INACTIVE
 until you run `/hooks` in Codex and trust the super-harness hook. Codex skips
