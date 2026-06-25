@@ -151,3 +151,45 @@ def test_kill_switch_with_no_active_change_records_nothing(tmp_path, monkeypatch
 def test_record_bypass_never_raises(tmp_path):
     from super_harness.daemon import hook_entry
     hook_entry._record_bypass(tmp_path / "nonexistent", tool="apply_patch", file=None)
+
+
+def test_block_messages_do_not_teach_escape_hatch(capsys, monkeypatch):
+    """All three shims' BLOCK output must halt-and-surface, never name gate-disabled."""
+    import json
+
+    from super_harness.daemon import hook_entry
+
+    monkeypatch.setattr(
+        hook_entry,
+        "_decide",
+        lambda tool, file: ("block", "INTENT_DECLARED: plan not drafted yet"),
+    )
+
+    # positional: argv list in, stderr out, exit 1 on block
+    with pytest.raises(SystemExit):
+        hook_entry._run_positional(["Edit", "a.py"])
+    err = capsys.readouterr().err
+    assert "gate-disabled" not in err
+    assert "do not bypass" in err.lower()
+
+    # claude-code shim: stdin JSON in, stderr out, exit 2 on block
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(json.dumps({"tool_name": "Edit", "tool_input": {"file_path": "a.py"}})),
+    )
+    with pytest.raises(SystemExit):
+        hook_entry._run_claude_code_shim()
+    err = capsys.readouterr().err
+    assert "gate-disabled" not in err
+    assert "do not bypass" in err.lower()
+
+    # codex shim: stdin JSON in, deny reason in stdout JSON
+    monkeypatch.setattr(
+        "sys.stdin",
+        io.StringIO(json.dumps({"tool_name": "apply_patch", "tool_input": {"command": "x"}})),
+    )
+    with pytest.raises(SystemExit):
+        hook_entry._run_codex_shim()
+    reason = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "gate-disabled" not in reason
+    assert "do not bypass" in reason.lower()

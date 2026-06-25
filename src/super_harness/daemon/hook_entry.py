@@ -50,6 +50,11 @@ from typing import Literal
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import HarnessNotInitialized, find_harness_root
 
+_HALT_HINT = (
+    "Stop and tell the human — run `super-harness status` for the next valid step. "
+    "Do NOT bypass the gate yourself."
+)
+
 
 def main() -> None:  # console_script entry
     argv = sys.argv[1:]
@@ -78,10 +83,7 @@ def _run_positional(argv: list[str]) -> None:
 
     decision, reason = _decide(tool, file)
     if decision == "block":
-        sys.stderr.write(
-            f"super-harness: BLOCK ({reason})\n"
-            f"  escape hatch: touch .harness/gate-disabled to disable the gate\n"
-        )
+        sys.stderr.write(f"super-harness: BLOCK ({reason}). {_HALT_HINT}\n")
         sys.exit(1)
     sys.exit(0)
 
@@ -108,10 +110,7 @@ def _run_claude_code_shim() -> None:
 
     decision, reason = _decide(tool, file)
     if decision == "block":
-        sys.stderr.write(
-            f"super-harness: BLOCK ({reason})\n"
-            f"  escape hatch: touch .harness/gate-disabled to disable the gate\n"
-        )
+        sys.stderr.write(f"super-harness: BLOCK ({reason}). {_HALT_HINT}\n")
         sys.exit(2)  # Claude Code: exit 2 = block + stderr → model
     sys.exit(0)
 
@@ -146,8 +145,7 @@ def _run_codex_shim() -> None:
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
                     "permissionDecisionReason": (
-                        f"super-harness: {reason} — escape hatch: "
-                        f"touch .harness/gate-disabled to disable the gate"
+                        f"super-harness: BLOCK ({reason}). {_HALT_HINT}"
                     ),
                 }
             },
