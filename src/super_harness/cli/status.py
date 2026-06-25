@@ -39,6 +39,7 @@ from super_harness.engineering.reviewer_policy import (
     load_reviewer_strategy,
 )
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
+from super_harness.gates.decisions import SUGGESTIONS
 
 
 @click.command("status")
@@ -122,6 +123,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             changes_data = []
             for cs in target:
                 entry = asdict(cs)
+                entry["next"] = SUGGESTIONS.get(cs.current_state)
                 reviewer, strategy = _reviewer_info(cs)
                 if reviewer is not None:
                     entry["reviewer"] = reviewer
@@ -145,6 +147,9 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                 reviewer, strategy = _reviewer_info(cs)
                 if reviewer is not None:
                     click.echo(f"  reviewer: {reviewer} (strategy: {strategy})")
+                nxt = SUGGESTIONS.get(cs.current_state)
+                if nxt:
+                    click.echo(f"  next: {nxt}")
     except ReviewerPolicyError as e:
         click.echo(format_error(subcommand="status", message=str(e)), err=True)
         sys.exit(EXIT_VALIDATION)
