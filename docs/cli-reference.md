@@ -494,6 +494,23 @@ super-harness doc check [OPTIONS]
 - `3` registry malformed or `.harness/` missing
 - `4` a generator command failed
 
+## super-harness doc refs
+
+Flag backtick code-symbols in prose docs that no longer resolve in source.
+
+```
+super-harness doc refs [OPTIONS]
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `--gate` | flag | `False` | Merge-boundary teeth: exit 2 on any high-confidence (backtick) dead code-reference (default mode only warns). |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+
 ## super-harness done
 
 Verify a change and emit implementation_complete on a pass.

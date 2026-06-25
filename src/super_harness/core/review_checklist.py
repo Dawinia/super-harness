@@ -21,6 +21,7 @@ DEFAULT_CHECKLISTS: dict[str, list[str]] = {
         "scope-adherence",
         "code-quality",
         "edge-cases",
+        "doc-impact",
     ],
     "plan-reviewer": [
         "spec-coverage",
