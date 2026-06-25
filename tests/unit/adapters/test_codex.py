@@ -61,3 +61,10 @@ def test_on_uninstall_restores_earliest_backup(tmp_path, monkeypatch):
     CodexAdapter().install_hooks(tmp_path)  # writes a backup of pristine
     CodexAdapter().on_uninstall(tmp_path)
     assert json.loads(hooks.read_text()) == {"hooks": {"PreToolUse": []}}
+
+
+def test_agents_md_subsection_does_not_teach_kill_switch():
+    sub = CodexAdapter().agents_md_subsection()
+    assert "gate-disabled" not in sub
+    assert "surface" in sub.lower()
+    assert "human" in sub.lower()

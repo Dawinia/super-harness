@@ -83,10 +83,10 @@ When a tool call is blocked by the gate:
 - Run `super-harness status` to see the current change, its state, and why the
   edit was rejected, plus the next valid step.
 - Resume context for a change with `super-harness change resume <change_id>`.
-- **Escape hatch (if the gate is wrong):** from the repo root, `touch
-  .harness/gate-disabled` to disable enforcement immediately, and `rm
-  .harness/gate-disabled` to re-enable. This works even when edits are blocked
-  (the gate never blocks `Bash`).
+- **If a tool call is blocked by the gate:** stop, and surface the block plus the
+  next valid step (`super-harness status`) to the human. Do **not** bypass the gate
+  yourself — the kill switch is a human-only emergency override, and any bypass is
+  disclosed at the merge gate.
 <!-- /super-harness agent: claude-code -->
 ```
 
@@ -113,11 +113,10 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   verb to advance `AWAITING_PLAN_REVIEW → PLAN_APPROVED`; multi-stage
   plan-reviewer is deferred to v0.2 (see project README's "What v0.1
   does NOT ship yet"). Framework adapters auto-emit `plan_ready` when
-  their artifacts exist (OpenSpec watches `tasks.md`). To disable the gate
-  when it is genuinely wrong, use the file-based kill switch instead of
-  hand-editing settings: from the repo root, `touch .harness/gate-disabled`
-  (and `rm .harness/gate-disabled` to re-enable). `Bash` is never gated, so
-  this works even when edits are blocked.
+  their artifacts exist (OpenSpec watches `tasks.md`). A **human** may, as an
+  emergency override, `touch .harness/gate-disabled` (`rm` to re-enable) — agents
+  must not; any bypass is disclosed at the merge gate. See getting-started
+  troubleshooting.
 - **SessionStart never injects context.** Confirm the hook is registered
   (`jq '.hooks.SessionStart' .claude/settings.local.json`); if absent, re-run
   `adapter install claude-code`. If present but no slug is active,
