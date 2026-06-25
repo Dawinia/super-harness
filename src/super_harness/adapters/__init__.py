@@ -131,7 +131,7 @@ class AgentAdapter(ABC):
         """
         pass
 
-    def local_config_relpath(self) -> str:  # noqa: B027
+    def local_config_relpath(self) -> str:
         """Workspace-relative path of the per-machine hook config this adapter
         writes (e.g. ``.claude/settings.local.json``). Default ``""`` = none.
         Used only for CLI install messaging."""

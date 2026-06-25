@@ -65,6 +65,7 @@ def test_gate_disabled_sentinel_allows_with_corrupt_state(
 
 def test_codex_shim_blocks_with_deny_json(monkeypatch, capsys):
     import json
+
     from super_harness.daemon import hook_entry
 
     monkeypatch.setattr(hook_entry, "_decide", lambda tool, file: ("block", "plan not approved"))
@@ -82,6 +83,7 @@ def test_codex_shim_blocks_with_deny_json(monkeypatch, capsys):
 
 def test_codex_shim_allows_silently(monkeypatch, capsys):
     import json
+
     from super_harness.daemon import hook_entry
 
     monkeypatch.setattr(hook_entry, "_decide", lambda tool, file: ("allow", "ok"))

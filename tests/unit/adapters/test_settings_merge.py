@@ -381,8 +381,9 @@ def test_session_start_idempotent_reinstall_writes_no_new_backup(
 
 
 def test_merge_pre_tool_use_respects_custom_matcher_and_marker(tmp_path):
-    from super_harness.adapters.agent._settings_merge import merge_pre_tool_use_hook
     import json
+
+    from super_harness.adapters.agent._settings_merge import merge_pre_tool_use_hook
 
     p = tmp_path / "hooks.json"
     merge_pre_tool_use_hook(
@@ -399,8 +400,9 @@ def test_merge_pre_tool_use_respects_custom_matcher_and_marker(tmp_path):
 
 def test_codex_marker_does_not_strip_claude_pre_tool_use(tmp_path):
     """A codex re-merge must not remove a co-resident claude-code entry."""
-    from super_harness.adapters.agent._settings_merge import merge_pre_tool_use_hook
     import json
+
+    from super_harness.adapters.agent._settings_merge import merge_pre_tool_use_hook
 
     p = tmp_path / "hooks.json"
     # Pre-seed a claude-code entry (foreign marker).
