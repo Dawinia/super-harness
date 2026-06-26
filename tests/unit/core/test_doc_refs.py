@@ -195,3 +195,47 @@ def test_collect_source_identifiers_accepts_token_re(tmp_path):
     assert "valid?" in idents
     default_idents = collect_source_identifiers(tmp_path, include=["**/*"], exclude=["docs/**"])
     assert "valid?" not in default_idents and "valid" in default_idents
+
+
+def _ruby_workspace(root):
+    (root / "lib").mkdir(parents=True, exist_ok=True)
+    (root / "lib" / "account.rb").write_text(
+        "class Account\n"
+        "  def valid?\n    @balance >= 0\n  end\n"
+        "  def total_amount\n    @balance\n  end\n"
+        "  def charge!(cents)\n    @balance -= cents\n  end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    (root / "docs" / "guide.md").write_text(
+        "# Guide\n\nUse `total_amount`. Check `valid?` then `charge!`.\n"
+        "Legacy: `removed_helper` and `deleted?` are gone.\n",
+        encoding="utf-8",
+    )
+    (root / ".harness").mkdir(parents=True, exist_ok=True)
+
+
+def test_ruby_default_pattern_misses_suffix_dead_ref(tmp_path):
+    """Documents TODAY's gap: with the C-family default, a `?`-suffix dead ref is
+    invisible; only the snake_case dead ref `removed_helper` is flagged."""
+    _ruby_workspace(tmp_path)
+    flagged = {f.symbol for f in scan_doc_refs(tmp_path).findings}
+    assert "removed_helper" in flagged
+    assert "deleted?" not in flagged
+
+
+def test_ruby_pattern_flags_suffix_dead_ref_and_resolves_live(tmp_path):
+    """With a Ruby identifier_pattern: `deleted?` (dead) is flagged; `valid?` /
+    `charge!` / `total_amount` (live) resolve; no false positive."""
+    _ruby_workspace(tmp_path)
+    (tmp_path / ".harness" / "language.yaml").write_text(
+        "doc_refs:\n  identifier_pattern: '[@$]{0,2}[A-Za-z_][A-Za-z0-9_]*[?!]?'\n",
+        encoding="utf-8",
+    )
+    flagged = {f.symbol for f in scan_doc_refs(tmp_path).findings}
+    assert "deleted?" in flagged
+    assert "removed_helper" in flagged
+    assert "valid?" not in flagged
+    assert "charge!" not in flagged
+    assert "total_amount" not in flagged
