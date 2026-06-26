@@ -68,8 +68,9 @@ are idempotent: an unchanged file is not rewritten, no backup produced.
 ## What it injects into AGENTS.md
 
 The Claude Code subsection teaches the agent that a deterministic gate is
-enforced and how to recover when an edit is blocked. Verbatim from
-`ClaudeCodeAdapter.agents_md_subsection()`:
+enforced and how to recover when an edit is blocked. Excerpt from
+`ClaudeCodeAdapter.agents_md_subsection()` (the gate-block portion; the full
+subsection also carries a review-protocol section):
 
 ```markdown
 <!-- super-harness agent: claude-code -->
@@ -84,9 +85,9 @@ When a tool call is blocked by the gate:
   edit was rejected, plus the next valid step.
 - Resume context for a change with `super-harness change resume <change_id>`.
 - **If a tool call is blocked by the gate:** stop, and surface the block plus the
-  next valid step (`super-harness status`) to the human. Do **not** bypass the gate
-  yourself — the kill switch is a human-only emergency override, and any bypass is
-  disclosed at the merge gate.
+  next valid step (`super-harness status`) to the human. Do **not** try to disable
+  or work around the gate yourself — overriding it is a human-only decision, and any
+  bypass is recorded and disclosed at the merge gate.
 <!-- /super-harness agent: claude-code -->
 ```
 
@@ -113,10 +114,10 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   verb to advance `AWAITING_PLAN_REVIEW → PLAN_APPROVED`; multi-stage
   plan-reviewer is deferred to v0.2 (see project README's "What v0.1
   does NOT ship yet"). Framework adapters auto-emit `plan_ready` when
-  their artifacts exist (OpenSpec watches `tasks.md`). A **human** may, as an
-  emergency override, `touch .harness/gate-disabled` (`rm` to re-enable) — agents
-  must not; any bypass is disclosed at the merge gate. See getting-started
-  troubleshooting.
+  their artifacts exist (OpenSpec watches `tasks.md`). If the gate is genuinely
+  malfunctioning, a **human** (never an agent) can apply the emergency override
+  documented in getting-started troubleshooting; any bypass is recorded and
+  disclosed at the merge gate.
 - **SessionStart never injects context.** Confirm the hook is registered
   (`jq '.hooks.SessionStart' .claude/settings.local.json`); if absent, re-run
   `adapter install claude-code`. If present but no slug is active,
