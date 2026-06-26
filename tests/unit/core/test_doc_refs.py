@@ -156,10 +156,13 @@ def test_scan_doc_refs_catches_top_level_md(tmp_path: Path) -> None:
 def test_default_tokenizer_equals_old_token_re():
     """Derived default token_re must be byte-for-byte equivalent to the old
     \\b...\\b, incl @/$/?/! adjacency and digit prefixes (design §3.3/§4)."""
-    token_re = re.compile(rf"(?<!\w){IDENTIFIER_PATTERN_DEFAULT}")
+    token_re = re.compile(rf"(?<!\w){IDENTIFIER_PATTERN_DEFAULT}(?!\w)")
     for s in ["@property", "$element jQuery", "a?b:c", "foo!bar", "123abc",
               "var2name x", "self.method_name", "addNumbers PaymentProcessor",
-              "@decorator\ndef f", "__init__"]:
+              "@decorator\ndef f", "__init__",
+              # Unicode adjacency: the trailing (?!\w) must reproduce the old
+              # Unicode-aware \b (ASCII id glued to a Unicode word char → no match).
+              "método", "foo_é", "cafébar x", "über_x"]:
         assert token_re.findall(s) == _TOKEN_RE.findall(s), s
 
 

@@ -151,14 +151,17 @@ invocation (not at import — the pattern is per-workspace):
 
 - `ident_re = re.compile(rf"^{pattern}$")` (replaces `_IDENT_RE`). For the default
   pattern this is `^[A-Za-z_][A-Za-z0-9_]*$` — identical to today's `_IDENT_RE`.
-- `token_re = re.compile(rf"(?<!\w){pattern}")` (replaces `_TOKEN_RE`). The leading
-  negative-lookbehind is on `\w` **only** (`[A-Za-z0-9_]`) — NOT `?!@$`. This is the
-  load-bearing correction (see §4): a leading `\b` on a pattern whose first class is a
-  word-char is exactly `(?<!\w)`, and no trailing boundary is needed because the
-  pattern's trailing `[A-Za-z0-9_]*` (and any optional decoration) is greedy. For the
-  default this is provably equivalent to `\b[A-Za-z_][A-Za-z0-9_]*\b`
-  (`@property`→`property`, `$element`→`element`, `a?b`→`a`,`b`, `123abc`→nothing — all
-  match today). For Ruby it captures `@balance` and `valid?` whole.
+- `token_re = re.compile(rf"(?<!\w){pattern}(?!\w)")` (replaces `_TOKEN_RE`). BOTH
+  lookarounds are on `\w` (`[A-Za-z0-9_]`) — NOT `?!@$`. This is the load-bearing
+  correction (see §4): the old `\b…\b` is exactly `(?<!\w)…(?!\w)`. The trailing
+  `(?!\w)` is required for full equivalence (not just ASCII): without it, an ASCII
+  identifier glued to a **Unicode** word char (`método`, `foo_é`) would mis-tokenize a
+  truncated fragment where the old Unicode-aware trailing `\b` matched nothing. With
+  both lookarounds the default is provably equivalent to `\b[A-Za-z_][A-Za-z0-9_]*\b`
+  on every case (`@property`→`property`, `$element`→`element`, `a?b`→`a`,`b`,
+  `123abc`→nothing, `método`/`foo_é`→nothing — all match today). For Ruby it captures
+  `@balance` and `valid?` whole (the trailing `(?!\w)` holds because `?`/`!` are
+  followed by a non-word char in real source).
 
 The real precision function is **`looks_like_symbol`** (NOT `looks_like_code`); it is
 called by `extract_backtick_symbols` (which strips a trailing `()`). It keeps

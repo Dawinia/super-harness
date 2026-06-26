@@ -161,7 +161,11 @@ def scan_doc_refs(workspace_root: Path) -> DocRefsResult:
     doc_include, doc_exclude = load_doc_scope(workspace_root)
     pattern = load_identifier_pattern(workspace_root)
     ident_re = re.compile(rf"^{pattern}$")
-    token_re = re.compile(rf"(?<!\w){pattern}")
+    # Leading + trailing word-boundary lookarounds make the default pattern
+    # byte-for-byte equivalent to the old `\b[A-Za-z_][A-Za-z0-9_]*\b` INCLUDING
+    # Unicode adjacency (an ASCII identifier glued to a Unicode word char like
+    # `método` matches nothing, same as `\b...\b`). See design §3.3/§4.
+    token_re = re.compile(rf"(?<!\w){pattern}(?!\w)")
     # Doc files must NOT contribute to the source identifier set: code symbols are
     # defined in code, not in prose. Without this, a top-level doc (README.md /
     # AGENTS.md — not under the source-scope `docs/**` exclude) would resolve its

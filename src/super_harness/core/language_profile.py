@@ -20,7 +20,8 @@ from pathlib import Path
 import yaml
 
 # Today's behavior, byte-for-byte. The doc-span matcher anchors this (``^{p}$``);
-# the source tokenizer wraps it (``(?<!\w){p}``). See doc_refs + design §3.3.
+# the source tokenizer wraps it (``(?<!\w){p}(?!\w)``) — both lookarounds reproduce
+# the old ``\b...\b`` exactly, including Unicode adjacency. See doc_refs + design §3.3.
 IDENTIFIER_PATTERN_DEFAULT = r"[A-Za-z_][A-Za-z0-9_]*"
 
 
