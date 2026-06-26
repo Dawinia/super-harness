@@ -59,6 +59,8 @@ Generated from `super_harness.core.transitions`. Each row is a legal `(from, eve
 
 These events are legal but leave the state unchanged (informational sensor signals):
 
+- `gate_bypass_disclosed`
+- `gate_bypassed`
 - `merged_reverted`
 - `pr_opened`
 - `scope_drift_detected`
