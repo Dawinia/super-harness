@@ -30,6 +30,7 @@ import yaml
 
 # Shared file-discovery primitives — reused so the git-aware walk cannot drift.
 from super_harness.core.anchor_scanner import _excluded, _list_files, _matches_any
+from super_harness.core.language_profile import load_identifier_pattern
 from super_harness.core.source_scope import load_source_scope
 
 # Both globs are needed: `fnmatch` does NOT match a top-level file against `**/*.md`
@@ -80,20 +81,26 @@ def load_doc_scope(workspace_root: Path) -> tuple[list[str], list[str]]:
     return list(include), list(exclude)
 
 
-def looks_like_symbol(span: str) -> bool:
+def looks_like_symbol(span: str, ident_re: re.Pattern[str] = _IDENT_RE) -> bool:
     """True if `span` is a single code identifier that looks like code (precision crux).
 
-    Accepts a single identifier (optionally with a trailing `()`) that either contains
-    an underscore or shows a camelCase / PascalCase boundary. Rejects prose words,
-    flags, dotted names, paths, and multi-token spans. See module docstring + design §5.1.
+    Accepts a single identifier (optionally with a trailing `()`) admitted by
+    `ident_re` that EITHER contains `_` / a camelCase boundary OR carries identifier
+    "decoration" (a non-`[A-Za-z0-9_]` char the pattern admits, e.g. `?` `!` `@` `$`).
+    With the default `ident_re` no decoration is possible, so behavior is unchanged.
+    Rejects prose words, flags, dotted names, paths, and multi-token spans.
     """
     candidate = span[:-2] if span.endswith("()") else span
-    if not _IDENT_RE.match(candidate):
+    if not ident_re.match(candidate):
         return False
-    return "_" in candidate or bool(_HAS_INTERNAL_UPPER_RE.search(candidate))
+    has_snake_or_camel = "_" in candidate or bool(_HAS_INTERNAL_UPPER_RE.search(candidate))
+    has_decoration = any(not c.isalnum() and c != "_" for c in candidate)
+    return has_snake_or_camel or has_decoration
 
 
-def extract_backtick_symbols(text: str) -> list[tuple[str, int]]:
+def extract_backtick_symbols(
+    text: str, ident_re: re.Pattern[str] = _IDENT_RE
+) -> list[tuple[str, int]]:
     """Return [(symbol, 1-based-line)] for backtick spans that pass `looks_like_symbol`.
 
     A trailing `()` is stripped from the recorded symbol so resolution matches the
@@ -103,7 +110,7 @@ def extract_backtick_symbols(text: str) -> list[tuple[str, int]]:
     for lineno, line in enumerate(text.splitlines(), start=1):
         for m in _BACKTICK_RE.finditer(line):
             span = m.group(1).strip()
-            if looks_like_symbol(span):
+            if looks_like_symbol(span, ident_re):
                 out.append((span[:-2] if span.endswith("()") else span, lineno))
     return out
 
@@ -113,7 +120,8 @@ def _in_scope(rel: Path, include: list[str], exclude: list[str]) -> bool:
 
 
 def collect_source_identifiers(
-    root: Path, *, include: list[str], exclude: list[str]
+    root: Path, *, include: list[str], exclude: list[str],
+    token_re: re.Pattern[str] = _TOKEN_RE,
 ) -> set[str]:
     """Every identifier token present in any source-scope file. Binary/unreadable skipped."""
     idents: set[str] = set()
@@ -127,7 +135,7 @@ def collect_source_identifiers(
             text = f.read_text(encoding="utf-8")
         except (UnicodeDecodeError, PermissionError, OSError):
             continue
-        idents.update(_TOKEN_RE.findall(text))
+        idents.update(token_re.findall(text))
     return idents
 
 
@@ -151,12 +159,20 @@ def scan_doc_refs(workspace_root: Path) -> DocRefsResult:
     """
     src_include, src_exclude = load_source_scope(workspace_root)
     doc_include, doc_exclude = load_doc_scope(workspace_root)
+    pattern = load_identifier_pattern(workspace_root)
+    ident_re = re.compile(rf"^{pattern}$")
+    # Leading + trailing word-boundary lookarounds make the default pattern
+    # byte-for-byte equivalent to the old `\b[A-Za-z_][A-Za-z0-9_]*\b` INCLUDING
+    # Unicode adjacency (an ASCII identifier glued to a Unicode word char like
+    # `método` matches nothing, same as `\b...\b`). See design §3.3/§4.
+    token_re = re.compile(rf"(?<!\w){pattern}(?!\w)")
     # Doc files must NOT contribute to the source identifier set: code symbols are
     # defined in code, not in prose. Without this, a top-level doc (README.md /
     # AGENTS.md — not under the source-scope `docs/**` exclude) would resolve its
     # own backtick symbols against itself and the gate could never fire on it.
     present = collect_source_identifiers(
-        workspace_root, include=src_include, exclude=src_exclude + doc_include
+        workspace_root, include=src_include, exclude=src_exclude + doc_include,
+        token_re=token_re,
     )
 
     findings: list[DocRef] = []
@@ -171,7 +187,7 @@ def scan_doc_refs(workspace_root: Path) -> DocRefsResult:
         except (UnicodeDecodeError, PermissionError, OSError):
             continue
         rel_str = str(rel)
-        for symbol, lineno in extract_backtick_symbols(text):
+        for symbol, lineno in extract_backtick_symbols(text, ident_re):
             if symbol not in present:
                 findings.append(DocRef(rel_str, lineno, symbol, "high"))
     findings.sort(key=lambda d: (d.doc_file, d.line, d.symbol))

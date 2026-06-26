@@ -1,10 +1,12 @@
 """Unit tests for core.doc_refs (doc dead-reference engine)."""
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 
 from super_harness.core.doc_refs import (
+    _TOKEN_RE,
     DEFAULT_DOC_EXCLUDE,
     DEFAULT_DOC_INCLUDE,
     collect_source_identifiers,
@@ -13,6 +15,7 @@ from super_harness.core.doc_refs import (
     looks_like_symbol,
     scan_doc_refs,
 )
+from super_harness.core.language_profile import IDENTIFIER_PATTERN_DEFAULT
 
 
 def _harness(tmp_path: Path) -> Path:
@@ -148,3 +151,94 @@ def test_scan_doc_refs_catches_top_level_md(tmp_path: Path) -> None:
 
     dead = [(f.symbol, f.doc_file) for f in scan_doc_refs(root).findings]
     assert ("_format_rows", "README.md") in dead
+
+
+def test_default_tokenizer_equals_old_token_re():
+    """Derived default token_re must be byte-for-byte equivalent to the old
+    \\b...\\b, incl @/$/?/! adjacency and digit prefixes (design §3.3/§4)."""
+    token_re = re.compile(rf"(?<!\w){IDENTIFIER_PATTERN_DEFAULT}(?!\w)")
+    for s in ["@property", "$element jQuery", "a?b:c", "foo!bar", "123abc",
+              "var2name x", "self.method_name", "addNumbers PaymentProcessor",
+              "@decorator\ndef f", "__init__",
+              # Unicode adjacency: the trailing (?!\w) must reproduce the old
+              # Unicode-aware \b (ASCII id glued to a Unicode word char → no match).
+              "método", "foo_é", "cafébar x", "über_x"]:
+        assert token_re.findall(s) == _TOKEN_RE.findall(s), s
+
+
+def test_decoration_signal_under_ruby_pattern():
+    ruby = re.compile(r"^[@$]{0,2}[A-Za-z_][A-Za-z0-9_]*[?!]?$")
+    assert looks_like_symbol("valid?", ident_re=ruby) is True
+    assert looks_like_symbol("charge!", ident_re=ruby) is True
+    assert looks_like_symbol("total_amount", ident_re=ruby) is True
+    assert looks_like_symbol("note", ident_re=ruby) is False
+
+
+def test_default_decoration_unchanged():
+    assert looks_like_symbol("addNumbers") is True
+    assert looks_like_symbol("snake_case") is True
+    assert looks_like_symbol("note") is False
+    assert looks_like_symbol("valid?") is False
+
+
+def test_extract_backtick_symbols_accepts_ident_re():
+    ruby = re.compile(r"^[@$]{0,2}[A-Za-z_][A-Za-z0-9_]*[?!]?$")
+    out = extract_backtick_symbols("call `valid?` then `note`.", ident_re=ruby)
+    assert ("valid?", 1) in out
+    assert all(sym != "note" for sym, _ in out)
+
+
+def test_collect_source_identifiers_accepts_token_re(tmp_path):
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "lib" / "a.rb").write_text("def valid?\nend\n", encoding="utf-8")
+    ruby_tok = re.compile(r"(?<!\w)[@$]{0,2}[A-Za-z_][A-Za-z0-9_]*[?!]?")
+    idents = collect_source_identifiers(
+        tmp_path, include=["**/*"], exclude=["docs/**"], token_re=ruby_tok
+    )
+    assert "valid?" in idents
+    default_idents = collect_source_identifiers(tmp_path, include=["**/*"], exclude=["docs/**"])
+    assert "valid?" not in default_idents and "valid" in default_idents
+
+
+def _ruby_workspace(root):
+    (root / "lib").mkdir(parents=True, exist_ok=True)
+    (root / "lib" / "account.rb").write_text(
+        "class Account\n"
+        "  def valid?\n    @balance >= 0\n  end\n"
+        "  def total_amount\n    @balance\n  end\n"
+        "  def charge!(cents)\n    @balance -= cents\n  end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+    (root / "docs").mkdir(parents=True, exist_ok=True)
+    (root / "docs" / "guide.md").write_text(
+        "# Guide\n\nUse `total_amount`. Check `valid?` then `charge!`.\n"
+        "Legacy: `removed_helper` and `deleted?` are gone.\n",
+        encoding="utf-8",
+    )
+    (root / ".harness").mkdir(parents=True, exist_ok=True)
+
+
+def test_ruby_default_pattern_misses_suffix_dead_ref(tmp_path):
+    """Documents TODAY's gap: with the C-family default, a `?`-suffix dead ref is
+    invisible; only the snake_case dead ref `removed_helper` is flagged."""
+    _ruby_workspace(tmp_path)
+    flagged = {f.symbol for f in scan_doc_refs(tmp_path).findings}
+    assert "removed_helper" in flagged
+    assert "deleted?" not in flagged
+
+
+def test_ruby_pattern_flags_suffix_dead_ref_and_resolves_live(tmp_path):
+    """With a Ruby identifier_pattern: `deleted?` (dead) is flagged; `valid?` /
+    `charge!` / `total_amount` (live) resolve; no false positive."""
+    _ruby_workspace(tmp_path)
+    (tmp_path / ".harness" / "language.yaml").write_text(
+        "doc_refs:\n  identifier_pattern: '[@$]{0,2}[A-Za-z_][A-Za-z0-9_]*[?!]?'\n",
+        encoding="utf-8",
+    )
+    flagged = {f.symbol for f in scan_doc_refs(tmp_path).findings}
+    assert "deleted?" in flagged
+    assert "removed_helper" in flagged
+    assert "valid?" not in flagged
+    assert "charge!" not in flagged
+    assert "total_amount" not in flagged
