@@ -412,6 +412,28 @@ is what makes the merge gate refuse work that skipped a lifecycle step.
 
 ---
 
+## 12. Tuning the dead-reference gate for non-C-family languages
+
+`super-harness doc refs` flags backtick code-symbols in your prose docs that no
+longer resolve in source. It recognizes a "code symbol" with a default identifier
+pattern that fits C-family languages (Python, JavaScript/TypeScript, Go, Rust, Java,
+C#, …): `[A-Za-z_][A-Za-z0-9_]*` with snake_case / camelCase shape. These work with
+zero configuration.
+
+A language with other identifier conventions — Ruby's `valid?` / `save!` methods, or
+`@ivar` / `$global` — can tune the pattern in an optional `.harness/language.yaml`:
+
+```yaml
+doc_refs:
+  identifier_pattern: '[@$]{0,2}[A-Za-z_][A-Za-z0-9_]*[?!]?'   # Ruby
+```
+
+The single pattern drives both source tokenization and doc-span recognition, so they
+stay consistent. A missing, malformed, or un-compilable config silently falls back to
+the C-family default — it never breaks the gate.
+
+---
+
 ## Common issues
 
 **`super-harness: command not found` after `pipx install`**
