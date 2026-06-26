@@ -231,6 +231,13 @@ def verify_attestations(root: Path, diff_entries: list[DiffEntry]) -> Attestatio
                 f"attestation {slug}: code review was skipped without --override "
                 "(a deliberate `review skip --override --reason ...` is required to merge)"
             )
+        gb = gate_bypass_for_attestation(att_path)
+        if gb["undisclosed"] > 0:
+            blockers.append(
+                f"attestation {slug}: the gate was bypassed {gb['undisclosed']} time(s) "
+                f"during this change without disclosure (a deliberate "
+                f'`attest write {slug} --disclose-gate-bypass "<reason>"` is required to merge)'
+            )
 
     for f in sorted(subjects - covered):
         blockers.append(f"changed file not covered by any complete lifecycle: {f}")
@@ -310,3 +317,47 @@ def independence_for_attestation(att_path: Path) -> dict[str, Any]:
         except EventSchemaError:
             continue
     return derive_independence(events)
+
+
+# --------------------------------------------------------------------------- #
+# Gate-bypass disclosure (escape-hatch hardening, Part C) — merge blocker
+# --------------------------------------------------------------------------- #
+def gate_bypass_disclosure(events: list[Event]) -> dict[str, Any]:
+    """Count gate bypasses vs disclosures by APPEND ORDER (pure; no timestamps).
+
+    Append position is causal truth. A ``gate_bypassed`` is undisclosed iff it
+    appears after the last ``gate_bypass_disclosed`` in the event list.
+    """
+    last_disclosed = max(
+        (i for i, e in enumerate(events) if e.type == "gate_bypass_disclosed"),
+        default=-1,
+    )
+    undisclosed = sum(
+        1 for i, e in enumerate(events) if e.type == "gate_bypassed" and i > last_disclosed
+    )
+    bypassed = sum(1 for e in events if e.type == "gate_bypassed")
+    disclosed = sum(1 for e in events if e.type == "gate_bypass_disclosed")
+    reasons = [e.payload.get("reason") for e in events if e.type == "gate_bypass_disclosed"]
+    return {
+        "bypassed": bypassed, "disclosed": disclosed,
+        "undisclosed": undisclosed, "reasons": reasons,
+    }
+
+
+def gate_bypass_for_attestation(att_path: Path) -> dict[str, Any]:
+    """Read an attestation file tolerantly and derive gate-bypass disclosure.
+
+    Mirrors ``independence_for_attestation``'s tolerant parse: malformed lines
+    are skipped (never raise) so the merge-gate blocker can never crash on a
+    partially-corrupt attestation.
+    """
+    events: list[Event] = []
+    for raw in att_path.read_text(encoding="utf-8").splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        try:
+            events.append(parse_event_line(s))
+        except EventSchemaError:
+            continue
+    return gate_bypass_disclosure(events)

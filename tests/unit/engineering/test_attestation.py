@@ -446,3 +446,52 @@ def test_verify_override_skip_passes(tmp_path):
     diff = [DiffEntry("A", (".harness/attestations/s.jsonl",)), DiffEntry("M", ("src/x.py",))]
     v = verify_attestations(tmp_path, diff)
     assert v.ok, v.blockers
+
+
+# --------------------------------------------------------------------------- #
+# Task 6: gate-bypass disclosure helper + undisclosed-bypass merge blocker
+# --------------------------------------------------------------------------- #
+def test_gate_bypass_disclosure_counts_append_order():
+    from super_harness.engineering.attestation import gate_bypass_disclosure
+
+    def ev(t):
+        return Event(event_id="x", type=t, change_id="c1", timestamp="2026-01-01T00:00:00Z",
+                     actor=Actor(type="sensor", identifier="gate"), framework="plain", payload={})
+
+    r = gate_bypass_disclosure([ev("gate_bypassed"), ev("gate_bypass_disclosed")])
+    assert r["undisclosed"] == 0
+    r = gate_bypass_disclosure([ev("gate_bypass_disclosed"), ev("gate_bypassed")])
+    assert r["undisclosed"] == 1
+    r = gate_bypass_disclosure([ev("gate_bypassed"), ev("gate_bypassed")])
+    assert r["undisclosed"] == 2
+
+
+def _ready_bypass_scope(root: Path, slug: str, files: list[str], *, disclose: bool) -> None:
+    att_dir = root / ".harness" / "attestations"
+    att_dir.mkdir(parents=True, exist_ok=True)
+    w = EventWriter(att_dir / f"{slug}.jsonl")
+    _emit(w, "intent_declared", slug)
+    _emit(w, "plan_ready", slug, {"scope": {"files": files}})
+    _emit(w, "plan_approved", slug)
+    _emit(w, "implementation_started", slug)
+    _emit(w, "gate_bypassed", slug, {"reason": "kill-switch ALLOW"})
+    _emit(w, "verification_passed", slug)
+    _emit(w, "implementation_complete", slug)
+    _emit(w, "code_review_passed", slug)
+    if disclose:
+        _emit(w, "gate_bypass_disclosed", slug, {"reason": "deadlock recovery"})
+
+
+def test_verify_blocks_undisclosed_bypass(tmp_path):
+    _ready_bypass_scope(tmp_path, "s", ["src/x.py"], disclose=False)
+    diff = [DiffEntry("A", (".harness/attestations/s.jsonl",)), DiffEntry("M", ("src/x.py",))]
+    v = verify_attestations(tmp_path, diff)
+    assert not v.ok
+    assert any("bypassed" in b and "without disclosure" in b for b in v.blockers)
+
+
+def test_verify_disclosed_bypass_passes(tmp_path):
+    _ready_bypass_scope(tmp_path, "s", ["src/x.py"], disclose=True)
+    diff = [DiffEntry("A", (".harness/attestations/s.jsonl",)), DiffEntry("M", ("src/x.py",))]
+    v = verify_attestations(tmp_path, diff)
+    assert v.ok, v.blockers
