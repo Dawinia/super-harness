@@ -80,3 +80,12 @@ def test_invalid_is_distinct_string() -> None:
     """INVALID sentinel must not collide with any real state name."""
     from super_harness.core.state import STATES
     assert INVALID not in STATES
+
+
+def test_gate_bypass_events_are_informational_and_known():
+    from super_harness.core.events import KNOWN_EVENT_TYPES
+    from super_harness.core.transitions import _INFORMATIONAL, compute_target_state
+    for t in ("gate_bypassed", "gate_bypass_disclosed"):
+        assert t in KNOWN_EVENT_TYPES
+        assert t in _INFORMATIONAL
+        assert compute_target_state("INTENT_DECLARED", t) == "INTENT_DECLARED"

@@ -37,7 +37,7 @@ _AGENTS_MD_SUBSECTION = f"""{_AGENTS_MD_BEGIN}
 
 A **PreToolUse** hook gates this workspace. `apply_patch` edits are blocked by
 super-harness when the current change state forbids the mutation (deterministic
-gate enforcement). `Bash` is never gated, so the kill-switch always works.
+gate enforcement). `Bash` is never gated (see the coverage caveat below).
 
 **REQUIRED trust step:** after `adapter install codex`, the gate is INACTIVE
 until you run `/hooks` in Codex and trust the super-harness hook. Codex skips
@@ -52,8 +52,12 @@ coverage is narrower than Claude Code's. The CI cold floor backs the gap.
 When a tool call is blocked:
 - Run `super-harness status` to see the change, its state, and the next step.
 - Resume context with `super-harness change resume <change_id>`.
-- Escape hatch (if the gate is wrong): `touch .harness/gate-disabled` to disable,
-  `rm .harness/gate-disabled` to re-enable (the gate never blocks `Bash`).
+- If the gate blocks a tool call, stop and surface the block plus the next valid
+  step (`super-harness status`) to the human. Do **not** touch the kill switch
+  (the emergency override file under `.harness/`) yourself — it is a **human-only**
+  emergency override; an agent using it to get past a block defeats the gate, and
+  any such bypass is recorded and disclosed at the merge gate. Whether to override
+  is the human's call.
 
 #### Review protocol
 

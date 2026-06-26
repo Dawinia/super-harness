@@ -434,7 +434,8 @@ genuinely wrong, use the file-based kill switch: from the repo root, `touch
 .harness/gate-disabled` to disable enforcement immediately, and `rm
 .harness/gate-disabled` to re-enable. `Bash` is never gated, so this works even
 when edits are blocked. Do not hand-edit `.claude/settings.local.json` to
-disable it.
+disable it. Note: if you disable the gate while a change is in flight, the bypass
+is recorded and surfaced at the merge gate (`attest verify`).
 
 **Verify is failing but I don't see why**
 

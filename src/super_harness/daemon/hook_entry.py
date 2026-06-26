@@ -50,6 +50,11 @@ from typing import Literal
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import HarnessNotInitialized, find_harness_root
 
+_HALT_HINT = (
+    "Stop and tell the human — run `super-harness status` for the next valid step. "
+    "Do NOT bypass the gate yourself."
+)
+
 
 def main() -> None:  # console_script entry
     argv = sys.argv[1:]
@@ -78,10 +83,7 @@ def _run_positional(argv: list[str]) -> None:
 
     decision, reason = _decide(tool, file)
     if decision == "block":
-        sys.stderr.write(
-            f"super-harness: BLOCK ({reason})\n"
-            f"  escape hatch: touch .harness/gate-disabled to disable the gate\n"
-        )
+        sys.stderr.write(f"super-harness: BLOCK ({reason}). {_HALT_HINT}\n")
         sys.exit(1)
     sys.exit(0)
 
@@ -108,10 +110,7 @@ def _run_claude_code_shim() -> None:
 
     decision, reason = _decide(tool, file)
     if decision == "block":
-        sys.stderr.write(
-            f"super-harness: BLOCK ({reason})\n"
-            f"  escape hatch: touch .harness/gate-disabled to disable the gate\n"
-        )
+        sys.stderr.write(f"super-harness: BLOCK ({reason}). {_HALT_HINT}\n")
         sys.exit(2)  # Claude Code: exit 2 = block + stderr → model
     sys.exit(0)
 
@@ -146,8 +145,7 @@ def _run_codex_shim() -> None:
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
                     "permissionDecisionReason": (
-                        f"super-harness: {reason} — escape hatch: "
-                        f"touch .harness/gate-disabled to disable the gate"
+                        f"super-harness: BLOCK ({reason}). {_HALT_HINT}"
                     ),
                 }
             },
@@ -179,6 +177,7 @@ def _decide(tool: str, file: str | None) -> tuple[Literal["allow", "block"], str
     # (`touch .harness/gate-disabled` / `rm`). Robust where `daemon stop` is not
     # — the unreachable path respawns the daemon, so stop only reprieves one edit.
     if (root / ".harness" / "gate-disabled").exists():
+        _record_bypass(root, tool=tool, file=file)
         return "allow", "gate disabled (.harness/gate-disabled present)"
 
     # Resolve change_id: env override > derived active change > None.
@@ -195,6 +194,36 @@ def _decide(tool: str, file: str | None) -> tuple[Literal["allow", "block"], str
     return supervisor.gate_pre_tool_use(
         root, tool=tool, file=file, change_id=change_id
     )
+
+
+def _record_bypass(root: Path, *, tool: str, file: str | None) -> None:
+    """Best-effort record a `gate_bypassed` audit event. NEVER raises — recording
+    must not break the safety path. Skips when no active change (a bypass with no
+    change has no merge gate to disclose at; design §4)."""
+    try:
+        import os
+
+        from super_harness.core.clock import utc_now_iso
+        from super_harness.core.events import Actor, Event
+        from super_harness.core.paths import events_path
+        from super_harness.core.ulid import new_event_id
+        from super_harness.core.writer import EventWriter
+
+        change_id = os.environ.get("SUPER_HARNESS_CHANGE_ID") or _read_active_change_id(root)
+        if not change_id:
+            return
+        ev = Event(
+            event_id=new_event_id(),
+            type="gate_bypassed",
+            change_id=change_id,
+            timestamp=utc_now_iso(),
+            actor=Actor(type="sensor", identifier="gate"),
+            framework="plain",
+            payload={"tool": tool, "file": file or ""},
+        )
+        EventWriter(events_path(root)).emit(ev, skip_validation=True)
+    except Exception:
+        pass
 
 
 def _read_active_change_id(root: Path) -> str | None:

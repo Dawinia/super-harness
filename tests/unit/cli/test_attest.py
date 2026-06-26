@@ -184,6 +184,61 @@ def test_verify_quiet_suppresses_disclosure(tmp_path, monkeypatch):
     assert "review independence:" not in r.output
 
 
+# --------------------------------------------------------------------------- #
+# Part C.3: gate-bypass disclosure (merge blocker + write-side clear)
+# --------------------------------------------------------------------------- #
+from super_harness.core.paths import events_path  # noqa: E402
+
+
+def _seed_lifecycle(root: Path, slug: str, author: str, reviewer: str) -> EventWriter:
+    """Emit a full READY_TO_MERGE lifecycle for *slug* into the workspace events.jsonl."""
+    (root / ".harness").mkdir(parents=True, exist_ok=True)
+    w = EventWriter(events_path(root))
+    _emit_id(w, "intent_declared", slug, author)
+    _emit_id(w, "plan_ready", slug, "cli", {"scope": {"files": ["src/x.py"]}})
+    _emit_id(w, "plan_approved", slug, "cli")
+    _emit_id(w, "implementation_started", slug, "cli")
+    _emit_id(w, "verification_passed", slug, "cli")
+    _emit_id(w, "implementation_complete", slug, "cli")
+    _emit_id(w, "code_review_passed", slug, reviewer)
+    return w
+
+
+def test_attest_write_disclose_gate_bypass_clears_blocker(tmp_path, monkeypatch):
+    slug = "feat-x"
+    w = _seed_lifecycle(tmp_path, slug, "alice@x", "bob@x")
+    # Inject an undisclosed gate bypass (same emit discipline as _record_bypass).
+    _emit_id(w, "gate_bypassed", slug, "gate", {"tool": "Edit", "file": "src/x.py"})
+
+    monkeypatch.setattr(attest_mod, "_git_name_status", lambda b, h, c: _DIFF)
+
+    # Plain write -> verify: the undisclosed bypass BLOCKS the merge gate.
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "attest", "write", slug])
+    assert r.exit_code == 0, r.output
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "attest", "verify", "--base", "main", "--head", "HEAD"],
+    )
+    assert r.exit_code == 2, r.output
+    assert "without disclosure" in r.output
+
+    # Disclose -> re-write -> verify: blocker cleared and the reason surfaced.
+    r = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(tmp_path), "attest", "write", slug,
+            "--disclose-gate-bypass", "daemon was wedged",
+        ],
+    )
+    assert r.exit_code == 0, r.output
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "attest", "verify", "--base", "main", "--head", "HEAD"],
+    )
+    assert r.exit_code == 0, r.output
+    assert "daemon was wedged" in r.output
+
+
 def test_independence_line_override_skip():
     from super_harness.cli.attest import _independence_line
     line = _independence_line(

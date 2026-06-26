@@ -29,6 +29,7 @@ from super_harness.core.paths import (
 )
 from super_harness.engineering.attestation import (
     ATTESTATIONS_DIRNAME,
+    gate_bypass_for_attestation,
     independence_for_attestation,
     parse_name_status,
     verify_attestations,
@@ -74,8 +75,15 @@ def attest_group() -> None:
 
 @attest_group.command("write")
 @click.argument("slug")
+@click.option(
+    "--disclose-gate-bypass",
+    "disclose_reason",
+    default=None,
+    help="Disclose+justify that the gate was bypassed during this change "
+    "(clears the merge-gate blocker).",
+)
 @click.pass_context
-def attest_write(ctx: click.Context, slug: str) -> None:
+def attest_write(ctx: click.Context, slug: str, disclose_reason: str | None) -> None:
     """Snapshot the per-change event slice to .harness/attestations/<slug>.jsonl."""
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
@@ -85,6 +93,25 @@ def attest_write(ctx: click.Context, slug: str) -> None:
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
+    if disclose_reason:
+        from super_harness.core.clock import utc_now_iso
+        from super_harness.core.events import Actor, Event
+        from super_harness.core.identity import resolve_identity
+        from super_harness.core.ulid import new_event_id
+        from super_harness.core.writer import EventWriter
+
+        # Informational event: emit with skip_validation and do NOT refresh derived
+        # state (mirrors `_record_bypass` discipline — must not mutate the FSM).
+        ev = Event(
+            event_id=new_event_id(),
+            type="gate_bypass_disclosed",
+            change_id=slug,
+            timestamp=utc_now_iso(),
+            actor=Actor(type="human", identifier=resolve_identity(root, None)),
+            framework="plain",
+            payload={"reason": disclose_reason},
+        )
+        EventWriter(events_path(root)).emit(ev, skip_validation=True)
     try:
         out = write_attestation(events_path(root), root / ATTESTATIONS_DIRNAME, slug)
     except ValueError as e:
@@ -195,6 +222,16 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
         if not ctx.obj.get("quiet"):
             for item in independence:
                 click.echo(_independence_line(item))
+            for slug in verdict.attestations:
+                gb = gate_bypass_for_attestation(
+                    root / ATTESTATIONS_DIRNAME / f"{slug}.jsonl"
+                )
+                if gb["bypassed"]:
+                    click.echo(
+                        f"gate bypass: {gb['bypassed']} bypass(es), "
+                        f"{gb['disclosed']} disclosure(s) — "
+                        + "; ".join(r for r in gb["reasons"] if r)
+                    )
         if verdict.ok:
             if not ctx.obj.get("quiet"):
                 click.echo(f"attest verify: PASS ({len(verdict.subjects)} file(s) covered)")

@@ -298,13 +298,15 @@ def test_agents_md_subsection_has_review_protocol() -> None:
     assert "human" in block.lower()
 
 
-def test_agents_md_subsection_documents_kill_switch() -> None:
-    # The file-based kill switch lets the agent (or a human) disable the gate
-    # from the repo root when the gate is wrong. Bash is never gated, so the
-    # `touch`/`rm` escape hatch always works even when edits are blocked.
+def test_agents_md_subsection_frames_kill_switch_as_human_only() -> None:
+    # The agent-facing subsection must NOT teach the kill switch as an escape
+    # hatch. It is a human-only emergency override; the agent must stop and
+    # surface the block to the human instead of bypassing the gate.
     block = ClaudeCodeAdapter().agents_md_subsection()
-    assert ".harness/gate-disabled" in block
-    assert "Escape hatch" in block
+    assert "gate-disabled" not in block
+    assert "Escape hatch" not in block
+    assert "human-only" in block
+    assert "surface" in block.lower()
 
 
 def test_on_uninstall_restores_earliest_pristine_backup(tmp_path: Path) -> None:
@@ -383,3 +385,10 @@ def test_claude_adapter_install_detail_strings():
     a = ClaudeCodeAdapter()
     assert a.local_config_relpath() == ".claude/settings.local.json"
     assert a.installed_detail() == "PreToolUse gate hook registered in .claude/settings.local.json"
+
+
+def test_agents_md_subsection_does_not_teach_kill_switch():
+    sub = ClaudeCodeAdapter().agents_md_subsection()
+    assert "gate-disabled" not in sub
+    assert "surface" in sub.lower()
+    assert "human" in sub.lower()

@@ -44,10 +44,12 @@ When a tool call is blocked by the gate:
 - Run `super-harness status` to see the current change, its state, and why the
   edit was rejected, plus the next valid step.
 - Resume context for a change with `super-harness change resume <change_id>`.
-- **Escape hatch (if the gate is wrong):** from the repo root, `touch
-  .harness/gate-disabled` to disable enforcement immediately, and `rm
-  .harness/gate-disabled` to re-enable. This works even when edits are blocked
-  (the gate never blocks `Bash`).
+- **If a tool call is blocked by the gate:** stop, and surface the block plus the
+  next valid step (`super-harness status`) to the human. Do **not** touch the kill
+  switch (the emergency override file under `.harness/`) yourself — it is a
+  **human-only** emergency override; an agent using it to get past a block defeats
+  the gate, and any such bypass is recorded and disclosed at the merge gate. Whether
+  to override is the human's call.
 
 #### Review protocol
 

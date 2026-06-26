@@ -158,6 +158,29 @@ def test_status_json_envelope_schema(tmp_path: Path) -> None:
     assert entry["last_event_at"]
 
 
+def test_status_shows_next_step_for_blocking_state(tmp_path: Path) -> None:
+    """A change in a blocking state surfaces a `next:` step from SUGGESTIONS.
+
+    After `change start`, the change is INTENT_DECLARED (blocking), so the
+    human render carries a `next:` line and the `--json` entry a `next` key,
+    both holding SUGGESTIONS["INTENT_DECLARED"]. The block-message redirect
+    from Task 3 ("run `super-harness status` for the next valid step") lands
+    on a real next step, not a dead end.
+    """
+    _init(tmp_path)
+    _start(tmp_path, "ch1")
+    human = CliRunner().invoke(main, ["--workspace", str(tmp_path), "status", "ch1"])
+    assert human.exit_code == 0, human.output
+    assert "next:" in human.output.lower()
+    assert "Draft a plan" in human.output  # from SUGGESTIONS["INTENT_DECLARED"]
+    js = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "--json", "status", "ch1"]
+    )
+    assert js.exit_code == 0, js.output
+    changes = json.loads(js.output)["data"]["changes"]
+    assert any("Draft a plan" in str(e.get("next", "")) for e in changes)
+
+
 # --- HG-02.C: status surfaces the reviewer strategy in review states ----------
 
 

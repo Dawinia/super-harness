@@ -38,6 +38,8 @@ EXTENSION_EVENT_TYPES: frozenset[str] = frozenset({
     "implementation_withdrawn", "merged_reverted", "pr_opened",
     # sensor lifecycle (added by SensorDispatcher on timeout / crash)
     "sensor_timeout_exceeded", "sensor_crashed",
+    # gate-bypass disclosure (state-preserving audit signals)
+    "gate_bypassed", "gate_bypass_disclosed",
 })
 
 KNOWN_EVENT_TYPES: frozenset[str] = CORE_EVENT_TYPES | EXTENSION_EVENT_TYPES
