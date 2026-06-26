@@ -69,4 +69,11 @@ def test_agents_md_subsection_does_not_teach_kill_switch():
     assert "surface" in sub.lower()
     assert "human" in sub.lower()
     assert "kill-switch always works" not in sub
+    # Generalized wording: do not name/point at the override file or a discrete
+    # "kill switch" in the agent channel — keep the norm ("don't work around the
+    # gate, surface to human") without surfacing the bypass mechanism's location.
+    assert "override file" not in sub.lower()
+    assert "kill switch" not in sub.lower()
+    flat = " ".join(sub.split()).lower()  # collapse line-wraps before phrase match
+    assert "work around the gate" in flat
     assert "kill switch always works" not in sub.lower()

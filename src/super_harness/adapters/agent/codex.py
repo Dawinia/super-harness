@@ -53,11 +53,10 @@ When a tool call is blocked:
 - Run `super-harness status` to see the change, its state, and the next step.
 - Resume context with `super-harness change resume <change_id>`.
 - If the gate blocks a tool call, stop and surface the block plus the next valid
-  step (`super-harness status`) to the human. Do **not** touch the kill switch
-  (the emergency override file under `.harness/`) yourself — it is a **human-only**
-  emergency override; an agent using it to get past a block defeats the gate, and
-  any such bypass is recorded and disclosed at the merge gate. Whether to override
-  is the human's call.
+  step (`super-harness status`) to the human. Do **not** try to disable or work
+  around the gate yourself — overriding it is a **human-only** decision, and any
+  bypass is recorded and disclosed at the merge gate. Whether to override is the
+  human's call.
 
 #### Review protocol
 

@@ -392,3 +392,9 @@ def test_agents_md_subsection_does_not_teach_kill_switch():
     assert "gate-disabled" not in sub
     assert "surface" in sub.lower()
     assert "human" in sub.lower()
+    # Generalized wording: keep the "don't work around the gate, surface to human"
+    # norm without naming/pointing at the override file or a discrete "kill switch".
+    assert "override file" not in sub.lower()
+    assert "kill switch" not in sub.lower()
+    flat = " ".join(sub.split()).lower()  # collapse line-wraps before phrase match
+    assert "work around the gate" in flat
