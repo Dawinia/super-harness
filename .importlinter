@@ -1,0 +1,20 @@
+# Architecture-fitness contracts (G-FITNESS).
+#
+# Each contract is the rung-1, executable form of a ratified architecture-class
+# decision. The decision record's tier-1 `check` block runs the matching contract
+# via `lint-imports --contract <id>`; that decision is the human-ratified anchor.
+#
+# - core-is-base  -> docs/decisions/d-core-is-base.md
+#
+# Run locally: PYTHONPATH=src lint-imports --config .importlinter --no-cache
+[importlinter]
+root_package = super_harness
+
+[importlinter:contract:core-is-base]
+name = core is the base layer (must not import cli/gates)
+type = forbidden
+source_modules =
+    super_harness.core
+forbidden_modules =
+    super_harness.cli
+    super_harness.gates

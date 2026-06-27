@@ -52,6 +52,10 @@ dev = [
   "ruff>=0.4",
   "mypy>=1.10",
   "types-PyYAML>=6.0",
+  # Architecture-fitness engine for tier-1 architecture decisions (G-FITNESS).
+  # Runs `decision check`'s import-graph contracts locally + in CI; not a
+  # runtime dependency of the shipped product. See docs/decisions/d-core-is-base.md.
+  "import-linter>=2.0",
 ]
 
 [project.scripts]
