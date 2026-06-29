@@ -24,6 +24,7 @@ from pathlib import Path
 
 import click
 
+from super_harness.adapters.registry import resolve_spec_plan_paths
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
 from super_harness.core.clock import utc_now_iso
@@ -347,7 +348,10 @@ def prepare(ctx: click.Context, change: str, reviewer: str, base: str | None) ->
                    err=True)
         sys.exit(EXIT_NO_CONFIG)
     try:
-        bundle = assemble_bundle(root, change_id=change, reviewer=reviewer, base=base)
+        bundle = assemble_bundle(
+            root, change_id=change, reviewer=reviewer, base=base,
+            spec_plan_resolver=resolve_spec_plan_paths,
+        )
     except BundleError as e:
         click.echo(format_error(subcommand="review prepare", message=str(e),
                                 hint="Commit the in-scope changes, then re-run review prepare."),
