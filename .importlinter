@@ -11,10 +11,11 @@
 root_package = super_harness
 
 [importlinter:contract:core-is-base]
-name = core is the base layer (must not import cli/gates)
+name = core is the base layer (must not import cli/gates/sensors)
 type = forbidden
 source_modules =
     super_harness.core
 forbidden_modules =
     super_harness.cli
     super_harness.gates
+    super_harness.sensors

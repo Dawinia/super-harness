@@ -16,7 +16,7 @@ def _git(ws: Path, *a: str) -> None:
     subprocess.run(["git", *a], cwd=ws, check=True, capture_output=True, text=True)
 
 
-def _seed_change(ws: Path, declared: list[str]) -> None:
+def _seed_change(ws: Path, declared: list[str], framework: str = "plain") -> None:
     from super_harness.core.events import Actor, Event
     from super_harness.core.paths import events_path
     from super_harness.core.post_emit import refresh_state_after_emit
@@ -31,7 +31,7 @@ def _seed_change(ws: Path, declared: list[str]) -> None:
         EventWriter(events_path(ws)).emit(Event(
             event_id=new_event_id(), type=t, change_id="c",
             timestamp="2026-06-23T00:00:00Z",
-            actor=Actor(type="human", identifier="cli"), framework="plain", payload=p))
+            actor=Actor(type="human", identifier="cli"), framework=framework, payload=p))
     refresh_state_after_emit(ws)
 
 
@@ -72,3 +72,19 @@ def test_prepare_dirty_tree_errors(tmp_path: Path) -> None:
                                   "--reviewer", "code-reviewer"])
     assert r.exit_code == EXIT_VALIDATION, r.output
     assert "commit" in r.output.lower()
+
+
+def test_prepare_wires_resolver_for_openspec(tmp_path: Path) -> None:
+    ws = _repo(tmp_path)
+    _seed_change(ws, ["src/"], framework="openspec")
+    r = CliRunner().invoke(
+        main,
+        ["--json", "--workspace", str(ws), "review", "prepare", "c",
+         "--reviewer", "code-reviewer", "--base", "main"],
+    )
+    assert r.exit_code == 0, r.output
+    bundle = json.loads(
+        (ws / ".harness" / "pending-reviews" / "c" / "code-reviewer.bundle.json").read_text()
+    )
+    assert bundle["spec_path"].endswith("openspec/changes/c/proposal.md")
+    assert bundle["plan_path"].endswith("openspec/changes/c/tasks.md")

@@ -25,10 +25,10 @@ from __future__ import annotations
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, ClassVar, Literal
 
 from super_harness.core.events import Event
+from super_harness.core.workspace import WorkspaceContext
 
 __all__ = [
     "Activity",
@@ -55,23 +55,6 @@ class Activity:
     type: ActivityType
     change_id: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class WorkspaceContext:
-    """Read-only snapshot of the workspace passed to every Sensor.check() call.
-
-    See sensor-gate-architecture spec §2.1.
-    """
-
-    workspace_root: Path
-    git_branch: str | None = None
-    active_change_id: str | None = None
-    # Framework name of the active change (HG-01), used by the verification runner
-    # to resolve `${SPEC_PATH}`/`${PLAN_PATH}` via the adapter's `spec_paths`.
-    # None → those vars stay empty. Defaulted so every existing construction site
-    # (and sensors that don't need it) keep working unchanged.
-    framework: str | None = None
 
 
 @dataclass(frozen=True)

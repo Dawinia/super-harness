@@ -99,3 +99,31 @@ def test_load_base_branch_default_and_override(tmp_path: Path) -> None:
     assert load_base_branch(tmp_path) == "main"
     (tmp_path / ".harness" / "policy.yaml").write_text("review:\n  base_branch: develop\n")
     assert load_base_branch(tmp_path) == "develop"
+
+
+def test_assemble_bundle_uses_injected_resolver(tmp_path: Path) -> None:
+    ws = _repo_with_change(tmp_path)
+    _change(ws, ["src/"])
+
+    seen: dict[str, object] = {}
+
+    def fake_resolver(framework: str | None, root: Path, change_id: str) -> tuple[str, str]:
+        seen["framework"] = framework
+        seen["change_id"] = change_id
+        return "specs/proposal.md", "specs/tasks.md"
+
+    b = assemble_bundle(
+        ws, change_id="c", reviewer="code-reviewer", base="main",
+        spec_plan_resolver=fake_resolver,
+    )
+    assert b["spec_path"] == "specs/proposal.md"
+    assert b["plan_path"] == "specs/tasks.md"
+    assert seen == {"framework": "plain", "change_id": "c"}
+
+
+def test_assemble_bundle_no_resolver_yields_empty_spec_plan(tmp_path: Path) -> None:
+    ws = _repo_with_change(tmp_path)
+    _change(ws, ["src/"])
+    b = assemble_bundle(ws, change_id="c", reviewer="code-reviewer", base="main")
+    assert b["spec_path"] == ""
+    assert b["plan_path"] == ""

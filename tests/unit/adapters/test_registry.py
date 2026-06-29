@@ -374,3 +374,30 @@ def test_codex_is_registered():
     from super_harness.adapters.agent.codex import CodexAdapter
     from super_harness.adapters.registry import get_builtin
     assert get_builtin("codex") is CodexAdapter
+
+
+def test_resolve_spec_plan_paths_openspec(tmp_path: Path) -> None:
+    from super_harness.adapters.registry import resolve_spec_plan_paths
+
+    spec, plan = resolve_spec_plan_paths("openspec", tmp_path, "c")
+    assert spec == str(tmp_path / "openspec" / "changes" / "c" / "proposal.md")
+    assert plan == str(tmp_path / "openspec" / "changes" / "c" / "tasks.md")
+
+
+def test_resolve_spec_plan_paths_plain_is_empty(tmp_path: Path) -> None:
+    from super_harness.adapters.registry import resolve_spec_plan_paths
+
+    assert resolve_spec_plan_paths("plain", tmp_path, "c") == ("", "")
+
+
+def test_resolve_spec_plan_paths_no_framework(tmp_path: Path) -> None:
+    from super_harness.adapters.registry import resolve_spec_plan_paths
+
+    assert resolve_spec_plan_paths(None, tmp_path, "c") == ("", "")
+    assert resolve_spec_plan_paths("", tmp_path, "c") == ("", "")
+
+
+def test_resolve_spec_plan_paths_unknown_framework(tmp_path: Path) -> None:
+    from super_harness.adapters.registry import resolve_spec_plan_paths
+
+    assert resolve_spec_plan_paths("no-such-fw", tmp_path, "c") == ("", "")
