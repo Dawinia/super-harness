@@ -267,8 +267,9 @@ def build_variables(change_id: str, context: WorkspaceContext) -> dict[str, str]
     """
     spec_path = plan_path = ""
     if context.framework:
-        # Local import breaks the sensors<->adapters cycle (adapters/__init__ imports
-        # WorkspaceContext from sensors). `spec_paths` is pure → daemon-safe.
+        # Lazy import: keeps the adapters registry off the sensors module-import
+        # path (the daemon imports sensors). No cycle to break since Cut B —
+        # `adapters` no longer imports `sensors`. `spec_paths` is pure → daemon-safe.
         from super_harness.adapters import FrameworkAdapter
         from super_harness.adapters.registry import get_builtin
 
