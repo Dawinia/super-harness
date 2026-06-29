@@ -45,6 +45,7 @@ __all__ = [
     "list_builtins",
     "load_adapters",
     "register_builtin",
+    "resolve_spec_plan_paths",
 ]
 
 # FrameworkAdapter / AgentAdapter are abstract; mypy rejects passing them to
@@ -81,6 +82,28 @@ def list_builtins() -> list[str]:
 def get_builtin(name: str) -> _BuiltinAdapter | None:
     """Return the registered built-in adapter class for `name`, or None."""
     return _BUILTIN.get(name)
+
+
+def resolve_spec_plan_paths(
+    framework: str | None, root: Path, change_id: str
+) -> tuple[str, str]:
+    """Resolve ``(spec_path, plan_path)`` for ``change_id`` via its framework adapter.
+
+    Pure path derivation — delegates to the builtin adapter's ``spec_paths``.
+    Returns ``("", "")`` when ``framework`` is falsy or has no builtin adapter.
+
+    Lives here (not in ``core``) so ``core.review_bundle`` stays free of any
+    ``adapters`` import: the review-bundle assembler takes this as an injected
+    resolver. See decision ``d-core-is-base`` (core is the base layer; it must
+    not import the upper layers, including ``adapters``/``sensors``).
+    """
+    if not framework:
+        return "", ""
+    cls = get_builtin(framework)
+    if cls is None or not issubclass(cls, FrameworkAdapter):
+        return "", ""
+    paths = cls().spec_paths(root, change_id)
+    return paths.get("spec", ""), paths.get("plan", "")
 
 
 def load_adapters(
