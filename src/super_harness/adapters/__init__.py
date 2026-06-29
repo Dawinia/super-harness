@@ -13,7 +13,7 @@ verification checks.
 Public surface:
 - AgentAdapter (ABC) — subclass to support a new agent runtime
 - FrameworkAdapter (ABC) — subclass to support a new spec framework
-- WorkspaceContext — re-exported from super_harness.sensors (single source of truth)
+- WorkspaceContext — re-exported from super_harness.core.workspace (single source of truth)
 
 v0.1 ships only the ABCs here. Concrete adapters, the adapter registry, and
 the `adapter install` CLI come in later tasks.
@@ -45,7 +45,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 from super_harness.core.events import Event
-from super_harness.sensors import WorkspaceContext
+from super_harness.core.workspace import WorkspaceContext
 
 __all__ = [
     "AgentAdapter",
