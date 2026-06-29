@@ -9,6 +9,7 @@ No LLM, no inference — pure derivation. Requires a clean in-scope working tree
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -54,21 +55,29 @@ def load_base_branch(root: Path) -> str:
     return _DEFAULT_BASE
 
 
-def _spec_plan_paths(framework: str | None, root: Path, change_id: str) -> tuple[str, str]:
-    if not framework:
-        return "", ""
-    from super_harness.adapters import FrameworkAdapter
-    from super_harness.adapters.registry import get_builtin
+# A spec/plan path resolver: (framework, root, change_id) -> (spec_path, plan_path).
+# Injected by the caller so core stays free of any `adapters` import (decision
+# d-core-is-base: core is the base layer). cli/review.py wires the adapters-backed
+# resolver (adapters.registry.resolve_spec_plan_paths).
+SpecPlanResolver = Callable[[str | None, Path, str], tuple[str, str]]
 
-    cls = get_builtin(framework)
-    if cls is None or not issubclass(cls, FrameworkAdapter):
-        return "", ""
-    paths = cls().spec_paths(root, change_id)
-    return paths.get("spec", ""), paths.get("plan", "")
+
+def _no_spec_plan(framework: str | None, root: Path, change_id: str) -> tuple[str, str]:
+    """Default resolver: no framework spec/plan paths.
+
+    Used when the caller wires no resolver (e.g. core-only tests). Keeps the
+    bundle shape stable (``spec_path``/``plan_path`` present but empty).
+    """
+    return "", ""
 
 
 def assemble_bundle(
-    root: Path, *, change_id: str, reviewer: str, base: str | None = None
+    root: Path,
+    *,
+    change_id: str,
+    reviewer: str,
+    base: str | None = None,
+    spec_plan_resolver: SpecPlanResolver | None = None,
 ) -> dict[str, Any]:
     """Build the review bundle dict for `change_id` / `reviewer`.
 
@@ -90,7 +99,8 @@ def assemble_bundle(
     except GitScopeError as e:
         raise BundleError(str(e)) from e
 
-    spec_path, plan_path = _spec_plan_paths(framework, root, change_id)
+    resolve = spec_plan_resolver or _no_spec_plan
+    spec_path, plan_path = resolve(framework, root, change_id)
     return {
         "change": change_id,
         "reviewer": reviewer,
