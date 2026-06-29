@@ -2,22 +2,26 @@
 id: d-core-is-base
 status: ratified
 ratified_by: dawinialo@163.com
-ratified_at: '2026-06-27T05:43:35.587478Z'
-ratified_text_hash: sha256:671c31c0f690031610e9357e803ee375ad8e7b3966376b6afb783943139e4288
+ratified_at: '2026-06-29T16:22:58.227086Z'
+ratified_text_hash: sha256:a751fdf80671ccd1d441f0f59b1ee9b5ba9c2f8c5fe46c428eca647e9c5a79fc
 ---
-core/ is the base layer: it must not import the orchestration layers cli/gates.
+core/ is the base layer: it must not import the upper layers cli/gates/sensors.
 
 `super_harness.core` is the pure foundation the upper layers build on. It must not
-depend (directly OR transitively) on the orchestration layers `super_harness.cli` or
-`super_harness.gates`, so the core can be imported (e.g. by the daemon) without dragging
-in the CLI/gate stack. The faithful mechanical form of this invariant is an import-graph
-contract, not a text grep: `grep` sees only direct textual imports and is blind to the
-transitive and function-local edges that actually break layering. The rung-1 check is the
-import-linter `core-is-base` contract in `.importlinter`.
+depend (directly OR transitively) on the upper layers `super_harness.cli`,
+`super_harness.gates`, or `super_harness.sensors`, so the core can be imported (e.g. by
+the daemon) without dragging in the CLI/gate/sensor stack. The faithful mechanical form
+of this invariant is an import-graph contract, not a text grep: `grep` sees only direct
+textual imports and is blind to the transitive and function-local edges that actually
+break layering. The rung-1 check is the import-linter `core-is-base` contract in
+`.importlinter`.
 
-(`sensors` is intentionally NOT yet covered: `core.review_bundle` reaches `sensors`
-transitively via a function-local `adapters` import — a real coupling import-linter
-caught that grep declared clean. Fixing it is tracked separately.)
+(`sensors` is now covered too. Two transitive `core -> sensors` edges both flowed through
+`adapters -> sensors` (a `WorkspaceContext` re-export): `core.review_bundle -> adapters`
+and `core.sync_check -> engineering -> adapters`. import-linter caught both where grep
+declared the code clean. They were severed by moving `WorkspaceContext` into
+`core.workspace` (so `adapters` no longer imports `sensors`) and by injecting the
+spec/plan-path resolver into `core.review_bundle` instead of importing `adapters` there.)
 
 ```check
 PYTHONPATH=src lint-imports --config .importlinter --contract core-is-base --no-cache
