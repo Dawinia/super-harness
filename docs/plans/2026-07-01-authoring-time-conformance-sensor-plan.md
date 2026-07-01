@@ -1,40 +1,39 @@
-# Authoring-time decision-conformance sensor (cut-1, Claude-only) — Implementation Plan
+# Authoring-time conformance feedback (Stop hook, cut-1) — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** After a Claude Code edit, run the tier-1 decision check(s) relevant to the changed file and feed a deterministic, non-blocking "you violated decision X" advisory back to the agent at authoring time, so it self-corrects before the merge gate / a human.
+**Goal:** When a Claude Code turn ends, run the ratified, authoring-opted-in tier-1 decision checks once; if one fails, block the stop and feed the deterministic verdict back so the agent self-corrects before the human / merge gate.
 
-**Architecture:** Agent-agnostic check core (changed-file → relevant tier-1 decisions → reuse `run_executable_checks` → verdict → rendered feedback text) + a per-agent delivery seam (`AgentAdapter.format_post_edit_feedback`) + a new non-blocking, fail-open PostToolUse path on the `super-harness-hook` binary. The merge-gate `decision check` is unchanged and remains the authoritative floor. Codex delivery is a separate follow-on cut.
+**Architecture:** A Stop hook on `super-harness-hook` runs an agent-agnostic verdict core (`core/authoring_check.py`, reusing `load_decisions` + `run_executable_checks`) once per turn. The per-agent delivery is one `AgentAdapter.format_stop_feedback(verdict)` method. Loop-safe (`stop_hook_active`), fail-open, opt-in per decision (`authoring_time: true`). The merge-gate `decision check` is unchanged and remains the floor.
 
-**Tech Stack:** Python 3.10+, pytest, existing super-harness `core` (decisions, check_runner, paths), `adapters/agent` (claude_code, _settings_merge), `daemon/hook_entry`. Verify with `PATH="$(pwd)/.venv/bin:$PATH" pytest ...` (never `uv run`).
+**Tech Stack:** Python 3.10+, pytest. Reuses `core.decisions`, `core.check_runner`, `adapters.agent.claude_code`, `adapters.agent._settings_merge`, `daemon.hook_entry`. Verify with `PATH="$(pwd)/.venv/bin:$PATH" pytest ...` (never `uv run`).
 
-**Design doc:** `docs/plans/2026-07-01-authoring-time-conformance-sensor-design.md`. This plan implements cut-1 only. It tests hypothesis **H** (§1 of design): authoring-time advisory may be ignored the same way CLAUDE.md is — the bite-test (Task 8) decides, and a null result is a valid honest outcome.
+**Design doc:** `docs/plans/2026-07-01-authoring-time-conformance-sensor-design.md` (Rev 2). H was validated by a LIVE stub before this plan; the bite-test (Task 8) re-tests it on a **transitive** violation.
 
 ---
 
 ## File Structure
 
 **Create:**
-- `src/super_harness/core/conformance_sensor.py` — agnostic core: relevance resolution + verdict + feedback-text rendering. One responsibility: "given a changed file, produce the authoring-time conformance verdict + advisory text."
-- `tests/unit/core/test_conformance_sensor.py` — unit tests for the core.
-- `tests/integration/daemon/test_hook_entry_post.py` — integration tests for the new PostToolUse hook path.
+- `src/super_harness/core/authoring_check.py` — agnostic verdict core: `Verdict`, `Violation`, `run_authoring_check(root) -> Verdict`. Reuses `run_executable_checks`; adds tri-state (`unavailable` filtering) + `authoring_time` opt-in filtering. No agent knowledge, no prose.
+- `tests/unit/core/test_authoring_check.py`
+- `tests/integration/daemon/test_hook_entry_stop.py`
 
 **Modify:**
-- `src/super_harness/core/decisions.py` — add optional `applies_to` frontmatter field (parse + serialize round-trip).
-- `docs/decisions/d-core-is-base.md` — add `applies_to` frontmatter (no body change → hash unaffected).
-- `src/super_harness/adapters/agent/_settings_merge.py` — add `merge_post_tool_use_hook`.
-- `src/super_harness/adapters/agent/claude_code.py` — register PostToolUse in `install_hooks`; add `format_post_edit_feedback`; update `on_uninstall` reasoning.
-- `src/super_harness/adapters/__init__.py` — add `format_post_edit_feedback` to `AgentAdapter` ABC (non-abstract default = floor-only).
-- `src/super_harness/daemon/hook_entry.py` — add `--event post-tool-use` parsing + a non-blocking, fail-open claude-code post path.
-- `tests/unit/adapters/test_settings_merge.py`, `tests/unit/adapters/test_claude_code.py` — extend for the new merge + adapter method.
+- `src/super_harness/core/decisions.py` — add `authoring_time: bool = False` frontmatter field (parse + serialize round-trip).
+- `docs/decisions/d-core-is-base.md` — add `authoring_time: true` frontmatter (no body change → hash unaffected).
+- `src/super_harness/adapters/agent/_settings_merge.py` — add `merge_stop_hook` (mirror the matcher-less `merge_session_start_hook`).
+- `src/super_harness/adapters/__init__.py` — add `format_stop_feedback(verdict) -> str` (default `""`) + shared `_render_advisory(verdict) -> str` to `AgentAdapter`.
+- `src/super_harness/adapters/agent/claude_code.py` — override `format_stop_feedback`; register the Stop hook in `install_hooks`; switch `on_uninstall` to marker-strip.
+- `src/super_harness/daemon/hook_entry.py` — add `--event stop` claude-code path (loop-safe, fail-open, honors kill switch).
 
 ---
 
-## Task 1: `applies_to` frontmatter field on Decision
+## Task 1: `authoring_time` opt-in frontmatter on Decision
 
 **Files:**
-- Modify: `src/super_harness/core/decisions.py` (Decision dataclass ~line 33, `parse_decision_file` ~line 140, `serialize_decision` ~line 233)
-- Test: `tests/unit/core/test_decisions.py` (extend; if absent, create)
+- Modify: `src/super_harness/core/decisions.py` (Decision dataclass, `parse_decision_file`, `serialize_decision`)
+- Test: `tests/unit/core/test_decisions.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -43,203 +42,167 @@
 from pathlib import Path
 from super_harness.core.decisions import parse_decision_file, serialize_decision
 
-def test_applies_to_parsed_and_roundtrips(tmp_path: Path):
+def test_authoring_time_parsed_and_roundtrips(tmp_path: Path):
     p = tmp_path / "d-x.md"
-    p.write_text(
-        "---\n"
-        "id: d-x\n"
-        "status: ratified\n"
-        "applies_to:\n"
-        "  - 'src/super_harness/core/**'\n"
-        "---\n"
-        "body text\n"
-    )
+    p.write_text("---\nid: d-x\nstatus: ratified\nauthoring_time: true\n---\nbody\n")
     d = parse_decision_file(p)
-    assert d.applies_to == ("src/super_harness/core/**",)
-    # round-trip must preserve applies_to (serialize is an allow-list)
-    assert "applies_to" in serialize_decision(d)
+    assert d.authoring_time is True
+    assert "authoring_time" in serialize_decision(d)
 
-def test_applies_to_absent_defaults_empty(tmp_path: Path):
+def test_authoring_time_absent_defaults_false(tmp_path: Path):
     p = tmp_path / "d-y.md"
     p.write_text("---\nid: d-y\nstatus: ratified\n---\nbody\n")
-    assert parse_decision_file(p).applies_to == ()
+    assert parse_decision_file(p).authoring_time is False
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_decisions.py -k applies_to -v`
-Expected: FAIL — `Decision` has no attribute `applies_to`.
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_decisions.py -k authoring_time -v`
+Expected: FAIL — `Decision` has no `authoring_time`.
 
 - [ ] **Step 3: Implement**
 
-In `decisions.py`, add to the `Decision` dataclass (after `check`/other optional fields):
+In `decisions.py`, add to the `Decision` dataclass:
 
 ```python
-    applies_to: tuple[str, ...] = ()
+    authoring_time: bool = False
 ```
 
-In `parse_decision_file`, where the `Decision(...)` is constructed, add:
+In `parse_decision_file`, in the `Decision(...)` constructor:
 
 ```python
-        applies_to=tuple(data.get("applies_to") or ()),
+        authoring_time=bool(data.get("authoring_time", False)),
 ```
 
 In `serialize_decision`, after the reconciled_anchors block and before `fm_text = ...`:
 
 ```python
-    if decision.applies_to:
-        fm["applies_to"] = list(decision.applies_to)
+    if decision.authoring_time:
+        fm["authoring_time"] = True
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run to verify it passes**
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_decisions.py -k applies_to -v`
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_decisions.py -k authoring_time -v`
 Expected: PASS.
 
-- [ ] **Step 5: Add `applies_to` to the real decision (frontmatter only — body hash unchanged)**
+- [ ] **Step 5: Opt the real decision in (frontmatter only — body hash unchanged)**
 
-Edit `docs/decisions/d-core-is-base.md` frontmatter, inserting a line after `id: d-core-is-base` (do NOT touch anything below the closing `---`, so `ratified_text_hash` stays valid):
+Edit `docs/decisions/d-core-is-base.md` frontmatter, add after `id: d-core-is-base` (do NOT touch anything below the closing `---`):
 
 ```yaml
-applies_to:
-  - 'src/super_harness/core/**'
+authoring_time: true
 ```
 
-- [ ] **Step 6: Verify integrity gate still clean (proves hash unaffected by frontmatter)**
+- [ ] **Step 6: Verify integrity gate still clean**
 
 Run: `PATH="$(pwd)/.venv/bin:$PATH" super-harness decision check`
-Expected: no integrity/hash violation for `d-core-is-base` (exit 0 on that check; frontmatter is outside the body hash).
+Expected: no integrity/hash violation for `d-core-is-base` (frontmatter is outside `compute_body_hash`).
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add src/super_harness/core/decisions.py tests/unit/core/test_decisions.py docs/decisions/d-core-is-base.md
-git commit -m "feat(decisions): optional applies_to frontmatter for file-scope relevance"
+git commit -m "feat(decisions): authoring_time opt-in frontmatter for the interactive loop"
 ```
 
 ---
 
-## Task 2: Relevance resolver + verdict core
+## Task 2: Verdict core (`authoring_check.py`)
 
 **Files:**
-- Create: `src/super_harness/core/conformance_sensor.py`
-- Test: `tests/unit/core/test_conformance_sensor.py`
+- Create: `src/super_harness/core/authoring_check.py`
+- Test: `tests/unit/core/test_authoring_check.py`
 
-Reuses `load_decisions` (returns `(list[Decision], errors)`), `run_executable_checks` (returns `list[CheckFailure]`), and `decision_tier`/tier-1 semantics from `core`. The resolver deliberately does NOT use `select_changed` (its anchor-intersection is unsound — design §3a).
+Reuses `load_decisions` (returns `(list[Decision], errors)`) and `run_executable_checks` (returns `list[CheckFailure(id, exit_code, detail)]`, already skips non-ratified + `check is None`). Adds the `authoring_time` filter and the tri-state (`exit_code == -1` = `unavailable`, not a violation).
 
-- [ ] **Step 1: Write the failing test (relevance)**
+- [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/unit/core/test_conformance_sensor.py
+# tests/unit/core/test_authoring_check.py
 from pathlib import Path
-from super_harness.core.decisions import Decision
-from super_harness.core.conformance_sensor import relevant_decisions
+import textwrap
+from super_harness.core.authoring_check import run_authoring_check, Verdict, Violation
 
-def _d(id, applies_to=(), status="ratified", check="true"):
-    return Decision(id=id, status=status, applies_to=applies_to, check=check, body="b")
+def _write_decision(root: Path, id: str, check: str, authoring: bool):
+    d = root / "docs" / "decisions"; d.mkdir(parents=True, exist_ok=True)
+    at = "authoring_time: true\n" if authoring else ""
+    (d / f"{id}.md").write_text(textwrap.dedent(f"""\
+        ---
+        id: {id}
+        status: ratified
+        {at}---
+        body
+        ```check
+        {check}
+        ```
+        ```counterexample path=src/_ce.py
+        x = 1
+        ```
+        """))
 
-def test_relevant_matches_glob():
-    ds = [_d("d-core", applies_to=("src/super_harness/core/**",))]
-    assert [d.id for d in relevant_decisions(ds, "src/super_harness/core/foo.py")] == ["d-core"]
+def test_failing_opted_in_check_is_a_violation(tmp_path: Path):
+    _write_decision(tmp_path, "d-fail", check="false", authoring=True)
+    v = run_authoring_check(tmp_path)
+    assert [x.decision_id for x in v.violations] == ["d-fail"]
+    assert v.violations[0].decision_doc_path == "docs/decisions/d-fail.md"
 
-def test_irrelevant_file_excluded():
-    ds = [_d("d-core", applies_to=("src/super_harness/core/**",))]
-    assert relevant_decisions(ds, "src/super_harness/cli/plan.py") == []
+def test_not_opted_in_is_skipped(tmp_path: Path):
+    _write_decision(tmp_path, "d-fail", check="false", authoring=False)
+    assert run_authoring_check(tmp_path).violations == []
 
-def test_no_applies_to_is_conservative_always_relevant():
-    ds = [_d("d-anywhere", applies_to=())]
-    assert [d.id for d in relevant_decisions(ds, "any/path.py")] == ["d-anywhere"]
+def test_passing_check_is_clean(tmp_path: Path):
+    _write_decision(tmp_path, "d-ok", check="true", authoring=True)
+    assert run_authoring_check(tmp_path).violations == []
 
-def test_non_ratified_excluded():
-    ds = [_d("d-prop", applies_to=("**",), status="proposed")]
-    assert relevant_decisions(ds, "x.py") == []
+def test_unavailable_is_not_a_violation(tmp_path: Path):
+    # exit 127 → the runner maps spawn/timeout to exit_code -1; a bad command that
+    # exits nonzero-but-not -1 IS a violation, so use a real timeout-like sentinel.
+    # Simulate unavailable by a command the runner reports as -1 is hard here; instead
+    # assert the filter directly:
+    from super_harness.core.authoring_check import _to_violations
+    from super_harness.core.check_runner import CheckFailure
+    fails = [CheckFailure(id="d-a", exit_code=-1, detail="timeout"),
+             CheckFailure(id="d-b", exit_code=1, detail="real")]
+    ids = [v.decision_id for v in _to_violations(fails)]
+    assert ids == ["d-b"]   # -1 (unavailable) filtered out
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_conformance_sensor.py -k relevant -v`
-Expected: FAIL — module/function does not exist.
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_authoring_check.py -v`
+Expected: FAIL — module does not exist.
 
-- [ ] **Step 3: Implement `relevant_decisions`**
+- [ ] **Step 3: Implement**
 
 ```python
-# src/super_harness/core/conformance_sensor.py
-"""Authoring-time decision-conformance sensor core (design 2026-07-01).
+# src/super_harness/core/authoring_check.py
+"""Authoring-time conformance verdict (design 2026-07-01, Rev 2).
 
-Agent-agnostic: given the file an agent just changed, resolve which ratified
-tier-1 decisions apply to it, run their checks, and render a deterministic
-advisory. No agent knowledge, no daemon, no LLM. Delivery is per-agent (adapters).
+Agent-agnostic: run the ratified, authoring-opted-in tier-1 decision checks once and
+return a structured Verdict. Reused by the Stop-hook path. No agent knowledge, no
+prose, no daemon. This is deliberately NOT a `Sensor` (no dispatcher / event emission)
+— it is a synchronous verdict producer.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from fnmatch import fnmatch
 from pathlib import Path
 
 from super_harness.core.check_runner import CheckFailure, run_executable_checks
-from super_harness.core.decisions import Decision, load_decisions
+from super_harness.core.decisions import load_decisions
 
-POST_CHECK_TIMEOUT = 15  # bounded latency budget for the authoring path (design §5)
+# Inner check budget; MUST stay strictly below the hook's outer timeout
+# (adapters.agent._settings_merge._TIMEOUT = 10s) so a slow graph degrades to
+# `unavailable` (silent) rather than a hard kill (design §5).
+AUTHORING_CHECK_TIMEOUT = 8
 
-
-def relevant_decisions(decisions: list[Decision], changed_file: str) -> list[Decision]:
-    """Ratified decisions whose `applies_to` globs match `changed_file`.
-
-    A decision with an empty `applies_to` is conservatively treated as always
-    relevant (never silently skip a rule for lack of a scope declaration).
-    Only ratified decisions are considered (proposed/retired are inert).
-    `changed_file` is a workspace-relative POSIX path.
-    """
-    out: list[Decision] = []
-    for d in decisions:
-        if d.status != "ratified":
-            continue
-        if not d.applies_to or any(fnmatch(changed_file, g) for g in d.applies_to):
-            out.append(d)
-    return out
-```
-
-- [ ] **Step 4: Run to verify relevance passes**
-
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_conformance_sensor.py -k relevant -v`
-Expected: PASS.
-
-- [ ] **Step 5: Write failing test (verdict + rendering)**
-
-```python
-# append to tests/unit/core/test_conformance_sensor.py
-from super_harness.core.conformance_sensor import Verdict, Violation, render_feedback
-
-def test_render_feedback_names_decision_and_detail():
-    v = Verdict(violations=[Violation(
-        decision_id="d-core-is-base",
-        detail="src.super_harness.core is not allowed to import super_harness.sensors",
-        decision_doc_path="docs/decisions/d-core-is-base.md",
-    )])
-    text = render_feedback(v)
-    assert "d-core-is-base" in text
-    assert "super_harness.sensors" in text
-    assert "docs/decisions/d-core-is-base.md" in text
-
-def test_render_feedback_empty_is_none():
-    assert render_feedback(Verdict(violations=[])) is None
-```
-
-- [ ] **Step 6: Run to verify it fails**
-
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_conformance_sensor.py -k render -v`
-Expected: FAIL — `Verdict`/`Violation`/`render_feedback` undefined.
-
-- [ ] **Step 7: Implement verdict types + rendering + the top-level scan**
-
-```python
-# append to src/super_harness/core/conformance_sensor.py
 
 @dataclass(frozen=True)
 class Violation:
     decision_id: str
-    detail: str            # the check's own violation output (CheckFailure.detail)
-    decision_doc_path: str  # workspace-relative path to the decision record
+    detail: str            # the check's own output (CheckFailure.detail)
+    decision_doc_path: str
 
 
 @dataclass(frozen=True)
@@ -247,75 +210,69 @@ class Verdict:
     violations: list[Violation]
 
 
-def render_feedback(verdict: Verdict) -> str | None:
-    """Render the agent-agnostic advisory text, or None if there is nothing to say.
-
-    Deliberately carries only what the mechanism actually produced (design §3b):
-    the decision id, the check's own detail, and a pointer to the decision doc.
-    No fabricated fix text. Framed as advisory + ignorable-if-mid-step (design §5).
-    """
-    if not verdict.violations:
-        return None
-    lines = [
-        "super-harness authoring-time check — you just edited a file governed by a "
-        "ratified decision, and its check is failing:",
-    ]
-    for v in verdict.violations:
-        lines.append(f"  • {v.decision_id}: {v.detail}")
-        lines.append(f"    (rule + counterexample: {v.decision_doc_path})")
-    lines.append(
-        "This is advice, not a block — the edit stands. If you are mid multi-step "
-        "change and will fix this next, ignore it. Otherwise, correct it now; the "
-        "merge gate will otherwise reject it later."
-    )
-    return "\n".join(lines)
-
-
-def scan_changed_file(workspace_root: Path, changed_file: str) -> Verdict:
-    """Run the relevant ratified tier-1 checks for `changed_file`, return a Verdict.
-
-    Pure-ish: reads decision records + runs their checks (subprocess) read-only.
-    Never raises for a normal check failure — a failing check is data, not an error.
-    """
-    decisions, _errors = load_decisions(workspace_root)
-    relevant = relevant_decisions(decisions, changed_file)
-    if not relevant:
-        return Verdict(violations=[])
-    failures: list[CheckFailure] = run_executable_checks(
-        workspace_root, relevant, timeout=POST_CHECK_TIMEOUT
-    )
-    by_id = {d.id: d for d in relevant}
-    violations = [
+def _to_violations(failures: list[CheckFailure]) -> list[Violation]:
+    """Map real check failures to violations, dropping `unavailable` (exit_code == -1
+    = timeout / spawn failure): an unavailable check is NOT 'you violated X' (design §3)."""
+    return [
         Violation(
             decision_id=f.id,
             detail=f.detail,
             decision_doc_path=f"docs/decisions/{f.id}.md",
         )
         for f in failures
+        if f.exit_code != -1
     ]
-    _ = by_id  # reserved for future per-decision doc-path override
-    return Verdict(violations=violations)
+
+
+def run_authoring_check(workspace_root: Path) -> Verdict:
+    """Run the ratified, `authoring_time` tier-1 checks once; return a Verdict.
+
+    Only decisions that opted into the interactive loop (`authoring_time: true`) run —
+    the safety control (design §4). Never raises for a check failure (failure is data).
+    """
+    decisions, _errors = load_decisions(workspace_root)
+    opted = [d for d in decisions if d.authoring_time]
+    if not opted:
+        return Verdict(violations=[])
+    # run_executable_checks already skips non-ratified + `check is None`.
+    failures = run_executable_checks(workspace_root, opted, timeout=AUTHORING_CHECK_TIMEOUT)
+    return Verdict(violations=_to_violations(failures))
 ```
 
-- [ ] **Step 8: Run to verify all core tests pass**
+- [ ] **Step 4: Run to verify it passes**
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_conformance_sensor.py -v`
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_authoring_check.py -v`
 Expected: PASS (all).
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 5: Assert core stays adapter-free (guard the layering)**
+
+Add to `tests/unit/core/test_authoring_check.py`:
+
+```python
+def test_core_module_imports_no_adapters():
+    import super_harness.core.authoring_check as m
+    src = Path(m.__file__).read_text()
+    assert "adapters" not in src   # core must not import the adapter layer (core-is-base)
+```
+
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/core/test_authoring_check.py -k adapters_free -v` (rename to match) → PASS.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add src/super_harness/core/conformance_sensor.py tests/unit/core/test_conformance_sensor.py
-git commit -m "feat(core): authoring-time conformance sensor core (relevance + verdict + render)"
+git add src/super_harness/core/authoring_check.py tests/unit/core/test_authoring_check.py
+git commit -m "feat(core): authoring-time conformance verdict (reuse run_executable_checks, tri-state)"
 ```
 
 ---
 
-## Task 3: `merge_post_tool_use_hook` in settings-merge
+## Task 3: `merge_stop_hook` in settings-merge (mirror the matcher-less session_start helper)
 
 **Files:**
-- Modify: `src/super_harness/adapters/agent/_settings_merge.py` (mirror `merge_pre_tool_use_hook` ~line 63; `__all__` ~line 36; markers ~line 45)
+- Modify: `src/super_harness/adapters/agent/_settings_merge.py`
 - Test: `tests/unit/adapters/test_settings_merge.py`
+
+**Read first:** open `_settings_merge.py` and read `merge_session_start_hook` end-to-end. Stop hooks (like SessionStart) take **no matcher**, so `merge_stop_hook` mirrors `merge_session_start_hook` exactly — NOT the PreToolUse helper. Reuse the existing generic `_ensure_event_list(hooks, event)` and the file's real loader/backup/write logic (the idempotent write is **inlined** in each merge fn: existed-guard → `_read_settings` or `{}` → deepcopy → strip-by-marker → append → `if settings == original: return` → conditional `_write_backup` → `write_text`). Do NOT invent `_load_settings` / `_write_if_changed` — they do not exist.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -323,73 +280,50 @@ git commit -m "feat(core): authoring-time conformance sensor core (relevance + v
 # tests/unit/adapters/test_settings_merge.py
 import json
 from pathlib import Path
-from super_harness.adapters.agent._settings_merge import merge_post_tool_use_hook
+from super_harness.adapters.agent._settings_merge import merge_stop_hook
 
-def test_merge_post_tool_use_adds_entry(tmp_path: Path):
+def test_merge_stop_adds_entry(tmp_path: Path):
     hooks = tmp_path / "settings.json"
-    merge_post_tool_use_hook(hooks, command="/abs/hook --event post-tool-use",
-                             matcher="Edit|Write|MultiEdit", marker="post-tool-use")
+    merge_stop_hook(hooks, command="/abs/super-harness-hook --agent claude-code --event stop")
     data = json.loads(hooks.read_text())
-    entries = data["hooks"]["PostToolUse"]
-    assert any("post-tool-use" in h["command"]
-               for e in entries for h in e["hooks"])
+    entries = data["hooks"]["Stop"]
+    assert any("--event stop" in h["command"] for e in entries for h in e["hooks"])
+    # Stop entries carry NO matcher (mirror SessionStart)
+    assert all("matcher" not in e for e in entries)
 
-def test_merge_post_tool_use_preserves_pretooluse(tmp_path: Path):
+def test_merge_stop_preserves_existing_hooks(tmp_path: Path):
     hooks = tmp_path / "settings.json"
     hooks.write_text(json.dumps({"hooks": {"PreToolUse": [
         {"matcher": "Edit", "hooks": [{"type": "command", "command": "keepme"}]}]}}))
-    merge_post_tool_use_hook(hooks, command="/abs/hook --event post-tool-use",
-                             matcher="Edit|Write|MultiEdit", marker="post-tool-use")
+    merge_stop_hook(hooks, command="/abs/super-harness-hook --agent claude-code --event stop")
     data = json.loads(hooks.read_text())
     assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "keepme"
-    assert "PostToolUse" in data["hooks"]
+    assert "Stop" in data["hooks"]
+
+def test_merge_stop_idempotent(tmp_path: Path):
+    hooks = tmp_path / "settings.json"
+    cmd = "/abs/super-harness-hook --agent claude-code --event stop"
+    merge_stop_hook(hooks, command=cmd)
+    first = hooks.read_text()
+    merge_stop_hook(hooks, command=cmd)
+    assert hooks.read_text() == first   # no duplicate entry, stable output
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_settings_merge.py -k post_tool_use -v`
-Expected: FAIL — `merge_post_tool_use_hook` undefined.
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_settings_merge.py -k stop -v`
+Expected: FAIL — `merge_stop_hook` undefined.
 
-- [ ] **Step 3: Implement (mirror the pre-tool-use helper)**
+- [ ] **Step 3: Implement (mirror `merge_session_start_hook`)**
 
-In `_settings_merge.py`: add `"merge_post_tool_use_hook"` to `__all__`; add a helper symmetric to `merge_pre_tool_use_hook` but writing the `"PostToolUse"` event list. Reuse the existing `_ensure_hooks_dict`, `_strip_entries`, `_hook_entry`, and the atomic write-if-different logic. Add a `_ensure_post_tool_use_list(hooks)` mirroring `_ensure_pre_tool_use_list`:
-
-```python
-def _ensure_post_tool_use_list(hooks: dict[str, Any]) -> list[Any]:
-    entries = hooks.setdefault("PostToolUse", [])
-    if not isinstance(entries, list):
-        raise ValueError(
-            f'"PostToolUse" must be a JSON array, got {type(entries).__name__}; '
-            "the settings file looks corrupt — fix it before installing the hook."
-        )
-    return entries
-
-
-def merge_post_tool_use_hook(
-    path: Path, *, command: str, matcher: str, marker: str,
-) -> None:
-    """Add/replace super-harness's PostToolUse hook; preserve all other hooks.
-
-    Symmetric with merge_pre_tool_use_hook: computes the desired settings
-    (existing PostToolUse entry for `command` replaced by a fresh one) and writes
-    it only if it differs from disk.
-    """
-    settings = _load_settings(path)          # reuse the same loader as pre
-    hooks = _ensure_hooks_dict(settings)
-    post = _ensure_post_tool_use_list(hooks)
-    _strip_entries(post, marker)
-    post.append(_hook_entry(command, matcher))
-    _write_if_changed(path, settings)        # reuse the same atomic writer as pre
-```
-
-(Use the exact helper names present in the file — align `_load_settings` / `_write_if_changed` with whatever `merge_pre_tool_use_hook` currently calls.)
+Add `"merge_stop_hook"` to `__all__`. Add a `_STOP_MARKER` constant (a stable substring identifying our Stop command, e.g. `"--event stop"`). Copy the body of `merge_session_start_hook` verbatim and change: the event list to `_ensure_event_list(hooks, "Stop")`, the marker to `_STOP_MARKER`, and the appended entry to the matcher-less command entry (reuse the same entry-builder `merge_session_start_hook` uses — e.g. `_session_start_entry(command)` or the shared no-matcher builder; if it is session-specific, add a tiny `_stop_entry(command)` mirroring it with the Stop command + `_TIMEOUT`). Signature: `merge_stop_hook(settings_path: Path, *, command: str, marker: str = _STOP_MARKER) -> None` — mirror the real `merge_session_start_hook` parameter name (`settings_path`) and its inlined existed-guard/backup/write structure exactly.
 
 - [ ] **Step 4: Run to verify it passes**
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_settings_merge.py -k post_tool_use -v`
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_settings_merge.py -k stop -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run the whole settings-merge suite (no regression to pre/session merges)**
+- [ ] **Step 5: Full settings-merge suite (no regression to pre/session merges)**
 
 Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_settings_merge.py -v`
 Expected: PASS (all).
@@ -398,43 +332,48 @@ Expected: PASS (all).
 
 ```bash
 git add src/super_harness/adapters/agent/_settings_merge.py tests/unit/adapters/test_settings_merge.py
-git commit -m "feat(adapters): merge_post_tool_use_hook (symmetric to pre-tool-use)"
+git commit -m "feat(adapters): merge_stop_hook (matcher-less, mirrors session_start)"
 ```
 
 ---
 
-## Task 4: `AgentAdapter.format_post_edit_feedback` seam + Claude Code delivery
+## Task 4: Adapter seam + Claude Code delivery + install/uninstall
 
 **Files:**
-- Modify: `src/super_harness/adapters/__init__.py` (AgentAdapter ABC — add non-abstract default method)
-- Modify: `src/super_harness/adapters/agent/claude_code.py` (override + PostToolUse install + uninstall note)
+- Modify: `src/super_harness/adapters/__init__.py` (ABC: `format_stop_feedback` default + shared `_render_advisory`)
+- Modify: `src/super_harness/adapters/agent/claude_code.py` (override + install Stop hook + marker-strip uninstall)
 - Test: `tests/unit/adapters/test_claude_code.py`, `tests/unit/adapters/test_protocol.py`
 
-- [ ] **Step 1: Write the failing test (Claude delivery format)**
+- [ ] **Step 1: Write the failing tests (ABC default + shared render + Claude override)**
 
 ```python
 # tests/unit/adapters/test_claude_code.py
 import json
 from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+from super_harness.core.authoring_check import Verdict, Violation
 
-def test_format_post_edit_feedback_wraps_additional_context():
-    out = ClaudeCodeAdapter().format_post_edit_feedback("VIOLATION TEXT")
+def _v():
+    return Verdict(violations=[Violation("d-core-is-base",
+        "core is not allowed to import super_harness.sensors",
+        "docs/decisions/d-core-is-base.md")])
+
+def test_claude_format_stop_feedback_blocks_with_reason():
+    out = ClaudeCodeAdapter().format_stop_feedback(_v())
     obj = json.loads(out)
-    assert obj["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
-    assert obj["hookSpecificOutput"]["additionalContext"] == "VIOLATION TEXT"
+    assert obj["decision"] == "block"
+    assert "d-core-is-base" in obj["reason"]
+    assert "super_harness.sensors" in obj["reason"]
+    assert "docs/decisions/d-core-is-base.md" in obj["reason"]
 
-def test_format_post_edit_feedback_none_is_empty_string():
-    assert ClaudeCodeAdapter().format_post_edit_feedback(None) == ""
+def test_claude_format_stop_feedback_clean_is_empty():
+    assert ClaudeCodeAdapter().format_stop_feedback(Verdict(violations=[])) == ""
 ```
-
-- [ ] **Step 2: Write the failing test (ABC default = floor-only, empty)**
 
 ```python
 # tests/unit/adapters/test_protocol.py  (add)
-def test_agentadapter_default_post_edit_feedback_is_empty():
-    # A minimal concrete adapter that does NOT override the method degrades to
-    # floor-only: it returns "" (no delivery), never raising.
+def test_default_format_stop_feedback_is_empty():
     from super_harness.adapters import AgentAdapter
+    from super_harness.core.authoring_check import Verdict, Violation
     from pathlib import Path
 
     class _Bare(AgentAdapter):
@@ -443,75 +382,94 @@ def test_agentadapter_default_post_edit_feedback_is_empty():
         def install_hooks(self, w: Path) -> None: ...
         def inject_context(self, c: str) -> str: return ""
         def agents_md_subsection(self) -> str: return ""
-    assert _Bare().format_post_edit_feedback("x") == ""
+    v = Verdict(violations=[Violation("d", "x", "docs/decisions/d.md")])
+    assert _Bare().format_stop_feedback(v) == ""   # floor-only default
 ```
 
-- [ ] **Step 3: Run to verify both fail**
+- [ ] **Step 2: Run to verify they fail**
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_claude_code.py -k post_edit tests/unit/adapters/test_protocol.py -k post_edit -v`
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_claude_code.py -k stop_feedback tests/unit/adapters/test_protocol.py -k format_stop -v`
 Expected: FAIL — method undefined.
 
-- [ ] **Step 4: Implement the ABC default (non-abstract, floor-only)**
+- [ ] **Step 3: Implement the ABC default + shared renderer**
 
-In `adapters/__init__.py`, add to `AgentAdapter` (a non-abstract method, like `on_uninstall`):
+In `adapters/__init__.py`, add to `AgentAdapter` (non-abstract, like `on_uninstall`):
 
 ```python
-    def format_post_edit_feedback(self, feedback_text: str | None) -> str:
-        """Format an authoring-time conformance advisory for this agent's post-edit
-        feedback channel; return "" to deliver nothing.
+    def format_stop_feedback(self, verdict: "Verdict") -> str:
+        """Format a turn-end conformance verdict for this agent's Stop-hook feedback
+        channel; return "" to deliver nothing.
 
-        Default = floor-only: agents whose post-tool hook cannot inject text back to
-        the model (e.g. GitHub Copilot) do not override this, so they deliver nothing
-        and rely on the CI cold-path floor. Agents that CAN feed back (Claude Code,
-        Codex) override it. `feedback_text` is the agent-agnostic advisory (or None).
-        """
+        Default = floor-only: agents whose Stop hook cannot feed text back to the model
+        do not override this and rely on the CI cold-path floor. Agents that can
+        (Claude Code, Codex) override it. Takes the STRUCTURED verdict so an agent can
+        choose channel/fields; use `_render_advisory` for the shared prose."""
         return ""
+
+    @staticmethod
+    def _render_advisory(verdict: "Verdict") -> str:
+        """Shared agent-agnostic advisory prose (design §3b): decision id + the check's
+        own detail + decision-doc pointer. No fabricated fix text."""
+        lines = [
+            "super-harness authoring-time check — a ratified decision's check is failing "
+            "for your changes:",
+        ]
+        for v in verdict.violations:
+            lines.append(f"  • {v.decision_id}: {v.detail}")
+            lines.append(f"    (rule + counterexample: {v.decision_doc_path})")
+        lines.append(
+            "Correct it before finishing this turn; the merge gate will otherwise reject "
+            "it later. (If this is a deliberate, disclosed exception, proceed.)"
+        )
+        return "\n".join(lines)
 ```
 
-- [ ] **Step 5: Implement the Claude Code override**
+Add the TYPE_CHECKING import for `Verdict` at the top of `adapters/__init__.py`:
+
+```python
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from super_harness.core.authoring_check import Verdict
+```
+
+(Note: `core.authoring_check` imports only `core`, and this is a TYPE_CHECKING-only import in the adapter layer, so no runtime `core → adapters` or `adapters → core` cycle is introduced at import time.)
+
+- [ ] **Step 4: Implement the Claude Code override**
 
 In `claude_code.py`, add to `ClaudeCodeAdapter`:
 
 ```python
-    def format_post_edit_feedback(self, feedback_text: str | None) -> str:
-        """Wrap the advisory in Claude Code's PostToolUse additionalContext envelope.
-
-        Claude Code reads `hookSpecificOutput.additionalContext` as a system-reminder
-        on its next model request (self-correct channel; does NOT block the edit).
-        Returns "" when there is nothing to deliver.
-        """
+    def format_stop_feedback(self, verdict) -> str:
+        """Block the stop and feed the advisory back via Claude Code's Stop-hook JSON
+        protocol: `{"decision":"block","reason": ...}` (the reason reaches the model on
+        its next turn). Returns "" when clean (allow the stop)."""
         import json
-        if not feedback_text:
+        if not verdict.violations:
             return ""
-        return json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "additionalContext": feedback_text,
-            }
-        })
+        return json.dumps({"decision": "block", "reason": self._render_advisory(verdict)})
 ```
 
-- [ ] **Step 6: Run to verify format tests pass**
+- [ ] **Step 5: Run to verify format tests pass**
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_claude_code.py -k post_edit tests/unit/adapters/test_protocol.py -k post_edit -v`
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_claude_code.py -k stop_feedback tests/unit/adapters/test_protocol.py -k format_stop -v`
 Expected: PASS.
 
-- [ ] **Step 7: Register the PostToolUse hook in `install_hooks`**
+- [ ] **Step 6: Register the Stop hook in `install_hooks`**
 
-In `claude_code.py`'s `install_hooks`, after the existing PreToolUse + SessionStart merges, add a PostToolUse merge. Import `merge_post_tool_use_hook` alongside the existing merge imports. Use a distinct marker constant (e.g. `_POST_MARKER = "--event post-tool-use"` or a dedicated marker string) and the same tool matcher used for edits:
+In `claude_code.py`'s `install_hooks`, after the existing PreToolUse + SessionStart merges, add (import `merge_stop_hook` alongside the existing merge imports; use the same `settings_path` + resolved hook binary the PreToolUse install uses):
 
 ```python
-        merge_post_tool_use_hook(
+        merge_stop_hook(
             settings_path,
-            command=f"{resolved_hook} --agent claude-code --event post-tool-use",
-            matcher=_MATCHER,      # same Edit|Write|MultiEdit matcher used for pre
-            marker="--event post-tool-use",
+            command=f"{resolved_hook} --agent claude-code --event stop",
         )
 ```
 
-(Match the exact `settings_path` variable + `resolved_hook` resolution `install_hooks` already uses for the PreToolUse entry.)
+- [ ] **Step 7: Switch `on_uninstall` to marker-strip (fixes the latent leak)**
 
-- [ ] **Step 8: Write + run an install test (three hooks land, all preserved)**
+Replace `on_uninstall`'s restore-earliest-backup logic (which leaks the PreToolUse hook when settings were absent — cross-review S5) with a **marker-strip**: load the settings (if present), and for each event list (`PreToolUse`, `SessionStart`, `Stop`) drop entries whose command contains a super-harness marker (reuse `_strip_entries` + the `_OURS_MARKER` / `_SESSION_MARKER` / `_STOP_MARKER` constants), then write back (or delete the file if it becomes empty and we created it). Keep it best-effort/no-raise.
+
+- [ ] **Step 8: Write + run install/uninstall tests (three hooks land + all stripped)**
 
 ```python
 # tests/unit/adapters/test_claude_code.py
@@ -519,119 +477,73 @@ import json
 from pathlib import Path
 from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
 
-def test_install_registers_post_tool_use(tmp_path: Path, monkeypatch):
-    # ClaudeCodeAdapter.install_hooks resolves the hook binary via shutil.which;
-    # stub it so the test does not depend on an installed console script.
+def _install(tmp_path, monkeypatch):
     import super_harness.adapters.agent.claude_code as cc
-    monkeypatch.setattr(cc.shutil, "which", lambda _n: "/abs/super-harness-hook")
+    # real install resolves BOTH super-harness-hook and super-harness
+    monkeypatch.setattr(cc.shutil, "which", lambda n: f"/abs/{n}")
     (tmp_path / ".claude").mkdir()
     ClaudeCodeAdapter().install_hooks(tmp_path)
-    settings = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
-    events = settings["hooks"]
-    assert "PreToolUse" in events and "PostToolUse" in events
-    assert any("post-tool-use" in h["command"]
-               for e in events["PostToolUse"] for h in e["hooks"])
-```
+    return json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_claude_code.py -k install_registers_post -v`
-Expected: PASS. (Adjust the settings filename/`which` target to match the adapter's real code if the stub differs.)
+def test_install_registers_stop(tmp_path, monkeypatch):
+    events = _install(tmp_path, monkeypatch)["hooks"]
+    assert "Stop" in events and "PreToolUse" in events
+    assert any("--event stop" in h["command"] for e in events["Stop"] for h in e["hooks"])
 
-- [ ] **Step 9: Update `on_uninstall` reasoning for the third hook**
-
-The current `on_uninstall` (`claude_code.py:257`) restores the earliest backup based on "install writes two merges." Adding PostToolUse makes it three merges. Update the comment + any backup-count logic so uninstall still restores the pre-install state (or explicitly strips all three markers). Add a test asserting `on_uninstall` leaves no super-harness PostToolUse entry:
-
-```python
-def test_uninstall_removes_post_tool_use(tmp_path: Path, monkeypatch):
+def test_uninstall_strips_all_markers(tmp_path, monkeypatch):
     import super_harness.adapters.agent.claude_code as cc
-    monkeypatch.setattr(cc.shutil, "which", lambda _n: "/abs/super-harness-hook")
+    monkeypatch.setattr(cc.shutil, "which", lambda n: f"/abs/{n}")
     (tmp_path / ".claude").mkdir()
     a = ClaudeCodeAdapter()
     a.install_hooks(tmp_path)
     a.on_uninstall(tmp_path)
-    settings_file = tmp_path / ".claude" / "settings.local.json"
-    if settings_file.exists():
-        settings = json.loads(settings_file.read_text())
-        post = settings.get("hooks", {}).get("PostToolUse", [])
-        assert not any("post-tool-use" in h["command"]
-                       for e in post for h in e["hooks"])
+    f = tmp_path / ".claude" / "settings.local.json"
+    if f.exists():
+        hooks = json.loads(f.read_text()).get("hooks", {})
+        flat = [h["command"] for lst in hooks.values() for e in lst for h in e.get("hooks", [])]
+        assert not any("super-harness-hook" in c or "--event stop" in c for c in flat)
 ```
 
 Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_claude_code.py -v`
-Expected: PASS (all).
+Expected: PASS (all). If existing uninstall tests assumed restore-earliest, update them to the marker-strip contract.
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/super_harness/adapters/__init__.py src/super_harness/adapters/agent/claude_code.py tests/unit/adapters/
-git commit -m "feat(adapters): post-edit feedback seam + Claude Code PostToolUse delivery"
+git commit -m "feat(adapters): Stop-feedback seam (Verdict) + Claude delivery + marker-strip uninstall"
 ```
 
 ---
 
-## Task 5: Non-blocking PostToolUse path on the hook binary
+## Task 5: `--event stop` path on the hook binary (loop-safe, fail-open)
 
 **Files:**
-- Modify: `src/super_harness/daemon/hook_entry.py` (add `--event` parse in `main`; add `_run_claude_code_post`)
-- Test: `tests/integration/daemon/test_hook_entry_post.py`
+- Modify: `src/super_harness/daemon/hook_entry.py` (`--event` parse in `main`; `_run_claude_code_stop`)
+- Test: `tests/integration/daemon/test_hook_entry_stop.py`
 
 - [ ] **Step 1: Write the failing integration test**
 
 ```python
-# tests/integration/daemon/test_hook_entry_post.py
-import json, subprocess, sys, textwrap
+# tests/integration/daemon/test_hook_entry_stop.py
+import json, subprocess, textwrap
 from pathlib import Path
 
-def _run_hook(cwd: Path, payload: dict) -> subprocess.CompletedProcess:
+def _run_stop(cwd: Path, payload: dict) -> subprocess.CompletedProcess:
+    # invoke the real console script (matches tests/integration/daemon/test_hook_entry.py)
     return subprocess.run(
-        [sys.executable, "-c",
-         "from super_harness.daemon.hook_entry import main; main()",
-         "--agent", "claude-code", "--event", "post-tool-use"],
+        ["super-harness-hook", "--agent", "claude-code", "--event", "stop"],
         input=json.dumps(payload), capture_output=True, text=True, cwd=str(cwd),
     )
 
-def test_post_no_harness_root_is_silent_allow(tmp_path: Path):
-    r = _run_hook(tmp_path, {"tool_name": "Edit",
-                             "tool_input": {"file_path": "x.py"}})
-    assert r.returncode == 0
-    assert r.stdout.strip() == ""   # nothing to deliver
-
-def test_post_violation_emits_additional_context(tmp_path: Path):
-    # Minimal harness workspace with one ratified tier-1 decision whose check
-    # always fails and applies to the edited file.
+def _workspace_with_failing_opted_check(tmp_path: Path):
     (tmp_path / ".harness").mkdir()
-    dec = tmp_path / "docs" / "decisions"
-    dec.mkdir(parents=True)
-    (dec / "d-fail.md").write_text(textwrap.dedent("""\
+    d = tmp_path / "docs" / "decisions"; d.mkdir(parents=True)
+    (d / "d-fail.md").write_text(textwrap.dedent("""\
         ---
         id: d-fail
         status: ratified
-        applies_to:
-          - 'src/**'
-        ---
-        always fails
-        ```check
-        false
-        ```
-        ```counterexample path=src/_ce.py
-        x = 1
-        ```
-        """))
-    r = _run_hook(tmp_path, {"tool_name": "Edit",
-                             "tool_input": {"file_path": "src/foo.py"}})
-    assert r.returncode == 0                       # NON-blocking, always exit 0
-    obj = json.loads(r.stdout)
-    assert obj["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
-    assert "d-fail" in obj["hookSpecificOutput"]["additionalContext"]
-
-def test_post_irrelevant_file_is_silent(tmp_path: Path):
-    (tmp_path / ".harness").mkdir()
-    dec = tmp_path / "docs" / "decisions"; dec.mkdir(parents=True)
-    (dec / "d-fail.md").write_text(textwrap.dedent("""\
-        ---
-        id: d-fail
-        status: ratified
-        applies_to:
-          - 'src/**'
+        authoring_time: true
         ---
         body
         ```check
@@ -641,20 +553,40 @@ def test_post_irrelevant_file_is_silent(tmp_path: Path):
         x = 1
         ```
         """))
-    r = _run_hook(tmp_path, {"tool_name": "Edit",
-                             "tool_input": {"file_path": "docs/notes.md"}})
+
+def test_stop_violation_blocks_with_reason(tmp_path: Path):
+    _workspace_with_failing_opted_check(tmp_path)
+    r = _run_stop(tmp_path, {"hook_event_name": "Stop", "stop_hook_active": False})
     assert r.returncode == 0
-    assert r.stdout.strip() == ""
+    obj = json.loads(r.stdout)
+    assert obj["decision"] == "block"
+    assert "d-fail" in obj["reason"]
+
+def test_stop_already_nudged_allows(tmp_path: Path):
+    _workspace_with_failing_opted_check(tmp_path)
+    r = _run_stop(tmp_path, {"hook_event_name": "Stop", "stop_hook_active": True})
+    assert r.returncode == 0
+    assert r.stdout.strip() == ""     # loop-safe: don't block twice
+
+def test_stop_no_harness_is_silent(tmp_path: Path):
+    r = _run_stop(tmp_path, {"hook_event_name": "Stop", "stop_hook_active": False})
+    assert r.returncode == 0 and r.stdout.strip() == ""
+
+def test_stop_kill_switch_allows(tmp_path: Path):
+    _workspace_with_failing_opted_check(tmp_path)
+    (tmp_path / ".harness" / "gate-disabled").touch()
+    r = _run_stop(tmp_path, {"hook_event_name": "Stop", "stop_hook_active": False})
+    assert r.returncode == 0 and r.stdout.strip() == ""
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/integration/daemon/test_hook_entry_post.py -v`
-Expected: FAIL — `--event` not parsed; post path routes into the pre gate (or errors).
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/integration/daemon/test_hook_entry_stop.py -v`
+Expected: FAIL — `--event stop` not handled.
 
-- [ ] **Step 3: Parse `--event` in `main` and route the post path**
+- [ ] **Step 3: Parse `--event` in `main` and route the stop path**
 
-In `hook_entry.py` `main()`, before the current `--agent` handling, extract an optional `--event` flag (default `pre-tool-use`). Keep the existing pre path untouched when `--event` is absent or `pre-tool-use`. When `--event post-tool-use` + `--agent claude-code`, call the new `_run_claude_code_post()`:
+In `hook_entry.py` `main()`, extract an optional `--event` (default `pre-tool-use`) before the `--agent` dispatch (keep the existing pre path when absent). Route `--event stop` + `--agent claude-code` to `_run_claude_code_stop()`:
 
 ```python
 def main() -> None:
@@ -667,76 +599,52 @@ def main() -> None:
     if argv[:1] == ["--agent"]:
         agent = argv[1] if len(argv) > 1 else ""
         if agent == "claude-code":
-            if event == "post-tool-use":
-                _run_claude_code_post()
-            else:
-                _run_claude_code_shim()
+            _run_claude_code_stop() if event == "stop" else _run_claude_code_shim()
             return
         if agent == "codex":
-            _run_codex_shim()   # post path for codex is a later cut
+            _run_codex_shim()   # codex stop path is a later cut
             return
         sys.stderr.write(f"super-harness-hook: unknown --agent {agent!r}\n")
         sys.exit(0)
     _run_positional(argv)
 ```
 
-- [ ] **Step 4: Implement `_run_claude_code_post` (non-blocking, fail-open)**
+- [ ] **Step 4: Implement `_run_claude_code_stop` (loop-safe, fail-open, kill-switch)**
 
 ```python
-def _run_claude_code_post() -> None:
-    """Claude Code PostToolUse: read stdin JSON, run the authoring-time conformance
-    check for the changed file, and emit an additionalContext advisory on stdout.
-
-    ALWAYS exits 0 (non-blocking: the edit already happened). Emits nothing on any
-    error / no harness / no violation (fail-open — Axiom 1). Never blocks.
-    """
+def _run_claude_code_stop() -> None:
+    """Claude Code Stop hook: run the authoring-time check once at turn end and, on a
+    violation, block the stop with an advisory. ALWAYS exit 0. Loop-safe (never block
+    twice — `stop_hook_active`). Fail-open on any error / no harness / kill switch."""
     import json
     try:
         data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
-    if not isinstance(data, dict):
-        sys.exit(0)
-    tool_input = data.get("tool_input")
-    changed = tool_input.get("file_path") if isinstance(tool_input, dict) else None
-    if not changed:
-        sys.exit(0)
+    if not isinstance(data, dict) or data.get("stop_hook_active") is True:
+        sys.exit(0)     # loop-safe: we already nudged once, or malformed → allow stop
     try:
         root = find_harness_root(Path.cwd())
     except HarnessNotInitialized:
         sys.exit(0)
+    if (root / ".harness" / "gate-disabled").exists():
+        sys.exit(0)     # kill switch → allow
     try:
-        rel = _to_workspace_rel(root, changed)
-        from super_harness.core.conformance_sensor import render_feedback, scan_changed_file
+        from super_harness.core.authoring_check import run_authoring_check
         from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
-        verdict = scan_changed_file(root, rel)
-        text = render_feedback(verdict)
-        out = ClaudeCodeAdapter().format_post_edit_feedback(text)
+        verdict = run_authoring_check(root)
+        out = ClaudeCodeAdapter().format_stop_feedback(verdict)
     except Exception:
-        sys.exit(0)   # fail-open: never let the sensor break the agent
+        sys.exit(0)     # fail-open: never let the check break the agent
     if out:
         sys.stdout.write(out)
     sys.exit(0)
-
-
-def _to_workspace_rel(root: Path, changed: str) -> str:
-    """Normalise the hook-provided path to a workspace-relative POSIX string.
-
-    Claude Code sends `tool_input.file_path` (absolute or cwd-relative). We derive
-    it relative to the harness root; a path outside the root falls back to its
-    given form (relevance globs simply won't match)."""
-    p = Path(changed)
-    p = p if p.is_absolute() else (Path.cwd() / p)
-    try:
-        return p.resolve().relative_to(root.resolve()).as_posix()
-    except ValueError:
-        return Path(changed).as_posix()
 ```
 
-- [ ] **Step 5: Run to verify the post path tests pass**
+- [ ] **Step 5: Run to verify the stop path tests pass**
 
-Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/integration/daemon/test_hook_entry_post.py -v`
-Expected: PASS (all three).
+Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/integration/daemon/test_hook_entry_stop.py -v`
+Expected: PASS (all four).
 
 - [ ] **Step 6: Verify the existing PreToolUse path is untouched**
 
@@ -746,62 +654,56 @@ Expected: PASS (no regression — `--event` absent still routes to the pre gate)
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/super_harness/daemon/hook_entry.py tests/integration/daemon/test_hook_entry_post.py
-git commit -m "feat(hook): non-blocking PostToolUse authoring-time conformance path (claude-code)"
+git add src/super_harness/daemon/hook_entry.py tests/integration/daemon/test_hook_entry_stop.py
+git commit -m "feat(hook): loop-safe fail-open Stop-hook authoring-time path (claude-code)"
 ```
 
 ---
 
 ## Task 6: Full suite + AGENTS.md / docs sync
 
-**Files:**
-- Possibly Modify: `AGENTS.md` (regen), `docs/adapters/claude-code.md` (document the new PostToolUse advisory)
-
-- [ ] **Step 1: Run the full unit + integration suite**
+- [ ] **Step 1: Full unit + integration suite**
 
 Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit tests/integration -q`
 Expected: PASS (no regressions).
 
-- [ ] **Step 2: If CLI/adapter surface changed, regenerate AGENTS.md + doc-check**
+- [ ] **Step 2: Regenerate AGENTS.md + doc-check (adapter surface changed)**
 
 Run: `PATH="$(pwd)/.venv/bin:$PATH" super-harness sync --agents-md -y && PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check --fix`
-Expected: clean (no drift). Review any AGENTS.md diff — the Claude Code subsection may now mention the authoring-time advisory.
+Expected: clean. Review any diff (the Claude Code subsection may now mention the turn-end advisory). Document only the mechanical fact ("a Stop hook runs the authoring check") — behavioral efficacy is Task 8's to report.
 
 - [ ] **Step 3: Commit any sync output**
 
 ```bash
 git add AGENTS.md docs/adapters/claude-code.md
-git commit -m "docs: regenerate AGENTS.md for authoring-time PostToolUse advisory"
+git commit -m "docs: regenerate AGENTS.md for the Stop-hook authoring advisory"
 ```
 
 ---
 
-## Task 7: LIVE spike — Claude `additionalContext` reaches the model (load-bearing)
+## Task 7: LIVE re-confirm through the real adapter
 
-Not a unit test — a real verification (design §7): `post_tool_use_hook: True` only means the hook exists, not that the feedback lands. Do this in a scratch workspace so a bug can't affect the real repo.
+The mechanism was proven by the pre-implementation stub. Re-confirm it end-to-end through the *real* installed adapter (design §7).
 
-- [ ] **Step 1: Set up a scratch workspace** with super-harness initialised, the Claude Code adapter installed (`super-harness adapter install claude-code`), and one ratified tier-1 decision whose check fails for a known file.
-
-- [ ] **Step 2: Drive Claude Code** (headless `-p` or interactive) to edit that file. Put a unique marker string in the rendered advisory (temporarily) and confirm Claude's next turn reflects having read it (echoes/reacts to the marker).
-
-- [ ] **Step 3: Record the result** in `private/research/` (LIVE evidence): did the advisory reach the model, and was the edit non-blocked? If it does NOT land, that is a design-invalidating finding — stop and surface it (do not ship a sensor whose feedback never arrives).
+- [ ] **Step 1:** In a scratch workspace, `super-harness init` + `super-harness adapter install claude-code`, with one `authoring_time: true` decision whose check fails for a known state.
+- [ ] **Step 2:** Drive Claude Code (headless `-p`) to finish a turn while the check fails; confirm the `decision:block` advisory reaches the model (it references the decision) and the stop is blocked, then allowed once `stop_hook_active`.
+- [ ] **Step 3:** Record evidence in `private/research/`. If the feedback does NOT reach the model through the real adapter, stop and surface it.
 
 ---
 
-## Task 8: Dogfood bite-test — the H experiment (value-bleed proof)
+## Task 8: Dogfood bite-test — H on a TRANSITIVE violation (value-bleed proof)
 
-The experiment that decides hypothesis H (design §1/§7). A null result is a valid, reportable outcome.
+The experiment (design §1/§7). Target a **transitive** edge — the case a strong model cannot self-police — not a blatant direct import.
 
-- [ ] **Step 1: In a live self-host change**, with the sensor installed, have Claude Code edit a `core/` file to import from `sensors/` (a genuine `d-core-is-base` violation — mirror the real `core.review_bundle -> sensors` edge the decision documents).
-
-- [ ] **Step 2: Observe + record:** (a) did the authoring-time advisory fire naming `d-core-is-base`; (b) did Claude **self-correct before** the merge gate / a human; (c) the **measured latency** of the whole-graph import-linter run on the post path (design §5); (d) how much intermediate-state noise occurred during any multi-file work.
-
-- [ ] **Step 3: Write the honest verdict** into `private/research/` and the capability-convergence ledger: H supported (self-corrected earlier than the floor would have — value bleed) OR H falsified (ignored like CLAUDE.md — sensor is token-noise over the floor). Either is a valid deliverable; only an oversold result is a failure.
+- [ ] **Step 1:** In a live self-host change, with the Stop hook installed and `d-core-is-base` opted in, induce a **transitive** `core → adapters → sensors` edge (mirror the real #56 shape: e.g. a `core` module importing an `adapters` symbol that re-exports something from `sensors`).
+- [ ] **Step 2: Record:** (a) did the turn-end verdict name `d-core-is-base`; (b) did Claude self-correct before merge/human; (c) measured whole-graph import-linter latency (design §5); (d) any noise / loop behavior.
+- [ ] **Step 3: Write the honest verdict** into `private/research/` + the capability-convergence ledger: H supported (self-corrected on a transitive violation it could not have self-policed — real value bleed) or falsified (ignored — token noise over the floor). Either is a valid deliverable; only an oversold result is a failure.
 
 ---
 
 ## Self-review checklist (run before execution)
 
-- **Spec coverage:** design §2 IN items → Task 1–5 (relevance/verdict, non-blocking hook, Claude delivery, no fabricated fix); §3a relevance → Task 1–2; §3b honest verdict → Task 2; §4 install/uninstall + input-from-tool_input → Task 4–5; §5 latency budget (`POST_CHECK_TIMEOUT`) → Task 2, measured in Task 8; §7 LIVE spikes → Task 7–8; §8 success criteria → Tasks 5/7/8. Codex delivery + 9th capability key are correctly ABSENT (out of scope).
-- **Placeholder scan:** no TBD/TODO; every code step has concrete code; test steps have real assertions.
-- **Type consistency:** `Verdict`/`Violation`/`render_feedback`/`scan_changed_file`/`relevant_decisions` used consistently across Task 2 and Task 5; `format_post_edit_feedback` signature identical in ABC (Task 4 step 4), Claude override (step 5), and hook call site (Task 5 step 4); `merge_post_tool_use_hook` signature identical in Task 3 and the install call (Task 4 step 7).
+- **Spec coverage:** design §3 IN → Task 2 (verdict core, tri-state, opt-in filter), Task 1 (`authoring_time`), Task 5 (loop-safe fail-open Stop path + kill switch), Task 4 (Verdict-shaped seam + Claude delivery + marker-strip uninstall), Task 8 (transitive bite-test). §4 safety (opt-in + kill switch) → Task 1 + Task 5. §5 latency (`AUTHORING_CHECK_TIMEOUT=8` < outer 10) → Task 2, measured in Task 8. §6 naming (`authoring_check`, not `sensor`) → Task 2. Codex delivery, 9th capability key, per-edit/PostToolUse, `applies_to`/relevance are correctly ABSENT.
+- **Placeholder scan:** none — every code step has concrete code; test steps have real assertions.
+- **Type consistency:** `Verdict`/`Violation`/`run_authoring_check`/`_to_violations` used consistently (Task 2 ↔ Task 4 ↔ Task 5); `format_stop_feedback(verdict)` signature identical in ABC (Task 4 s3), Claude override (s4), and hook call (Task 5 s4); `merge_stop_hook(settings_path, *, command, marker=_STOP_MARKER)` identical in Task 3 and the install call (Task 4 s6). All `_settings_merge` internals (`_read_settings`, inlined backup/write, `_ensure_event_list`, `_strip_entries`, markers) are referenced as "mirror the real `merge_session_start_hook`" rather than invented names.
+```

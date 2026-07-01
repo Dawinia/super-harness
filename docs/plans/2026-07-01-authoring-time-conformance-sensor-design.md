@@ -1,304 +1,191 @@
-# Authoring-time decision-conformance sensor — design
+# Authoring-time conformance feedback (Stop hook, cut-1) — design
 
-> Open the first G-FEEDFORWARD cut: after an agent edits a file, run the relevant
-> tier-1 mechanical decision check for that file and feed the deterministic result
-> **back to the agent as advice (non-blocking)** so it can self-correct *before* the
-> lifecycle / merge gate or a human sees it. Attacks the research-named
-> "authoring-time sensor" gap and the 5–10×/session review whack-a-mole.
-> **First cut ships Claude Code delivery only**, but designs the agent-agnostic
-> check core + per-agent delivery seam so other agents (Codex first) slot in as
-> follow-on cuts. Codex delivery is gated on a LIVE spike (§6) and is floor-only
-> until that spike proves the loop.
+> When a Claude Code agent finishes a turn, run the ratified tier-1 decision checks
+> once and, if a check fails, block the stop and feed the deterministic
+> "you violated decision X" verdict back so the agent self-corrects **before** it
+> hands the turn to the human / merge gate. Reuses the existing `decision check`
+> machinery — **no new relevance model, no per-edit trigger**. Agent-agnostic verdict
+> core + per-agent delivery seam + unchanged CI cold-path floor.
+> **Cut-1 ships Claude Code delivery only**; Codex is a de-risked follow-on.
 >
-> This cut is framed as a **falsifiable experiment**, not a guaranteed win — see §1.
-> Written 2026-07-01; revised after cross-review (Claude + Codex independent reviewers
-> converged on the findings folded in below). See
-> `private/research/2026-07-01-agent-conformance-pain.md` and memory
-> `project-agent-conformance-research`.
+> Written 2026-07-01. Shaped by four independent cross-reviews (Claude + Codex ×
+> mechanical + architecture) and a LIVE `claude -p` stub that validated the core
+> hypothesis before any durable code was written. See
+> `private/research/2026-07-01-agent-conformance-pain.md`, memory
+> `project-agent-conformance-research`, and the REVISION-1/2 history at the bottom.
 
-## REVISION 2 — architecture cross-review outcome (2026-07-01)
+## 1. Why — and the hypothesis, now with a stub result
 
-Four independent cross-reviews (Claude + Codex × mechanical + architecture) converged
-that the plan below should **not** be built as-is. Two decisions were taken (user-approved)
-that reshape the cut; the durable rewrite of §2–§9 + the plan is **deferred until the H
-stub (below) shows signal** — this is the stub-first discipline itself.
+The sharpest research pain is "rules are written down, the agent reads them, and
+violates them anyway" — enforced today only by a human in a 5–10×/session review
+loop, or by deterministic tools (import-linter) that fire at CI, after the code is
+written. The named gap is an **authoring-time feedback loop**: let the agent
+self-correct before a human/CI does.
 
-**Decision A — stub-first sequencing.** §1 admits H may be false (net value ≈ 0). Building
-the durable, least-reversible parts first (a new `applies_to` Decision-schema field + a full
-core module + the adapter seam) before testing H would strand that schema on a null result.
-So: **validate H with a throwaway stub first** (a ~20-line hook that runs the existing check
-for the known `core → sensors` violation and feeds back the advisory), then build only if
-Claude actually self-corrects.
+**Hypothesis H:** deterministic, precise, turn-end feedback naming the *specific*
+decision the agent violated makes it self-correct — and does so for violations the
+agent *cannot self-police*, which is the case that matters.
 
-**Decision B — per-turn (Stop hook), not per-edit (PostToolUse).** Per-edit maximizes the
-intermediate-state noise §5 frets about and mis-attributes whole-graph violations to whichever
-file was just edited. A `Stop` / `SubagentStop` hook that runs the standard `decision check`
-**once when the agent finishes its turn** is simpler (reuse `decision check` almost verbatim —
-**no `applies_to`, no new relevance model, no new core module**), sound (full graph, not the
-unsound `--changed` anchor-intersection), 1× cost, and noise-free. Trade-off: feedback at
-turn-end vs per-edit immediacy — still before the human / merge gate. (The Codex PostToolUse
-spike still stands as proof Codex hooks fire under `exec`; the Stop-hook feedback semantics
-must be LIVE-verified before the rewrite.)
+**Stub result (2026-07-01, LIVE `claude -p`, N=1, true-causal):** with a throwaway
+Stop hook and **no CLAUDE.md rule**, the agent introduced a `core → sensors` import,
+tried to end its turn, got the turn-end advisory, and **self-corrected to compliant
+working code** (dependency injection) — citing the advisory in its own words. H is
+supported enough to build.
 
-**Convergent fixes to fold into the rewrite (all four reviews):** (1) tri-state result
-`violation | clean | unavailable` — only a real non-zero check feeds back; timeout/spawn
-(`exit_code == -1`)/parse → silent (the current plan reports a timeout as "you violated X").
-(2) Timeout budget: inner check timeout **strictly less** than the hook's outer timeout
-(`_TIMEOUT = 10`), and a sub-second-to-few-second budget (a 10–15 s synchronous stall is worse
-than no sensor). (3) Uninstall must **strip by marker**, not restore-earliest-backup (which
-leaks the PreToolUse hook when settings were absent) — and test all three markers gone.
-(4) Adapter seam takes the structured `Verdict`, not a pre-rendered string, so third parties
-can choose channel/fields (the contribution requirement). (5) Rendering lives in the adapter;
-core returns a structured verdict only. (6) Don't name it `sensor` (collides with the `Sensor`
-+ dispatcher framework) — `authoring_feedback` / `conformance_check`; document "not a `Sensor`".
-(7) Security/trust: running ratified `shell=True` checks automatically every turn in the dev
-loop is a frequency/blast-radius shift — restrict the authoring path to declared-safe check
-kinds (import-linter contracts) for cut-1. (8) YAGNI: drop `by_id`; reuse `_ensure_event_list`;
-`fnmatch` is not path-aware (moot if `applies_to` is dropped per Decision B).
+**But the stub also sharpened the value claim (honest).** The baseline (a CLAUDE.md
+rule, no hook) did *not* reproduce the research's "ignores the rule" failure for this
+strong model + one blatant rule — instead the agent **refused up-front and punted the
+task to the human**. So the value of this cut is **not** "static rules fail, we
+succeed" for the easy case. The defensible value is two-fold:
 
-Verified clean by review: a `core`-resident conformance module importing only `core` does
-**not** violate `core-is-base`; the layering split is sound.
+1. **Catch what the agent cannot self-police.** A strong model that has read
+   "core must not import sensors" can *still* introduce a **transitive** violation
+   (`core → adapters → sensors`) because it cannot check the import graph in its head
+   — exactly the edge that grep, Codex, and Plan all missed in PR #56 and only
+   import-linter's real graph engine caught. Static prose cannot catch transitive
+   edges; a deterministic graph check + precise feedback can.
+2. **Self-heal to working code**, rather than the baseline's "refuse and punt": the
+   feedback path let the agent deliver a compliant, *complete* implementation.
+
+**Consequence for the bite-test (§7):** it must target a **transitive** violation
+(the real `core → adapters → sensors` shape), not a blatant direct import — the direct
+case a strong model dodges on its own and proves nothing.
+
+**H may still be false at scale** (N=1; weaker models, fuzzier rules, conflicting
+constraints). If the bite-test shows the agent ignores the turn-end verdict, this cut
+is token-noise over the floor — reported honestly. The floor stands either way.
+
+## 2. Shape — per-turn Stop hook, reuse `decision check`
+
+```
+agent finishes a turn
+      │  (Stop hook — stdin carries stop_hook_active, NOT a changed file)
+      ▼
+super-harness-hook --agent claude-code --event stop
+      │  run the ratified, authoring-opted-in tier-1 checks ONCE (full, sound)
+      ▼
+[AGNOSTIC VERDICT CORE]  reuse run_executable_checks → Verdict{violations|clean|unavailable}
+      │  violations AND not stop_hook_active?
+      ▼  yes                                   │ no (clean / unavailable / already-nudged)
+AgentAdapter.format_stop_feedback(verdict)      │ allow stop (exit 0, no output)
+      │                                         ▼
+      ▼  {"decision":"block","reason": advisory}   CI cold-path floor still authoritative
+agent gets another turn → self-corrects (H under test)
+```
+
+Because a Stop hook has **no changed file** and runs **once per turn**, there is **no
+relevance model, no `applies_to` path-glob, no new per-file core module** (all cut by
+the cross-review). We run the full check set once — sound (whole graph, not the
+unsound `--changed` anchor-intersection) and cheap (1×/turn, not N×/edit).
+
+## 3. Scope
+
+**IN (cut-1 — Claude Code delivery):**
+- **Agnostic verdict core:** a thin function reusing `load_decisions` +
+  `run_executable_checks` to produce a structured `Verdict` — the ratified tier-1
+  checks that opted into the authoring loop, with a **tri-state** per check:
+  `violation` (real non-zero) / `clean` / `unavailable` (timeout or spawn failure,
+  `exit_code == -1`). Only `violation` reaches the agent.
+- **`authoring_time: true` opt-in** frontmatter on a decision (parsed like other
+  frontmatter — body-hash-safe, no re-ratify). Only opted-in checks run in the
+  interactive loop. This is both the **safety control** (§4) and the **scope** (which
+  checks participate) — replacing the dropped `applies_to`. Default absent = **not** in
+  the authoring loop.
+- **Stop hook path** on `super-harness-hook` (new `--event stop`), **loop-safe**:
+  blocks (feeds back) only when `violations AND not stop_hook_active`; otherwise allows
+  the stop. One turn-end nudge, never an infinite block; the floor catches the rest.
+- **Per-agent delivery seam:** `AgentAdapter.format_stop_feedback(verdict) -> str`
+  takes the **structured Verdict** (not a pre-rendered string), so a third-party agent
+  can choose channel/fields. Default (floor-only agents) returns `""`. Claude Code
+  renders `{"decision":"block","reason": ...}`.
+- **Claude Code install/uninstall** of the Stop hook, uninstall by **marker-strip**.
+- **Bite-test** on a **transitive** `core → sensors` violation (§7).
+
+**Designed-but-not-shipped (seam only):** adding an agent = a new `AgentAdapter`
+subclass + `format_stop_feedback` override. Codex is the first follow-on (its Stop-hook
+feedback semantics need the same LIVE check the PostToolUse spike got).
+
+**Explicitly OUT (non-goals):**
+- Per-edit / PostToolUse triggering (cross-review: maximizes noise, mis-attributes
+  whole-graph violations, needs a relevance model). Turn-end is the trigger.
+- `applies_to` path-glob relevance; a new per-file core module; `fnmatch` matching.
+- Blocking merges / replacing the floor. The Stop block is a *soft* one-turn nudge; the
+  merge-gate `decision check` stays the authoritative, agent-agnostic hard block.
+- Tier-2 / judgment checks; running checks **not** opted into `authoring_time`.
+- Fabricated fix text — the verdict carries the check's own detail + the decision-doc
+  pointer only.
+- Codex delivery (follow-on); a 9th canonical capability key; daemon-autonomous
+  dispatch; changing WHAT the checks assert.
+
+## 4. Safety / trust — running checks in the dev loop
+
+A decision's `check` is arbitrary `shell=True`, trusted because it is ratify-time
+hash-locked and (until now) only run at explicit `decision check` / CI. Running checks
+automatically every turn in the interactive environment is a real frequency/blast-radius
+shift (cross-review S3). Controls:
+- **Opt-in only:** a check runs in the authoring loop **only** if its decision declares
+  `authoring_time: true`. Default = never. So nothing runs in the dev loop unless a
+  decision author explicitly deemed it safe + fast.
+- **cut-1 = one import-linter contract** (`d-core-is-base`), read-only graph analysis.
+- **Fail-open + kill switch:** honor `.harness/gate-disabled` (the existing break-glass)
+  on the Stop path too; any error → allow stop.
+
+## 5. Latency
+The Stop check runs the whole import graph **once per turn** (not per edit), so the
+cost is paid at a natural boundary, not on every keystroke-edit. Still: the agent waits
+for the hook. So the **inner check timeout must be strictly less than the hook's outer
+timeout** (`_settings_merge._TIMEOUT` = 10 s), e.g. inner 8 s, and a slow graph →
+`unavailable` → silent allow (never a hard kill, never a false "you violated"). Record
+the measured whole-graph latency in the bite-test; incremental/cached analysis is a
+follow-on if it is too slow.
+
+## 6. Naming
+Not a `sensor` — the codebase's `Sensor` is a dispatcher-run, event-emitting lifecycle
+observer (`EventWriter`, `events.jsonl`, `SensorResult.emit_events`); this is a
+synchronous, on-stdout advisory. Name the module/functions `authoring_check` /
+`format_stop_feedback`; document "this is not a `Sensor`; it deliberately bypasses
+`SensorDispatcher` because the dispatcher is an event-emitting engine and this path
+wants a synchronous verdict."
+
+## 7. Testing & the bite-test (the experiment)
+- **Unit:** verdict core — ratified + `authoring_time` + tier-1 filtering; tri-state
+  (`unavailable` on `exit_code == -1` is NOT a violation); adapter `format_stop_feedback`
+  produces the correct `decision:block` envelope for violations and `""` otherwise;
+  loop-safety (`stop_hook_active` true → allow).
+- **Integration:** the `--event stop` path — given a workspace with a failing opted-in
+  check, returns `{"decision":"block","reason": ...}` naming the decision, exit 0; given
+  a clean or `stop_hook_active` workspace, emits nothing.
+- **LIVE (already done for the mechanism):** Stop hook fires under `claude -p` and
+  `decision:block`+`reason` reaches the model — confirmed by the stub. Re-confirm once
+  wired through the real adapter.
+- **Dogfood bite-test = the H experiment, on a TRANSITIVE violation:** in a live
+  self-host change, induce a `core → adapters → sensors` transitive edge (the #56
+  shape), and record: (a) did the turn-end verdict name `d-core-is-base`; (b) did Claude
+  self-correct before merge/human; (c) measured whole-graph latency; (d) any noise.
+  A null result (ignored) is a valid, reported outcome; the floor still catches it.
+
+## 8. Success criteria
+1. A ratified, `authoring_time` tier-1 violation present when a Claude Code turn ends
+   produces a deterministic, loop-safe `decision:block` advisory — naming the decision,
+   carrying the check's own detail + decision-doc pointer (no fabricated fix) — that the
+   agent reads on its next turn.
+2. Claude Code delivery works end-to-end; the "feedback reaches the model" claim is
+   LIVE-verified (stub done; re-confirm through the real adapter).
+3. The verdict core is agent-agnostic and reuses `run_executable_checks`; adding an
+   agent is a new `AgentAdapter.format_stop_feedback` override touching no core.
+4. The CI cold-path floor is unchanged and catches everything the nudge misses,
+   including when H is false.
+5. The bite-test honestly reports H supported (self-correct on a transitive violation)
+   or falsified, plus measured latency. Only an oversold result is a failure.
 
 ---
 
-## 1. Why — and the honest hypothesis this cut is testing
-
-The sharpest, most-reproduced complaint about AI coding agents is not "the rules
-aren't written down" — it is **"the rules are written down, the agent reads them
-into context, and it violates them anyway."** Redundant authoring, memory files,
-and full spec-driven scaffolding all fail the same way: advisory text has no
-mechanical enforcement (research §A/§B). Today the only in-the-loop enforcement is a
-human reviewing and correcting — a 5–10×/session whack-a-mole that "defeats the
-purpose." Deterministic tooling that *does* bite (import-linter, ArchUnit) fires at
-**CI/test time — after the code is written** (research §D/§E). The gap named by the
-harness-engineering discourse is an **authoring-time feedback loop** that lets the
-agent self-correct before a human/CI does (research §E).
-
-**The uncomfortable self-reference (cross-review S5).** This cut delivers
-*non-blocking* feedback — which is still advisory text, just injected into the
-agent's `additionalContext` instead of `CLAUDE.md`. The research's own open question
-#1 is that pre-write feedback reducing the whack-a-mole is **unproven**. So we must
-state the hypothesis plainly and hold it falsifiable:
-
-> **H:** Deterministic, precise, just-in-time feedback that names the *specific*
-> decision the agent *just* violated changes behaviour more than static advisory
-> prose does — not because it is louder, but because it is specific, contextual, and
-> arrives at the moment of the violation. The existing floor (merge-gate check)
-> stays underneath regardless.
-
-**H may be false.** If the agent ignores the authoring-time advisory the same way it
-ignores CLAUDE.md, this cut delivers only token noise on top of the existing floor —
-net value ≈ 0 (or negative). That is a real possible outcome. **The §7 bite-test is
-the experiment that decides it, and a null result will be reported honestly, not
-buried.** This honesty is the point: the project's discipline is "don't conflate
-ritual with value" — so we build the smallest thing that can actually test H.
-
-## 2. Scope
-
-**IN (first cut — Claude Code delivery only):**
-- **Agnostic check core.** Given the file the agent just changed, resolve which
-  tier-1 decision check(s) are *relevant to that file* (see §3a — this is NOT the
-  existing `--changed` anchor-intersection, which is unsound for whole-graph
-  contracts), run them, and produce a structured verdict. No agent knowledge.
-- **PostToolUse hook path** on the `super-harness-hook` binary (new event mode),
-  wired strictly **non-blocking**: it never blocks the edit (already applied); it
-  returns advisory feedback iff there is a violation, and fails **open** (no feedback)
-  on timeout / any error / missing file.
-- **Claude Code delivery.** Adapter formats the verdict into
-  `hookSpecificOutput.additionalContext`; Claude Code adapter's `install_hooks`
-  registers a PostToolUse entry; matching uninstall cleanup.
-- **Bite-test (dogfood)** proving (or falsifying) H on `d-core-is-base` with Claude Code.
-
-**Designed-but-not-shipped (the agnostic seam — architecture only, no code beyond the ABC):**
-- The check core and the adapter delivery method are defined so a new agent =
-  a new `AgentAdapter` subclass + delivery method, touching no core. Codex is the
-  first intended follow-on (§6).
-
-**Explicitly OUT (recorded non-goals):**
-- **Codex (and any other agent) delivery in this cut.** The §6 LIVE spike **PASSED**
-  (2026-07-01), so Codex is now a **de-risked, immediate follow-on cut** — not
-  floor-only, but still not folded into cut-1 (keeping cut-1 the smallest thing that
-  tests H; cross-review C1/scope). Its delivery ships right after cut-1.
-- **A 9th canonical capability key.** Not added. Claude Code already has both the post
-  hook and a feedback channel, so no new capability is needed to gate cut-1 install.
-  The real distinction the research surfaced — *has-hook ≠ can-feed-back* (Copilot has
-  a postToolUse hook but cannot inject context back) — is deferred to the cut that adds
-  a feedback-less agent, and will go through the ABC's own `x_<vendor>_*` extension
-  path (or an explicit, acknowledged contract change), not a silent canonical addition.
-- **Blocking.** The merge-gate `decision check` stays the authoritative hard block;
-  the sensor only reduces how often it fires.
-- **Tier-2 / judgment-class decisions.** Stay reviewable. A deterministic per-edit
-  sensor must not depend on LLM judgment (noisy, slow, violates "harness never spawns agent").
-- **Debounce / batching.** Not built — noise is measurable; measure in the bite-test first.
-- **Fabricated fix text.** The verdict carries only what the mechanism actually
-  produces (§3b) plus a pointer to the decision doc — no invented `suggested_fix`.
-- **Daemon-autonomous dispatch** (v0.2); **changing WHAT the checks assert** (decision
-  records / `.importlinter` unchanged — this cut changes *when/how* the verdict reaches the agent).
-
-## 3. Architecture — three layers, all on existing seams
-
-```
-agent edits file
-      │  (PostToolUse hook — carries the changed file path in tool_input)
-      ▼
-super-harness-hook --event post-tool-use --agent claude-code
-      │  a) resolve changed file → relevant tier-1 contract(s)
-      │  b) run check → verdict
-      ▼
-[AGNOSTIC CHECK CORE]  relevant tier-1 check → verdict  ── shares check machinery with ──▶ merge gate
-      │  verdict has violations?
-      ▼
-AgentAdapter.format_post_edit_feedback(verdict)   ── per-agent delivery (Claude Code in cut-1)
-      │
-      ▼  Claude Code: hookSpecificOutput.additionalContext (read next turn)
-agent reads feedback → self-corrects (H under test)
-      ⋮  (whatever the sensor misses — or if H is false)
-CI cold-path floor: merge-gate `decision check` — authoritative, agent-agnostic  ← never removed
-```
-
-### 3a. Changed-file → relevant contract (the B1 fix)
-The existing `decision check --changed` scopes by intersecting git-changed files with
-a decision's sparse `@decision:` code anchors (`core/check_runner.py:select_changed`,
-which its own comment flags as unsound for this purpose). `d-core-is-base` has a
-single anchor (`core/__init__.py:8`) but its check is a **whole-graph** import-linter
-contract over all of `super_harness.core`. So anchor-intersection would miss an edit
-to `core/foo.py` — the sensor would silently produce nothing, and the §7 bite-test
-would not fire.
-
-The sensor therefore needs its **own relevance resolution**: a changed file is
-relevant to a tier-1 contract when the file's module falls within that contract's
-declared scope (for import-linter, its `source_modules` / `forbidden_modules`). For
-cut-1's single contract: **an edit to any file under `src/super_harness/core/` runs
-`d-core-is-base`.** This is a small, principled resolver (contract-scope membership),
-not the sparse-anchor intersection. Generalising it to arbitrary contracts is noted
-for the plan; cut-1 needs only the core-scope rule.
-
-### 3b. The verdict is what the mechanism actually produces (the B2 fix)
-The check machinery yields `CheckFailure(id, exit_code, detail)` where `detail` is the
-check's stderr tail (for import-linter, the offending import line). There is **no**
-`reason` schema and **no** `suggested_fix` field anywhere in the decision records or
-the runner. So the verdict is honestly:
-
-```
-{ violations: [ { decision_id, detail, decision_doc_path } ] }
-```
-
-Feedback to the agent = the decision id + the check's own violation detail + a pointer
-to `docs/decisions/<id>.md` (which contains the human-readable rule + counterexample).
-No fabricated fix text. If a curated one-line fix hint is wanted later, it is an
-**explicit new optional field on the decision record** (small additive work) — a plan
-decision, not a "free reuse."
-
-### 3c. Layering
-- **Agnostic core** (relevance resolver + check runner + verdict) is agent-independent
-  and shares the check machinery with the merge gate — one check, two trigger times.
-- **Per-agent delivery** is the only agent-aware part: one `AgentAdapter` method. This
-  is the contribution seam; the ABC, registry, and degraded-mode docs already exist.
-- **CI cold-path floor** is unchanged and remains the guarantee for *every* agent
-  (including feedback-less ones). The sensor is a real-time assist on top; the floor is
-  the enforcement (`project-positioning-layer-not-replacement`).
-
-## 4. Hook wiring & control flow
-- Extend `daemon/hook_entry.py` with a **post-tool-use** event path parallel to the
-  existing pre-tool-use path. **The changed file comes from the hook payload's
-  `tool_input.file_path`, NOT from `git diff`** (git diff sees the whole dirty tree,
-  not this tool call). `MultiEdit` = one file per call; `NotebookEdit` / any multi-file
-  tool is handled per its payload or skipped in cut-1 (noted).
-- Claude Code adapter's `install_hooks` additionally registers a **PostToolUse** entry
-  (matcher `Edit|Write|MultiEdit`) → `super-harness-hook --event post-tool-use --agent claude-code`.
-- **Non-blocking contract:** the post path always resolves to "continue"; it attaches
-  advisory feedback iff there is a violation and attaches nothing on timeout/error
-  (**fail-open**). It must never emit a blocking exit.
-- **Invocation path:** call the relevance-resolver + check directly on the hook path
-  with a tight timeout — **not** through `SensorDispatcher` (its 300s timeout + thread
-  pool is far too heavy for a per-edit path). It is a "sensor" in the Böckeler sense but
-  deliberately does not register as a code `Sensor`; this naming/architecture split is
-  called out so it is not mistaken for the existing dispatcher path.
-
-## 5. Latency — a feasibility constraint, not an open question
-`d-core-is-base`'s check is whole-graph import-linter (`check_runner.py` default
-timeout 30s). On the PostToolUse path the agent waits for the hook to return, so a
-whole-graph run per edit means: **the larger the repo, the slower the graph, the more
-likely a timeout → fail-open → no feedback** — the sensor's reliability is inversely
-correlated with the codebase size that needs it most. Cut-1 therefore:
-- Sets an explicit **bounded latency budget** for the post path (fail-open past it).
-- Runs the whole-graph check for cut-1's single contract and **records the measured
-  latency** in the bite-test as a first-class result.
-- Names the scaling answer as a **follow-on** (incremental/cached import analysis, or
-  a faster relevance pre-filter), and honestly marks cut-1 as "validated on this
-  repo's graph size" rather than "works at any scale."
-
-## 6. Codex LIVE-verify spike — RESULT: PASSED (2026-07-01)
-Codex's adapter declared `post_tool_use_hook: False` with a coverage caveat, and
-OpenAI's docs are silent on whether hooks run under `codex exec` — a load-bearing
-uncertainty we **LIVE-verified rather than assumed**.
-
-**Spike (scratch dir, reversible, `codex-cli 0.142.2`):** registered a project-level
-`.codex/hooks.json` PostToolUse hook → a logging script emitting a unique marker; ran
-`codex exec --dangerously-bypass-hook-trust --sandbox workspace-write` making an
-`apply_patch` edit. Result, from the real run:
-- ✅ **PostToolUse fires on `apply_patch`** (native diff edit) under non-interactive
-  `codex exec` — logged payload shows `tool_name: apply_patch` + `tool_response:
-  Success. Updated hello.py`. It also fired on `Bash` tools in the same run, so both the
-  native-edit and shell paths trigger it.
-- ✅ **Feedback reaches the model** — the hook's unique marker was echoed verbatim in
-  Codex's final agent message, and the file was edited. So the loop closes.
-- Config detail: event name is **PascalCase `PostToolUse`** (same shape
-  `_settings_merge.py` writes; the snake_case in `config.toml [hooks.state]` is Codex's
-  internal trust-key, not the config key). stdin payload carries `tool_input`,
-  `tool_response`, `tool_use_id`, `cwd`, etc. — the post hook can see whether the edit
-  succeeded.
-
-**Consequences for the plan:**
-- The Codex adapter's `post_tool_use_hook: False` is **factually wrong for exec** and
-  must be flipped to `True` (with a test) in the Codex follow-on cut.
-- **Open micro-uncertainty (honest):** the spike put the marker in *three* feedback
-  fields at once (`decision:block`+`reason`, `systemMessage`, `additionalContext`), so
-  it proves feedback *arrives* but does **not** isolate which channel delivered it. The
-  Codex cut must pin the channel with three distinct markers (cheap) before relying on
-  `additionalContext` specifically.
-- This result also bears on the standing "does `codex exec` run hooks" open item
-  (memory `project-gate-escape-hatch-self-bypass`): at least PostToolUse **does** run
-  under exec on this Codex version — that open item needs reconciling.
-- The rejected "route via a shell-tool path" fallback is now moot (real PostToolUse
-  works), but recorded: a pre-exec shell intercept cannot observe the applied patch, so
-  it was never an equivalent to authoring-time feedback.
-
-## 7. Testing & the value-bleed proof (the experiment)
-- **Unit:** relevance resolver maps a `core/` file to `d-core-is-base` and a non-core
-  file to nothing; verdict shape matches §3b; fail-open on timeout/missing file; Claude
-  adapter formats correct `additionalContext`.
-- **Integration:** the PostToolUse path, given a changed `core/` file importing
-  `sensors/`, returns non-blocking advisory naming `d-core-is-base` + detail + doc path.
-- **Load-bearing LIVE spikes (must actually run, not assume):** (i) Claude Code
-  PostToolUse `additionalContext` genuinely reaches the model on its next turn in
-  headless/real use — `post_tool_use_hook: True` only means the hook exists, not that
-  feedback lands; (ii) the Codex spike (§6); (iii) measured whole-graph latency (§5).
-- **Dogfood bite-test = the H experiment:** in a live self-host change, have Claude
-  Code edit `core/` to import `sensors/` (a genuine `d-core-is-base` violation) and
-  record whether the agent, on receiving the authoring-time advisory, **self-corrects
-  before** the merge gate / a human — and how much intermediate-state noise occurred.
-  **A null result (agent ignores it) is a valid, reportable outcome that falsifies H
-  for this cut**; the floor still catches the violation regardless.
-
-## 8. Success criteria
-1. A tier-1 violation introduced by a Claude Code edit produces a deterministic,
-   non-blocking advisory — naming the decision, carrying the check's own violation
-   detail, and pointing at the decision doc — delivered via `additionalContext` at
-   authoring time. (No fabricated fix text; §3b.)
-2. Claude Code delivery works end-to-end and the feedback-lands claim is **LIVE-verified**
-   (§7), not asserted from capability flags.
-3. The check core (relevance resolver + runner + verdict) is agent-agnostic and shares
-   the check machinery with the merge gate; adding a new agent is a new `AgentAdapter`
-   subclass + delivery method touching no core.
-4. The CI cold-path floor is unchanged and still catches everything the sensor misses —
-   including the case where **H turns out false**.
-5. The bite-test reports, honestly, whether authoring-time advisory changed the outcome
-   (H supported) or not (H falsified) — plus the measured latency. Either way is a valid
-   deliverable; only a hidden/oversold result is a failure.
-
-## 9. Non-goals recap for the plan (so nothing silently creeps back in)
-Codex real delivery (spike-gated), any 9th canonical capability key, blocking,
-tier-2/judgment checks, debounce/batching, fabricated fix text, daemon-autonomous
-dispatch, general contributor-seam productisation beyond the ABC method, and
-"works at any repo scale" latency claims are all OUT of this cut.
+## REVISION history
+- **Rev 1 (initial):** PostToolUse per-edit sensor with an `applies_to` relevance model,
+  a new core module, and a string-shaped adapter seam.
+- **Rev 2 (post cross-review, 2026-07-01):** four cross-reviews → stub-first + per-turn
+  Stop hook. The stub validated H, so this document was rewritten to the simpler shape:
+  reuse `decision check`, drop `applies_to`/relevance/new-core-module, tri-state verdict,
+  inner<outer timeout, marker-strip uninstall, adapter-takes-Verdict, `authoring_time`
+  opt-in as the safety+scope control, transitive-violation bite-test, non-`sensor` naming.
+  Convergent correctness fixes from all four reviews are folded into §3–§7.
