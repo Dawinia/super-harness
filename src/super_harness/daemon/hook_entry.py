@@ -195,6 +195,7 @@ def _run_stop(adapter: AgentAdapter) -> None:
     if (root / ".harness" / "gate-disabled").exists():
         sys.exit(0)  # kill switch → allow
     try:
+        # Inside the try so a buggy adapter guard fails open (allow), not break the agent.
         if not adapter.stop_should_check(data):
             sys.exit(0)  # continuation turn (or adapter opts out) → allow
         from super_harness.core.authoring_check import run_authoring_check

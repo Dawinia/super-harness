@@ -257,3 +257,21 @@ def test_run_stop_fails_open_on_check_error(tmp_path, monkeypatch, capsys):
         hook_entry._run_stop(_StubAdapter())
     assert e.value.code == 0            # fail-open: never break the agent
     assert capsys.readouterr().out == ""
+
+
+def test_run_stop_systemexit_propagates_not_swallowed(tmp_path, monkeypatch):
+    # SystemExit is BaseException, NOT caught by `except Exception` — the internal
+    # `sys.exit(0)` (guard opt-out) must propagate, not be turned into fail-open.
+    from super_harness.daemon import hook_entry
+
+    class _ExitAdapter:
+        def stop_should_check(self, payload):
+            raise SystemExit(7)  # stand-in for the in-try sys.exit(0)
+
+        def format_stop_feedback(self, verdict):  # pragma: no cover - never reached
+            return ""
+
+    _drive_stop(monkeypatch, tmp_path, {"my_custom_guard": False})
+    with pytest.raises(SystemExit) as e:
+        hook_entry._run_stop(_ExitAdapter())
+    assert e.value.code == 7  # propagated, not swallowed → not rewritten to 0

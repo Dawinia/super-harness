@@ -1,9 +1,10 @@
 """AgentAdapter for OpenAI Codex CLI (portability axis B).
 
-Registers a PreToolUse hook (deny via stdout `permissionDecision`) + a
-SessionStart hook (stdout = developer context) into `<repo>/.codex/hooks.json`,
-reusing the agent-neutral `_settings_merge`. Codex's hooks.json has the same
-shape as Claude's settings.json hooks block; only the matcher + marker differ.
+Registers a PreToolUse hook (deny via stdout `permissionDecision`), a
+SessionStart hook (stdout = developer context), and a Stop hook (turn-end
+authoring-conformance advisory) into `<repo>/.codex/hooks.json`, reusing the
+agent-neutral `_settings_merge`. Codex's hooks.json has the same shape as
+Claude's settings.json hooks block; only the matcher + marker differ.
 
 Trust caveat: Codex skips new/changed hooks until a human runs `/hooks` to trust
 them — the gate is INACTIVE until then. See design 2026-06-25 §4.3.
