@@ -85,3 +85,33 @@ def test_stop_malformed_stdin_is_silent(tmp_path: Path):
     )
     assert r.returncode == 0  # fail-open on malformed stdin
     assert r.stdout.strip() == ""
+
+
+# --- Codex rides the SAME agnostic _run_stop orchestrator --------------------
+def _run_codex_stop(cwd: Path, payload: dict) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["super-harness-hook", "--agent", "codex", "--event", "stop"],
+        input=json.dumps(payload), capture_output=True, text=True, cwd=str(cwd),
+    )
+
+
+def test_codex_stop_violation_blocks_with_reason(tmp_path: Path):
+    _workspace_with_failing_opted_check(tmp_path)
+    r = _run_codex_stop(tmp_path, {"hook_event_name": "Stop", "stop_hook_active": False})
+    assert r.returncode == 0
+    obj = json.loads(r.stdout)
+    assert obj["decision"] == "block" and "d-fail" in obj["reason"]
+    assert set(obj) == {"decision", "reason"}  # reason-ONLY
+
+
+def test_codex_stop_already_nudged_allows(tmp_path: Path):
+    _workspace_with_failing_opted_check(tmp_path)
+    r = _run_codex_stop(tmp_path, {"hook_event_name": "Stop", "stop_hook_active": True})
+    assert r.returncode == 0 and r.stdout.strip() == ""
+
+
+def test_codex_stop_kill_switch_allows(tmp_path: Path):
+    _workspace_with_failing_opted_check(tmp_path)
+    (tmp_path / ".harness" / "gate-disabled").touch()
+    r = _run_codex_stop(tmp_path, {"hook_event_name": "Stop", "stop_hook_active": False})
+    assert r.returncode == 0 and r.stdout.strip() == ""

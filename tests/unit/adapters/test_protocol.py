@@ -22,6 +22,7 @@ class _MinimalAdapter(AgentAdapter):
         "rules_file_injection": True,
         "mcp_server": False,
         "subprocess_execution": True,
+        "turn_end_feedback_hook": False,
     }
 
     def detect(self, workspace: Path) -> bool:
@@ -119,6 +120,7 @@ def test_capabilities_canonical_keys() -> None:
         "rules_file_injection",
         "mcp_server",
         "subprocess_execution",
+        "turn_end_feedback_hook",
     }
     assert set(a.capabilities) == expected
 
@@ -297,3 +299,9 @@ def test_default_format_stop_feedback_is_empty():
 
     v = Verdict(violations=[Violation("d", "x", "docs/decisions/d.md")])
     assert _Bare().format_stop_feedback(v) == ""
+
+
+def test_stop_should_check_defaults_true() -> None:
+    # A conforming agent that does not override runs the check on every Stop.
+    assert _MinimalAdapter().stop_should_check({"stop_hook_active": True}) is True
+    assert _MinimalAdapter().stop_should_check({}) is True

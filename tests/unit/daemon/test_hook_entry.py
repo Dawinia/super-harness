@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -193,3 +194,84 @@ def test_block_messages_do_not_teach_escape_hatch(capsys, monkeypatch):
     reason = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecisionReason"]
     assert "gate-disabled" not in reason
     assert "do not bypass" in reason.lower()
+
+
+# --- Agnostic Stop orchestrator (`_run_stop`) --------------------------------
+# A stub adapter that guards on a MADE-UP field (`my_custom_guard`), NOT
+# `stop_hook_active` — so if the orchestrator honors this guard, it cannot be
+# reading a hard-coded Claude field. Proves `_run_stop` is agent-agnostic.
+class _StubAdapter:
+    def stop_should_check(self, payload):
+        return payload.get("my_custom_guard") is not True
+
+    def format_stop_feedback(self, verdict):
+        return "STUB_OUT" if verdict.violations else ""
+
+
+def _drive_stop(monkeypatch, tmp_path, payload):
+    import sys
+
+    (tmp_path / ".harness").mkdir(exist_ok=True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+
+
+def test_run_stop_emits_adapter_output_on_violation(tmp_path, monkeypatch, capsys):
+    from super_harness.core.authoring_check import Verdict, Violation
+    from super_harness.daemon import hook_entry
+    _drive_stop(monkeypatch, tmp_path, {"my_custom_guard": False})
+    monkeypatch.setattr(
+        "super_harness.core.authoring_check.run_authoring_check",
+        lambda root: Verdict(violations=[Violation("d-x", "detail", "docs/decisions/d-x.md")]),
+    )
+    with pytest.raises(SystemExit) as e:
+        hook_entry._run_stop(_StubAdapter())
+    assert e.value.code == 0
+    assert capsys.readouterr().out == "STUB_OUT"
+
+
+def test_run_stop_honors_adapter_guard_not_stop_hook_active(tmp_path, monkeypatch, capsys):
+    from super_harness.core.authoring_check import Verdict, Violation
+    from super_harness.daemon import hook_entry
+    # Continuation per the stub's OWN field (stop_hook_active absent) → allow, no output.
+    _drive_stop(monkeypatch, tmp_path, {"my_custom_guard": True})
+    monkeypatch.setattr(
+        "super_harness.core.authoring_check.run_authoring_check",
+        lambda root: Verdict(violations=[Violation("d-x", "d", "p")]),
+    )
+    with pytest.raises(SystemExit) as e:
+        hook_entry._run_stop(_StubAdapter())
+    assert e.value.code == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_run_stop_fails_open_on_check_error(tmp_path, monkeypatch, capsys):
+    from super_harness.daemon import hook_entry
+    _drive_stop(monkeypatch, tmp_path, {"my_custom_guard": False})
+
+    def _boom(root):
+        raise RuntimeError("graph engine exploded")
+
+    monkeypatch.setattr("super_harness.core.authoring_check.run_authoring_check", _boom)
+    with pytest.raises(SystemExit) as e:
+        hook_entry._run_stop(_StubAdapter())
+    assert e.value.code == 0            # fail-open: never break the agent
+    assert capsys.readouterr().out == ""
+
+
+def test_run_stop_systemexit_propagates_not_swallowed(tmp_path, monkeypatch):
+    # SystemExit is BaseException, NOT caught by `except Exception` — the internal
+    # `sys.exit(0)` (guard opt-out) must propagate, not be turned into fail-open.
+    from super_harness.daemon import hook_entry
+
+    class _ExitAdapter:
+        def stop_should_check(self, payload):
+            raise SystemExit(7)  # stand-in for the in-try sys.exit(0)
+
+        def format_stop_feedback(self, verdict):  # pragma: no cover - never reached
+            return ""
+
+    _drive_stop(monkeypatch, tmp_path, {"my_custom_guard": False})
+    with pytest.raises(SystemExit) as e:
+        hook_entry._run_stop(_ExitAdapter())
+    assert e.value.code == 7  # propagated, not swallowed → not rewritten to 0
