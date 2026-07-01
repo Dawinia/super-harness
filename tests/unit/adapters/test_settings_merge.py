@@ -17,6 +17,7 @@ import pytest
 from super_harness.adapters.agent._settings_merge import (
     merge_pre_tool_use_hook,
     merge_session_start_hook,
+    merge_stop_hook,
 )
 
 _COMMAND = "/abs/bin/super-harness-hook --agent claude-code"
@@ -418,3 +419,31 @@ def test_codex_marker_does_not_strip_claude_pre_tool_use(tmp_path):
             for h in e["hooks"]]
     assert any("--agent claude-code" in c for c in cmds)  # foreign preserved
     assert any("--agent codex" in c for c in cmds)        # ours added
+
+
+def test_merge_stop_adds_entry(tmp_path):
+    hooks = tmp_path / "settings.json"
+    merge_stop_hook(hooks, command="/abs/super-harness-hook --agent claude-code --event stop")
+    data = json.loads(hooks.read_text())
+    entries = data["hooks"]["Stop"]
+    assert any("--event stop" in h["command"] for e in entries for h in e["hooks"])
+    assert all("matcher" not in e for e in entries)
+
+
+def test_merge_stop_preserves_existing_hooks(tmp_path):
+    hooks = tmp_path / "settings.json"
+    hooks.write_text(json.dumps({"hooks": {"PreToolUse": [
+        {"matcher": "Edit", "hooks": [{"type": "command", "command": "keepme"}]}]}}))
+    merge_stop_hook(hooks, command="/abs/super-harness-hook --agent claude-code --event stop")
+    data = json.loads(hooks.read_text())
+    assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "keepme"
+    assert "Stop" in data["hooks"]
+
+
+def test_merge_stop_idempotent(tmp_path):
+    hooks = tmp_path / "settings.json"
+    cmd = "/abs/super-harness-hook --agent claude-code --event stop"
+    merge_stop_hook(hooks, command=cmd)
+    first = hooks.read_text()
+    merge_stop_hook(hooks, command=cmd)
+    assert hooks.read_text() == first
