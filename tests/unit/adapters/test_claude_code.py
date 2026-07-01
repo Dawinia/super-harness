@@ -432,6 +432,13 @@ def test_claude_format_stop_feedback_clean_is_empty():
     assert ClaudeCodeAdapter().format_stop_feedback(Verdict(violations=[])) == ""
 
 
+def test_claude_stop_should_check_skips_continuation():
+    a = ClaudeCodeAdapter()
+    assert a.stop_should_check({"stop_hook_active": True}) is False  # continuation → skip
+    assert a.stop_should_check({"stop_hook_active": False}) is True
+    assert a.stop_should_check({}) is True
+
+
 def _install_into(tmp_path, monkeypatch, pre_existing):
     import json
 

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from super_harness.adapters import AgentAdapter
+from super_harness.adapters.agent import _stop_protocol
 
 if TYPE_CHECKING:
     from super_harness.core.authoring_check import Verdict
@@ -235,17 +236,17 @@ class ClaudeCodeAdapter(AgentAdapter):
         else:
             settings_path.write_text(snapshot)
 
-    def format_stop_feedback(self, verdict: Verdict) -> str:
-        """Block the stop and feed the advisory back via Claude Code's Stop-hook JSON
-        protocol: ``{"decision":"block","reason": ...}`` (the reason reaches the model
-        on its next turn; the edit itself is never undone). Returns ``""`` when clean,
-        so the hook allows the stop. Loop-safety (`stop_hook_active`) is enforced by the
-        hook entry, not here."""
-        import json
+    def stop_should_check(self, payload: dict) -> bool:
+        """Skip the continuation turn a prior block created (loop-safety). Delegates to
+        the shared Claude-Code-hook family guard (`stop_hook_active`)."""
+        return not _stop_protocol.is_continuation(payload)
 
-        if not verdict.violations:
-            return ""
-        return json.dumps({"decision": "block", "reason": self._render_advisory(verdict)})
+    def format_stop_feedback(self, verdict: Verdict) -> str:
+        """Claude Code Stop feedback = the shared Claude-Code-hook family envelope
+        (`{"decision":"block","reason": ...}`; the reason reaches the model on its next
+        turn, the edit is never undone). ``""`` when clean, so the hook allows the stop.
+        Loop-safety lives in :meth:`stop_should_check` / the hook entry, not here."""
+        return _stop_protocol.block_feedback(verdict)
 
     def inject_context(self, change_id: str) -> str:
         """Return the ``change resume`` context dump for ``change_id``.
