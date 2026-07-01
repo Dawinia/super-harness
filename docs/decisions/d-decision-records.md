@@ -5,11 +5,13 @@ ratified_by: dawinialo@163.com
 ratified_at: '2026-06-26T09:45:29.090702Z'
 ratified_text_hash: sha256:b2ee29066411206363cb90de2251e44e17d4f53bca0c4d4018fc9dd538f4badd
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-06-26T09:45:28.988510Z'
+last_reconciled_at: '2026-07-01T06:36:43.994419Z'
 last_reconcile_kind: self
-last_reconcile_justification: 'Baseline arming: invariant holds at HEAD.'
+last_reconcile_justification: "Added an orthogonal optional authoring_time bool field\
+  \ (frontmatter parse + serialize); one-file-per-record model and four-state lifecycle\
+  \ are untouched \u2014 no multi-record file, no fifth state."
 reconciled_anchors:
-  src/super_harness/core/decisions.py: sha256:6ba4253e9448cd2d1bc011863456b6c6fbd350df55cfad1e7e78ec134b7baa5a
+  src/super_harness/core/decisions.py: sha256:a3405ab59928bdf0f6c768f029dbd6fd76bea576428d9c7abee983cb1c8d0c98
 ---
 Decisions are one-file-per-record under docs/decisions/, four-state lifecycle.
 
