@@ -16,6 +16,51 @@
 > `private/research/2026-07-01-agent-conformance-pain.md` and memory
 > `project-agent-conformance-research`.
 
+## REVISION 2 — architecture cross-review outcome (2026-07-01)
+
+Four independent cross-reviews (Claude + Codex × mechanical + architecture) converged
+that the plan below should **not** be built as-is. Two decisions were taken (user-approved)
+that reshape the cut; the durable rewrite of §2–§9 + the plan is **deferred until the H
+stub (below) shows signal** — this is the stub-first discipline itself.
+
+**Decision A — stub-first sequencing.** §1 admits H may be false (net value ≈ 0). Building
+the durable, least-reversible parts first (a new `applies_to` Decision-schema field + a full
+core module + the adapter seam) before testing H would strand that schema on a null result.
+So: **validate H with a throwaway stub first** (a ~20-line hook that runs the existing check
+for the known `core → sensors` violation and feeds back the advisory), then build only if
+Claude actually self-corrects.
+
+**Decision B — per-turn (Stop hook), not per-edit (PostToolUse).** Per-edit maximizes the
+intermediate-state noise §5 frets about and mis-attributes whole-graph violations to whichever
+file was just edited. A `Stop` / `SubagentStop` hook that runs the standard `decision check`
+**once when the agent finishes its turn** is simpler (reuse `decision check` almost verbatim —
+**no `applies_to`, no new relevance model, no new core module**), sound (full graph, not the
+unsound `--changed` anchor-intersection), 1× cost, and noise-free. Trade-off: feedback at
+turn-end vs per-edit immediacy — still before the human / merge gate. (The Codex PostToolUse
+spike still stands as proof Codex hooks fire under `exec`; the Stop-hook feedback semantics
+must be LIVE-verified before the rewrite.)
+
+**Convergent fixes to fold into the rewrite (all four reviews):** (1) tri-state result
+`violation | clean | unavailable` — only a real non-zero check feeds back; timeout/spawn
+(`exit_code == -1`)/parse → silent (the current plan reports a timeout as "you violated X").
+(2) Timeout budget: inner check timeout **strictly less** than the hook's outer timeout
+(`_TIMEOUT = 10`), and a sub-second-to-few-second budget (a 10–15 s synchronous stall is worse
+than no sensor). (3) Uninstall must **strip by marker**, not restore-earliest-backup (which
+leaks the PreToolUse hook when settings were absent) — and test all three markers gone.
+(4) Adapter seam takes the structured `Verdict`, not a pre-rendered string, so third parties
+can choose channel/fields (the contribution requirement). (5) Rendering lives in the adapter;
+core returns a structured verdict only. (6) Don't name it `sensor` (collides with the `Sensor`
++ dispatcher framework) — `authoring_feedback` / `conformance_check`; document "not a `Sensor`".
+(7) Security/trust: running ratified `shell=True` checks automatically every turn in the dev
+loop is a frequency/blast-radius shift — restrict the authoring path to declared-safe check
+kinds (import-linter contracts) for cut-1. (8) YAGNI: drop `by_id`; reuse `_ensure_event_list`;
+`fnmatch` is not path-aware (moot if `applies_to` is dropped per Decision B).
+
+Verified clean by review: a `core`-resident conformance module importing only `core` does
+**not** violate `core-is-base`; the layering split is sound.
+
+---
+
 ## 1. Why — and the honest hypothesis this cut is testing
 
 The sharpest, most-reproduced complaint about AI coding agents is not "the rules
