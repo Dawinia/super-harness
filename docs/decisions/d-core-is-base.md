@@ -1,6 +1,7 @@
 ---
 id: d-core-is-base
 status: ratified
+authoring_time: true
 ratified_by: dawinialo@163.com
 ratified_at: '2026-06-29T16:22:58.227086Z'
 ratified_text_hash: sha256:a751fdf80671ccd1d441f0f59b1ee9b5ba9c2f8c5fe46c428eca647e9c5a79fc

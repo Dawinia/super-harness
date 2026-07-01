@@ -42,10 +42,16 @@ import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from super_harness.core.events import Event
 from super_harness.core.workspace import WorkspaceContext
+
+if TYPE_CHECKING:
+    # Type-only import (no runtime coupling). `core.authoring_check` imports only
+    # `core`, and this is the normal downward direction (adapters build on core), so
+    # the core-is-base contract — which forbids core → {cli,gates,sensors} — is unaffected.
+    from super_harness.core.authoring_check import Verdict
 
 __all__ = [
     "AgentAdapter",
@@ -141,6 +147,35 @@ class AgentAdapter(ABC):
         """One-line post-install summary for the CLI (e.g. where the gate hook
         landed + any required follow-up). Default is generic."""
         return "agent hooks registered"
+
+    def format_stop_feedback(self, verdict: Verdict) -> str:
+        """Format a turn-end conformance verdict for this agent's Stop-hook feedback
+        channel; return ``""`` to deliver nothing.
+
+        Default = floor-only: agents whose Stop hook cannot feed text back to the model
+        do not override this and rely on the CI cold-path floor. Agents that can
+        (Claude Code, Codex) override it. Takes the STRUCTURED ``verdict`` so an agent
+        can choose channel/fields; use :meth:`_render_advisory` for the shared prose.
+        """
+        return ""
+
+    @staticmethod
+    def _render_advisory(verdict: Verdict) -> str:
+        """Shared agent-agnostic advisory prose: the decision id + the check's own
+        detail + a decision-doc pointer. No fabricated fix text (design §3b)."""
+        lines = [
+            "super-harness authoring-time check — a ratified decision's check is "
+            "failing for your changes:",
+        ]
+        for v in verdict.violations:
+            lines.append(f"  • {v.decision_id}: {v.detail}")
+            lines.append(f"    (rule + counterexample: {v.decision_doc_path})")
+        lines.append(
+            "Correct it before finishing this turn; the merge gate will otherwise "
+            "reject it later. If you believe this is a legitimate exception, stop and "
+            "surface it to the human — do not proceed on your own authority."
+        )
+        return "\n".join(lines)
 
 
 class FrameworkAdapter(ABC):

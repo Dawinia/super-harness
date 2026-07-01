@@ -273,3 +273,27 @@ def test_workspace_context_is_reexported_from_sensors() -> None:
     from super_harness.sensors import WorkspaceContext as SensorWC
 
     assert AdapterWC is SensorWC
+
+
+def test_default_format_stop_feedback_is_empty():
+    from super_harness.adapters import AgentAdapter
+    from super_harness.core.authoring_check import Verdict, Violation
+
+    class _Bare(AgentAdapter):
+        name: ClassVar[str] = "bare"
+        version: ClassVar[str] = "0.1.0"
+        capabilities: ClassVar[dict[str, bool]] = {}
+
+        def detect(self, w: Path) -> bool:
+            return False
+
+        def install_hooks(self, w: Path) -> None: ...
+
+        def inject_context(self, c: str) -> str:
+            return ""
+
+        def agents_md_subsection(self) -> str:
+            return ""
+
+    v = Verdict(violations=[Violation("d", "x", "docs/decisions/d.md")])
+    assert _Bare().format_stop_feedback(v) == ""

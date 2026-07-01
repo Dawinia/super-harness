@@ -43,6 +43,7 @@ class Decision:
     check: str | None = None
     counterexample: Counterexample | None = None
     acceptance: str | None = None
+    authoring_time: bool = False
     reconciled_anchors: dict[str, str] | None = None
     last_reconciled_by: str | None = None
     last_reconciled_at: str | None = None
@@ -167,6 +168,10 @@ def parse_decision_file(path: Path) -> Decision:
         check=parse_check(body),
         counterexample=parse_counterexample(body),
         acceptance=parse_review(body),
+        # STRICT: only a literal YAML boolean `true` opts a decision into the
+        # interactive loop (a safety control). A quoted `"false"`/`"0"` string would be
+        # truthy under bool(); `is True` refuses those (they are authoring-loop OFF).
+        authoring_time=(data.get("authoring_time") is True),
         reconciled_anchors=raw_anchors,
         last_reconciled_by=data.get("last_reconciled_by"),
         last_reconciled_at=data.get("last_reconciled_at"),
@@ -242,6 +247,8 @@ def serialize_decision(decision: Decision) -> str:
             fm[key] = val
     if decision.reconciled_anchors:
         fm["reconciled_anchors"] = dict(decision.reconciled_anchors)
+    if decision.authoring_time:
+        fm["authoring_time"] = True
     fm_text = yaml.safe_dump(fm, sort_keys=False).strip()
     return f"---\n{fm_text}\n---\n{decision.body}\n"
 

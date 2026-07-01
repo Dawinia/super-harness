@@ -40,6 +40,13 @@ A **PreToolUse** hook is enabled for this workspace. `Edit` / `Write` /
 `MultiEdit` / `NotebookEdit` tool calls are blocked by super-harness when the
 current change state forbids the mutation (deterministic gate enforcement).
 
+A **Stop** hook also runs a turn-end authoring-time conformance check: when you
+finish a turn, any ratified decision that opted in (`authoring_time: true`) has its
+check run once, and a failing check blocks the stop with a **non-blocking advisory**
+naming the violated decision — so you can self-correct before the merge gate. It never
+undoes your edit and never blocks twice (it nudges once per turn); the merge gate is
+the authoritative floor.
+
 When a tool call is blocked by the gate:
 - Run `super-harness status` to see the current change, its state, and why the
   edit was rejected, plus the next valid step.

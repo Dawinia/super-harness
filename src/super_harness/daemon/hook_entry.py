@@ -58,12 +58,21 @@ _HALT_HINT = (
 
 def main() -> None:  # console_script entry
     argv = sys.argv[1:]
+    # Optional `--event <name>` selects the hook event (default: pre-tool-use). Strip it
+    # first so the existing `--agent` dispatch is unchanged when it is absent.
+    event = "pre-tool-use"
+    if "--event" in argv:
+        i = argv.index("--event")
+        event = argv[i + 1] if i + 1 < len(argv) else event
+        argv = argv[:i] + argv[i + 2 :]
     if argv[:1] == ["--agent"]:
         agent = argv[1] if len(argv) > 1 else ""
         if agent == "claude-code":
-            _run_claude_code_shim()
+            _run_claude_code_stop() if event == "stop" else _run_claude_code_shim()
             return
         if agent == "codex":
+            if event == "stop":
+                sys.exit(0)  # codex Stop delivery is a follow-on cut → explicit no-op
             _run_codex_shim()
             return
         # Fail-open: never block on a shim contract we don't understand.
@@ -152,6 +161,39 @@ def _run_codex_shim() -> None:
             sys.stdout,
         )
         sys.exit(0)
+    sys.exit(0)
+
+
+def _run_claude_code_stop() -> None:
+    """Claude Code Stop hook: run the authoring-time check once at turn end and, on a
+    violation, block the stop with an advisory. ALWAYS exits 0 (the turn's edits stand).
+    Loop-safe: never blocks twice (`stop_hook_active`). Fail-open on any error / no
+    harness / kill switch (Axiom 1 — never let the check break the agent)."""
+    import json
+
+    try:
+        data = json.load(sys.stdin)
+    except (json.JSONDecodeError, ValueError):
+        sys.exit(0)
+    if not isinstance(data, dict) or data.get("stop_hook_active") is True:
+        # Malformed, or we already nudged this turn → allow the stop.
+        sys.exit(0)
+    try:
+        root = find_harness_root(Path.cwd())
+    except HarnessNotInitialized:
+        sys.exit(0)
+    if (root / ".harness" / "gate-disabled").exists():
+        sys.exit(0)  # kill switch → allow
+    try:
+        from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+        from super_harness.core.authoring_check import run_authoring_check
+
+        verdict = run_authoring_check(root)
+        out = ClaudeCodeAdapter().format_stop_feedback(verdict)
+    except Exception:
+        sys.exit(0)  # fail-open: never let the check break the agent
+    if out:
+        sys.stdout.write(out)
     sys.exit(0)
 
 

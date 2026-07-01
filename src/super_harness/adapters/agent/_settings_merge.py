@@ -35,6 +35,7 @@ from typing import Any
 __all__ = [
     "merge_pre_tool_use_hook",
     "merge_session_start_hook",
+    "merge_stop_hook",
 ]
 
 # The PreToolUse matcher super-harness registers (sensor-gate §3.2.1). Covers
@@ -58,6 +59,17 @@ _SESSION_OURS_MARKER = "change resume"
 # `change resume` reads events.jsonl + renders Markdown; 10s is generous for
 # v0.1 log sizes and matches the PreToolUse budget shape.
 _SESSION_TIMEOUT = 10
+
+# Stable marker for our Stop hook command. The Stop command is
+# `<abs super-harness-hook> --agent claude-code --event stop`; the full
+# `--agent claude-code --event stop` flag-pair is the path-independent substring
+# identifying it as ours. Deliberately the WHOLE pair (not the bare `--event stop`) so
+# an unrelated user Stop hook that merely happens to pass `--event stop` to some other
+# tool is never stripped as if it were ours.
+_STOP_OURS_MARKER = "--agent claude-code --event stop"
+# Per-hook timeout (seconds) for the Stop authoring-check command; matches the
+# PreToolUse/SessionStart budget shape and is the OUTER bound the inner check must beat.
+_STOP_TIMEOUT = 10
 
 
 def merge_pre_tool_use_hook(
@@ -153,6 +165,47 @@ def merge_session_start_hook(
 
     _strip_entries(session_start, marker)
     session_start.append(_session_start_entry(command))
+
+    if settings == original:
+        return
+
+    if existed:
+        _write_backup(settings_path)
+    else:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+
+
+def merge_stop_hook(
+    settings_path: Path,
+    *,
+    command: str,
+    marker: str = _STOP_OURS_MARKER,
+) -> None:
+    """Register super-harness's Stop hook in ``settings_path``, safely.
+
+    Mirrors :func:`merge_session_start_hook` exactly (Stop hooks, like SessionStart,
+    take NO ``matcher`` — they always fire on every turn end): computes the desired
+    settings with any prior super-harness Stop entry replaced by a fresh one for
+    ``command``, and writes only if it differs from disk. On a real change to a
+    pre-existing file the original is backed up FIRST; an absent file starts from
+    ``{}`` and writes no backup. "Ours" is the path-independent ``--event stop``
+    substring, so a relocated binary replaces the stale entry instead of duplicating.
+
+    Raises:
+        ValueError: if the file is not valid JSON, is not a JSON object, or has a
+            malformed ``hooks`` / ``hooks.Stop`` shape the user must fix.
+    """
+    existed = settings_path.exists()
+    original = _read_settings(settings_path) if existed else {}
+
+    settings = copy.deepcopy(original)
+    hooks = _ensure_hooks_dict(settings)
+    stop = _ensure_event_list(hooks, "Stop")
+
+    _strip_entries(stop, marker)
+    stop.append(_stop_entry(command))
 
     if settings == original:
         return
@@ -281,4 +334,12 @@ def _session_start_entry(command: str) -> dict[str, Any]:
     # which is what we want for context injection (Claude Code hooks schema).
     return {
         "hooks": [{"type": "command", "command": command, "timeout": _SESSION_TIMEOUT}],
+    }
+
+
+def _stop_entry(command: str) -> dict[str, Any]:
+    # No ``matcher``: Claude Code Stop hooks do not support matchers and always fire
+    # on turn end (Claude Code hooks schema, confirmed by the 2026-07-01 LIVE stub).
+    return {
+        "hooks": [{"type": "command", "command": command, "timeout": _STOP_TIMEOUT}],
     }

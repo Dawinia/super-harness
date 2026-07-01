@@ -310,9 +310,9 @@ def test_agents_md_subsection_frames_kill_switch_as_human_only() -> None:
 
 
 def test_on_uninstall_restores_earliest_pristine_backup(tmp_path: Path) -> None:
-    """install_hooks runs TWO merges → TWO backups on a pre-existing file.
+    """install_hooks runs THREE merges → THREE backups on a pre-existing file.
 
-    The EARLIEST (lowest ts) backup is the truly pristine file; the later one
+    The EARLIEST (lowest ts) backup is the truly pristine file; the later ones
     already contains our PreToolUse entry. Uninstall must restore the earliest
     so BOTH of our hooks are removed — restoring the newest would leave the
     PreToolUse hook behind.
@@ -384,7 +384,9 @@ def test_claude_adapter_install_detail_strings():
 
     a = ClaudeCodeAdapter()
     assert a.local_config_relpath() == ".claude/settings.local.json"
-    assert a.installed_detail() == "PreToolUse gate hook registered in .claude/settings.local.json"
+    detail = a.installed_detail()
+    assert "PreToolUse" in detail and "Stop" in detail
+    assert ".claude/settings.local.json" in detail
 
 
 def test_agents_md_subsection_does_not_teach_kill_switch():
@@ -398,3 +400,77 @@ def test_agents_md_subsection_does_not_teach_kill_switch():
     assert "kill switch" not in sub.lower()
     flat = " ".join(sub.split()).lower()  # collapse line-wraps before phrase match
     assert "work around the gate" in flat
+
+
+# --- authoring-time Stop feedback (2026-07-01) ---
+
+def _stop_verdict():
+    from super_harness.core.authoring_check import Verdict, Violation
+    return Verdict(violations=[Violation(
+        "d-core-is-base",
+        "core is not allowed to import super_harness.sensors",
+        "docs/decisions/d-core-is-base.md")])
+
+
+def test_claude_format_stop_feedback_blocks_with_reason():
+    import json
+
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    out = ClaudeCodeAdapter().format_stop_feedback(_stop_verdict())
+    obj = json.loads(out)
+    assert obj["decision"] == "block"
+    assert "d-core-is-base" in obj["reason"]
+    assert "super_harness.sensors" in obj["reason"]
+    assert "docs/decisions/d-core-is-base.md" in obj["reason"]
+
+
+def test_claude_format_stop_feedback_clean_is_empty():
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    from super_harness.core.authoring_check import Verdict
+    assert ClaudeCodeAdapter().format_stop_feedback(Verdict(violations=[])) == ""
+
+
+def _install_into(tmp_path, monkeypatch, pre_existing):
+    import json
+
+    import super_harness.adapters.agent.claude_code as cc
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    monkeypatch.setattr(cc.shutil, "which", lambda n: f"/abs/{n}")
+    (tmp_path / ".claude").mkdir()
+    f = tmp_path / ".claude" / "settings.local.json"
+    if pre_existing is not None:
+        f.write_text(json.dumps(pre_existing))
+    ClaudeCodeAdapter().install_hooks(tmp_path)
+    return f
+
+
+def test_install_registers_stop(tmp_path, monkeypatch):
+    import json
+    f = _install_into(tmp_path, monkeypatch, pre_existing=None)
+    events = json.loads(f.read_text())["hooks"]
+    assert "Stop" in events and "PreToolUse" in events
+    assert any("--event stop" in h["command"] for e in events["Stop"] for h in e["hooks"])
+
+
+def test_uninstall_round_trip_removes_stop(tmp_path, monkeypatch):
+    import json
+
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    pristine = {"model": "x", "permissions": {}}
+    f = _install_into(tmp_path, monkeypatch, pre_existing=pristine)
+    assert "Stop" in json.loads(f.read_text())["hooks"]
+    ClaudeCodeAdapter().on_uninstall(tmp_path)
+    assert json.loads(f.read_text()) == pristine
+
+
+def test_stop_advisory_has_no_self_authorized_bypass():
+    # Regression lock (#51/#52): the advisory must NOT teach the agent a
+    # self-authorized bypass; it directs legitimate exceptions to the human.
+    import json
+
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    reason = json.loads(ClaudeCodeAdapter().format_stop_feedback(_stop_verdict()))["reason"]
+    low = reason.lower()
+    assert "deliberate, disclosed exception, proceed" not in low
+    assert "proceed on your own authority" in low  # explicitly forbidden
+    assert "surface it to the human" in low
