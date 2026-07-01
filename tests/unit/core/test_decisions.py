@@ -306,3 +306,17 @@ def test_reconcile_justification_roundtrip(tmp_path):
                  last_reconcile_justification="still masks 500s correctly")
     write_decision(d)
     assert parse_decision_file(p).last_reconcile_justification == "still masks 500s correctly"
+
+
+def test_authoring_time_parsed_and_roundtrips(tmp_path: Path):
+    p = tmp_path / "d-x.md"
+    p.write_text("---\nid: d-x\nstatus: ratified\nauthoring_time: true\n---\nbody\n")
+    d = parse_decision_file(p)
+    assert d.authoring_time is True
+    assert "authoring_time" in serialize_decision(d)
+
+
+def test_authoring_time_absent_defaults_false(tmp_path: Path):
+    p = tmp_path / "d-y.md"
+    p.write_text("---\nid: d-y\nstatus: ratified\n---\nbody\n")
+    assert parse_decision_file(p).authoring_time is False
