@@ -37,6 +37,7 @@ from super_harness.adapters import AgentAdapter
 from super_harness.adapters.agent._settings_merge import (
     merge_pre_tool_use_hook,
     merge_session_start_hook,
+    merge_stop_hook,
 )
 
 __all__ = [
@@ -61,6 +62,13 @@ _AGENTS_MD_SUBSECTION = f"""{_AGENTS_MD_BEGIN}
 A **PreToolUse** hook is enabled for this workspace. `Edit` / `Write` /
 `MultiEdit` / `NotebookEdit` tool calls are blocked by super-harness when the
 current change state forbids the mutation (deterministic gate enforcement).
+
+A **Stop** hook also runs a turn-end authoring-time conformance check: when you
+finish a turn, any ratified decision that opted in (`authoring_time: true`) has its
+check run once, and a failing check blocks the stop with a **non-blocking advisory**
+naming the violated decision — so you can self-correct before the merge gate. It never
+undoes your edit and never blocks twice (it nudges once per turn); the merge gate is
+the authoritative floor.
 
 When a tool call is blocked by the gate:
 - Run `super-harness status` to see the current change, its state, and why the
@@ -196,6 +204,8 @@ class ClaudeCodeAdapter(AgentAdapter):
         pre_tool_use_command = f"{resolved_hook} --agent claude-code"
         # No-arg `change resume` → resume the active change at session start.
         session_start_command = f"{resolved_cli} change resume"
+        # Turn-end authoring-time conformance advisory (non-blocking, loop-safe).
+        stop_command = f"{resolved_hook} --agent claude-code --event stop"
 
         # Snapshot the install transaction boundary: capture the file's exact
         # pre-install content, or that it was absent. Restored on ANY failure.
@@ -203,6 +213,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         try:
             merge_pre_tool_use_hook(settings_path, command=pre_tool_use_command)
             merge_session_start_hook(settings_path, command=session_start_command)
+            merge_stop_hook(settings_path, command=stop_command)
         except BaseException:
             self._restore_snapshot(settings_path, snapshot)
             raise
@@ -218,6 +229,18 @@ class ClaudeCodeAdapter(AgentAdapter):
             settings_path.unlink(missing_ok=True)
         else:
             settings_path.write_text(snapshot)
+
+    def format_stop_feedback(self, verdict) -> str:
+        """Block the stop and feed the advisory back via Claude Code's Stop-hook JSON
+        protocol: ``{"decision":"block","reason": ...}`` (the reason reaches the model
+        on its next turn; the edit itself is never undone). Returns ``""`` when clean,
+        so the hook allows the stop. Loop-safety (`stop_hook_active`) is enforced by the
+        hook entry, not here."""
+        import json
+
+        if not verdict.violations:
+            return ""
+        return json.dumps({"decision": "block", "reason": self._render_advisory(verdict)})
 
     def inject_context(self, change_id: str) -> str:
         """Return the ``change resume`` context dump for ``change_id``.

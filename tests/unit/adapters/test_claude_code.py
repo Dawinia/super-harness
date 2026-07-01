@@ -398,3 +398,61 @@ def test_agents_md_subsection_does_not_teach_kill_switch():
     assert "kill switch" not in sub.lower()
     flat = " ".join(sub.split()).lower()  # collapse line-wraps before phrase match
     assert "work around the gate" in flat
+
+
+# --- authoring-time Stop feedback (2026-07-01) ---
+
+def _stop_verdict():
+    from super_harness.core.authoring_check import Verdict, Violation
+    return Verdict(violations=[Violation(
+        "d-core-is-base",
+        "core is not allowed to import super_harness.sensors",
+        "docs/decisions/d-core-is-base.md")])
+
+
+def test_claude_format_stop_feedback_blocks_with_reason():
+    import json
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    out = ClaudeCodeAdapter().format_stop_feedback(_stop_verdict())
+    obj = json.loads(out)
+    assert obj["decision"] == "block"
+    assert "d-core-is-base" in obj["reason"]
+    assert "super_harness.sensors" in obj["reason"]
+    assert "docs/decisions/d-core-is-base.md" in obj["reason"]
+
+
+def test_claude_format_stop_feedback_clean_is_empty():
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    from super_harness.core.authoring_check import Verdict
+    assert ClaudeCodeAdapter().format_stop_feedback(Verdict(violations=[])) == ""
+
+
+def _install_into(tmp_path, monkeypatch, pre_existing):
+    import json
+    import super_harness.adapters.agent.claude_code as cc
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    monkeypatch.setattr(cc.shutil, "which", lambda n: f"/abs/{n}")
+    (tmp_path / ".claude").mkdir()
+    f = tmp_path / ".claude" / "settings.local.json"
+    if pre_existing is not None:
+        f.write_text(json.dumps(pre_existing))
+    ClaudeCodeAdapter().install_hooks(tmp_path)
+    return f
+
+
+def test_install_registers_stop(tmp_path, monkeypatch):
+    import json
+    f = _install_into(tmp_path, monkeypatch, pre_existing=None)
+    events = json.loads(f.read_text())["hooks"]
+    assert "Stop" in events and "PreToolUse" in events
+    assert any("--event stop" in h["command"] for e in events["Stop"] for h in e["hooks"])
+
+
+def test_uninstall_round_trip_removes_stop(tmp_path, monkeypatch):
+    import json
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    pristine = {"model": "x", "permissions": {}}
+    f = _install_into(tmp_path, monkeypatch, pre_existing=pristine)
+    assert "Stop" in json.loads(f.read_text())["hooks"]
+    ClaudeCodeAdapter().on_uninstall(tmp_path)
+    assert json.loads(f.read_text()) == pristine
