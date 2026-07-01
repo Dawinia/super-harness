@@ -31,6 +31,7 @@ from super_harness.sensors.verification_runner import (
     _baseline_lifecycle_ordering,
     _baseline_scope_vs_plan,
     _covered_by_scope,
+    _scrubbed_environ,
     baseline_check_tasks,
     build_variables,
     collect_checks,
@@ -525,6 +526,47 @@ def test_collect_checks_merges_env_with_os_environ(tmp_path: Path) -> None:
     tasks = collect_checks(cfg, context=_ctx(tmp_path), archive=archive, variables={})
     tasks[0].run()
     assert (archive / "envc.stdout").read_text() == "fromdefault-fromcheck\n"
+
+
+def test_scrubbed_environ_strips_harness_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Every SUPER_HARNESS_* knob is dropped from the ambient base; unrelated
+    # vars (PATH, and any non-harness name) survive.
+    monkeypatch.setenv("SUPER_HARNESS_CHANGE_ID", "leaked")
+    monkeypatch.setenv("SUPER_HARNESS_ACTOR", "leaked@x")
+    monkeypatch.setenv("NOT_HARNESS", "kept")
+
+    scrubbed = _scrubbed_environ()
+
+    assert not any(k.startswith("SUPER_HARNESS_") for k in scrubbed)
+    assert scrubbed["NOT_HARNESS"] == "kept"
+    assert "PATH" in scrubbed  # unrelated ambient vars pass through
+
+
+def test_collect_checks_scrubs_ambient_harness_env_but_keeps_declared(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Ambient SUPER_HARNESS_CHANGE_ID must NOT reach the check subprocess (it
+    # would poison e2e hooks). A SUPER_HARNESS_* var DECLARED in defaults.env is
+    # a deliberate config layer and MUST survive. Baseline disabled so tasks[0]
+    # is the check under test.
+    monkeypatch.setenv("SUPER_HARNESS_CHANGE_ID", "leaked")
+    archive = tmp_path / "arch"
+    cfg = _config(
+        layers=Layers(baseline=False),
+        checks=[
+            _spec(
+                check_id="envc",
+                command="echo [$SUPER_HARNESS_CHANGE_ID][$SUPER_HARNESS_KEEP]",
+                capture="stdout",
+            )
+        ],
+        defaults=Defaults(env={"SUPER_HARNESS_KEEP": "declared"}),
+    )
+    tasks = collect_checks(cfg, context=_ctx(tmp_path), archive=archive, variables={})
+    tasks[0].run()
+    assert (archive / "envc.stdout").read_text() == "[][declared]\n"
 
 
 # --- run_checks -------------------------------------------------------------
