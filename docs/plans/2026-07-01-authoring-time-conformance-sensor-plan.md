@@ -155,17 +155,17 @@ def test_passing_check_is_clean(tmp_path: Path):
     _write_decision(tmp_path, "d-ok", check="true", authoring=True)
     assert run_authoring_check(tmp_path).violations == []
 
-def test_unavailable_is_not_a_violation(tmp_path: Path):
-    # exit 127 → the runner maps spawn/timeout to exit_code -1; a bad command that
-    # exits nonzero-but-not -1 IS a violation, so use a real timeout-like sentinel.
-    # Simulate unavailable by a command the runner reports as -1 is hard here; instead
-    # assert the filter directly:
+def test_unavailable_is_not_a_violation():
+    # `unavailable` = timeout/spawn (runner returns exit_code -1) OR the check TOOL is
+    # missing/not-executable (shell exits 126/127 — e.g. `lint-imports` not installed).
+    # A real nonzero (e.g. 1) IS a violation. Assert the filter directly.
     from super_harness.core.authoring_check import _to_violations
     from super_harness.core.check_runner import CheckFailure
-    fails = [CheckFailure(id="d-a", exit_code=-1, detail="timeout"),
+    fails = [CheckFailure(id="d-timeout", exit_code=-1, detail="timeout"),
+             CheckFailure(id="d-missing", exit_code=127, detail="lint-imports: not found"),
              CheckFailure(id="d-b", exit_code=1, detail="real")]
     ids = [v.decision_id for v in _to_violations(fails)]
-    assert ids == ["d-b"]   # -1 (unavailable) filtered out
+    assert ids == ["d-b"]   # -1 (timeout/spawn) and 126/127 (tool missing) filtered out
 ```
 
 - [ ] **Step 2: Run to verify it fails**
@@ -210,9 +210,15 @@ class Verdict:
     violations: list[Violation]
 
 
+# Exit codes that mean "the check could not run" (NOT a violation): timeout/spawn
+# failure (runner sentinel -1) and tool-not-found / not-executable under shell=True
+# (126/127, e.g. `lint-imports` absent). Design §3/§5: never emit a false "you violated".
+_UNAVAILABLE_EXIT_CODES = frozenset({-1, 126, 127})
+
+
 def _to_violations(failures: list[CheckFailure]) -> list[Violation]:
-    """Map real check failures to violations, dropping `unavailable` (exit_code == -1
-    = timeout / spawn failure): an unavailable check is NOT 'you violated X' (design §3)."""
+    """Map real check failures to violations, dropping `unavailable` results (a check
+    that could not run is NOT 'you violated X' — design §3)."""
     return [
         Violation(
             decision_id=f.id,
@@ -220,18 +226,29 @@ def _to_violations(failures: list[CheckFailure]) -> list[Violation]:
             decision_doc_path=f"docs/decisions/{f.id}.md",
         )
         for f in failures
-        if f.exit_code != -1
+        if f.exit_code not in _UNAVAILABLE_EXIT_CODES
     ]
 
 
-def run_authoring_check(workspace_root: Path) -> Verdict:
-    """Run the ratified, `authoring_time` tier-1 checks once; return a Verdict.
+def _integrity_ok(d) -> bool:
+    """True if the decision's body still matches its ratified hash. Mirror the CI floor
+    (cli/decision.py): a tamper-detected decision must NOT have its arbitrary shell check
+    run automatically in the interactive loop (design §4 trust control)."""
+    from super_harness.core.decisions import compute_body_hash
+    if not d.ratified_text_hash:
+        return True
+    return compute_body_hash(d.body) == d.ratified_text_hash
 
-    Only decisions that opted into the interactive loop (`authoring_time: true`) run —
-    the safety control (design §4). Never raises for a check failure (failure is data).
+
+def run_authoring_check(workspace_root: Path) -> Verdict:
+    """Run the ratified, `authoring_time`, integrity-clean tier-1 checks once; return a Verdict.
+
+    Only decisions that opted into the interactive loop (`authoring_time: true`) AND whose
+    body still matches their ratified hash run — the safety control (design §4). Never
+    raises for a check failure (failure is data).
     """
     decisions, _errors = load_decisions(workspace_root)
-    opted = [d for d in decisions if d.authoring_time]
+    opted = [d for d in decisions if d.authoring_time and _integrity_ok(d)]
     if not opted:
         return Verdict(violations=[])
     # run_executable_checks already skips non-ratified + `check is None`.
@@ -465,11 +482,17 @@ In `claude_code.py`'s `install_hooks`, after the existing PreToolUse + SessionSt
         )
 ```
 
-- [ ] **Step 7: Switch `on_uninstall` to marker-strip (fixes the latent leak)**
+- [ ] **Step 7: Do NOT change `on_uninstall` — the existing restore-earliest already removes the Stop hook.**
 
-Replace `on_uninstall`'s restore-earliest-backup logic (which leaks the PreToolUse hook when settings were absent — cross-review S5) with a **marker-strip**: load the settings (if present), and for each event list (`PreToolUse`, `SessionStart`, `Stop`) drop entries whose command contains a super-harness marker (reuse `_strip_entries` + the `_OURS_MARKER` / `_SESSION_MARKER` / `_STOP_MARKER` constants), then write back (or delete the file if it becomes empty and we created it). Keep it best-effort/no-raise.
+Cross-review found: `on_uninstall` restores the *earliest* backup, which is the pristine
+settings from before merge 1. Adding a third merge (Stop) does not change that — restoring
+the pristine backup removes **all** super-harness hooks, Stop included. So **leave
+`on_uninstall` untouched** (do NOT switch to marker-strip; that would break the 3 existing
+backup round-trip tests and cannot reproduce a pristine `hooks`-free file without extra
+pruning). The pre-existing absent-settings leak (`test_on_uninstall_no_backup_is_noop`) is a
+**pre-existing** issue, explicitly OUT of this cut's scope. No code change in this step.
 
-- [ ] **Step 8: Write + run install/uninstall tests (three hooks land + all stripped)**
+- [ ] **Step 8: Write + run install/uninstall tests (Stop lands; round-trip removes it)**
 
 ```python
 # tests/unit/adapters/test_claude_code.py
@@ -477,41 +500,41 @@ import json
 from pathlib import Path
 from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
 
-def _install(tmp_path, monkeypatch):
+def _install_into(tmp_path, monkeypatch, pre_existing: dict | None):
     import super_harness.adapters.agent.claude_code as cc
     # real install resolves BOTH super-harness-hook and super-harness
     monkeypatch.setattr(cc.shutil, "which", lambda n: f"/abs/{n}")
     (tmp_path / ".claude").mkdir()
+    f = tmp_path / ".claude" / "settings.local.json"
+    if pre_existing is not None:
+        f.write_text(json.dumps(pre_existing))
     ClaudeCodeAdapter().install_hooks(tmp_path)
-    return json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
+    return f
 
 def test_install_registers_stop(tmp_path, monkeypatch):
-    events = _install(tmp_path, monkeypatch)["hooks"]
+    f = _install_into(tmp_path, monkeypatch, pre_existing=None)
+    events = json.loads(f.read_text())["hooks"]
     assert "Stop" in events and "PreToolUse" in events
     assert any("--event stop" in h["command"] for e in events["Stop"] for h in e["hooks"])
 
-def test_uninstall_strips_all_markers(tmp_path, monkeypatch):
-    import super_harness.adapters.agent.claude_code as cc
-    monkeypatch.setattr(cc.shutil, "which", lambda n: f"/abs/{n}")
-    (tmp_path / ".claude").mkdir()
-    a = ClaudeCodeAdapter()
-    a.install_hooks(tmp_path)
-    a.on_uninstall(tmp_path)
-    f = tmp_path / ".claude" / "settings.local.json"
-    if f.exists():
-        hooks = json.loads(f.read_text()).get("hooks", {})
-        flat = [h["command"] for lst in hooks.values() for e in lst for h in e.get("hooks", [])]
-        assert not any("super-harness-hook" in c or "--event stop" in c for c in flat)
+def test_uninstall_round_trip_removes_stop(tmp_path, monkeypatch):
+    # Install into PRE-EXISTING settings so a pristine backup exists; the existing
+    # restore-earliest on_uninstall then restores pristine (Stop gone).
+    pristine = {"model": "x", "permissions": {}}
+    f = _install_into(tmp_path, monkeypatch, pre_existing=pristine)
+    assert "Stop" in json.loads(f.read_text())["hooks"]
+    ClaudeCodeAdapter().on_uninstall(tmp_path)
+    assert json.loads(f.read_text()) == pristine   # no Stop, no super-harness hooks
 ```
 
 Run: `PATH="$(pwd)/.venv/bin:$PATH" pytest tests/unit/adapters/test_claude_code.py -v`
-Expected: PASS (all). If existing uninstall tests assumed restore-earliest, update them to the marker-strip contract.
+Expected: PASS (all — including the 3 pre-existing backup round-trip tests, since `on_uninstall` is unchanged).
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add src/super_harness/adapters/__init__.py src/super_harness/adapters/agent/claude_code.py tests/unit/adapters/
-git commit -m "feat(adapters): Stop-feedback seam (Verdict) + Claude delivery + marker-strip uninstall"
+git commit -m "feat(adapters): Stop-feedback seam (Verdict) + Claude delivery + Stop hook install"
 ```
 
 ---
@@ -602,7 +625,9 @@ def main() -> None:
             _run_claude_code_stop() if event == "stop" else _run_claude_code_shim()
             return
         if agent == "codex":
-            _run_codex_shim()   # codex stop path is a later cut
+            if event == "stop":
+                sys.exit(0)     # codex Stop delivery is a follow-on cut → explicit no-op
+            _run_codex_shim()
             return
         sys.stderr.write(f"super-harness-hook: unknown --agent {agent!r}\n")
         sys.exit(0)
