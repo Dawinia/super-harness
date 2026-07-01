@@ -138,8 +138,12 @@ Contrast pair, both with `SUPER_HARNESS_CHANGE_ID=fake-does-not-exist` exported:
   `super-harness verify --check pytest` → `verification passed (1 checks, 0 failed)`.
   The full suite ran through `_config_check_task` with the scrubbed base env, so
   the exact env that fails a bare pytest passes through the runner.
+- **Retired footgun (strongest evidence).** `super-harness done` for this very
+  change was run with `SUPER_HARNESS_CHANGE_ID=fake-does-not-exist` still exported
+  → `implementation_complete emitted`. This is the exact scenario that forced a
+  manual `unset` before every `done` in PR#58/#59; it now passes with the knob
+  exported, so the lifecycle pothole is retired.
 - Baseline (no poison) is subsumed by the fix proof (passing under poison implies
-  passing without) and is re-confirmed by the clean-env `super-harness done` run
-  in this change's lifecycle.
+  passing without).
 
 Full transcript kept out of the tracked tree (session-local).
