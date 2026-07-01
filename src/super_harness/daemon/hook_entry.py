@@ -45,7 +45,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
+
+if TYPE_CHECKING:
+    from super_harness.adapters import AgentAdapter
 
 from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import HarnessNotInitialized, find_harness_root
@@ -170,7 +173,7 @@ def _run_codex_shim() -> None:
     sys.exit(0)
 
 
-def _run_stop(adapter) -> None:
+def _run_stop(adapter: AgentAdapter) -> None:
     """Agent-agnostic turn-end (Stop) authoring-check orchestrator. ALWAYS exits 0 (the
     turn's edits stand). The adapter owns the agent-specific Stop protocol: the
     re-entrancy guard (`adapter.stop_should_check`) and the feedback envelope

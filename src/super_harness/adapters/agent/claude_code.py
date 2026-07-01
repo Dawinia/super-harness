@@ -31,7 +31,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from super_harness.adapters import AgentAdapter
 from super_harness.adapters.agent import _stop_protocol
@@ -236,7 +236,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         else:
             settings_path.write_text(snapshot)
 
-    def stop_should_check(self, payload: dict) -> bool:
+    def stop_should_check(self, payload: dict[str, Any]) -> bool:
         """Skip the continuation turn a prior block created (loop-safety). Delegates to
         the shared Claude-Code-hook family guard (`stop_hook_active`)."""
         return not _stop_protocol.is_continuation(payload)
