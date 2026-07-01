@@ -172,7 +172,8 @@ class AgentAdapter(ABC):
             lines.append(f"    (rule + counterexample: {v.decision_doc_path})")
         lines.append(
             "Correct it before finishing this turn; the merge gate will otherwise "
-            "reject it later. (If this is a deliberate, disclosed exception, proceed.)"
+            "reject it later. If you believe this is a legitimate exception, stop and "
+            "surface it to the human — do not proceed on your own authority."
         )
         return "\n".join(lines)
 
