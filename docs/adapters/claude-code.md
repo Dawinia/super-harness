@@ -38,7 +38,7 @@ Auto-detected when the workspace contains a `.claude/` directory. If
 | `inject_context` | Shells out to `super-harness change resume <slug>` and returns its stdout (best-effort; empty string on non-zero exit) |
 | `format_stop_feedback` | Renders a turn-end conformance `Verdict` into Claude Code's Stop-hook `{"decision":"block","reason": ...}` (or `""` when clean) |
 | `agents_md_subsection` | Static block explaining the PreToolUse gate + Stop advisory behavior and recovery commands |
-| `capabilities` | `pre_tool_use_hook`, `post_tool_use_hook`, `session_start_hook`, `rules_file_injection`, `mcp_server`, `subprocess_execution` (all `True`); `session_end_hook`, `pre_commit_hook` (`False`) |
+| `capabilities` | `pre_tool_use_hook`, `post_tool_use_hook`, `session_start_hook`, `rules_file_injection`, `mcp_server`, `subprocess_execution`, `turn_end_feedback_hook` (all `True`); `session_end_hook`, `pre_commit_hook` (`False`) |
 
 ## Install
 

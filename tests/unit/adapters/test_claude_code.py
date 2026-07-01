@@ -65,6 +65,7 @@ _CANONICAL_CAPABILITY_KEYS = {
     "rules_file_injection",
     "mcp_server",
     "subprocess_execution",
+    "turn_end_feedback_hook",
 }
 
 
@@ -98,6 +99,7 @@ def test_capabilities_match_spec() -> None:
         "rules_file_injection": True,
         "mcp_server": True,
         "subprocess_execution": True,
+        "turn_end_feedback_hook": True,
     }
 
 

@@ -22,6 +22,7 @@ class _MinimalAdapter(AgentAdapter):
         "rules_file_injection": True,
         "mcp_server": False,
         "subprocess_execution": True,
+        "turn_end_feedback_hook": False,
     }
 
     def detect(self, workspace: Path) -> bool:
@@ -119,6 +120,7 @@ def test_capabilities_canonical_keys() -> None:
         "rules_file_injection",
         "mcp_server",
         "subprocess_execution",
+        "turn_end_feedback_hook",
     }
     assert set(a.capabilities) == expected
 

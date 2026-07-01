@@ -152,6 +152,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         "rules_file_injection": True,  # CLAUDE.md / AGENTS.md
         "mcp_server": True,  # v0.2 strengthens context injection via MCP
         "subprocess_execution": True,  # Bash tool
+        "turn_end_feedback_hook": True,  # Claude Code Stop hook (cut-1)
     }
 
     def detect(self, workspace: Path) -> bool:

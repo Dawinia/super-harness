@@ -75,13 +75,14 @@ class CodexAdapter(AgentAdapter):
     version: ClassVar[str] = "0.1.0"
     capabilities: ClassVar[dict[str, bool]] = {
         "pre_tool_use_hook": True,
-        "post_tool_use_hook": False,
+        "post_tool_use_hook": True,  # spike-verified: fires under `codex exec` (2026-07-01)
         "session_start_hook": True,
         "session_end_hook": False,
         "pre_commit_hook": False,
         "rules_file_injection": True,
         "mcp_server": True,
         "subprocess_execution": True,
+        "turn_end_feedback_hook": True,  # Codex Stop hook (cut-2)
     }
 
     def detect(self, workspace: Path) -> bool:

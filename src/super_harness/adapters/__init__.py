@@ -19,7 +19,7 @@ v0.1 ships only the ABCs here. Concrete adapters, the adapter registry, and
 the `adapter install` CLI come in later tasks.
 
 Concrete AgentAdapter subclasses must declare `capabilities` with the v0.1
-canonical 8 keys (adapters do not invent their own; v0.2 adds a reserved
+canonical 9 keys (adapters do not invent their own; v0.2 adds a reserved
 `x_<vendor>_*` prefix for extensions — see adapter-architecture §2.2):
     pre_tool_use_hook    # agent tool-call pre hook (real-time deterministic gate)
     post_tool_use_hook   # agent tool-call post hook (result inspection)
@@ -29,6 +29,7 @@ canonical 8 keys (adapters do not invent their own; v0.2 adds a reserved
     rules_file_injection  # static rules file (.cursorrules / AGENTS.md)
     mcp_server           # MCP protocol server integration
     subprocess_execution  # can run super-harness CLI subprocess
+    turn_end_feedback_hook  # turn-end (Stop) authoring-conformance advisory
 
 See adapter-architecture spec §2.2 for the full contract.
 
@@ -67,13 +68,13 @@ class AgentAdapter(ABC):
     for cross-session continuity (Ralph Loop).
     See adapter-architecture spec §2.2 for the full contract.
     Subclasses must define `name` (non-empty) and `version` (not the default
-    "0.0.0"), and fill `capabilities` with the v0.1 canonical 8 keys.
+    "0.0.0"), and fill `capabilities` with the v0.1 canonical 9 keys.
     """
 
     name: ClassVar[str] = ""
     version: ClassVar[str] = "0.0.0"
     # Platform capability declaration — influences install behaviour + degraded
-    # mode docs. Concrete adapters fill the v0.1 canonical 8 keys (see module
+    # mode docs. Concrete adapters fill the v0.1 canonical 9 keys (see module
     # docstring + adapter-architecture §2.2).
     capabilities: ClassVar[dict[str, bool]] = {}
 

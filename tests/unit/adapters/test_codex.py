@@ -77,3 +77,9 @@ def test_agents_md_subsection_does_not_teach_kill_switch():
     flat = " ".join(sub.split()).lower()  # collapse line-wraps before phrase match
     assert "work around the gate" in flat
     assert "kill switch always works" not in sub.lower()
+
+
+def test_codex_capabilities():
+    caps = CodexAdapter().capabilities
+    assert caps["post_tool_use_hook"] is True       # spike-verified (fires under codex exec)
+    assert caps["turn_end_feedback_hook"] is True    # cut-2 Stop delivery
