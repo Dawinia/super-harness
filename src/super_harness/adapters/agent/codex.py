@@ -15,13 +15,18 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from super_harness.adapters import AgentAdapter
+from super_harness.adapters.agent import _stop_protocol
 from super_harness.adapters.agent._settings_merge import (
     merge_pre_tool_use_hook,
     merge_session_start_hook,
+    merge_stop_hook,
 )
+
+if TYPE_CHECKING:
+    from super_harness.core.authoring_check import Verdict
 
 __all__ = ["CodexAdapter"]
 
@@ -29,6 +34,11 @@ _HOOK_BINARY = "super-harness-hook"
 _CLI_BINARY = "super-harness"
 _CODEX_MATCHER = "^(apply_patch|Edit|Write)$"
 _CODEX_MARKER = "--agent codex"
+# Codex-specific Stop marker: merge_stop_hook defaults to the CLAUDE pair
+# (`_STOP_OURS_MARKER`), so passing this explicitly is what makes a Codex reinstall
+# REPLACE the prior Stop entry instead of appending a duplicate (two objects on stdout
+# → Codex "Stop Failed"). Mirrors the PreToolUse `_CODEX_MARKER` pattern.
+_CODEX_STOP_MARKER = "--agent codex --event stop"
 
 _AGENTS_MD_BEGIN = "<!-- super-harness agent: codex -->"
 _AGENTS_MD_END = "<!-- /super-harness agent: codex -->"
@@ -67,6 +77,13 @@ record verdicts with `super-harness review approve/reject <change> --reviewer
 <name>` (code-reviewer approval requires a `--verdict-file` from a genuinely
 independent reviewer subagent; see `super-harness status` output). Run a real
 independent reviewer — don't self-rubber-stamp.
+
+#### Turn-end authoring check
+
+A **Stop** hook runs a turn-end authoring-time conformance check: when you finish a
+turn, any ratified decision that opted in (`authoring_time: true`) has its check run
+once; a failure is fed back as a non-blocking advisory so you self-correct next turn.
+Like the PreToolUse gate, the Stop hook is INACTIVE until you `/hooks`-trust it.
 {_AGENTS_MD_END}"""
 
 
@@ -107,6 +124,7 @@ class CodexAdapter(AgentAdapter):
         hooks_path = workspace / ".codex" / "hooks.json"
         pre_command = f"{resolved_hook} --agent codex"
         session_command = f"{resolved_cli} change resume"
+        stop_command = f"{resolved_hook} --agent codex --event stop"
 
         snapshot: str | None = hooks_path.read_text() if hooks_path.exists() else None
         try:
@@ -115,6 +133,7 @@ class CodexAdapter(AgentAdapter):
                 matcher=_CODEX_MATCHER, marker=_CODEX_MARKER,
             )
             merge_session_start_hook(hooks_path, command=session_command)
+            merge_stop_hook(hooks_path, command=stop_command, marker=_CODEX_STOP_MARKER)
         except BaseException:
             self._restore_snapshot(hooks_path, snapshot)
             raise
@@ -133,6 +152,18 @@ class CodexAdapter(AgentAdapter):
         )
         return result.stdout or ""
 
+    def stop_should_check(self, payload: dict) -> bool:
+        """Skip the continuation turn a prior block created (loop-safety). Codex's Stop
+        payload carries `stop_hook_active`, spiked identical to Claude Code's."""
+        return not _stop_protocol.is_continuation(payload)
+
+    def format_stop_feedback(self, verdict: Verdict) -> str:
+        """Codex Stop feedback = the shared Claude-Code-hook family envelope
+        (`{"decision":"block","reason": ...}`). Spike-verified under `codex exec`:
+        `reason` is the ONLY channel that reaches the model; adding systemMessage /
+        additionalContext makes Codex report "Stop Failed" and drop the continuation."""
+        return _stop_protocol.block_feedback(verdict)
+
     def agents_md_subsection(self) -> str:
         return _AGENTS_MD_SUBSECTION
 
@@ -141,8 +172,8 @@ class CodexAdapter(AgentAdapter):
 
     def installed_detail(self) -> str:
         return (
-            "PreToolUse + SessionStart hooks registered in .codex/hooks.json — "
-            "run `/hooks` in Codex to trust the hook before the gate is active"
+            "PreToolUse + SessionStart + Stop hooks registered in .codex/hooks.json — "
+            "run `/hooks` in Codex to trust the hooks before the gate is active"
         )
 
     def on_uninstall(self, workspace: Path) -> None:

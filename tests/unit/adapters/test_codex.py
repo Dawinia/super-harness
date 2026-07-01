@@ -83,3 +83,58 @@ def test_codex_capabilities():
     caps = CodexAdapter().capabilities
     assert caps["post_tool_use_hook"] is True       # spike-verified (fires under codex exec)
     assert caps["turn_end_feedback_hook"] is True    # cut-2 Stop delivery
+
+
+def test_codex_stop_should_check_and_feedback_delegate():
+    from super_harness.core.authoring_check import Verdict, Violation
+    a = CodexAdapter()
+    assert a.stop_should_check({"stop_hook_active": True}) is False
+    assert a.stop_should_check({"stop_hook_active": False}) is True
+    v = Verdict(violations=[Violation("d-core-is-base", "x", "docs/decisions/d-core-is-base.md")])
+    obj = json.loads(a.format_stop_feedback(v))
+    assert obj["decision"] == "block" and "d-core-is-base" in obj["reason"]
+    assert set(obj) == {"decision", "reason"}  # reason-ONLY (spike: extra fields break Codex Stop)
+
+
+def test_codex_install_writes_stop_hook(tmp_path, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda _n: f"/abs/{_n}")
+    (tmp_path / ".codex").mkdir()
+    CodexAdapter().install_hooks(tmp_path)
+    data = json.loads((tmp_path / ".codex" / "hooks.json").read_text())
+    stop = data["hooks"]["Stop"][0]
+    assert stop["hooks"][0]["command"] == "/abs/super-harness-hook --agent codex --event stop"
+
+
+def test_codex_install_stop_is_idempotent_on_reinstall(tmp_path, monkeypatch):
+    # BLOCKER regression (review B1): a Codex-specific marker must make reinstall REPLACE,
+    # not append. Two Stop entries → two JSON objects on stdout → Codex "Stop Failed".
+    monkeypatch.setattr(shutil, "which", lambda _n: f"/abs/{_n}")
+    (tmp_path / ".codex").mkdir()
+    CodexAdapter().install_hooks(tmp_path)
+    CodexAdapter().install_hooks(tmp_path)  # reinstall
+    data = json.loads((tmp_path / ".codex" / "hooks.json").read_text())
+    assert len(data["hooks"]["Stop"]) == 1  # replaced, not duplicated
+
+
+def test_codex_uninstall_round_trips_stop_hook(tmp_path, monkeypatch):
+    # S3: install onto a PRE-EXISTING hooks.json, then uninstall → earliest backup restored,
+    # Stop entry gone. (Fresh-install-absent-file uninstall leak is pre-existing / OUT.)
+    monkeypatch.setattr(shutil, "which", lambda _n: f"/abs/{_n}")
+    (tmp_path / ".codex").mkdir()
+    hooks = tmp_path / ".codex" / "hooks.json"
+    hooks.write_text('{"hooks": {}}\n')  # pristine pre-existing file
+    CodexAdapter().install_hooks(tmp_path)
+    assert "Stop" in json.loads(hooks.read_text())["hooks"]
+    CodexAdapter().on_uninstall(tmp_path)
+    assert json.loads(hooks.read_text()) == {"hooks": {}}  # restored, Stop gone
+
+
+def test_codex_installed_detail_mentions_stop():
+    assert "Stop" in CodexAdapter().installed_detail()
+
+
+def test_codex_agents_md_mentions_stop_authoring_check():
+    sub = CodexAdapter().agents_md_subsection()
+    assert "Stop" in sub
+    assert "authoring" in sub.lower()
+    assert "/hooks" in sub  # trust caveat still present
