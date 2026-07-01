@@ -144,8 +144,9 @@ def run_check(
         - **`env` is passed PRE-MERGED.** `run_check` hands `env` straight to
           `subprocess.run(env=...)`, which REPLACES the entire child
           environment (it does NOT layer on top of `os.environ`). Building the
-          `os.environ` + `defaults.env` + `check.env` merge is the caller's job
-          (task 8.4). In particular, `env` MUST include `PATH` or PATH-resolved
+          scrubbed-`os.environ` (ambient minus `SUPER_HARNESS_*`) + `defaults.env`
+          + `check.env` merge is the caller's job (see `_config_check_task` /
+          `_scrubbed_environ`). In particular, `env` MUST include `PATH` or PATH-resolved
           commands (`ls`, `sleep`, `python`, …) will fail to launch.
         - `workdir` is used verbatim as `cwd`; the caller is responsible for
           resolving any relative `check.workdir` to an absolute path.
@@ -410,6 +411,10 @@ def _baseline_scope_vs_plan(
     # v0.1 — no base-branch detection exists yet.
     base = "main"
     try:
+        # Inherits the full ambient env (no `env=`), unlike the check subprocess
+        # which uses `_scrubbed_environ()`. Safe here: git reads no
+        # `SUPER_HARNESS_*` and spawns no harness hooks. If a future baseline
+        # shells out to a harness-aware tool, route it through the scrubbed env.
         proc = subprocess.run(
             ["git", "diff", "--name-only", f"{base}...HEAD"],
             cwd=context.workspace_root,
@@ -546,6 +551,29 @@ def baseline_check_tasks(
     return tasks
 
 
+_HARNESS_ENV_PREFIX = "SUPER_HARNESS_"
+
+
+def _scrubbed_environ() -> dict[str, str]:
+    """Ambient `os.environ` minus every ``SUPER_HARNESS_*`` knob.
+
+    The verification subprocess must run in a clean-room with respect to
+    harness-control env (as CI does). Otherwise an exported knob — e.g.
+    ``SUPER_HARNESS_CHANGE_ID`` set for the self-host lifecycle — leaks into the
+    pytest subprocess and its spawned hooks, changing gate behaviour and causing
+    false failures. This drops EVERY knob by design — identity
+    (``SUPER_HARNESS_ACTOR``, ``SUPER_HARNESS_CHANGE_ID``) and perf tuners
+    (``SUPER_HARNESS_HOOK_QUERY_TIMEOUT``, ``SUPER_HARNESS_DAEMON_START_TIMEOUT``)
+    alike; only values re-declared in `defaults.env`/`spec.env` reach the child.
+    Scrubs the ambient base only; `os.environ` is never mutated.
+    """
+    return {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(_HARNESS_ENV_PREFIX)
+    }
+
+
 def _config_check_task(
     spec: CheckSpec,
     *,
@@ -557,12 +585,16 @@ def _config_check_task(
     """Wrap one config `CheckSpec` as a `CheckTask` bound to a `run_check` call.
 
     Resolves the per-check workdir + merges the three env layers at BIND time
-    (`os.environ` < `defaults.env` < `spec.env`) so the closure captures concrete
-    values, then binds them via default args to dodge Python's late-binding-in-
-    loops trap (the `spec=spec, ...` defaults snapshot per-iteration values).
+    (scrubbed `os.environ` < `defaults.env` < `spec.env`) so the closure captures
+    concrete values, then binds them via default args to dodge Python's
+    late-binding-in-loops trap (the `spec=spec, ...` defaults snapshot per-
+    iteration values). The base layer is `_scrubbed_environ()` (ambient minus
+    `SUPER_HARNESS_*`) so an exported harness knob cannot leak into the check
+    subprocess; a knob explicitly declared in `defaults.env`/`spec.env` still
+    layers on top and is preserved.
     """
     resolved = (context.workspace_root / spec.workdir).resolve()
-    merged_env = {**os.environ, **cfg.defaults.env, **spec.env}
+    merged_env = {**_scrubbed_environ(), **cfg.defaults.env, **spec.env}
 
     # The default args snapshot this iteration's values to dodge late-binding.
     # `spec`/`workdir`/`env` are per-task-fresh, but `archive` and `variables`
