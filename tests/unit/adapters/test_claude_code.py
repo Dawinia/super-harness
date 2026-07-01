@@ -384,7 +384,9 @@ def test_claude_adapter_install_detail_strings():
 
     a = ClaudeCodeAdapter()
     assert a.local_config_relpath() == ".claude/settings.local.json"
-    assert a.installed_detail() == "PreToolUse gate hook registered in .claude/settings.local.json"
+    detail = a.installed_detail()
+    assert "PreToolUse" in detail and "Stop" in detail
+    assert ".claude/settings.local.json" in detail
 
 
 def test_agents_md_subsection_does_not_teach_kill_switch():

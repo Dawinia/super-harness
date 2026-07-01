@@ -278,7 +278,10 @@ class ClaudeCodeAdapter(AgentAdapter):
         return ".claude/settings.local.json"
 
     def installed_detail(self) -> str:
-        return "PreToolUse gate hook registered in .claude/settings.local.json"
+        return (
+            "PreToolUse gate + SessionStart context + Stop authoring-check hooks "
+            "registered in .claude/settings.local.json"
+        )
 
     def on_uninstall(self, workspace: Path) -> None:
         """Best-effort restore of the EARLIEST settings.local.json backup (pristine).

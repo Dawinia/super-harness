@@ -447,3 +447,17 @@ def test_merge_stop_idempotent(tmp_path):
     first = hooks.read_text()
     merge_stop_hook(hooks, command=cmd)
     assert hooks.read_text() == first
+
+
+def test_merge_stop_preserves_unrelated_stop_hook(tmp_path):
+    # A user Stop hook whose command merely contains "--event stop" (for some other
+    # tool) must NOT be stripped — our marker is the full "--agent claude-code
+    # --event stop" flag-pair, not the bare "--event stop".
+    hooks = tmp_path / "settings.json"
+    hooks.write_text(json.dumps({"hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": "othertool --event stop"}]}]}}))
+    merge_stop_hook(hooks, command="/abs/super-harness-hook --agent claude-code --event stop")
+    entries = json.loads(hooks.read_text())["hooks"]["Stop"]
+    cmds = [h["command"] for e in entries for h in e["hooks"]]
+    assert "othertool --event stop" in cmds  # user's unrelated hook survives
+    assert any("--agent claude-code --event stop" in c for c in cmds)  # ours added

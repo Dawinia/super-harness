@@ -98,7 +98,12 @@ unsound `--changed` anchor-intersection) and cheap (1×/turn, not N×/edit).
   takes the **structured Verdict** (not a pre-rendered string), so a third-party agent
   can choose channel/fields. Default (floor-only agents) returns `""`. Claude Code
   renders `{"decision":"block","reason": ...}`.
-- **Claude Code install/uninstall** of the Stop hook, uninstall by **marker-strip**.
+- **Claude Code install/uninstall** of the Stop hook. Uninstall is left as the existing
+  **restore-earliest-backup** mechanism (which already removes all three super-harness
+  hooks, Stop included, by restoring the pristine pre-install backup) — the plan (Task 4)
+  reversed the earlier marker-strip idea because marker-strip would break the three
+  existing backup round-trip tests and cannot reproduce a pristine `hooks`-free file
+  without extra pruning. The pre-existing absent-settings uninstall leak is OUT of scope.
 - **Bite-test** on a **transitive** `core → sensors` violation (§7).
 
 **Designed-but-not-shipped (seam only):** adding an agent = a new `AgentAdapter`
@@ -186,6 +191,7 @@ wants a synchronous verdict."
 - **Rev 2 (post cross-review, 2026-07-01):** four cross-reviews → stub-first + per-turn
   Stop hook. The stub validated H, so this document was rewritten to the simpler shape:
   reuse `decision check`, drop `applies_to`/relevance/new-core-module, tri-state verdict,
-  inner<outer timeout, marker-strip uninstall, adapter-takes-Verdict, `authoring_time`
+  inner<outer timeout, uninstall kept as restore-earliest (marker-strip reversed in the
+  plan — see §3), adapter-takes-Verdict, `authoring_time`
   opt-in as the safety+scope control, transitive-violation bite-test, non-`sensor` naming.
   Convergent correctness fixes from all four reviews are folded into §3–§7.

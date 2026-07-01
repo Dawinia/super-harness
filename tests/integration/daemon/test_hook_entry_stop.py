@@ -75,3 +75,13 @@ def test_stop_clean_workspace_allows(tmp_path: Path):
     r = _run_stop(tmp_path, {"hook_event_name": "Stop", "stop_hook_active": False})
     assert r.returncode == 0
     assert r.stdout.strip() == ""
+
+
+def test_stop_malformed_stdin_is_silent(tmp_path: Path):
+    _workspace_with_failing_opted_check(tmp_path)
+    r = subprocess.run(
+        ["super-harness-hook", "--agent", "claude-code", "--event", "stop"],
+        input="not json at all", capture_output=True, text=True, cwd=str(tmp_path),
+    )
+    assert r.returncode == 0  # fail-open on malformed stdin
+    assert r.stdout.strip() == ""

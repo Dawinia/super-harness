@@ -61,10 +61,12 @@ _SESSION_OURS_MARKER = "change resume"
 _SESSION_TIMEOUT = 10
 
 # Stable marker for our Stop hook command. The Stop command is
-# `<abs super-harness-hook> --agent claude-code --event stop`; `--event stop` is the
-# path-independent substring identifying it as ours (mirroring the other markers), and
-# is specific enough that an unrelated user Stop hook is never mistaken for it.
-_STOP_OURS_MARKER = "--event stop"
+# `<abs super-harness-hook> --agent claude-code --event stop`; the full
+# `--agent claude-code --event stop` flag-pair is the path-independent substring
+# identifying it as ours. Deliberately the WHOLE pair (not the bare `--event stop`) so
+# an unrelated user Stop hook that merely happens to pass `--event stop` to some other
+# tool is never stripped as if it were ours.
+_STOP_OURS_MARKER = "--agent claude-code --event stop"
 # Per-hook timeout (seconds) for the Stop authoring-check command; matches the
 # PreToolUse/SessionStart budget shape and is the OUTER bound the inner check must beat.
 _STOP_TIMEOUT = 10

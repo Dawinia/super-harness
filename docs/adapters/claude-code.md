@@ -2,17 +2,23 @@
 
 The Claude Code adapter is super-harness's reference *agent* adapter and the
 only agent adapter shipped in v0.1. It wires Claude Code's runtime to the
-harness by registering two hooks directly in `.claude/settings.local.json`
+harness by registering three hooks directly in `.claude/settings.local.json`
 (the per-machine, conventionally-gitignored settings file — NEVER the committed
 shared `.claude/settings.json` — because the hook `command` pins a
 machine-specific absolute path that must not be committed):
 
 - a **PreToolUse** hook that invokes the `super-harness-hook` binary on
   every `Edit` / `Write` / `MultiEdit` / `NotebookEdit` tool call (the
-  deterministic gate enforcement path), and
+  deterministic gate enforcement path),
 - a **SessionStart** hook that invokes `super-harness change resume` (no
   slug, so it resolves the active change) and lets Claude Code inject the
-  resulting context dump into the session.
+  resulting context dump into the session, and
+- a **Stop** hook (`super-harness-hook --agent claude-code --event stop`)
+  that, when a turn ends, runs the ratified, `authoring_time`-opted-in tier-1
+  decision checks once and — on a violation — blocks the stop with a
+  **non-blocking advisory** (`{"decision":"block","reason": ...}`) naming the
+  decision, so the agent self-corrects before the merge gate. It never undoes an
+  edit, never blocks twice (loop-safe via `stop_hook_active`), and fails open.
 
 Claude Code's PreToolUse contract treats process exit code `2` as a hard
 deny — that is how the harness blocks an `Edit` / `Write` without a CC
@@ -28,9 +34,10 @@ Auto-detected when the workspace contains a `.claude/` directory. If
 | Capability | Implementation |
 |---|---|
 | `detect` | `.claude/` directory exists at the workspace root |
-| `install_hooks` | Merges two entries into `.claude/settings.local.json` (PreToolUse + SessionStart) without clobbering existing entries; snapshots+rolls back on failure |
+| `install_hooks` | Merges three entries into `.claude/settings.local.json` (PreToolUse + SessionStart + Stop) without clobbering existing entries; snapshots+rolls back on failure |
 | `inject_context` | Shells out to `super-harness change resume <slug>` and returns its stdout (best-effort; empty string on non-zero exit) |
-| `agents_md_subsection` | Static block explaining the PreToolUse gate behavior and recovery commands |
+| `format_stop_feedback` | Renders a turn-end conformance `Verdict` into Claude Code's Stop-hook `{"decision":"block","reason": ...}` (or `""` when clean) |
+| `agents_md_subsection` | Static block explaining the PreToolUse gate + Stop advisory behavior and recovery commands |
 | `capabilities` | `pre_tool_use_hook`, `post_tool_use_hook`, `session_start_hook`, `rules_file_injection`, `mcp_server`, `subprocess_execution` (all `True`); `session_end_hook`, `pre_commit_hook` (`False`) |
 
 ## Install
@@ -57,6 +64,9 @@ Mechanics:
    `command: "<abs super-harness-hook> --agent claude-code"`, `timeout: 10`.
 4. Merges a **SessionStart** entry (no `matcher` → fires on every session
    source): `command: "<abs super-harness> change resume"`, `timeout: 10`.
+   Merges a **Stop** entry (no `matcher` → fires on every turn end):
+   `command: "<abs super-harness-hook> --agent claude-code --event stop"`,
+   `timeout: 10` (the outer bound; the inner authoring check budget is 8s).
 5. Persists the row in `.harness/adapters.yaml` and injects the
    `<!-- super-harness agent: claude-code -->` subsection into `AGENTS.md`
    (replacing the no-agent anchor written by `init`).
@@ -79,6 +89,13 @@ subsection also carries a review-protocol section):
 A **PreToolUse** hook is enabled for this workspace. `Edit` / `Write` /
 `MultiEdit` / `NotebookEdit` tool calls are blocked by super-harness when the
 current change state forbids the mutation (deterministic gate enforcement).
+
+A **Stop** hook also runs a turn-end authoring-time conformance check: when you
+finish a turn, any ratified decision that opted in (`authoring_time: true`) has its
+check run once, and a failing check blocks the stop with a **non-blocking advisory**
+naming the violated decision — so you can self-correct before the merge gate. It never
+undoes your edit and never blocks twice (it nudges once per turn); the merge gate is
+the authoritative floor.
 
 When a tool call is blocked by the gate:
 - Run `super-harness status` to see the current change, its state, and why the
