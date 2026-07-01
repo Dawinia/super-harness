@@ -148,6 +148,16 @@ class AgentAdapter(ABC):
         landed + any required follow-up). Default is generic."""
         return "agent hooks registered"
 
+    def stop_should_check(self, payload: dict[str, Any]) -> bool:
+        """Whether to run the authoring check for this turn-end (Stop) event.
+
+        Default ``True`` (check every turn end). Agents whose Stop payload carries a
+        re-entrancy guard override this to skip the continuation turn a prior block
+        created, so a nudge never loops. This is the FIRST half of an agent's Stop
+        protocol; :meth:`format_stop_feedback` is the second — both live on the adapter
+        so the orchestrator (`hook_entry._run_stop`) stays free of agent field names."""
+        return True
+
     def format_stop_feedback(self, verdict: Verdict) -> str:
         """Format a turn-end conformance verdict for this agent's Stop-hook feedback
         channel; return ``""`` to deliver nothing.

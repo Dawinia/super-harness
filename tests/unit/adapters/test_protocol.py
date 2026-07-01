@@ -297,3 +297,9 @@ def test_default_format_stop_feedback_is_empty():
 
     v = Verdict(violations=[Violation("d", "x", "docs/decisions/d.md")])
     assert _Bare().format_stop_feedback(v) == ""
+
+
+def test_stop_should_check_defaults_true() -> None:
+    # A conforming agent that does not override runs the check on every Stop.
+    assert _MinimalAdapter().stop_should_check({"stop_hook_active": True}) is True
+    assert _MinimalAdapter().stop_should_check({}) is True
