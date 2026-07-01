@@ -168,7 +168,10 @@ def parse_decision_file(path: Path) -> Decision:
         check=parse_check(body),
         counterexample=parse_counterexample(body),
         acceptance=parse_review(body),
-        authoring_time=bool(data.get("authoring_time", False)),
+        # STRICT: only a literal YAML boolean `true` opts a decision into the
+        # interactive loop (a safety control). A quoted `"false"`/`"0"` string would be
+        # truthy under bool(); `is True` refuses those (they are authoring-loop OFF).
+        authoring_time=(data.get("authoring_time") is True),
         reconciled_anchors=raw_anchors,
         last_reconciled_by=data.get("last_reconciled_by"),
         last_reconciled_at=data.get("last_reconciled_at"),

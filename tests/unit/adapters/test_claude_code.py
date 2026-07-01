@@ -310,9 +310,9 @@ def test_agents_md_subsection_frames_kill_switch_as_human_only() -> None:
 
 
 def test_on_uninstall_restores_earliest_pristine_backup(tmp_path: Path) -> None:
-    """install_hooks runs TWO merges → TWO backups on a pre-existing file.
+    """install_hooks runs THREE merges → THREE backups on a pre-existing file.
 
-    The EARLIEST (lowest ts) backup is the truly pristine file; the later one
+    The EARLIEST (lowest ts) backup is the truly pristine file; the later ones
     already contains our PreToolUse entry. Uninstall must restore the earliest
     so BOTH of our hooks are removed — restoring the newest would leave the
     PreToolUse hook behind.
@@ -461,3 +461,16 @@ def test_uninstall_round_trip_removes_stop(tmp_path, monkeypatch):
     assert "Stop" in json.loads(f.read_text())["hooks"]
     ClaudeCodeAdapter().on_uninstall(tmp_path)
     assert json.loads(f.read_text()) == pristine
+
+
+def test_stop_advisory_has_no_self_authorized_bypass():
+    # Regression lock (#51/#52): the advisory must NOT teach the agent a
+    # self-authorized bypass; it directs legitimate exceptions to the human.
+    import json
+
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    reason = json.loads(ClaudeCodeAdapter().format_stop_feedback(_stop_verdict()))["reason"]
+    low = reason.lower()
+    assert "deliberate, disclosed exception, proceed" not in low
+    assert "proceed on your own authority" in low  # explicitly forbidden
+    assert "surface it to the human" in low

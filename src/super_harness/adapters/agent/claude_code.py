@@ -1,7 +1,7 @@
 """Reference ``AgentAdapter`` for Claude Code (adapter-architecture §3.5).
 
 This is the canonical adapter super-harness ships in v0.1. It bridges Claude
-Code's runtime to the harness by registering two hooks directly into
+Code's runtime to the harness by registering three hooks directly into
 ``.claude/settings.local.json`` (the per-machine, conventionally-gitignored
 settings file — NEVER the committed shared ``settings.json`` — because the hook
 ``command`` pins a machine-specific absolute path):
@@ -162,9 +162,10 @@ class ClaudeCodeAdapter(AgentAdapter):
         """Register the super-harness PreToolUse + SessionStart hooks.
 
         Resolves BOTH binaries to absolute paths UP FRONT (so a missing binary
-        aborts before any write), then merges two entries into
+        aborts before any write), then merges three entries into
         ``.claude/settings.local.json`` (no clobber, idempotent — see
-        ``merge_pre_tool_use_hook`` / ``merge_session_start_hook``). The hook
+        ``merge_pre_tool_use_hook`` / ``merge_session_start_hook`` /
+        ``merge_stop_hook``). The hook
         ``command`` pins a machine-specific absolute path, so it belongs in the
         per-machine, conventionally-gitignored ``settings.local.json`` — never
         the committed shared ``settings.json``:

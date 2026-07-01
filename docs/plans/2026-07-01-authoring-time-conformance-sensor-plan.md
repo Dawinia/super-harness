@@ -24,7 +24,7 @@
 - `docs/decisions/d-core-is-base.md` — add `authoring_time: true` frontmatter (no body change → hash unaffected).
 - `src/super_harness/adapters/agent/_settings_merge.py` — add `merge_stop_hook` (mirror the matcher-less `merge_session_start_hook`).
 - `src/super_harness/adapters/__init__.py` — add `format_stop_feedback(verdict) -> str` (default `""`) + shared `_render_advisory(verdict) -> str` to `AgentAdapter`.
-- `src/super_harness/adapters/agent/claude_code.py` — override `format_stop_feedback`; register the Stop hook in `install_hooks`; switch `on_uninstall` to marker-strip.
+- `src/super_harness/adapters/agent/claude_code.py` — override `format_stop_feedback`; register the Stop hook in `install_hooks`; leave `on_uninstall` as restore-earliest (it already removes the Stop hook — see Task 4 Step 7).
 - `src/super_harness/daemon/hook_entry.py` — add `--event stop` claude-code path (loop-safe, fail-open, honors kill switch).
 
 ---
@@ -358,7 +358,7 @@ git commit -m "feat(adapters): merge_stop_hook (matcher-less, mirrors session_st
 
 **Files:**
 - Modify: `src/super_harness/adapters/__init__.py` (ABC: `format_stop_feedback` default + shared `_render_advisory`)
-- Modify: `src/super_harness/adapters/agent/claude_code.py` (override + install Stop hook + marker-strip uninstall)
+- Modify: `src/super_harness/adapters/agent/claude_code.py` (override + install Stop hook; uninstall left as restore-earliest)
 - Test: `tests/unit/adapters/test_claude_code.py`, `tests/unit/adapters/test_protocol.py`
 
 - [ ] **Step 1: Write the failing tests (ABC default + shared render + Claude override)**
@@ -436,7 +436,8 @@ In `adapters/__init__.py`, add to `AgentAdapter` (non-abstract, like `on_uninsta
             lines.append(f"    (rule + counterexample: {v.decision_doc_path})")
         lines.append(
             "Correct it before finishing this turn; the merge gate will otherwise reject "
-            "it later. (If this is a deliberate, disclosed exception, proceed.)"
+            "it later. If you believe this is a legitimate exception, stop and surface it "
+            "to the human — do not proceed on your own authority."
         )
         return "\n".join(lines)
 ```
@@ -728,7 +729,7 @@ The experiment (design §1/§7). Target a **transitive** edge — the case a str
 
 ## Self-review checklist (run before execution)
 
-- **Spec coverage:** design §3 IN → Task 2 (verdict core, tri-state, opt-in filter), Task 1 (`authoring_time`), Task 5 (loop-safe fail-open Stop path + kill switch), Task 4 (Verdict-shaped seam + Claude delivery + marker-strip uninstall), Task 8 (transitive bite-test). §4 safety (opt-in + kill switch) → Task 1 + Task 5. §5 latency (`AUTHORING_CHECK_TIMEOUT=8` < outer 10) → Task 2, measured in Task 8. §6 naming (`authoring_check`, not `sensor`) → Task 2. Codex delivery, 9th capability key, per-edit/PostToolUse, `applies_to`/relevance are correctly ABSENT.
+- **Spec coverage:** design §3 IN → Task 2 (verdict core, tri-state, opt-in filter), Task 1 (`authoring_time`), Task 5 (loop-safe fail-open Stop path + kill switch), Task 4 (Verdict-shaped seam + Claude delivery + Stop hook install; uninstall left as restore-earliest), Task 8 (transitive bite-test). §4 safety (opt-in + kill switch) → Task 1 + Task 5. §5 latency (`AUTHORING_CHECK_TIMEOUT=8` < outer 10) → Task 2, measured in Task 8. §6 naming (`authoring_check`, not `sensor`) → Task 2. Codex delivery, 9th capability key, per-edit/PostToolUse, `applies_to`/relevance are correctly ABSENT.
 - **Placeholder scan:** none — every code step has concrete code; test steps have real assertions.
 - **Type consistency:** `Verdict`/`Violation`/`run_authoring_check`/`_to_violations` used consistently (Task 2 ↔ Task 4 ↔ Task 5); `format_stop_feedback(verdict)` signature identical in ABC (Task 4 s3), Claude override (s4), and hook call (Task 5 s4); `merge_stop_hook(settings_path, *, command, marker=_STOP_MARKER)` identical in Task 3 and the install call (Task 4 s6). All `_settings_merge` internals (`_read_settings`, inlined backup/write, `_ensure_event_list`, `_strip_entries`, markers) are referenced as "mirror the real `merge_session_start_hook`" rather than invented names.
 ```

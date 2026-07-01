@@ -320,3 +320,13 @@ def test_authoring_time_absent_defaults_false(tmp_path: Path):
     p = tmp_path / "d-y.md"
     p.write_text("---\nid: d-y\nstatus: ratified\n---\nbody\n")
     assert parse_decision_file(p).authoring_time is False
+
+
+def test_authoring_time_quoted_string_is_not_opt_in(tmp_path: Path):
+    # A safety opt-in must accept ONLY a literal boolean true; a quoted string
+    # (truthy under bool(), e.g. "false"/"0"/"true") must NOT opt the decision into
+    # the interactive loop. (Bare `yes`/`true` are genuine YAML booleans → opt in.)
+    for val in ('"false"', '"0"', '"true"', '"yes"'):
+        p = tmp_path / "d-q.md"
+        p.write_text(f"---\nid: d-q\nstatus: ratified\nauthoring_time: {val}\n---\nbody\n")
+        assert parse_decision_file(p).authoring_time is False, val
