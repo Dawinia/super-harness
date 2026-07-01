@@ -1,5 +1,5 @@
-from pathlib import Path
 import textwrap
+from pathlib import Path
 
 from super_harness.core.authoring_check import (
     Verdict,

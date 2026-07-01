@@ -412,6 +412,7 @@ def _stop_verdict():
 
 def test_claude_format_stop_feedback_blocks_with_reason():
     import json
+
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
     out = ClaudeCodeAdapter().format_stop_feedback(_stop_verdict())
     obj = json.loads(out)
@@ -429,6 +430,7 @@ def test_claude_format_stop_feedback_clean_is_empty():
 
 def _install_into(tmp_path, monkeypatch, pre_existing):
     import json
+
     import super_harness.adapters.agent.claude_code as cc
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
     monkeypatch.setattr(cc.shutil, "which", lambda n: f"/abs/{n}")
@@ -450,6 +452,7 @@ def test_install_registers_stop(tmp_path, monkeypatch):
 
 def test_uninstall_round_trip_removes_stop(tmp_path, monkeypatch):
     import json
+
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
     pristine = {"model": "x", "permissions": {}}
     f = _install_into(tmp_path, monkeypatch, pre_existing=pristine)

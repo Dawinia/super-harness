@@ -280,10 +280,20 @@ def test_default_format_stop_feedback_is_empty():
     from super_harness.core.authoring_check import Verdict, Violation
 
     class _Bare(AgentAdapter):
-        name = "bare"; version = "0.1.0"; capabilities = {}
-        def detect(self, w: Path) -> bool: return False
+        name: ClassVar[str] = "bare"
+        version: ClassVar[str] = "0.1.0"
+        capabilities: ClassVar[dict[str, bool]] = {}
+
+        def detect(self, w: Path) -> bool:
+            return False
+
         def install_hooks(self, w: Path) -> None: ...
-        def inject_context(self, c: str) -> str: return ""
-        def agents_md_subsection(self) -> str: return ""
+
+        def inject_context(self, c: str) -> str:
+            return ""
+
+        def agents_md_subsection(self) -> str:
+            return ""
+
     v = Verdict(violations=[Violation("d", "x", "docs/decisions/d.md")])
     assert _Bare().format_stop_feedback(v) == ""

@@ -31,9 +31,12 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from super_harness.adapters import AgentAdapter
+
+if TYPE_CHECKING:
+    from super_harness.core.authoring_check import Verdict
 from super_harness.adapters.agent._settings_merge import (
     merge_pre_tool_use_hook,
     merge_session_start_hook,
@@ -230,7 +233,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         else:
             settings_path.write_text(snapshot)
 
-    def format_stop_feedback(self, verdict) -> str:
+    def format_stop_feedback(self, verdict: Verdict) -> str:
         """Block the stop and feed the advisory back via Claude Code's Stop-hook JSON
         protocol: ``{"decision":"block","reason": ...}`` (the reason reaches the model
         on its next turn; the edit itself is never undone). Returns ``""`` when clean,
