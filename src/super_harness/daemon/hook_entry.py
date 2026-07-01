@@ -76,8 +76,10 @@ def main() -> None:  # console_script entry
             return
         if agent == "codex":
             if event == "stop":
-                sys.exit(0)  # codex Stop delivery is a follow-on cut → explicit no-op
-            _run_codex_shim()
+                from super_harness.adapters.agent.codex import CodexAdapter
+                _run_stop(CodexAdapter())
+            else:
+                _run_codex_shim()
             return
         # Fail-open: never block on a shim contract we don't understand.
         sys.stderr.write(f"super-harness-hook: unknown --agent {agent!r}\n")
