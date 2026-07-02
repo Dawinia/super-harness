@@ -44,13 +44,6 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# super-harness runtime lock (HG-D): `.harness/.state.lock` is a transient
-# flock target, not config — but `super-harness init`'s managed block below
-# omits it, so it would otherwise be committed. Ignored here, outside the
-# managed markers (which init regenerates). Tracked as an init gap in
-# private/OPEN-ITEMS.md.
-.harness/.state.lock
-
 # >>> super-harness gitignore (do not edit between markers)
 .harness/state.yaml
 .harness/events.jsonl
@@ -61,6 +54,7 @@ __pycache__/
 .harness/gate-disabled
 .harness/daemon.pid
 .harness/daemon.log
+.harness/.*.lock
 .claude/settings.local.json
 .claude/*.super-harness-backup.*
 .codex/hooks.json
