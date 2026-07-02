@@ -2,8 +2,9 @@
 id: d-merge-gate-pure-git
 status: ratified
 ratified_by: dawinialo@163.com
-ratified_at: '2026-06-22T19:17:30.442655Z'
+ratified_at: '2026-07-02T03:54:40.984436Z'
 ratified_text_hash: sha256:23cd016fa1a90d3110b13d0d7a4682bae262b8e27b694e10c7b7a57d03a6c911
+authoring_time: true
 ---
 The merge gate verifies committed evidence with pure git — no network, no runtime trust.
 
