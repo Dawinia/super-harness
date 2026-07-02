@@ -1,13 +1,13 @@
 """Executable-check runner (design §4.2) - the impure half of Tool B.
 
-`run_check` in decision_check.py stays pure; ALL subprocess / sandbox / git-diff
-machinery lives here so the structural-integrity layer never imports subprocess.
+`run_check` in decision_check.py stays pure; the sandbox / git-diff machinery
+lives here so the structural-integrity layer never imports subprocess. The
+subprocess primitive itself is `core.shell_runner` (shared with the
+verification runner).
 """
 from __future__ import annotations
 
-import os
 import shutil
-import signal
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -17,6 +17,7 @@ from pathlib import Path
 
 from super_harness.core.anchor_scanner import _list_files, _matches_any
 from super_harness.core.decisions import Counterexample, Decision
+from super_harness.core.shell_runner import run_shell, scrubbed_environ
 from super_harness.core.source_scope import load_source_scope
 
 DEFAULT_TIMEOUT = 30  # seconds (per-check override deferred, design §4.2)
@@ -33,41 +34,27 @@ def run_one_check(command: str, *, cwd: Path, timeout: float = DEFAULT_TIMEOUT) 
     """Run a single executable check and report whether it is satisfied.
 
     `command` MUST be a ratified, body-hash-locked check (Tool A text-lock).
-    `shell=True` is intentional: checks are deliberately shell snippets like
-    `! grep ... | ...`. The trust boundary is the ratify-time bite-test + hash
-    lock, NOT this primitive, which runs any string it is handed.
+    `shell=True` (in `run_shell`) is intentional: checks are deliberately shell
+    snippets like `! grep ... | ...`. The trust boundary is the ratify-time
+    bite-test + hash lock, NOT this primitive, which runs any string handed it.
 
-    On timeout the whole process GROUP is killed, not just the shell: with
-    `start_new_session=True` the child is its own group leader (pgid == pid), so
-    `os.killpg(proc.pid, SIGKILL)` reaps backgrounded grandchildren (e.g. the grep
-    under the shell) that would otherwise be orphaned and could hold the stdout
-    pipe open. We target `proc.pid` (not `os.getpgid`, which raises once the shell
-    leader has exited) and bound the post-kill reap so a stuck grandchild can never
-    hang the check.
+    Timeout kills the whole process GROUP and reaps backgrounded grandchildren
+    with a bounded wait — see `core.shell_runner.run_shell`.
+
+    Checks run against `scrubbed_environ()` (ambient minus `SUPER_HARNESS_*`)
+    on EVERY path (authoring Stop-hook, CI `decision check`, ratify
+    `bite_test`), so the authoring-time verdict and the merge-gate verdict
+    agree by construction. A check that genuinely needs an env value inlines it
+    in its ratified snippet.
     """
-    try:
-        proc = subprocess.Popen(
-            command, shell=True, cwd=str(cwd),
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, errors="replace", start_new_session=True,
-        )
-    except OSError as e:  # shell missing, bad cwd, etc.
-        return CheckRun(False, -1, f"could not run: {e}")
-    try:
-        out, err = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            proc.kill()  # best effort: at least the direct child
-        try:
-            proc.communicate(timeout=2)  # bounded reap; a SIGKILL'd group EOFs the pipes fast
-        except subprocess.TimeoutExpired:
-            pass  # give up reaping; the process is killed, never hang
+    res = run_shell(command, cwd=cwd, timeout=timeout, env=scrubbed_environ())
+    if res.spawn_error is not None:
+        return CheckRun(False, -1, f"could not run: {res.spawn_error}")
+    if res.timed_out:
         return CheckRun(False, -1, f"timeout after {timeout}s")
-    detail = (err or out or "").strip().splitlines()
-    tail = detail[-1] if detail else f"exited {proc.returncode}"
-    return CheckRun(proc.returncode == 0, proc.returncode, tail)
+    detail = (res.stderr or res.stdout or "").strip().splitlines()
+    tail = detail[-1] if detail else f"exited {res.exit_code}"
+    return CheckRun(res.exit_code == 0, res.exit_code, tail)
 
 
 @contextmanager
