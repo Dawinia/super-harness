@@ -35,6 +35,8 @@ _CANONICAL_PATHS = (
     ".harness/operation-logs/",
     ".harness/pending-reviews/",
     ".harness/gate-disabled",
+    ".harness/daemon.pid",
+    ".harness/daemon.log",
     ".claude/settings.local.json",
     ".claude/*.super-harness-backup.*",
     ".codex/hooks.json",
@@ -277,6 +279,22 @@ def test_block_contains_all_canonical_paths(tmp_path: Path) -> None:
     body = text[begin_idx:end_idx].strip("\n")
     lines = [line for line in body.split("\n") if line.strip()]
     assert lines == list(_CANONICAL_PATHS), lines
+
+
+def test_block_covers_daemon_runtime_files(tmp_path: Path) -> None:
+    """Regression for the #64 dogfood pothole: the daemon runtime regular files
+    `.harness/daemon.pid` and `.harness/daemon.log` must be ignored, or a
+    `git add -A` during a lifecycle sweeps them into a commit (attest-verify
+    then rejects the change as an undeclared file). The UDS socket
+    `.harness/daemon.sock` is deliberately NOT listed — git never tracks a
+    socket special file, so it cannot be swept.
+    """
+    path = tmp_path / ".gitignore"
+    inject_gitignore_block(path)
+    text = path.read_text()
+    assert ".harness/daemon.pid" in text, text
+    assert ".harness/daemon.log" in text, text
+    assert ".harness/daemon.sock" not in text, "socket is not a git-trackable file"
 
 
 def test_block_covers_claude_settings_backup_filenames(tmp_path: Path) -> None:
