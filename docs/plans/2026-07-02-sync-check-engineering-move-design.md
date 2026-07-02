@@ -1,9 +1,12 @@
 # F9 — Relocate `sync_check` out of `core`; extend `core-is-base` to `engineering`
 
 Date: 2026-07-02
-Change: `2026-07-02-sync-check-engineering-move-v2` (v1 abandoned after plan
+Change: `2026-07-02-sync-check-engineering-move-v3` (v1 abandoned after plan
 review: both reviewers flagged `core/__init__.py` missing from scope + the
-decision body naming the forbidden set in three places, not one)
+decision body naming the forbidden set in three places, not one. v2 abandoned
+after code review: Codex NIT — F9 makes the forbidden-set comment in
+`adapters/__init__.py` stale; folded that one-line fix into scope rather than
+ship known drift)
 Tier: Normal
 Finding: `private/REVIEW-FINDINGS-2026-07-02.md` F9 (P2 architecture).
 
@@ -109,7 +112,7 @@ existing counterexample (`import cli`) still proves the contract bites; a
 dedicated engineering counterexample would be gilding — one counterexample per
 forbidden contract suffices.
 
-## Change set (scope — 9 files)
+## Change set (scope — 10 files)
 
 | File | Action |
 |------|--------|
@@ -117,6 +120,7 @@ forbidden contract suffices.
 | `src/super_harness/engineering/sync_check.py` | added (content unchanged) |
 | `src/super_harness/cli/sync.py` | import path `core.sync_check` → `engineering.sync_check` |
 | `src/super_harness/core/__init__.py` | docstring: add `engineering` to the forbidden-set prose |
+| `src/super_harness/adapters/__init__.py` | TYPE_CHECKING comment: forbidden-set now `{cli,gates,sensors,engineering}` |
 | `.importlinter` | add `engineering` to forbidden; rename contract |
 | `docs/decisions/d-core-is-base.md` | amend body (3 prose spots + #56 append); re-ratify re-stamps hash |
 | `tests/unit/core/test_sync_check.py` | removed (git mv) |
