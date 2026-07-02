@@ -55,6 +55,7 @@ from super_harness.core.paths import (
 )
 from super_harness.core.reducer import derive_state
 from super_harness.core.scope_match import covered_by_scope as _covered_by_scope
+from super_harness.core.shell_runner import run_shell, scrubbed_environ
 from super_harness.engineering.verification_config import (
     CheckSpec,
     VerificationConfig,
@@ -111,7 +112,10 @@ class CheckResult:
           `.stderr` live there; the directory is the addressable handle).
         * `capture == "none"`   → `None` (nothing written).
         * on timeout            → `None` (the process was killed; no output is
-          archived).
+          archived — the ONLY no-archive outcome).
+        * on spawn failure      → archived per the normal capture matrix above
+          (empty stdout + a `could not run:` line on the stderr channel), so a
+          failed launch is `status="fail"` rather than a crash.
 
     Frozen: results are immutable records handed to the runner/event layer.
     """
@@ -142,15 +146,19 @@ def run_check(
 
     Contracts:
         - **`env` is passed PRE-MERGED.** `run_check` hands `env` straight to
-          `subprocess.run(env=...)`, which REPLACES the entire child
-          environment (it does NOT layer on top of `os.environ`). Building the
-          scrubbed-`os.environ` (ambient minus `SUPER_HARNESS_*`) + `defaults.env`
-          + `check.env` merge is the caller's job (see `_config_check_task` /
-          `_scrubbed_environ`). In particular, `env` MUST include `PATH` or PATH-resolved
-          commands (`ls`, `sleep`, `python`, …) will fail to launch.
+          `run_shell(env=...)`, which REPLACES the entire child environment (it
+          does NOT layer on top of `os.environ`). Building the
+          scrubbed-`os.environ` (ambient minus `SUPER_HARNESS_*`) +
+          `defaults.env` + `check.env` merge is the caller's job (see
+          `_config_check_task` / `scrubbed_environ`). In particular, `env` MUST
+          include `PATH` or PATH-resolved commands (`ls`, `sleep`, `python`, …)
+          will fail to launch.
         - `workdir` is used verbatim as `cwd`; the caller is responsible for
           resolving any relative `check.workdir` to an absolute path.
         - `shell=True` is intentional (see module docstring); no escaping.
+        - Timeout kills the whole process GROUP and reaps grandchildren with a
+          bounded wait (see `core.shell_runner.run_shell`); the verification
+          twin no longer orphans a hung workload the way `subprocess.run` did.
 
     Args:
         check: The check to run. `command` is interpolated; `timeout_seconds`
@@ -165,7 +173,11 @@ def run_check(
 
     Returns:
         A `CheckResult`. On timeout, `status == "timeout"`, `exit_code == -1`,
-        `output_path is None`, and `command` is still the interpolated command.
+        `output_path is None` (the only no-archive outcome). A shell that fails
+        to launch is `status == "fail"`, `exit_code == -1`, with an empty
+        stdout + a `could not run:` line archived per the normal capture
+        matrix — never a raised `OSError`. `command` is always the interpolated
+        command.
 
     Raises:
         InterpolationError: `check.command` references a non-allowlisted
@@ -174,36 +186,32 @@ def run_check(
     cmd = interpolate(check.command, variables)
     archive_dir.mkdir(parents=True, exist_ok=True)
 
-    t0 = time.perf_counter()  # measure real elapsed wall-clock
-    try:
-        # shell=True is intentional and per-spec (§3.6 #7); see module docstring.
-        proc = subprocess.run(
-            cmd,
-            shell=True,
-            cwd=workdir,
-            env=env,
-            capture_output=True,
-            timeout=check.timeout_seconds,
-            text=True,
-        )
-    except subprocess.TimeoutExpired:
+    res = run_shell(cmd, cwd=workdir, timeout=check.timeout_seconds, env=env)
+    if res.timed_out:
         return CheckResult(
             id=check.id,
             status="timeout",
             exit_code=-1,
-            duration_ms=int((time.perf_counter() - t0) * 1000),
+            duration_ms=res.duration_ms,
             must_pass=check.must_pass,
             command=cmd,
             output_path=None,
         )
 
-    duration_ms = int((time.perf_counter() - t0) * 1000)
+    if res.spawn_error is not None:
+        out_text, err_text = "", f"could not run: {res.spawn_error}\n"
+        status: CheckStatus = "fail"
+        exit_code = -1
+    else:
+        out_text, err_text = res.stdout, res.stderr
+        status = "pass" if res.exit_code == 0 else "fail"
+        exit_code = res.exit_code
 
     output_path: str | None = None
     if check.capture in ("stdout", "both"):
-        (archive_dir / f"{check.id}.stdout").write_text(proc.stdout)
+        (archive_dir / f"{check.id}.stdout").write_text(out_text, encoding="utf-8")
     if check.capture in ("stderr", "both"):
-        (archive_dir / f"{check.id}.stderr").write_text(proc.stderr)
+        (archive_dir / f"{check.id}.stderr").write_text(err_text, encoding="utf-8")
 
     if check.capture == "stdout":
         output_path = str(archive_dir / f"{check.id}.stdout")
@@ -214,9 +222,9 @@ def run_check(
 
     return CheckResult(
         id=check.id,
-        status="pass" if proc.returncode == 0 else "fail",
-        exit_code=proc.returncode,
-        duration_ms=duration_ms,
+        status=status,
+        exit_code=exit_code,
+        duration_ms=res.duration_ms,
         must_pass=check.must_pass,
         command=cmd,
         output_path=output_path,
@@ -322,7 +330,7 @@ def _make_baseline_result(
     if report:
         archive.mkdir(parents=True, exist_ok=True)
         report_file = archive / f"{check_id}.txt"
-        report_file.write_text(report)
+        report_file.write_text(report, encoding="utf-8")
         output_path = str(report_file)
     return CheckResult(
         id=check_id,
@@ -412,7 +420,7 @@ def _baseline_scope_vs_plan(
     base = "main"
     try:
         # Inherits the full ambient env (no `env=`), unlike the check subprocess
-        # which uses `_scrubbed_environ()`. Safe here: git reads no
+        # which uses `scrubbed_environ()`. Safe here: git reads no
         # `SUPER_HARNESS_*` and spawns no harness hooks. If a future baseline
         # shells out to a harness-aware tool, route it through the scrubbed env.
         proc = subprocess.run(
@@ -551,29 +559,6 @@ def baseline_check_tasks(
     return tasks
 
 
-_HARNESS_ENV_PREFIX = "SUPER_HARNESS_"
-
-
-def _scrubbed_environ() -> dict[str, str]:
-    """Ambient `os.environ` minus every ``SUPER_HARNESS_*`` knob.
-
-    The verification subprocess must run in a clean-room with respect to
-    harness-control env (as CI does). Otherwise an exported knob — e.g.
-    ``SUPER_HARNESS_CHANGE_ID`` set for the self-host lifecycle — leaks into the
-    pytest subprocess and its spawned hooks, changing gate behaviour and causing
-    false failures. This drops EVERY knob by design — identity
-    (``SUPER_HARNESS_ACTOR``, ``SUPER_HARNESS_CHANGE_ID``) and perf tuners
-    (``SUPER_HARNESS_HOOK_QUERY_TIMEOUT``, ``SUPER_HARNESS_DAEMON_START_TIMEOUT``)
-    alike; only values re-declared in `defaults.env`/`spec.env` reach the child.
-    Scrubs the ambient base only; `os.environ` is never mutated.
-    """
-    return {
-        k: v
-        for k, v in os.environ.items()
-        if not k.startswith(_HARNESS_ENV_PREFIX)
-    }
-
-
 def _config_check_task(
     spec: CheckSpec,
     *,
@@ -588,13 +573,13 @@ def _config_check_task(
     (scrubbed `os.environ` < `defaults.env` < `spec.env`) so the closure captures
     concrete values, then binds them via default args to dodge Python's
     late-binding-in-loops trap (the `spec=spec, ...` defaults snapshot per-
-    iteration values). The base layer is `_scrubbed_environ()` (ambient minus
+    iteration values). The base layer is `scrubbed_environ()` (ambient minus
     `SUPER_HARNESS_*`) so an exported harness knob cannot leak into the check
     subprocess; a knob explicitly declared in `defaults.env`/`spec.env` still
     layers on top and is preserved.
     """
     resolved = (context.workspace_root / spec.workdir).resolve()
-    merged_env = {**_scrubbed_environ(), **cfg.defaults.env, **spec.env}
+    merged_env = {**scrubbed_environ(), **cfg.defaults.env, **spec.env}
 
     # The default args snapshot this iteration's values to dodge late-binding.
     # `spec`/`workdir`/`env` are per-task-fresh, but `archive` and `variables`
@@ -842,7 +827,7 @@ def write_summary_json(
             for r in results
         ],
     }
-    (archive / "summary.json").write_text(json.dumps(summary, indent=2))
+    (archive / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
 
 def verify_data_block(
@@ -984,10 +969,10 @@ class VerificationRunner(Sensor):
     """Sensor that runs `.harness/verification.yaml` checks and emits a verdict.
 
     Triggered by the `cli_done` / `cli_verify` activities (the `verify` / `done`
-    CLI commands; wiring lands in Task 8.6/8.7). Loads the config, collects
-    `CheckTask`s across the three layers (baseline stubbed to `[]` in Task 8.4),
-    runs them per `execution.{mode,max_parallelism,fail_fast}`, archives a
-    `summary.json`, and emits `verification_passed` / `verification_failed`.
+    CLI commands). Loads the config, collects `CheckTask`s across the three
+    layers (in-process `baseline` / adapter-provided / user `checks`), runs them
+    per `execution.{mode,max_parallelism,fail_fast}`, archives a `summary.json`,
+    and emits `verification_passed` / `verification_failed`.
 
     The verdict is `passed` iff EVERY *must_pass* check passed; advisory
     (`must_pass: false`) checks never fail the run.

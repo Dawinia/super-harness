@@ -98,19 +98,66 @@ def test_bad_cwd_is_not_satisfied(tmp_path):
     assert r.satisfied is False and r.exit_code == -1
 
 
+def _wait_for(path, timeout=3.0):
+    """Poll until `path` exists (bounded); return whether it appeared."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.02)
+    return path.exists()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="process-group kill is POSIX-only")
 def test_timeout_kills_process_group(tmp_path):
-    # `(sleep 1; touch marker) &` backgrounds a grandchild that inherits the stdout
-    # pipe, so communicate() blocks past the shell's exit — the exact orphan case.
-    # On timeout run_one_check kills the WHOLE group (start_new_session + killpg), so
-    # the grandchild is killed before its `touch`; if only the shell were killed, the
-    # marker would appear after 1s.
-    marker = tmp_path / "marker"
-    q = shlex.quote(str(marker))
-    r = run_one_check(f"(sleep 1; touch {q}) & echo started", cwd=tmp_path, timeout=0.4)
+    # The backgrounded grandchild touches `spawned` immediately (handshake: it
+    # really started, so the test can't pass vacuously), then would touch
+    # `killed` after 1s. It inherits the stdout pipe so communicate() blocks
+    # past the shell's exit — the exact orphan case. On timeout run_one_check
+    # kills the WHOLE group, so the grandchild dies before its 1s `touch`.
+    spawned = tmp_path / "spawned"
+    killed = tmp_path / "killed"
+    sq, kq = shlex.quote(str(spawned)), shlex.quote(str(killed))
+    cmd = f"(touch {sq}; sleep 1; touch {kq}) & echo started"
+    r = run_one_check(cmd, cwd=tmp_path, timeout=0.4)
     assert r.exit_code == -1
-    time.sleep(1.3)  # wait past the grandchild's delay
-    assert not marker.exists()
+    assert _wait_for(spawned), "grandchild never started — test would be vacuous"
+    time.sleep(1.3)  # wait past the grandchild's would-be second touch
+    assert not killed.exists()
+
+
+def test_detail_prefers_stderr_tail(tmp_path):
+    r = run_one_check("echo out; echo err1 >&2; echo err2 >&2; exit 1", cwd=tmp_path)
+    assert not r.satisfied and r.detail == "err2"
+
+
+def test_detail_falls_back_to_stdout_tail(tmp_path):
+    r = run_one_check("echo o1; echo o2; exit 1", cwd=tmp_path)
+    assert r.detail == "o2"
+
+
+def test_detail_empty_output_reports_exit_code(tmp_path):
+    r = run_one_check("exit 7", cwd=tmp_path)
+    assert not r.satisfied and r.exit_code == 7 and r.detail == "exited 7"
+
+
+def test_timeout_message_text(tmp_path):
+    r = run_one_check("sleep 5", cwd=tmp_path, timeout=1)
+    assert r.detail == "timeout after 1s"
+
+
+def test_bad_cwd_message_text(tmp_path):
+    r = run_one_check("true", cwd=tmp_path / "nope")
+    assert r.detail.startswith("could not run: ")
+
+
+def test_check_env_is_scrubbed_of_harness_knobs(tmp_path, monkeypatch):
+    # A check runs against scrubbed_environ() on every path (authoring hook,
+    # CI decision check, ratify bite_test), so an exported SUPER_HARNESS_* knob
+    # never leaks in and the authoring-time verdict matches the merge gate.
+    monkeypatch.setenv("SUPER_HARNESS_CHECK_PROBE", "1")
+    run = run_one_check('test -z "$SUPER_HARNESS_CHECK_PROBE"', cwd=tmp_path)
+    assert run.satisfied
 
 
 def test_has_runnable_check_true_for_ratified_with_check():
