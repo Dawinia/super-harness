@@ -31,20 +31,15 @@ from pathlib import Path
 from typing import Any
 
 import click
-import yaml
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
 from super_harness.core._registry import read_plugin_paths
-from super_harness.core.active_change import read_active_change_id
 from super_harness.core.paths import (
     HarnessNotInitialized,
     find_harness_root,
     gates_yaml_path,
-    state_path,
 )
-from super_harness.core.state import ChangeState
-from super_harness.core.state_yaml import read_state_yaml
 from super_harness.exit_codes import (
     EXIT_GENERIC,
     EXIT_NO_CONFIG,
@@ -136,11 +131,10 @@ def gate_check(
 ) -> None:
     """Check a gate decision (`pre-tool-use` decides in-process).
 
-    Manual/CI/debug entry to the pre-tool-use gate — NOT the hot path (that's
-    the click-less `super-harness-hook` binary, which talks to the daemon).
-    Per `cli-command-surface` §gate-check this is a non-hot-path CLI: it reads
-    `state.yaml` in-process and runs `PreToolUseGate` directly with NO daemon
-    dependency. The four cold-path gate names (`pre-commit`, `pre-push`,
+    Manual/CI/debug entry to the pre-tool-use gate; the click-less
+    `super-harness-hook` binary is the hot path. Both decide **in-process**
+    through `load_state_snapshot` + `PreToolUseGate` — NO daemon.
+    The four cold-path gate names (`pre-commit`, `pre-push`,
     `pr-open`, `pr-merge`) are part of the ratified command surface but are not
     yet wired in v0.1 (Phase 12/13).
     """
@@ -166,11 +160,14 @@ def gate_check(
         )
         sys.exit(EXIT_GENERIC)
 
-    cid = change_id or read_active_change_id(root)
-    state = _read_change_state(root, cid)
-    result = PreToolUseGate().decide(ProposedAction(kind="edit", file=file), state, [])
+    from super_harness.core.state_snapshot import load_state_snapshot
+
+    snapshot = load_state_snapshot(root, change_id_override=change_id)
+    result = PreToolUseGate().decide(
+        ProposedAction(kind="edit", file=file), snapshot.state, []
+    )
     allow = result.decision is GateDecision.ALLOW
-    current_state = state.current_state if state is not None else None
+    current_state = snapshot.state.current_state if snapshot.state is not None else None
 
     if ctx.obj.get("json"):
         click.echo(
@@ -191,36 +188,6 @@ def gate_check(
         click.echo(f"{result.decision.value}: {result.reason}")
 
     sys.exit(EXIT_OK if allow else EXIT_VALIDATION)
-
-
-def _read_change_state(root: Path, cid: str | None) -> ChangeState | None:
-    """Reconstruct the active change's `ChangeState` from state.yaml in-process.
-
-    Returns None (→ gate ALLOWs, "no active change") when there is no resolved
-    change id, when state.yaml is missing/unreadable, or when the change is
-    absent from the derived `changes` map. state.yaml stores each change as a
-    plain `asdict()` mapping (no dataclass reconstruction on read — see
-    `state_yaml.read_state_yaml`), so we rebuild `ChangeState(**inner)` here.
-    """
-    if cid is None:
-        return None
-    path = state_path(root)
-    if not path.exists():
-        return None
-    try:
-        data = read_state_yaml(path)
-    except (ValueError, OSError, yaml.YAMLError):
-        return None
-    changes = data.get("changes")
-    if not isinstance(changes, dict):
-        return None
-    record = changes.get(cid)
-    if not isinstance(record, dict):
-        return None
-    try:
-        return ChangeState(**record)
-    except TypeError:
-        return None
 
 
 def _collect_gate_rows(yaml_path: Path) -> list[dict[str, Any]]:
