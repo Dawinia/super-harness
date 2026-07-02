@@ -3,7 +3,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -31,7 +33,6 @@ from super_harness.sensors.verification_runner import (
     _baseline_lifecycle_ordering,
     _baseline_scope_vs_plan,
     _covered_by_scope,
-    _scrubbed_environ,
     baseline_check_tasks,
     build_variables,
     collect_checks,
@@ -114,6 +115,62 @@ def test_timeout(tmp_path: Path) -> None:
     # No archive files written on timeout.
     assert not (tmp_path / "arch" / "c.stdout").exists()
     assert not (tmp_path / "arch" / "c.stderr").exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group kill is POSIX-only")
+def test_timeout_kills_process_group(tmp_path: Path) -> None:
+    # A backgrounded grandchild inherits the stdout pipe; on timeout run_check
+    # kills the WHOLE group (via run_shell). If only the shell were killed, the
+    # orphan would touch the marker after its 2s delay (> the 1s timeout).
+    marker = tmp_path / "marker"
+    q = shlex.quote(str(marker))
+    t0 = time.monotonic()
+    res = run_check(
+        _spec(command=f"(sleep 2; touch {q}) & echo started", timeout_seconds=1),
+        workdir=tmp_path,
+        env=_ENV,
+        archive_dir=tmp_path / "arch",
+        variables={},
+    )
+    assert time.monotonic() - t0 < 10  # bounded return, external clock
+    assert res.status == "timeout"
+    assert res.exit_code == -1
+    assert res.output_path is None  # timeout stays the no-archive case
+    time.sleep(2.3)  # wait past the grandchild's delay
+    assert not marker.exists()
+
+
+def test_spawn_failure_maps_to_fail_not_crash(tmp_path: Path) -> None:
+    # A bad workdir makes the shell fail to launch. This must map to a `fail`
+    # result (not propagate OSError and crash `verify`), and flow through the
+    # NORMAL capture matrix — only timeout is the no-archive exception.
+    archive = tmp_path / "arch"
+    res = run_check(
+        _spec(command="true", capture="both"),
+        workdir=tmp_path / "missing",
+        env=_ENV,
+        archive_dir=archive,
+        variables={},
+    )
+    assert res.status == "fail"
+    assert res.exit_code == -1
+    assert res.output_path == str(archive)  # capture="both" → archive dir
+    assert (archive / "c.stdout").read_text() == ""
+    assert "could not run: " in (archive / "c.stderr").read_text()
+
+
+def test_invalid_utf8_output_is_replaced_not_raised(tmp_path: Path) -> None:
+    archive = tmp_path / "arch"
+    # octal escape: POSIX-portable (dash's printf prints `\xff` literally).
+    res = run_check(
+        _spec(command=r"printf '\377'", capture="stdout"),
+        workdir=tmp_path,
+        env=_ENV,
+        archive_dir=archive,
+        variables={},
+    )
+    assert res.status == "pass"
+    assert "�" in (archive / "c.stdout").read_text()
 
 
 def test_capture_stdout_only(tmp_path: Path) -> None:
@@ -526,22 +583,6 @@ def test_collect_checks_merges_env_with_os_environ(tmp_path: Path) -> None:
     tasks = collect_checks(cfg, context=_ctx(tmp_path), archive=archive, variables={})
     tasks[0].run()
     assert (archive / "envc.stdout").read_text() == "fromdefault-fromcheck\n"
-
-
-def test_scrubbed_environ_strips_harness_prefix(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Every SUPER_HARNESS_* knob is dropped from the ambient base; unrelated
-    # vars (PATH, and any non-harness name) survive.
-    monkeypatch.setenv("SUPER_HARNESS_CHANGE_ID", "leaked")
-    monkeypatch.setenv("SUPER_HARNESS_ACTOR", "leaked@x")
-    monkeypatch.setenv("NOT_HARNESS", "kept")
-
-    scrubbed = _scrubbed_environ()
-
-    assert not any(k.startswith("SUPER_HARNESS_") for k in scrubbed)
-    assert scrubbed["NOT_HARNESS"] == "kept"
-    assert "PATH" in scrubbed  # unrelated ambient vars pass through
 
 
 def test_collect_checks_scrubs_ambient_harness_env_but_keeps_declared(
