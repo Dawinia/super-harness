@@ -33,13 +33,15 @@ parsing + the block signalling differ:
      gives a `command`, not a `file_path`, so the gate decides on lifecycle
      state with `file=None`.
 
-env SUPER_HARNESS_CHANGE_ID  optional override (both modes); default derives
+env SUPER_HARNESS_CHANGE_ID  optional override (all modes); default derives
                               the active (most recently active non-terminal) change
                               from the `changes` map in .harness/state.yaml.
 
 Fail-open everywhere (Axiom 1: prevent, don't punish — never block on a call
-shape we don't understand): empty argv, no .harness/, daemon down, malformed
-stdin, and an unknown --agent ALL ALLOW.
+shape we don't understand): empty argv, no .harness/, malformed stdin, corrupt
+state, and an unknown --agent ALL ALLOW. The decision is pure and in-process
+(design 2026-07-03): one state.yaml snapshot → the pure PreToolUseGate; there is
+no daemon on the decision path.
 """
 from __future__ import annotations
 
@@ -57,6 +59,14 @@ _HALT_HINT = (
     "Stop and tell the human — run `super-harness status` for the next valid step. "
     "Do NOT bypass the gate yourself."
 )
+
+
+def _format_block(reason: str, suggested: str | None) -> str:
+    """Build the BLOCK message: WHY (reason) + the state's what-to-do-next line
+    (suggested_action, F8 — previously dropped by the daemon dispatch) + the halt
+    hint. `suggested` is None for allowing states / no-active-change."""
+    next_step = f" {suggested}" if suggested else ""
+    return f"super-harness: BLOCK ({reason}).{next_step} {_HALT_HINT}"
 
 
 def main() -> None:  # console_script entry
@@ -99,9 +109,9 @@ def _run_positional(argv: list[str]) -> None:
     tool = argv[0]
     file = argv[1] if len(argv) > 1 else None
 
-    decision, reason = _decide(tool, file)
+    decision, reason, suggested = _decide(tool, file)
     if decision == "block":
-        sys.stderr.write(f"super-harness: BLOCK ({reason}). {_HALT_HINT}\n")
+        sys.stderr.write(_format_block(reason, suggested) + "\n")
         sys.exit(1)
     sys.exit(0)
 
@@ -126,9 +136,9 @@ def _run_claude_code_shim() -> None:
     tool_input = data.get("tool_input")
     file = tool_input.get("file_path") if isinstance(tool_input, dict) else None
 
-    decision, reason = _decide(tool, file)
+    decision, reason, suggested = _decide(tool, file)
     if decision == "block":
-        sys.stderr.write(f"super-harness: BLOCK ({reason}). {_HALT_HINT}\n")
+        sys.stderr.write(_format_block(reason, suggested) + "\n")
         sys.exit(2)  # Claude Code: exit 2 = block + stderr → model
     sys.exit(0)
 
@@ -155,16 +165,14 @@ def _run_codex_shim() -> None:
     if not tool:
         sys.exit(0)
 
-    decision, reason = _decide(tool, None)
+    decision, reason, suggested = _decide(tool, None)
     if decision == "block":
         json.dump(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
                     "permissionDecision": "deny",
-                    "permissionDecisionReason": (
-                        f"super-harness: BLOCK ({reason}). {_HALT_HINT}"
-                    ),
+                    "permissionDecisionReason": _format_block(reason, suggested),
                 }
             },
             sys.stdout,
@@ -209,45 +217,40 @@ def _run_stop(adapter: AgentAdapter) -> None:
     sys.exit(0)
 
 
-def _decide(tool: str, file: str | None) -> tuple[Literal["allow", "block"], str]:
-    """Shared decision core for both invocation modes.
+def _decide(
+    tool: str, file: str | None
+) -> tuple[Literal["allow", "block"], str, str | None]:
+    """Shared in-process decision core for all invocation modes (design 2026-07-03).
 
-    Resolves the workspace root (ALLOW if no .harness/ is found), resolves the
-    active change_id (env override > derived active change), and asks the
-    supervisor — which fail-open ALLOWs when the daemon is unreachable. Returns
-    `(decision, reason)` where decision is "allow" or "block". Callers map the
-    block decision onto the exit code their agent expects (1 positional, 2 for
-    Claude Code).
+    Resolves the workspace root (ALLOW if no .harness/), short-circuits the kill
+    switch (ALLOW + audit), loads ONE state snapshot (the single I/O seam), and
+    runs the pure `PreToolUseGate`. Returns `(decision, reason, suggested_action)`;
+    callers map the block onto the exit code / envelope their agent expects. No
+    daemon, no socket — the failure set is closed and deterministic.
     """
     try:
         root = find_harness_root(Path.cwd())
     except HarnessNotInitialized:
-        # No super-harness in this workspace → not our concern; ALLOW.
-        return "allow", "no .harness in workspace"
+        return "allow", "no .harness in workspace", None
 
-    # File-based kill switch (self-host hard-gate escape hatch): a sentinel file
-    # short-circuits to ALLOW before any daemon/state access, so a wedged daemon
-    # or corrupt state can never trap the user. Toggle via ungated Bash
-    # (`touch .harness/gate-disabled` / `rm`). Robust where `daemon stop` is not
-    # — the unreachable path respawns the daemon, so stop only reprieves one edit.
     if (root / ".harness" / "gate-disabled").exists():
         _record_bypass(root, tool=tool, file=file)
-        return "allow", "gate disabled (.harness/gate-disabled present)"
+        return "allow", "gate disabled (.harness/gate-disabled present)", None
 
-    # Resolve change_id: env override > derived active change > None.
     import os
 
-    change_id = os.environ.get("SUPER_HARNESS_CHANGE_ID")
-    if not change_id:
-        change_id = _read_active_change_id(root)
+    from super_harness.core.state_snapshot import load_state_snapshot
+    from super_harness.gates import GateDecision, ProposedAction
+    from super_harness.gates.pre_tool_use import PreToolUseGate
 
-    # Late import to keep startup lean — supervisor pulls in client + protocol
-    # + subprocess. ~3-5ms on Apple Silicon vs ~12ms for click.
-    from super_harness.daemon import supervisor
-
-    return supervisor.gate_pre_tool_use(
-        root, tool=tool, file=file, change_id=change_id
+    override = os.environ.get("SUPER_HARNESS_CHANGE_ID")
+    snapshot = load_state_snapshot(root, change_id_override=override)
+    result = PreToolUseGate().decide(
+        ProposedAction(kind="edit", file=file), snapshot.state, []
     )
+    if result.decision is GateDecision.BLOCK:
+        return "block", result.reason, result.suggested_action
+    return "allow", result.reason, result.suggested_action
 
 
 def _record_bypass(root: Path, *, tool: str, file: str | None) -> None:
