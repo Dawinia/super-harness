@@ -781,7 +781,7 @@ super-harness review approve [OPTIONS] CHANGE
 **Exit codes:**
 
 - `0` verdict recorded (`plan_approved` / `code_review_passed` emitted)
-- `2` code-review verdict gate failed (bare / incomplete checklist / stale digest), or malformed `--verdict-file`
+- `2` code-review verdict gate failed (bare / incomplete checklist / stale digest / failing checklist item — use `review reject`), or malformed `--verdict-file`
 - `3` no `.harness/`
 
 ## super-harness review prepare

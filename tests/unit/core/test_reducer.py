@@ -167,3 +167,39 @@ def test_reducer_intent_redeclared_can_change_framework(tmp_path: Path):
     w.emit(_ev("c1", "intent_redeclared", "spec-kit"))
     state = derive_state(f)
     assert state["c1"].framework == "spec-kit"
+
+
+def _raw_line(event_type: str, ts: object) -> str:
+    """A hand-crafted events.jsonl line (bypasses EventWriter — the point is a
+    stream the strict emit path would never produce)."""
+    import json as _json
+    return _json.dumps({
+        "event_id": new_event_id(), "type": event_type, "change_id": "c1",
+        "timestamp": ts, "actor": {"type": "adapter", "identifier": "test"},
+        "framework": "plain", "payload": {},
+    })
+
+
+# F3 (review 2026-07-02): a non-str timestamp on a malformed-but-valid-JSON line
+# used to crash the drift check (`.replace` on int, only ValueError caught) —
+# violating the reducer's "TOLERANT, never raise" contract. Both crash shapes:
+
+def test_reducer_skips_int_timestamp_line(tmp_path: Path):
+    # shape (a): valid event, THEN the int-timestamp line (direct crash site)
+    f = tmp_path / "events.jsonl"
+    f.write_text(_raw_line("intent_declared", "2026-05-27T10:00:00Z") + "\n"
+                 + _raw_line("plan_ready", 123) + "\n")
+    state = derive_state(f)  # must not raise
+    assert state["c1"].current_state == "INTENT_DECLARED"
+    assert "plan_ready" not in state["c1"].event_counts
+
+
+def test_reducer_survives_int_timestamp_then_valid_event(tmp_path: Path):
+    # shape (b): int-timestamp line FIRST — it used to detonate one line LATER,
+    # as prev_ts of the next (valid) event.
+    f = tmp_path / "events.jsonl"
+    f.write_text(_raw_line("intent_declared", 123) + "\n"
+                 + _raw_line("intent_declared", "2026-05-27T10:00:00Z") + "\n"
+                 + _raw_line("plan_ready", "2026-05-27T10:01:00Z") + "\n")
+    state = derive_state(f)  # must not raise
+    assert state["c1"].current_state == "AWAITING_PLAN_REVIEW"

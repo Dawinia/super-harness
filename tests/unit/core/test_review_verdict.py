@@ -9,6 +9,7 @@ import pytest
 from super_harness.core.review_verdict import (
     VerdictError,
     check_coverage,
+    failing_items,
     parse_verdict_file,
 )
 
@@ -66,6 +67,31 @@ findings: []
 """
     with pytest.raises(VerdictError, match="findings"):
         parse_verdict_file(_write(tmp_path, text))
+
+
+def test_failing_items_returns_fail_names_in_order(tmp_path: Path) -> None:
+    text = """
+bundle_digest: x
+checklist:
+  - item: spec-compliance
+    status: fail
+  - item: scope-adherence
+    status: pass
+  - item: code-quality
+    status: fail
+findings:
+  - id: f1
+    severity: major
+    file: src/a.py
+    summary: broken
+"""
+    verdict = parse_verdict_file(_write(tmp_path, text))
+    assert failing_items(verdict) == ["spec-compliance", "code-quality"]
+
+
+def test_failing_items_empty_when_all_pass_or_na(tmp_path: Path) -> None:
+    verdict = parse_verdict_file(_write(tmp_path, _OK))
+    assert failing_items(verdict) == []
 
 
 def test_check_coverage_missing_item(tmp_path: Path) -> None:

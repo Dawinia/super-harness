@@ -71,6 +71,27 @@ def test_approve_plan_reviewer_advances_to_plan_approved(tmp_path: Path) -> None
     assert _state(tmp_path, "c") == "PLAN_APPROVED"
 
 
+def test_approve_plan_reviewer_rejects_fail_verdict(tmp_path: Path) -> None:
+    # F1 (review 2026-07-02): the OPTIONAL plan-reviewer verdict, when provided,
+    # must not carry a failing checklist item on an approve.
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
+    v = tmp_path / "plan-verdict.yaml"
+    v.write_text(
+        "bundle_digest: whatever\nchecklist:\n"
+        "  - item: scope-sanity\n    status: fail\n"
+        "findings:\n  - id: f1\n    severity: minor\n    file: docs/plan.md\n"
+        "    summary: scope hole\n")
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "approve", "c", "--reviewer", "plan-reviewer",
+         "--verdict-file", str(v)],
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "scope-sanity" in r.output
+    assert "review reject" in r.output
+    assert "plan_approved" not in _event_types(tmp_path)
+
+
 def test_reject_plan_reviewer_advances_to_plan_rejected(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
     r = CliRunner().invoke(

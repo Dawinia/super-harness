@@ -1,8 +1,11 @@
 """Unit tests for `pick_active_change` — the pure "which change is active"
-definition (most-recent non-terminal, robust timestamp parsing). No I/O."""
+definition (most-recent non-terminal, robust timestamp parsing) — and for
+`read_active_change_id`'s state.yaml shape tolerance (gate hot path: a
+malformed cache must resolve to None, never raise)."""
 from datetime import datetime, timezone
+from pathlib import Path
 
-from super_harness.core.active_change import pick_active_change
+from super_harness.core.active_change import pick_active_change, read_active_change_id
 
 
 def test_most_recent_wins():
@@ -92,3 +95,31 @@ def test_none_and_nonstr_ts_sort_lowest():
         ("none", "INTENT_DECLARED", None),
         ("int", "INTENT_DECLARED", 12345),
     ]) == "good"
+
+
+def _state_yaml(tmp_path: Path, text: str) -> Path:
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".harness" / "state.yaml").write_text(text)
+    return tmp_path
+
+
+# F2 (review 2026-07-02): valid-YAML-but-non-mapping state.yaml must resolve to
+# None, not AttributeError — this feeds the PreToolUse hook (a crash there exits
+# 1, which Claude Code treats as a NON-blocking error → silent fail-open).
+
+def test_read_tolerates_nonempty_list_state_yaml(tmp_path: Path):
+    assert read_active_change_id(_state_yaml(tmp_path, "- a\n- b\n")) is None
+
+
+def test_read_tolerates_scalar_state_yaml(tmp_path: Path):
+    assert read_active_change_id(_state_yaml(tmp_path, "just a string\n")) is None
+
+
+def test_read_tolerates_empty_list_state_yaml(tmp_path: Path):
+    # behavior pin: [] is falsy → already coalesced by `or {}`
+    assert read_active_change_id(_state_yaml(tmp_path, "[]\n")) is None
+
+
+def test_read_tolerates_empty_state_yaml(tmp_path: Path):
+    # behavior pin: safe_load("") is None → `or {}`
+    assert read_active_change_id(_state_yaml(tmp_path, "")) is None

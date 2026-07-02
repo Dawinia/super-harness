@@ -91,9 +91,10 @@ Checklists & verdict verbs per review state:
      findings required when any item fails; verdict carries the bundle's digest).
   4. `super-harness review approve <change> --reviewer code-reviewer --verdict-file
      <path>` — the verdict is inlined into the emitted event. The approval is refused
-     if the verdict is missing/incomplete (a checklist item uncovered) or stale (its
-     digest no longer matches the current in-scope committed diff). Approve →
-     `READY_TO_MERGE`. (`review reject ... [--verdict-file <path>]` records a fail.)
+     if the verdict is missing/incomplete (a checklist item uncovered), stale (its
+     digest no longer matches the current in-scope committed diff), or has any
+     checklist item with status `fail` (record that with `review reject` instead).
+     Approve → `READY_TO_MERGE`. (`review reject ... [--verdict-file <path>]` records a fail.)
      If the approval comes out of a REJECTED review, the verdict's `prior_findings` must
      dispose EVERY open finding from the prior `code_review_failed` verdicts
      (`disposition: resolved | wontfix`; `wontfix` needs a `note`) or the approve is refused.
