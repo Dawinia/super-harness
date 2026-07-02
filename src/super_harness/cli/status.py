@@ -3,13 +3,13 @@
 Per cli-command-surface §3.5. Three call shapes:
 - `status <slug>`     → render that one change (empty result if slug unknown).
 - `status --all`      → render every change, including terminal states.
-- `status` (no args)  → fall back to the first ACTIVE change (v0.1 simplification).
+- `status` (no args)  → fall back to the MOST RECENTLY active change.
 
-v0.1 fallback is deliberately dumb: "first active" by events.jsonl insertion
-order, NOT git-branch parsing. The plan's "infer from git branch" wording is
-aspirational — git-branch → slug correlation lands in a later phase. The
-comment below keeps the simplification honest so future code-reviewers don't
-mistake the placeholder for real branch dispatch.
+The no-args fallback resolves the most recently active non-terminal change (by
+`last_event_at`), via the shared `core.active_change.pick_active_change` — the
+same definition the gate/resume/done use, so they never drift. (It was formerly
+"first/oldest active", a v0.1 placeholder that let a stale merged-but-not-archived
+change hijack the resolution — HG-STALE-MERGED-CHANGE.) NOT git-branch parsing.
 
 Because this command never emits, it does NOT call `post_emit_refresh` — that
 helper exists solely to keep state.yaml current after a write. Reads always
@@ -26,13 +26,13 @@ import click
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
+from super_harness.core.active_change import pick_active_change
 from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
     find_harness_root,
 )
 from super_harness.core.reducer import derive_state
-from super_harness.core.state import TERMINAL_STATES
 from super_harness.engineering.reviewer_policy import (
     REVIEW_STATE_REVIEWER,
     ReviewerPolicyError,
@@ -52,7 +52,7 @@ from super_harness.gates.decisions import SUGGESTIONS
 )
 @click.pass_context
 def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
-    """Show current state for one change, all changes, or the first active change."""
+    """Show current state for one change, all changes, or the most recently active change."""
     # Mutex: `status <slug> --all` is incoherent — `--all` is a list-everything
     # flag, `<slug>` is a single-object selector. Reject at parse time with an
     # actionable error rather than silently letting one shadow the other.
@@ -102,12 +102,12 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             sys.exit(EXIT_VALIDATION)
         target = [derived[slug]]
     else:
-        # v0.1 default: first ACTIVE change by events.jsonl insertion order.
-        # TODO(post-v0.1): infer from current git branch when branch-naming
-        # convention maps cleanly to slug. Today's "first active" is a deliberate
-        # placeholder, not a bug.
-        active = [cs for cs in derived.values() if cs.current_state not in TERMINAL_STATES]
-        target = [active[0]] if active else []
+        # No args → the most recently active non-terminal change, via the shared
+        # resolver (same definition gate/resume/done use — never drifts).
+        active_id = pick_active_change(
+            (cid, cs.current_state, cs.last_event_at) for cid, cs in derived.items()
+        )
+        target = [derived[active_id]] if active_id else []
     # HG-02.C: when a change sits in a review state, surface the configured
     # reviewer strategy so the agent/human knows whether to dispatch a Task
     # subagent or hand the review off to a person. Read-only; a malformed

@@ -34,8 +34,8 @@ parsing + the block signalling differ:
      state with `file=None`.
 
 env SUPER_HARNESS_CHANGE_ID  optional override (both modes); default derives
-                              the active (first non-terminal) change from the
-                              `changes` map in .harness/state.yaml.
+                              the active (most recently active non-terminal) change
+                              from the `changes` map in .harness/state.yaml.
 
 Fail-open everywhere (Axiom 1: prevent, don't punish — never block on a call
 shape we don't understand): empty argv, no .harness/, daemon down, malformed

@@ -11,7 +11,7 @@ Coverage map:
                                                   identifier-miss, NOT an
                                                   empty-filter; exit 2 + Hint
 - test_status_rejects_slug_with_all_flag      — `<slug> --all` mutex → exit 2
-- test_status_default_first_active            — no args + no flag → first active
+- test_status_default_most_recent_active      — no args + no flag → most recently active
 - test_status_all_includes_terminal           — `--all` includes ARCHIVED/ABANDONED
 - test_status_json_envelope_schema            — `--json` shape: envelope.data.changes[]
 """
@@ -95,11 +95,12 @@ def test_status_rejects_slug_with_all_flag(tmp_path: Path) -> None:
     assert "Hint:" in r.stderr
 
 
-def test_status_default_first_active(tmp_path: Path) -> None:
-    """No args + no `--all` → fall back to first active change.
+def test_status_default_most_recent_active(tmp_path: Path) -> None:
+    """No args + no `--all` → fall back to the MOST RECENTLY active change.
 
-    v0.1 simple fallback per plan. NOT git-branch parsing — comment in
-    cli/status.py is honest about the simplification.
+    Two non-terminal changes: the fallback resolves the one most recently active
+    (later `last_event_at`), not the oldest — so a stale, earlier change can't
+    hijack the resolution (HG-STALE-MERGED-CHANGE).
     """
     _init(tmp_path)
     _start(tmp_path, "ch-first")
@@ -111,9 +112,8 @@ def test_status_default_first_active(tmp_path: Path) -> None:
     payload = json.loads(r.output)
     changes = payload["data"]["changes"]
     assert len(changes) == 1
-    # Insertion order of `derive_state` reflects events.jsonl line order, so the
-    # first emitted slug is the "first active" the fallback picks.
-    assert changes[0]["change_id"] == "ch-first"
+    # ch-second was started later → later last_event_at → it is the active one.
+    assert changes[0]["change_id"] == "ch-second"
 
 
 def test_status_all_includes_terminal(tmp_path: Path) -> None:

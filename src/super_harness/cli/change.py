@@ -402,8 +402,8 @@ def resume(ctx: click.Context, slug: str | None) -> None:
     Two modes:
     - **Explicit `<slug>`**: dump context for that change. An unknown slug is a
       user error (exit 2) — see below.
-    - **No slug**: resolve the *active* change (first non-terminal change, via
-      `core.active_change.read_active_change_id`) and dump it. This powers the
+    - **No slug**: resolve the *active* change (most recently active non-terminal
+      change, via `core.active_change.read_active_change_id`) and dump it. This powers the
       Claude Code SessionStart hook, which can't know the change_id at install
       time. Best-effort context injection: if there is no active change (or the
       resolved id has skewed out of derived state), print NOTHING and exit 0 —

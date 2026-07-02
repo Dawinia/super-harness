@@ -349,7 +349,7 @@ def test_change_resume_scope_with_newlines_escapes_safely(tmp_path: Path):
 
 # -------------------- Task 8: `change resume` no-arg active-change mode ------
 #
-# `change resume` with NO slug resolves the active change (first non-terminal
+# `change resume` with NO slug resolves the active change (most recently active non-terminal
 # change per `core.active_change.read_active_change_id`). This powers the Claude
 # Code SessionStart hook (best-effort context injection). Semantics:
 # - active change present  → prints that change's dump (same as `resume <slug>`)
@@ -358,7 +358,7 @@ def test_change_resume_scope_with_newlines_escapes_safely(tmp_path: Path):
 
 
 def test_change_resume_no_arg_prints_active_change(tmp_path: Path):
-    """No-slug `resume` dumps the active (first non-terminal) change."""
+    """No-slug `resume` dumps the active (most recently active non-terminal) change."""
     _init(tmp_path)
     runner = CliRunner()
     runner.invoke(main, ["--workspace", str(tmp_path), "change", "start", "ch1"])

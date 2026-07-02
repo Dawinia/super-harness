@@ -912,7 +912,7 @@ super-harness state verify [OPTIONS]
 
 ## super-harness status
 
-Show current state for one change, all changes, or the first active change.
+Show current state for one change, all changes, or the most recently active change.
 
 ```
 super-harness status [OPTIONS] [SLUG]
