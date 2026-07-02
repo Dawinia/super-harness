@@ -1,8 +1,15 @@
+import os
+import shlex
+import time
+
+import pytest
+
 from super_harness.core.check_runner import (
     CheckFailure,
     CheckRun,
     bite_test,
     build_sandbox,
+    has_runnable_check,
     run_executable_checks,
     run_one_check,
     select_changed,
@@ -89,6 +96,33 @@ def test_non_utf8_output_is_not_satisfied(tmp_path):
 def test_bad_cwd_is_not_satisfied(tmp_path):
     r = run_one_check("true", cwd=tmp_path / "nope")
     assert r.satisfied is False and r.exit_code == -1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process-group kill is POSIX-only")
+def test_timeout_kills_process_group(tmp_path):
+    # `(sleep 1; touch marker) &` backgrounds a grandchild that inherits the stdout
+    # pipe, so communicate() blocks past the shell's exit — the exact orphan case.
+    # On timeout run_one_check kills the WHOLE group (start_new_session + killpg), so
+    # the grandchild is killed before its `touch`; if only the shell were killed, the
+    # marker would appear after 1s.
+    marker = tmp_path / "marker"
+    q = shlex.quote(str(marker))
+    r = run_one_check(f"(sleep 1; touch {q}) & echo started", cwd=tmp_path, timeout=0.4)
+    assert r.exit_code == -1
+    time.sleep(1.3)  # wait past the grandchild's delay
+    assert not marker.exists()
+
+
+def test_has_runnable_check_true_for_ratified_with_check():
+    assert has_runnable_check(Decision(id="d-x", status="ratified", check="! grep x src/")) is True
+
+
+def test_has_runnable_check_false_when_not_ratified():
+    assert has_runnable_check(Decision(id="d-x", status="proposed", check="! grep x src/")) is False
+
+
+def test_has_runnable_check_false_when_no_check():
+    assert has_runnable_check(Decision(id="d-x", status="ratified", check=None)) is False
 
 
 def test_sandbox_copies_inscope_and_injects(tmp_path):

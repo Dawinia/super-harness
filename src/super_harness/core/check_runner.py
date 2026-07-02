@@ -5,7 +5,9 @@ machinery lives here so the structural-integrity layer never imports subprocess.
 """
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import subprocess
 import tempfile
 from collections.abc import Iterator
@@ -27,24 +29,43 @@ class CheckRun:
     detail: str           # short human reason (stderr tail / "timeout" / "...")
 
 
-def run_one_check(command: str, *, cwd: Path, timeout: int = DEFAULT_TIMEOUT) -> CheckRun:
+def run_one_check(command: str, *, cwd: Path, timeout: float = DEFAULT_TIMEOUT) -> CheckRun:
     """Run a single executable check and report whether it is satisfied.
 
     `command` MUST be a ratified, body-hash-locked check (Tool A text-lock).
     `shell=True` is intentional: checks are deliberately shell snippets like
     `! grep ... | ...`. The trust boundary is the ratify-time bite-test + hash
     lock, NOT this primitive, which runs any string it is handed.
+
+    On timeout the whole process GROUP is killed, not just the shell: with
+    `start_new_session=True` the child is its own group leader (pgid == pid), so
+    `os.killpg(proc.pid, SIGKILL)` reaps backgrounded grandchildren (e.g. the grep
+    under the shell) that would otherwise be orphaned and could hold the stdout
+    pipe open. We target `proc.pid` (not `os.getpgid`, which raises once the shell
+    leader has exited) and bound the post-kill reap so a stuck grandchild can never
+    hang the check.
     """
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command, shell=True, cwd=str(cwd),
-            capture_output=True, text=True, errors="replace", timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, errors="replace", start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
-        return CheckRun(False, -1, f"timeout after {timeout}s")
     except OSError as e:  # shell missing, bad cwd, etc.
         return CheckRun(False, -1, f"could not run: {e}")
-    detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            proc.kill()  # best effort: at least the direct child
+        try:
+            proc.communicate(timeout=2)  # bounded reap; a SIGKILL'd group EOFs the pipes fast
+        except subprocess.TimeoutExpired:
+            pass  # give up reaping; the process is killed, never hang
+        return CheckRun(False, -1, f"timeout after {timeout}s")
+    detail = (err or out or "").strip().splitlines()
     tail = detail[-1] if detail else f"exited {proc.returncode}"
     return CheckRun(proc.returncode == 0, proc.returncode, tail)
 
@@ -96,6 +117,16 @@ class CheckFailure:
     detail: str
 
 
+def has_runnable_check(d: Decision) -> bool:
+    """A ratified decision whose executable check can actually run (tier-1).
+
+    Shared by the CI runner (`run_executable_checks`) and the authoring-time
+    fan-out (`core.authoring_check`) so "a decision whose check can run" has one
+    definition and cannot drift between the two paths.
+    """
+    return d.status == "ratified" and d.check is not None
+
+
 def select_changed(
     decisions: list[Decision],
     anchor_map: dict[str, list[tuple[str, int]]],
@@ -119,7 +150,7 @@ def run_executable_checks(
     workspace_root: Path,
     decisions: list[Decision],
     *,
-    timeout: int = DEFAULT_TIMEOUT,
+    timeout: float = DEFAULT_TIMEOUT,
 ) -> list[CheckFailure]:
     """Run each ratified tier-1 decision's check on the real tree (read-only).
 
@@ -128,7 +159,7 @@ def run_executable_checks(
     """
     failures: list[CheckFailure] = []
     for d in decisions:
-        if d.status != "ratified" or d.check is None:
+        if not has_runnable_check(d) or d.check is None:  # 2nd clause narrows d.check for mypy
             continue
         run = run_one_check(d.check, cwd=workspace_root, timeout=timeout)
         if not run.satisfied:
