@@ -102,7 +102,13 @@ def run_shell(
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
-            proc.kill()  # best effort: at least the direct child
+            # Group leader already gone / not permitted — fall back to the
+            # direct child, itself best-effort so the "never raises" contract
+            # holds without relying on Popen.kill's internal race guard.
+            try:
+                proc.kill()
+            except OSError:
+                pass
         try:
             # bounded reap; a SIGKILL'd group EOFs the pipes fast
             out, err = proc.communicate(timeout=2)

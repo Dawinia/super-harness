@@ -98,19 +98,32 @@ def test_bad_cwd_is_not_satisfied(tmp_path):
     assert r.satisfied is False and r.exit_code == -1
 
 
+def _wait_for(path, timeout=3.0):
+    """Poll until `path` exists (bounded); return whether it appeared."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.02)
+    return path.exists()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="process-group kill is POSIX-only")
 def test_timeout_kills_process_group(tmp_path):
-    # `(sleep 1; touch marker) &` backgrounds a grandchild that inherits the stdout
-    # pipe, so communicate() blocks past the shell's exit — the exact orphan case.
-    # On timeout run_one_check kills the WHOLE group (start_new_session + killpg), so
-    # the grandchild is killed before its `touch`; if only the shell were killed, the
-    # marker would appear after 1s.
-    marker = tmp_path / "marker"
-    q = shlex.quote(str(marker))
-    r = run_one_check(f"(sleep 1; touch {q}) & echo started", cwd=tmp_path, timeout=0.4)
+    # The backgrounded grandchild touches `spawned` immediately (handshake: it
+    # really started, so the test can't pass vacuously), then would touch
+    # `killed` after 1s. It inherits the stdout pipe so communicate() blocks
+    # past the shell's exit — the exact orphan case. On timeout run_one_check
+    # kills the WHOLE group, so the grandchild dies before its 1s `touch`.
+    spawned = tmp_path / "spawned"
+    killed = tmp_path / "killed"
+    sq, kq = shlex.quote(str(spawned)), shlex.quote(str(killed))
+    cmd = f"(touch {sq}; sleep 1; touch {kq}) & echo started"
+    r = run_one_check(cmd, cwd=tmp_path, timeout=0.4)
     assert r.exit_code == -1
-    time.sleep(1.3)  # wait past the grandchild's delay
-    assert not marker.exists()
+    assert _wait_for(spawned), "grandchild never started — test would be vacuous"
+    time.sleep(1.3)  # wait past the grandchild's would-be second touch
+    assert not killed.exists()
 
 
 def test_detail_prefers_stderr_tail(tmp_path):

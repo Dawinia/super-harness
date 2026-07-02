@@ -117,16 +117,30 @@ def test_timeout(tmp_path: Path) -> None:
     assert not (tmp_path / "arch" / "c.stderr").exists()
 
 
+def _wait_for(path: Path, timeout: float = 3.0) -> bool:
+    """Poll until `path` exists (bounded); return whether it appeared."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return True
+        time.sleep(0.02)
+    return path.exists()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="process-group kill is POSIX-only")
 def test_timeout_kills_process_group(tmp_path: Path) -> None:
-    # A backgrounded grandchild inherits the stdout pipe; on timeout run_check
-    # kills the WHOLE group (via run_shell). If only the shell were killed, the
-    # orphan would touch the marker after its 2s delay (> the 1s timeout).
-    marker = tmp_path / "marker"
-    q = shlex.quote(str(marker))
+    # The backgrounded grandchild touches `spawned` immediately (handshake: it
+    # really started, so the test can't pass vacuously), then would touch
+    # `killed` after 2s. It inherits the stdout pipe; on timeout run_check kills
+    # the WHOLE group (via run_shell), so the grandchild dies before its 2s
+    # touch (> the 1s timeout).
+    spawned = tmp_path / "spawned"
+    killed = tmp_path / "killed"
+    sq, kq = shlex.quote(str(spawned)), shlex.quote(str(killed))
+    cmd = f"(touch {sq}; sleep 2; touch {kq}) & echo started"
     t0 = time.monotonic()
     res = run_check(
-        _spec(command=f"(sleep 2; touch {q}) & echo started", timeout_seconds=1),
+        _spec(command=cmd, timeout_seconds=1),
         workdir=tmp_path,
         env=_ENV,
         archive_dir=tmp_path / "arch",
@@ -136,8 +150,9 @@ def test_timeout_kills_process_group(tmp_path: Path) -> None:
     assert res.status == "timeout"
     assert res.exit_code == -1
     assert res.output_path is None  # timeout stays the no-archive case
-    time.sleep(2.3)  # wait past the grandchild's delay
-    assert not marker.exists()
+    assert _wait_for(spawned), "grandchild never started — test would be vacuous"
+    time.sleep(2.3)  # wait past the grandchild's would-be second touch
+    assert not killed.exists()
 
 
 def test_spawn_failure_maps_to_fail_not_crash(tmp_path: Path) -> None:
