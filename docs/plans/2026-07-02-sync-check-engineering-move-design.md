@@ -1,7 +1,9 @@
 # F9 — Relocate `sync_check` out of `core`; extend `core-is-base` to `engineering`
 
 Date: 2026-07-02
-Change: `2026-07-02-sync-check-engineering-move`
+Change: `2026-07-02-sync-check-engineering-move-v2` (v1 abandoned after plan
+review: both reviewers flagged `core/__init__.py` missing from scope + the
+decision body naming the forbidden set in three places, not one)
 Tier: Normal
 Finding: `private/REVIEW-FINDINGS-2026-07-02.md` F9 (P2 architecture).
 
@@ -70,16 +72,34 @@ rename the contract to "…cli/gates/sensors/engineering".
 
 `docs/decisions/d-core-is-base.md` is the human-ratified anchor
 (`authoring_time: true`, tier-1, with `ratified_text_hash`). We amend its
-ratified body:
+ratified body. The forbidden set is named in **three** places — all must be
+updated together, or `decision ratify` will permanently stamp a self-inconsistent
+body (`compute_body_hash` locks whatever text is written; no gate checks internal
+consistency):
 
-- Prose forbidden list: `cli/gates/sensors` → `cli/gates/sensors/engineering`.
+- headline line (`core/ is the base layer … cli/gates/sensors`);
+- the enumerated prose list (`cli`, `gates`, `sensors`);
+- the trailing "CLI/gate/sensor stack" phrase.
+
+All three: add `engineering`.
+
 - The #56 parenthetical currently cites `core.sync_check -> engineering ->
   adapters` as one caught transitive edge. After this change that sentence is
   stale (sync_check leaves core; engineering itself is now directly forbidden).
   **Approach A**: keep the #56 history intact and *append* a sentence recording
   that F9 additionally closed the direct `core -> engineering` path and
   relocated `sync_check` to `engineering` — so the record faithfully shows the
-  contract growing from 3 upper layers to 4.
+  contract growing from 3 upper layers to 4. The appended sentence must state
+  explicitly that `sync_check` has since left `core`, so a future reader does not
+  grep for a `core.sync_check` edge that no longer exists.
+
+`src/super_harness/core/__init__.py` is the code anchor of d-core-is-base
+(`# @decision:d-core-is-base` at line 8) and its module docstring names the same
+forbidden set (`cli`, `gates`, `sensors` + "CLI/gate/sensor stack"). It must be
+updated to include `engineering` too — otherwise the very package the contract
+governs carries prose inconsistent with its own ratified decision (a smaller
+version of the exact drift this change closes). No gate text-matches tier-1
+anchors, so this is a faithfulness fix, not a gate requirement.
 
 Editing the ratified body changes `compute_body_hash(body)`, so the decision
 must be **re-ratified** (`decision ratify d-core-is-base`), which re-stamps
@@ -89,15 +109,16 @@ existing counterexample (`import cli`) still proves the contract bites; a
 dedicated engineering counterexample would be gilding — one counterexample per
 forbidden contract suffices.
 
-## Change set (scope — 8 files)
+## Change set (scope — 9 files)
 
 | File | Action |
 |------|--------|
 | `src/super_harness/core/sync_check.py` | removed (git mv) |
 | `src/super_harness/engineering/sync_check.py` | added (content unchanged) |
 | `src/super_harness/cli/sync.py` | import path `core.sync_check` → `engineering.sync_check` |
+| `src/super_harness/core/__init__.py` | docstring: add `engineering` to the forbidden-set prose |
 | `.importlinter` | add `engineering` to forbidden; rename contract |
-| `docs/decisions/d-core-is-base.md` | amend body (list + #56 append); re-ratify re-stamps hash |
+| `docs/decisions/d-core-is-base.md` | amend body (3 prose spots + #56 append); re-ratify re-stamps hash |
 | `tests/unit/core/test_sync_check.py` | removed (git mv) |
 | `tests/unit/engineering/test_sync_check.py` | added (import path fixed) |
 | `docs/plans/2026-07-02-sync-check-engineering-move-design.md` | this doc |
@@ -112,9 +133,12 @@ references are test-function names, not the module path.
    fail-first proof, now committed as the red state).
 2. `git mv core/sync_check.py engineering/sync_check.py`; fix `cli/sync.py`
    import; `git mv` the test and fix its import line.
-3. Amend `d-core-is-base.md` body (list + #56 append), then **immediately**
-   `decision ratify d-core-is-base` to re-stamp the hash (do not leave the body
-   drifted from the hash between steps — `authoring_check` would flag it).
+3. Update `core/__init__.py` docstring (add `engineering`). Amend
+   `d-core-is-base.md` body (all 3 forbidden-set spots + #56 append), then
+   **immediately** `decision ratify d-core-is-base` to re-stamp the hash. Keep the
+   body edit and the re-ratify adjacent: a drifted `body`-vs-`ratified_text_hash`
+   is an `integrity_violation` that drops the decision out of `effective_ratified`
+   and hard-dangles all five `@decision:d-core-is-base` anchors until re-stamped.
 4. **Green** — `lint-imports` contract KEPT; `decision check` clean;
    `test_sync_check` (new path) + `test_sync.py` + full suite pass.
 
