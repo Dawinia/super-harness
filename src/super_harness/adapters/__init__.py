@@ -51,7 +51,8 @@ from super_harness.core.workspace import WorkspaceContext
 if TYPE_CHECKING:
     # Type-only import (no runtime coupling). `core.authoring_check` imports only
     # `core`, and this is the normal downward direction (adapters build on core), so
-    # the core-is-base contract — which forbids core → {cli,gates,sensors} — is unaffected.
+    # the core-is-base contract — which forbids core → {cli,gates,sensors,engineering} —
+    # is unaffected.
     from super_harness.core.authoring_check import Verdict
 
 __all__ = [

@@ -60,7 +60,6 @@ from super_harness.core.paths import (
     adapters_yaml_path,
     find_harness_root,
 )
-from super_harness.core.sync_check import run_sync_check
 from super_harness.engineering.agents_md import (
     AgentsMdInjectionError,
     inject_agent_subsection,
@@ -72,6 +71,7 @@ from super_harness.engineering.gitignore_injector import (
     GitignoreInjectionError,
     inject_gitignore_block,
 )
+from super_harness.engineering.sync_check import run_sync_check
 from super_harness.exit_codes import (
     EXIT_GENERIC,
     EXIT_NO_CONFIG,

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from super_harness.core.sync_check import run_sync_check
 from super_harness.engineering.agents_md_render import render_super_harness_section
 from super_harness.engineering.gitignore_injector import inject_gitignore_block
+from super_harness.engineering.sync_check import run_sync_check
 
 
 def test_freshly_rendered_agents_md_is_in_sync(tmp_path: Path) -> None:

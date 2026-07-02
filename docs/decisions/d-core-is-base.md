@@ -1,17 +1,18 @@
 ---
 id: d-core-is-base
 status: ratified
-authoring_time: true
 ratified_by: dawinialo@163.com
-ratified_at: '2026-06-29T16:22:58.227086Z'
-ratified_text_hash: sha256:a751fdf80671ccd1d441f0f59b1ee9b5ba9c2f8c5fe46c428eca647e9c5a79fc
+ratified_at: '2026-07-02T15:10:35.092419Z'
+ratified_text_hash: sha256:8cca65a1116077f0b7f665772370f41d252d02295e26fddc6d8818c65a4a6372
+authoring_time: true
 ---
-core/ is the base layer: it must not import the upper layers cli/gates/sensors.
+core/ is the base layer: it must not import the upper layers cli/gates/sensors/engineering.
 
 `super_harness.core` is the pure foundation the upper layers build on. It must not
 depend (directly OR transitively) on the upper layers `super_harness.cli`,
-`super_harness.gates`, or `super_harness.sensors`, so the core can be imported (e.g. by
-the daemon) without dragging in the CLI/gate/sensor stack. The faithful mechanical form
+`super_harness.gates`, `super_harness.sensors`, or `super_harness.engineering`, so the
+core can be imported (e.g. by the daemon) without dragging in the
+CLI/gate/sensor/engineering stack. The faithful mechanical form
 of this invariant is an import-graph contract, not a text grep: `grep` sees only direct
 textual imports and is blind to the transitive and function-local edges that actually
 break layering. The rung-1 check is the import-linter `core-is-base` contract in
@@ -23,6 +24,14 @@ and `core.sync_check -> engineering -> adapters`. import-linter caught both wher
 declared the code clean. They were severed by moving `WorkspaceContext` into
 `core.workspace` (so `adapters` no longer imports `sensors`) and by injecting the
 spec/plan-path resolver into `core.review_bundle` instead of importing `adapters` there.)
+
+(`engineering` is now covered too (F9). Besides the transitive path above, there was a
+*direct* `core -> engineering` edge the forbidden set had never listed: `core.sync_check`
+imported `engineering.agents_md_render` and `engineering.gitignore_injector`. `sync_check`
+is sync-orchestration logic that depends on nothing in `core`, so it was relocated to
+`engineering.sync_check` (it no longer lives in `core` — do not grep for a `core.sync_check`
+edge), and `engineering` was added to the forbidden list. The contract now covers all four
+upper layers cli/gates/sensors/engineering.)
 
 ```check
 PYTHONPATH=src lint-imports --config .importlinter --contract core-is-base --no-cache
