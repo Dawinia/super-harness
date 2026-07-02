@@ -2,7 +2,7 @@
 
 Drives the full openspec + claude-code lifecycle slice using real
 subprocesses for every shipped surface: ``super-harness`` /
-``super-harness-daemon`` / ``super-harness-hook`` binaries, real local
+``super-harness-hook`` binaries (the gate decides in-process), real local
 ``git``, real ``EventWriter`` / reducer. The only mock is ``gh``
 (PATH-shim, via the ``mock_gh`` fixture in ``tests/e2e/conftest.py``).
 
@@ -36,7 +36,7 @@ from tests.e2e.conftest import (
 
 @pytest.mark.e2e
 def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> None:
-    """v0.1 ship gate: real daemon, real hook binary, real git, real
+    """v0.1 ship gate: real hook binary (in-process gate), real git, real
     subprocess invocations. ``gh`` is the only mock (PATH-shim).
 
     Three lifecycle gaps (``plan_approved`` / ``implementation_started`` /
@@ -65,15 +65,6 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
         "`super-harness-hook --agent claude-code` in PreToolUse"
     )
 
-    # === Phase B — daemon up (blocking start; no sleep needed) ==========
-    # `super-harness daemon start` is blocking-until-ready per Phase 11.
-    # NOTE: the socket path is NOT asserted at the literal `.harness/
-    # daemon.sock` location — `resolve_socket_path` (daemon/_uds_path.py)
-    # falls back to `$TMPDIR/super-harness-<hash>.sock` when the workspace
-    # path exceeds the 104-byte UDS limit (common on macOS tmp dirs).
-    # Daemon readiness is implied by `start` returning 0.
-    _run(["super-harness", "daemon", "start"], cwd=demo_repo)
-
     # === Phase C — cold state: hook ALLOWs (no active change) ===========
     # Positional mode: exit 0 = ALLOW, exit 1 = BLOCK
     # (hook_entry.py:_run_positional; plan §16 reconcile #5).
@@ -101,9 +92,8 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     assert _last_event_type(demo_repo) == "intent_declared"
 
     # In INTENT_DECLARED state the gate BLOCKs Edit (positional → exit 1).
-    # Polled to absorb the HotState mtime-reload race — sub-second writes
-    # to state.yaml may not be visible to the daemon on the very next
-    # gate query. `_wait_for_completed_process` returns the full
+    # The gate decides in-process (reads state.yaml on each invocation), so the
+    # block is deterministic. `_wait_for_completed_process` returns the full
     # CompletedProcess so we can also assert on the human-readable stderr.
     proc = _wait_for_completed_process(
         lambda: _hook("Edit", "src/foo.py"),
@@ -236,5 +226,3 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     assert _derive_and_read(demo_repo, "demo-feature") == "ARCHIVED", (
         "shipped lifecycle slice must reach ARCHIVED after on-merge"
     )
-
-    _run(["super-harness", "daemon", "stop"], cwd=demo_repo)
