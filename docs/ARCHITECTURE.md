@@ -69,13 +69,15 @@ verdict — a human or the agent's own reviewer subagent does.
 
 Two enforcement paths, sorted by how hard they are:
 
-- **Hot-path (local, fast feedback):** a long-running **workspace daemon** over a
-  Unix-domain socket. The Claude Code adapter installs a **PreToolUse** hook that
-  consults the daemon before every `Edit`/`Write`; if the current lifecycle state
-  forbids the mutation, the tool call is blocked. The daemon exists to amortize
-  Python startup — it is a latency optimization, not a separate source of truth (it
-  reads the same derived state). A file-based kill switch (`.harness/gate-disabled`)
-  disables it; `Bash` is never gated, so the switch is always reachable.
+- **Hot-path (local, fast feedback — in-process):** the Claude Code adapter installs
+  a **PreToolUse** hook (`super-harness-hook`) that makes the gate decision
+  **in-process** (`core.state_snapshot` → `gates.pre_tool_use.PreToolUseGate`) before
+  every `Edit`/`Write`. No background daemon is required; the gate always enforces by
+  reading `state.yaml` directly (one parse, never-raises, fail-open only on a missing
+  or corrupt workspace). The **optional observer host** (`super-harness observe start`)
+  runs watchdog observers that emit lifecycle events, but the gate does not depend on
+  it. A file-based kill switch (`.harness/gate-disabled`) disables enforcement;
+  `Bash` is never gated, so the switch is always reachable.
 - **Cold-path (CI, un-bypassable):** the bundled `super-harness.yml` workflow runs
   the gates that actually guard `main` — `pr-validate`, `verification`,
   `attest-verify`, `decision-check`, `doc-check`, plus `pr-decorate` and `on-merge`.
@@ -169,8 +171,8 @@ floor, not a proof of independence; see §11.)
 - **Event-sourcing**: append-only log is truth; state is a pure-fold cache.
 - **Pure / impure layering**: pure logic in `core/` (parse, fold, referential
   checks) stays free of I/O; subprocess / sandbox / git / network live in dedicated
-  modules (e.g. `core/check_runner.py`, `engineering/gh.py`, `daemon/`). This keeps
-  the load-bearing logic unit-testable and the trust surface small.
+  modules (e.g. `core/check_runner.py`, `engineering/gh.py`, `daemon/` observer host).
+  This keeps the load-bearing logic unit-testable and the trust surface small.
 - **Fail-closed**: ambiguity blocks. A check that times out, can't run, or emits
   garbage counts as a failure, not a pass.
 - **Layered hardness**: soft local sensors for the cooperative agent, hard
@@ -184,7 +186,7 @@ floor, not a proof of independence; see §11.)
 | Pure core (records, fold, checks) | `src/super_harness/core/` (`decisions.py`, `decision_check.py`, `check_runner.py`, `doc_check.py`, `anchor_scanner.py`, `frontmatter.py`, `source_scope.py`) |
 | CLI verbs | `src/super_harness/cli/` |
 | Lifecycle state / events | `src/super_harness/core/` (state fold) + `.harness/events.jsonl` |
-| Daemon (hot-path gate) | `src/super_harness/daemon/` |
+| Observer host (optional framework-event watcher) | `src/super_harness/daemon/` |
 | Adapters | `src/super_harness/adapters/` |
 | Sensors / verification | `src/super_harness/sensors/` |
 | Attestation / gh | `src/super_harness/engineering/` |
