@@ -98,8 +98,9 @@ Checklists & verdict verbs per review state:
      If the approval comes out of a REJECTED review, the verdict's `prior_findings` must
      dispose EVERY open finding from the prior `code_review_failed` verdicts
      (`disposition: resolved | wontfix`; `wontfix` needs a `note`) or the approve is refused.
-  - plan-reviewer is UNCHANGED this slice: its approve/reject take an optional
-    `--verdict-file` (inlined when present) but never require one.
+  - plan-reviewer: approve/reject take an optional `--verdict-file` (inlined when
+    present, never required) — but when one IS provided on an approve, a failing
+    checklist item refuses it the same way (any reviewer branch).
 - `super-harness review skip <change> --reviewer <name>` PASSes a stuck reviewer, but for
   `code-reviewer` a BARE skip is a MERGE-GATE BLOCKER (`attest verify` fails). To merge with
   a skip you must record a deliberate, disclosed override:

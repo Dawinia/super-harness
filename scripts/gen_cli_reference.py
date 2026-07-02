@@ -263,8 +263,9 @@ _EXIT_CODES: dict[str, list[str]] = {
     ],
     "review approve": [
         "`0` verdict recorded (`plan_approved` / `code_review_passed` emitted)",
-        "`2` code-review verdict gate failed (bare / incomplete checklist / stale digest / "
-        "failing checklist item — use `review reject`), or malformed `--verdict-file`",
+        "`2` verdict gate failed — code-reviewer: bare / incomplete checklist / stale "
+        "digest; ANY reviewer whose verdict has a failing checklist item (use "
+        "`review reject`); or malformed `--verdict-file`",
         "`3` no `.harness/`",
     ],
     "review skip": [
