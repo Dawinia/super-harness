@@ -59,8 +59,8 @@ def read_active_change_id(root: Path) -> str | None:
     """Resolve the active change_id from state.yaml's derived `changes` map — the
     most recently active non-terminal change (via `pick_active_change`). Returns
     None if state.yaml is missing/unparseable or has no non-terminal change.
-    Intentionally reads state.yaml directly (NOT via HotState — that's daemon-side);
-    callers that talk to the daemon only need a change_id to pass in the request.
+    Reads state.yaml directly — the same in-process snapshot seam the PreToolUse
+    gate uses (core.state_snapshot); there is no resident process to consult.
     """
     state_path = root / ".harness" / "state.yaml"
     if not state_path.exists():
@@ -73,7 +73,7 @@ def read_active_change_id(root: Path) -> str | None:
         return None
     if not isinstance(data, dict):
         # Valid YAML but not a mapping (scalar / non-empty list) — same
-        # non-mapping guard hot_state / state_yaml carry; this path feeds the
+        # non-mapping guard state_yaml carries; this path feeds the
         # PreToolUse hook, where an AttributeError would exit 1 = a NON-blocking
         # error to Claude Code (silent fail-open).
         return None
