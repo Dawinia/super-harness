@@ -6,6 +6,8 @@ import textwrap
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import pytest
+
 from super_harness.core.events import Actor, Event
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
@@ -147,4 +149,34 @@ def test_writer_skip_validation_bypasses_illegal(tmp_path: Path):
     # plan_ready as first event is illegal (must follow intent_declared);
     # default emit would raise EmitPreconditionError. skip_validation=True bypasses.
     w.emit(_make_event("c1", "plan_ready"), skip_validation=True)
+    assert events_file.read_text().count("\n") == 1
+
+
+# F3 (review 2026-07-02): the writer is the single choke point to disk and does
+# NOT round-trip parse_event_line, so it needs its own type-only timestamp
+# guard — shape, not a transition precondition, hence independent of
+# skip_validation.
+
+def test_writer_rejects_non_string_timestamp(tmp_path: Path):
+    import dataclasses
+    from datetime import datetime, timezone
+
+    from super_harness.core.writer import EmitPreconditionError
+
+    events_file = tmp_path / "events.jsonl"
+    w = EventWriter(events_file)
+    for bad_ts in (123, datetime(2026, 5, 27, tzinfo=timezone.utc)):
+        ev = dataclasses.replace(_make_event("c1"), timestamp=bad_ts)  # type: ignore[arg-type]
+        with pytest.raises(EmitPreconditionError, match="timestamp"):
+            w.emit(ev, skip_validation=True)
+    assert not events_file.exists() or events_file.read_text() == ""
+
+
+def test_writer_accepts_empty_string_timestamp(tmp_path: Path):
+    # type-only guard: "" is a str (the dispatcher stamps blanks before emit)
+    import dataclasses
+
+    events_file = tmp_path / "events.jsonl"
+    w = EventWriter(events_file)
+    w.emit(dataclasses.replace(_make_event("c1"), timestamp=""), skip_validation=True)
     assert events_file.read_text().count("\n") == 1

@@ -71,6 +71,12 @@ def read_active_change_id(root: Path) -> str | None:
         data = yaml.safe_load(state_path.read_text()) or {}
     except Exception:
         return None
+    if not isinstance(data, dict):
+        # Valid YAML but not a mapping (scalar / non-empty list) — same
+        # non-mapping guard hot_state / state_yaml carry; this path feeds the
+        # PreToolUse hook, where an AttributeError would exit 1 = a NON-blocking
+        # error to Claude Code (silent fail-open).
+        return None
     changes = data.get("changes")
     if not isinstance(changes, dict):
         return None

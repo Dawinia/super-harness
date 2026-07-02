@@ -47,6 +47,7 @@ from super_harness.core.review_verdict import (
     check_coverage,
     check_disposed,
     derive_open_findings,
+    failing_items,
     parse_verdict_file,
     read_change_events,
 )
@@ -154,6 +155,25 @@ _as_opt = click.option(
 )
 
 
+def _reject_failing_checklist(verdict: dict[str, object], subcommand: str) -> None:
+    """Exit EXIT_VALIDATION when an APPROVE verdict's own checklist says fail.
+
+    A `fail` status is the reviewer's record that the change is not approvable;
+    recording it as `plan_approved` / `code_review_passed` would let a
+    self-contradictory verdict through the merge gate. Applies to BOTH reviewer
+    branches (code-reviewer required verdict, plan-reviewer optional verdict);
+    the same verdict stays valid for `review reject`.
+    """
+    fails = failing_items(verdict)
+    if fails:
+        click.echo(format_error(subcommand=subcommand,
+            message=f"verdict has failing checklist item(s): {', '.join(fails)}; "
+                    "an approve cannot record a failing review.",
+            hint="Record it with `review reject --verdict-file <path>`, or fix the "
+                 "code and re-run `review prepare` + the review."), err=True)
+        sys.exit(EXIT_VALIDATION)
+
+
 def _validate_code_review_verdict(
     root: Path, change: str, reviewer: str, verdict_file: str | None, base: str | None,
     subcommand: str,
@@ -174,6 +194,8 @@ def _validate_code_review_verdict(
     except VerdictError as e:
         click.echo(format_error(subcommand=subcommand, message=str(e)), err=True)
         sys.exit(EXIT_VALIDATION)
+
+    _reject_failing_checklist(verdict, subcommand)
 
     required = resolve_checklist(root, reviewer)
     missing = check_coverage(verdict, required)
@@ -258,10 +280,12 @@ def approve(ctx: click.Context, change: str, reviewer: str, reason: str,
         extra = {"verdict": verdict}
     elif verdict_file:  # plan-reviewer: inline if provided, not required (advisory this slice)
         try:
-            extra = {"verdict": parse_verdict_file(Path(verdict_file))}
+            verdict = parse_verdict_file(Path(verdict_file))
         except VerdictError as e:
             click.echo(format_error(subcommand="review approve", message=str(e)), err=True)
             sys.exit(EXIT_VALIDATION)
+        _reject_failing_checklist(verdict, "review approve")
+        extra = {"verdict": verdict}
     _emit_verdict(
         ctx, subcommand="review approve", change=change, reviewer=reviewer,
         event_type=_REVIEWER_PASS[reviewer], reason=reason, as_identity=as_identity,

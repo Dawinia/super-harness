@@ -174,3 +174,29 @@ def test_parse_rejects_empty_change_id():
     })
     with pytest.raises(EventSchemaError, match="change_id"):
         parse_event_line(line)
+
+
+def _line_with_timestamp(ts: object) -> str:
+    return json.dumps({
+        "event_id": "ev_1",
+        "type": "intent_declared",
+        "change_id": "c",
+        "timestamp": ts,
+        "actor": {"type": "adapter", "identifier": "test"},
+        "framework": "plain",
+    })
+
+
+@pytest.mark.parametrize("bad_ts", [123, None, ["2026-05-27T10:00:00Z"]])
+def test_parse_rejects_non_string_timestamp(bad_ts):
+    # F3 (review 2026-07-02): timestamp str-ness is SHAPE — a non-str value used
+    # to crash the reducer's drift check (`.replace` on int) instead of the
+    # tolerant warn+skip every reader relies on.
+    with pytest.raises(EventSchemaError, match="timestamp"):
+        parse_event_line(_line_with_timestamp(bad_ts))
+
+
+def test_parse_accepts_empty_string_timestamp():
+    # "" stays legal: the sensor dispatcher builds Event(timestamp="") in-process
+    # and stamps it before emit; the parse check is type-only.
+    assert parse_event_line(_line_with_timestamp("")).timestamp == ""

@@ -185,3 +185,40 @@ def test_clean_docs_allow_code_review_approve(tmp_path: Path) -> None:
     r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
                                   "--reviewer", "code-reviewer", "--verdict-file", str(p)])
     assert r.exit_code == EXIT_OK, r.output
+
+
+def _fail_verdict(ws: Path, digest: str) -> Path:
+    """Full-coverage verdict whose `code-quality` item is FAIL (+ required finding)."""
+    p = ws / "fail-verdict.yaml"
+    items = []
+    for i in ["spec-compliance", "scope-adherence", "code-quality", "edge-cases", "doc-impact"]:
+        status = "fail" if i == "code-quality" else "pass"
+        items.append(f"  - item: {i}\n    status: {status}")
+    p.write_text(
+        f"bundle_digest: {digest}\nchecklist:\n" + "\n".join(items)
+        + "\nfindings:\n  - id: f1\n    severity: major\n    file: src/a.py\n"
+          "    summary: broken thing\n")
+    return p
+
+
+def test_approve_rejected_when_checklist_has_fail(tmp_path: Path) -> None:
+    # F1 (review 2026-07-02): a verdict whose own checklist says FAIL must not
+    # be recordable as code_review_passed.
+    ws = _repo_change(tmp_path)
+    digest = _prepare_digest(ws)
+    p = _fail_verdict(ws, digest)
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "approve", "c",
+                                  "--reviewer", "code-reviewer", "--verdict-file", str(p)])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "code-quality" in r.output          # names the failing item
+    assert "review reject" in r.output         # points at the honest verb
+
+
+def test_reject_still_accepts_fail_verdict(tmp_path: Path) -> None:
+    # The same verdict shape must stay VALID for `review reject`.
+    ws = _repo_change(tmp_path)
+    digest = _prepare_digest(ws)
+    p = _fail_verdict(ws, digest)
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "reject", "c",
+                                  "--reviewer", "code-reviewer", "--verdict-file", str(p)])
+    assert r.exit_code == EXIT_OK, r.output

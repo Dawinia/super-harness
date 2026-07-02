@@ -60,8 +60,19 @@ class EventWriter:
             EmitPreconditionError: if `skip_validation=False` and the event
                 would create an illegal transition or is missing a hard
                 prerequisite (e.g. implementation_complete without prior
-                verification_passed on the same change_id).
+                verification_passed on the same change_id). ALSO raised —
+                regardless of `skip_validation` — for a non-str `timestamp`:
+                the writer is the single choke point to disk and does not
+                round-trip `parse_event_line`, so shape is enforced here (a
+                widening of EmitPreconditionError's documented transition-only
+                meaning; reusing it keeps the 12+ existing "emit rejected, stay
+                alive" handlers working). Type-only: `""` stays legal (the
+                dispatcher stamps blank timestamps before emit).
         """
+        if not isinstance(event.timestamp, str):
+            raise EmitPreconditionError(
+                f"timestamp must be a string, got {type(event.timestamp).__name__}"
+            )
         if not skip_validation:
             validate_preconditions(self.path, event)
         line = serialize_event(event) + "\n"

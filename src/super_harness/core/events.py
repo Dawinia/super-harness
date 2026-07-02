@@ -126,6 +126,14 @@ def parse_event_line(line: str) -> Event:
         raise EventSchemaError("event_id must be non-empty")
     if not obj["change_id"]:
         raise EventSchemaError("change_id must be non-empty")
+    if not isinstance(obj["timestamp"], str):
+        # SHAPE not semantics: str-ness only (ISO validity stays a reducer/emit
+        # concern). A non-str value would crash tolerant readers' string ops —
+        # e.g. the reducer drift check — instead of the warn+skip they promise.
+        # "" stays legal: the dispatcher stamps blank timestamps post-hoc.
+        raise EventSchemaError(
+            f"timestamp must be a string, got {type(obj['timestamp']).__name__}"
+        )
     actor_raw = obj["actor"]
     if not isinstance(actor_raw, dict):
         raise EventSchemaError("actor must be an object with 'type' and 'identifier'")
