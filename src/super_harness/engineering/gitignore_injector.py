@@ -60,9 +60,11 @@ GITIGNORE_END_MARKER = "# <<< super-harness gitignore"
 #     `daemon.log` are here because they are REGULAR files under `.harness/`
 #     that `git add -A` will sweep into a commit (the #64 pothole). The UDS
 #     socket `daemon.sock` is deliberately absent: it is a unix-domain socket
-#     special file that git never tracks, so it cannot be committed. (The
-#     transient flock target `.harness/.state.lock` is ignored separately,
-#     outside this managed block.)
+#     special file that git never tracks, so it cannot be committed. The
+#     transient flock sentinels (`.harness/.state.lock`, `.harness/.events.lock`,
+#     any future `.harness/.<name>.lock`) are covered by the `.harness/.*.lock`
+#     glob below (F4 — previously `.state.lock` was ignored by a hand-written
+#     line outside this block, an init gap for downstream repos).
 #  2. Per-agent local settings + their backups. `adapter install claude-code`
 #     installs the gate hook into `.claude/settings.local.json` (which carries
 #     a machine-specific absolute path, so it must never be committed) and
@@ -86,6 +88,7 @@ _CANONICAL_PATHS: tuple[str, ...] = (
     ".harness/gate-disabled",
     ".harness/daemon.pid",
     ".harness/daemon.log",
+    ".harness/.*.lock",
     ".claude/settings.local.json",
     ".claude/*.super-harness-backup.*",
     ".codex/hooks.json",

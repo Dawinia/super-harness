@@ -3,21 +3,36 @@
 Atomicity guarantees (per lifecycle-event-model §2 + §3.9 #1):
 - Single line per event (newline-terminated JSON)
 - POSIX O_APPEND ensures kernel-atomic append across processes
-- threading.Lock serializes multi-thread same-process writes (defense in depth;
-  O_APPEND alone is enough but the lock makes the failure mode obvious)
+- fcntl.flock on a `.harness/.events.lock` sentinel serializes the WHOLE
+  validate→append critical section across writers (F4 fix). O_APPEND alone keeps
+  each write() atomic, but emit first READS the stream to validate the new event
+  against derived state; without a lock spanning read+append, two writers both
+  validate the stale stream, both pass, and both append — landing an event that
+  is illegal on replay (which the must_pass `lifecycle-ordering` baseline flags
+  as tamper on an append-only log with no repair path). The flock closes that
+  TOCTOU. Mirrors `post_emit.py`'s `.state.lock` idiom; lock order is
+  events-before-state (emit releases `.events.lock` before the caller's
+  `refresh_state_after_emit` takes `.state.lock`; never nested).
+- threading.Lock is a PER-INSTANCE thread guard (serializes threads sharing ONE
+  EventWriter). It is NOT process-wide: two EventWriter instances in one process
+  are serialized by the flock, not this lock (kept as cheap defense-in-depth).
 - fsync after each write — durable on power loss (cost: ~ms per emit; v0.1
   accepts this; v0.2 may add batch-fsync option)
 
 Supported filesystems (spec §3.9 #1): Linux ext4, macOS APFS. NOT supported:
-NFS / SMB / FUSE — these break atomic append semantics. README must call this
-out before users try to put .harness/ on a network drive.
+NFS / SMB / FUSE — these break atomic append AND advisory-lock semantics. flock
+is POSIX-only (Linux/macOS), consistent with the module's local-fs stance.
+README must call this out before users try to put .harness/ on a network drive.
 
 emit-time validation: this writer accepts a `skip_validation: bool = False`
 kwarg. When False (default) emit calls `emit_validation.validate_preconditions`
-BEFORE writing — illegal transitions raise `EmitPreconditionError` and nothing
-hits disk (strict per spec §3.8.1). Pass `skip_validation=True` to bypass (used
-by replay/import tooling that already vetted the stream).
+UNDER the flock, BEFORE writing — illegal transitions raise
+`EmitPreconditionError` and nothing hits disk (strict per spec §3.8.1). Pass
+`skip_validation=True` to bypass validation (used by replay/import tooling that
+already vetted the stream); the append still holds the flock so a skip write
+cannot slip into another writer's validate→append window.
 """
+import fcntl
 import os
 import threading
 from pathlib import Path
@@ -31,16 +46,22 @@ from super_harness.core.events import Event, serialize_event
 __all__ = ["EmitPreconditionError", "EventWriter"]
 
 
+# @decision:d-events-append-only
 class EventWriter:
     """Append-only writer to events.jsonl.
 
-    Thread-safe within a process (internal lock). Multi-process safe via
-    POSIX O_APPEND. NOT safe on network filesystems (see module docstring).
+    Thread-safe within a process (per-instance lock) AND across writer instances
+    / processes (fcntl.flock on a sentinel). NOT safe on network filesystems
+    (see module docstring).
     """
 
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)
         self._lock = threading.Lock()
+        # Cross-process critical-section lock sentinel. Sibling of events.jsonl,
+        # equal to `paths.lock_path(root, "events")` (`.harness/.events.lock`);
+        # derived from self.path so EventWriter stays path-only.
+        self._lock_path = self.path.parent / ".events.lock"
         # Ensure parent directory exists — common case: `.harness/` is brand
         # new on first emit. mkdir(parents=True, exist_ok=True) is idempotent.
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,17 +94,32 @@ class EventWriter:
             raise EmitPreconditionError(
                 f"timestamp must be a string, got {type(event.timestamp).__name__}"
             )
-        if not skip_validation:
-            validate_preconditions(self.path, event)
+        # Pure prep stays outside the lock to keep the critical section minimal.
         line = serialize_event(event) + "\n"
         data = line.encode("utf-8")
-        with self._lock:
-            # O_APPEND is the critical flag — kernel guarantees atomicity of
-            # each write() call on regular files (within PIPE_BUF on some FSes;
-            # events should always fit well under 4KB after JSON encoding).
-            fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-            try:
-                os.write(fd, data)
-                os.fsync(fd)
-            finally:
-                os.close(fd)
+        with self._lock:  # per-instance thread guard (see class docstring)
+            # Sentinel must exist before open() (read mode); touch is idempotent.
+            self._lock_path.touch(exist_ok=True)
+            with open(self._lock_path) as lock_file:
+                # LOCK_EX blocks until acquired — spans validate+append so no
+                # writer validates a stale stream then appends over another's
+                # append (the F4 TOCTOU). Auto-released on close / process death.
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                try:
+                    if not skip_validation:
+                        # READ under the lock — this is the whole point of F4.
+                        validate_preconditions(self.path, event)
+                    # O_APPEND — kernel guarantees atomicity of each write() on
+                    # regular files (events fit well under 4KB after encoding).
+                    fd = os.open(
+                        self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644
+                    )
+                    try:
+                        os.write(fd, data)
+                        os.fsync(fd)
+                    finally:
+                        os.close(fd)
+                finally:
+                    # Explicit UN is belt-and-suspenders (close releases anyway),
+                    # matching post_emit.py. Explicit > implicit.
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)

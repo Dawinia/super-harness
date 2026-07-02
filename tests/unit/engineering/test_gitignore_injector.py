@@ -37,6 +37,7 @@ _CANONICAL_PATHS = (
     ".harness/gate-disabled",
     ".harness/daemon.pid",
     ".harness/daemon.log",
+    ".harness/.*.lock",
     ".claude/settings.local.json",
     ".claude/*.super-harness-backup.*",
     ".codex/hooks.json",
@@ -295,6 +296,42 @@ def test_block_covers_daemon_runtime_files(tmp_path: Path) -> None:
     assert ".harness/daemon.pid" in text, text
     assert ".harness/daemon.log" in text, text
     assert ".harness/daemon.sock" not in text, "socket is not a git-trackable file"
+
+
+def test_block_covers_flock_lock_sentinels(tmp_path: Path) -> None:
+    """F4: the managed block ignores transient flock sentinels via the
+    `.harness/.*.lock` glob (product behavior, not a per-repo hand-edit), so
+    downstream `super-harness init` repos never commit `.state.lock` /
+    `.events.lock`. Assert the glob is emitted and matches both sentinels.
+    """
+    import fnmatch
+
+    path = tmp_path / ".gitignore"
+    inject_gitignore_block(path)
+    text = path.read_text()
+    assert ".harness/.*.lock" in text, text
+    for sentinel in (".harness/.state.lock", ".harness/.events.lock"):
+        assert fnmatch.fnmatch(sentinel, ".harness/.*.lock"), sentinel
+
+
+def test_committed_gitignore_has_no_standalone_state_lock() -> None:
+    """F4 removal guard: once `.harness/.*.lock` lives INSIDE the managed block,
+    the old hand-written `.harness/.state.lock` line outside the markers is
+    redundant and must be gone. The drift guard only compares the marker-bounded
+    block, so a leftover hand line would slip past it and `sync --check` — this
+    asserts there is no `.harness/.state.lock` line outside the managed markers.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    text = (repo_root / ".gitignore").read_text(encoding="utf-8")
+
+    begin = text.index(GITIGNORE_BEGIN_MARKER)
+    end = text.index(GITIGNORE_END_MARKER) + len(GITIGNORE_END_MARKER)
+    outside = text[:begin] + text[end:]
+    for line in outside.splitlines():
+        assert line.strip() != ".harness/.state.lock", (
+            "redundant hand-written .harness/.state.lock outside the managed "
+            "block — the `.harness/.*.lock` glob inside the block now covers it"
+        )
 
 
 def test_block_covers_claude_settings_backup_filenames(tmp_path: Path) -> None:

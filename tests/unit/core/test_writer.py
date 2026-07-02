@@ -172,6 +172,29 @@ def test_writer_rejects_non_string_timestamp(tmp_path: Path):
     assert not events_file.exists() or events_file.read_text() == ""
 
 
+# F4 (review 2026-07-02): emit takes an fcntl.flock on a `.events.lock` sentinel
+# spanning validate+append. These pin the sentinel naming (== paths.lock_path(
+# root, "events")) and that the lock is engaged even on the skip_validation path.
+
+def test_writer_lock_path_is_events_lock_sibling(tmp_path: Path):
+    from super_harness.core.paths import lock_path
+
+    events_file = tmp_path / ".harness" / "events.jsonl"
+    w = EventWriter(events_file)
+    assert w._lock_path == events_file.parent / ".events.lock"
+    # canonical sentinel path == paths.lock_path(root, "events")
+    assert w._lock_path == lock_path(tmp_path, "events")
+
+
+def test_writer_skip_validation_still_creates_lock_sentinel(tmp_path: Path):
+    """skip_validation bypasses validation but the append still holds the flock,
+    so the `.events.lock` sentinel is created next to events.jsonl."""
+    events_file = tmp_path / ".harness" / "events.jsonl"
+    w = EventWriter(events_file)
+    w.emit(_make_event("c1"), skip_validation=True)
+    assert (events_file.parent / ".events.lock").exists()
+
+
 def test_writer_accepts_empty_string_timestamp(tmp_path: Path):
     # type-only guard: "" is a str (the dispatcher stamps blanks before emit)
     import dataclasses
