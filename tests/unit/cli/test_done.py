@@ -250,7 +250,7 @@ def test_done_pr_recorded_on_payload(tmp_path: Path) -> None:
 
 
 def test_done_resolves_active_change(tmp_path: Path) -> None:
-    # No explicit slug → resolve the first non-terminal change.
+    # No explicit slug → resolve the most recently active non-terminal change.
     _init_in_progress(tmp_path, yaml_text=_PASS_YAML, slug="active-one")
     r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "done"])
     assert r.exit_code == EXIT_OK, r.output

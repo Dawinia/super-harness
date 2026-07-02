@@ -240,7 +240,7 @@ def test_verify_no_slug_no_active_exit_2(tmp_path: Path) -> None:
 
 
 def test_verify_resolves_active_change(tmp_path: Path) -> None:
-    # No explicit slug → resolve the first non-terminal change from state.yaml.
+    # No explicit slug → resolve the most recently active non-terminal change from state.yaml.
     _init_workspace(tmp_path, yaml_text=_PASS_YAML, slug="active-one")
     r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "verify"])
     assert r.exit_code == EXIT_OK, r.output

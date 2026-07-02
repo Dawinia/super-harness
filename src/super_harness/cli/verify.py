@@ -15,7 +15,7 @@ state.yaml internally, so `verify` itself neither emits nor refreshes.
 Slug resolution (cli-command-surface convention, NOT git-branch parsing):
 explicit `<slug>` argument wins; else `--pr <num>` fetches the PR body, parses
 the §2.5 metadata block, and uses its ``Change`` field (Phase 14 Task 14.3);
-else the first non-terminal change via `read_active_change_id`. Neither →
+else the most recently active non-terminal change via `read_active_change_id`. Neither →
 EXIT_VALIDATION.
 
 ``--pr`` resolution failures are classified into exit codes by

@@ -118,7 +118,7 @@ def test_hook_entry_exits_0_on_daemon_down_fail_safe(workspace: Path) -> None:
 
 def test_hook_entry_derives_active_change_from_state_yaml(workspace: Path) -> None:
     """When env var unset, hook should derive the active change_id from
-    state.yaml's `changes` map (first non-terminal change), NOT a top-level
+    state.yaml's `changes` map (most recently active non-terminal change), NOT a top-level
     `active_change_id` field (which the reducer never writes)."""
     write_state(workspace, "c1", "PLAN_APPROVED")
     _start_daemon(workspace)
@@ -138,7 +138,7 @@ def test_hook_entry_derives_active_change_from_state_yaml(workspace: Path) -> No
 
 
 def test_hook_entry_resolves_active_change_without_env(workspace: Path) -> None:
-    """No SUPER_HARNESS_CHANGE_ID → hook derives the active (first non-terminal)
+    """No SUPER_HARNESS_CHANGE_ID → hook derives the active (most recently active non-terminal)
     change from state.yaml's `changes` map (reducer shape has NO active_change_id
     field). A blocking state must actually block.
 

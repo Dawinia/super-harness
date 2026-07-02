@@ -41,7 +41,7 @@ def _hook_query_timeout_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def write_state(workspace: Path, change_id: str, current_state: str) -> None:
     state_path = workspace / ".harness" / "state.yaml"
     # Real reducer shape: `changes` map only, NO top-level active_change_id
-    # (the reducer never writes it; "active" is derived = first non-terminal).
+    # (the reducer never writes it; "active" is derived = most recently active non-terminal).
     state_path.write_text(
         yaml.safe_dump(
             {

@@ -64,7 +64,7 @@ pytestmark = pytest.mark.skipif(
 def workspace(tmp_path: Path) -> Path:
     (tmp_path / ".harness").mkdir()
     # Real reducer shape: `changes` map only, NO top-level active_change_id
-    # (the reducer never writes it; "active" is derived = first non-terminal).
+    # (the reducer never writes it; "active" is derived = most recently active non-terminal).
     (tmp_path / ".harness" / "state.yaml").write_text(
         yaml.safe_dump(
             {"changes": {"c1": {"change_id": "c1",
