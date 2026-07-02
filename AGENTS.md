@@ -167,5 +167,13 @@ yours, not the tool's — and the recipe is:
 
 - **If there is no brittle signature, leave it context-only (tier-3)** — do not
   invent a hollow check just to have one.
+- **The check MUST be read-only and reentrant.** With `authoring_time: true` the
+  check runs concurrently with the other armed checks on every turn end, so it must
+  not write source, caches, `.pyc`, lock files, or any temp under the working tree
+  (two checks writing the same path would race). A conformance check should be a pure
+  predicate — e.g. use `lint-imports --no-cache` so no cache file is written.
+- **Keep the armed authoring set small.** Each armed check spawns a subprocess
+  concurrently every turn end; a large armed set misuses the interactive budget (CI
+  is the exhaustive path).
 
 <!-- super-harness section end -->

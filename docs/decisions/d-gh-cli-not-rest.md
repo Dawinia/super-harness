@@ -2,8 +2,9 @@
 id: d-gh-cli-not-rest
 status: ratified
 ratified_by: dawinialo@163.com
-ratified_at: '2026-06-22T19:11:26.859145Z'
+ratified_at: '2026-07-02T03:54:40.718739Z'
 ratified_text_hash: sha256:8ee413d6344eef54aeeac4cb18772d060d63e0f28e397f7d7b3d9a859199736c
+authoring_time: true
 ---
 GitHub access goes through the gh CLI, never raw REST.
 
