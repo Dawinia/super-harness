@@ -203,3 +203,19 @@ def test_reducer_survives_int_timestamp_then_valid_event(tmp_path: Path):
                  + _raw_line("plan_ready", "2026-05-27T10:01:00Z") + "\n")
     state = derive_state(f)  # must not raise
     assert state["c1"].current_state == "AWAITING_PLAN_REVIEW"
+
+
+def test_reducer_tolerates_mixed_naive_aware_timestamps(tmp_path: Path):
+    """F11b (2026-07-03): a tz-less timestamp followed by an aware one (backward)
+    must not raise — the old inline drift parse compared a naive datetime against
+    an aware one and TypeError'd past its `except ValueError` guard. parse_ts now
+    normalizes both to aware-UTC so the comparison is safe."""
+    f = tmp_path / "events.jsonl"
+    f.write_text(
+        _raw_line("intent_declared", "2026-07-03T10:00:05") + "\n"        # naive
+        + _raw_line("plan_ready", "2026-07-03T10:00:00+00:00") + "\n",    # aware, earlier
+        encoding="utf-8",
+    )
+    state = derive_state(f)  # must not raise
+    assert "c1" in state
+    assert state["c1"].current_state == "AWAITING_PLAN_REVIEW"
