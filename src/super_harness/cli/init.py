@@ -67,7 +67,7 @@ def _pull_request_template() -> str:
             "super-harness install is corrupt — bundled template "
             "'pull_request_template.md' missing. Reinstall super-harness."
         )
-    return src.read_text()
+    return src.read_text(encoding="utf-8")
 
 
 def _workflow_template() -> str:
@@ -78,13 +78,13 @@ def _workflow_template() -> str:
             "super-harness install is corrupt — bundled template "
             "'super_harness_workflow.yml' missing. Reinstall super-harness."
         )
-    return src.read_text()
+    return src.read_text(encoding="utf-8")
 
 
 def _source_paths_default() -> str:
     src = _TEMPLATES.joinpath("source_paths_defaults.yaml")
     if src.is_file():
-        return src.read_text()
+        return src.read_text(encoding="utf-8")
     return "source_paths:\n  include:\n    - '**/*'\n  exclude:\n    - 'docs/**'\n"
 
 
@@ -108,7 +108,7 @@ def _verification_default() -> str:
             "super-harness install is corrupt — bundled template "
             "'verification_defaults.yaml' missing. Reinstall super-harness."
         )
-    return src.read_text()
+    return src.read_text(encoding="utf-8")
 
 
 def _skeleton_files() -> dict[str, str]:
@@ -209,7 +209,7 @@ def init_cmd(
         path = harness / name
         if path.exists() and not force:
             continue
-        path.write_text(content)
+        path.write_text(content, encoding="utf-8")
     # Wire the repo-root AGENTS.md "super-harness section" (§2.2 / §3.2): create
     # or append our section (preserving any user content outside the markers),
     # then replace the framework placeholder with the plain framework block.
@@ -444,11 +444,11 @@ def _write_pr_template(ctx: click.Context, root: Path) -> PRTemplateOutcome:
 
     if not template_path.exists():
         gh_dir.mkdir(parents=True, exist_ok=True)
-        template_path.write_text(_pull_request_template())
+        template_path.write_text(_pull_request_template(), encoding="utf-8")
         return "wrote"
 
     try:
-        existing = template_path.read_text()
+        existing = template_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
         # error-family: UnicodeDecodeError is a ValueError (not OSError), so both
         # must be caught — a non-UTF-8 / unreadable existing template must surface
@@ -520,7 +520,7 @@ def _write_pr_template(ctx: click.Context, root: Path) -> PRTemplateOutcome:
             return "declined"  # declined ('n') → leave untouched, non-fatal
     placeholder = f"{METADATA_BEGIN}\n{METADATA_END}\n"
     new = existing.rstrip("\n") + "\n\n" + placeholder
-    template_path.write_text(new)
+    template_path.write_text(new, encoding="utf-8")
     return "wrote"
 
 
@@ -549,11 +549,11 @@ def _write_workflow_file(ctx: click.Context, root: Path) -> WorkflowOutcome:
 
     if not workflow_path.exists():
         workflows_dir.mkdir(parents=True, exist_ok=True)
-        workflow_path.write_text(bundled)
+        workflow_path.write_text(bundled, encoding="utf-8")
         return "wrote"
 
     try:
-        existing = workflow_path.read_text()
+        existing = workflow_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
         # error-family: UnicodeDecodeError is a ValueError (not OSError), so both
         # must be caught — a non-UTF-8 / unreadable existing workflow file must
@@ -600,7 +600,7 @@ def _write_workflow_file(ctx: click.Context, root: Path) -> WorkflowOutcome:
         if not proceed:
             return "declined"  # declined ('n') → leave untouched, non-fatal
 
-    workflow_path.write_text(bundled)
+    workflow_path.write_text(bundled, encoding="utf-8")
     return "wrote"
 
 

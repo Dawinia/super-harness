@@ -127,7 +127,9 @@ class CodexAdapter(AgentAdapter):
         session_command = f"{resolved_cli} change resume"
         stop_command = f"{resolved_hook} --agent codex --event stop"
 
-        snapshot: str | None = hooks_path.read_text() if hooks_path.exists() else None
+        snapshot: str | None = (
+            hooks_path.read_text(encoding="utf-8") if hooks_path.exists() else None
+        )
         try:
             merge_pre_tool_use_hook(
                 hooks_path, command=pre_command,
@@ -144,7 +146,7 @@ class CodexAdapter(AgentAdapter):
         if snapshot is None:
             hooks_path.unlink(missing_ok=True)
         else:
-            hooks_path.write_text(snapshot)
+            hooks_path.write_text(snapshot, encoding="utf-8")
 
     def inject_context(self, change_id: str) -> str:
         result = subprocess.run(
@@ -185,7 +187,7 @@ class CodexAdapter(AgentAdapter):
         )
         if not backups:
             return
-        hooks_path.write_text(backups[0].read_text())
+        hooks_path.write_text(backups[0].read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _backup_sort_key(path: Path) -> int:

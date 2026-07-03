@@ -14,13 +14,13 @@ Invariants enforced (§3.8.5):
 1. Idempotent: derive(events) == derive(events) for same input
 2. Rebuildable: derive output round-trips through state.yaml (Task 1.7 wires this)
 3. Prefix consistency: derive(events[:N]) == state-at-N
-4. Tolerant of truncated last line (events.jsonl crash recovery)
+4. Tolerant of a truncated last line: a partial final write leaves incomplete
+   JSON, which is skipped via the malformed-JSON path (crash recovery)
 5. event_counts excludes unknown event types
 """
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 
 from super_harness.core.events import (
@@ -28,6 +28,7 @@ from super_harness.core.events import (
     EventSchemaError,
     parse_event_line,
 )
+from super_harness.core.parse_ts import parse_ts
 from super_harness.core.state import ChangeState
 from super_harness.core.transitions import INVALID, compute_target_state
 
@@ -46,7 +47,11 @@ def derive_state(events_file: Path) -> dict[str, ChangeState]:
 
     Tolerance rules:
     - Malformed JSON / missing required fields → log.warning + skip line
-    - Truncated last line (no newline) → log.warning + skip line
+    - Truncated last line (partial write) → surfaces as malformed JSON → skip.
+      (`splitlines()` cannot see a missing trailing newline on an otherwise-
+      complete JSON line, and the writer emits `line + "\n"` in one atomic write,
+      so the only observable torn write is incomplete JSON — there is no separate
+      newline check.)
     - Unknown event types → log.warning + skip (not counted in event_counts)
     - Illegal transitions (e.g. plan_ready before intent_declared) → log.warning,
       preserve current_state but still update last_event_* fields (audit trail).
@@ -60,7 +65,7 @@ def derive_state(events_file: Path) -> dict[str, ChangeState]:
     if not events_file.exists():
         return state
 
-    raw_lines = events_file.read_text().splitlines()
+    raw_lines = events_file.read_text(encoding="utf-8").splitlines()
     for line_num, line in enumerate(raw_lines, start=1):
         if not line.strip():
             continue
@@ -73,23 +78,23 @@ def derive_state(events_file: Path) -> dict[str, ChangeState]:
         cs = state.setdefault(ev.change_id, ChangeState(change_id=ev.change_id))
 
         # clock drift detection (do not reorder; §3.8.3 — append order is causal truth).
-        # Parse both timestamps via datetime to avoid string-lex misfires across
-        # mixed ISO 8601 forms (Z vs +00:00, second vs microsecond precision).
+        # Parse both timestamps via the shared core.parse_ts primitive to avoid
+        # string-lex misfires across mixed ISO 8601 forms (Z vs +00:00, second vs
+        # microsecond precision). Both must parse to compare; an unparseable side
+        # means "no signal", NOT a drift warning. parse_ts normalizes to aware-UTC
+        # so a mixed naive/aware pair compares without TypeError (the old inline
+        # copy caught only ValueError and crashed on that comparison).
         prev_ts = last_ts.get(ev.change_id)
         if prev_ts:
-            try:
-                prev_dt = datetime.fromisoformat(prev_ts.replace("Z", "+00:00"))
-                cur_dt = datetime.fromisoformat(ev.timestamp.replace("Z", "+00:00"))
-                if cur_dt < prev_dt:
-                    drift = (prev_dt - cur_dt).total_seconds()
-                    if drift > CLOCK_DRIFT_WARN_THRESHOLD_S:
-                        log.warning(
-                            "events.jsonl line %d: timestamp drift %.1fs (append order preserved)",
-                            line_num, drift,
-                        )
-            except ValueError:
-                # Non-ISO timestamp on either side — audit-only field, don't crash.
-                pass
+            prev_dt = parse_ts(prev_ts)
+            cur_dt = parse_ts(ev.timestamp)
+            if prev_dt is not None and cur_dt is not None and cur_dt < prev_dt:
+                drift = (prev_dt - cur_dt).total_seconds()
+                if drift > CLOCK_DRIFT_WARN_THRESHOLD_S:
+                    log.warning(
+                        "events.jsonl line %d: timestamp drift %.1fs (append order preserved)",
+                        line_num, drift,
+                    )
         last_ts[ev.change_id] = ev.timestamp
 
         # Invariant 5: only known event types count toward event_counts.

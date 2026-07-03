@@ -121,7 +121,7 @@ def merge_pre_tool_use_hook(
     else:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
 
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
 
 def merge_session_start_hook(
@@ -174,7 +174,7 @@ def merge_session_start_hook(
     else:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
 
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
 
 def merge_stop_hook(
@@ -215,11 +215,11 @@ def merge_stop_hook(
     else:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
 
-    settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+    settings_path.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
 
 def _read_settings(settings_path: Path) -> dict[str, Any]:
-    raw = settings_path.read_text()
+    raw = settings_path.read_text(encoding="utf-8")
     try:
         parsed: Any = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -251,7 +251,7 @@ def _write_backup(settings_path: Path) -> None:
         backup = settings_path.with_name(
             f"{settings_path.name}.super-harness-backup.{stamp}"
         )
-    backup.write_text(settings_path.read_text())
+    backup.write_text(settings_path.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _ensure_hooks_dict(settings: dict[str, Any]) -> dict[str, Any]:

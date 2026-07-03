@@ -134,7 +134,7 @@ def load_adapters(
     if not yaml_path.exists():
         return [], []
 
-    cfg = yaml.safe_load(yaml_path.read_text()) or {}
+    cfg = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
     entries = cfg.get("adapters", []) or []
     if not isinstance(entries, list):
         raise ValueError(

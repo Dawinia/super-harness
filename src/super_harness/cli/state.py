@@ -76,7 +76,7 @@ def state_rebuild(ctx: click.Context, dry_run: bool, verify_flag: bool) -> None:
     last_id = ""
     events_file = events_path(root)
     if events_file.exists():
-        for line in reversed(events_file.read_text().splitlines()):
+        for line in reversed(events_file.read_text(encoding="utf-8").splitlines()):
             if not line.strip():
                 continue
             try:
@@ -126,7 +126,7 @@ def state_verify(ctx: click.Context) -> None:
     violations: list[str] = []
     parsed_events = []
     if f.exists():
-        for ln, line in enumerate(f.read_text().splitlines(), start=1):
+        for ln, line in enumerate(f.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip():
                 continue
             try:

@@ -64,7 +64,7 @@ def refresh_state_after_emit(workspace_root: Path) -> None:
             # Same fix as cli/state.py state_rebuild — keep these in lockstep.
             last_id = ""
             if events_file.exists():
-                for line in reversed(events_file.read_text().splitlines()):
+                for line in reversed(events_file.read_text(encoding="utf-8").splitlines()):
                     if not line.strip():
                         continue
                     try:

@@ -44,6 +44,6 @@ def write_operation_log(harness: Path, subdir: str, body: str) -> None:
         log_dir = harness / "operation-logs" / subdir
         log_dir.mkdir(parents=True, exist_ok=True)
         ts = utc_now_iso().replace(":", "-")
-        (log_dir / f"{ts}.log").write_text(body)
+        (log_dir / f"{ts}.log").write_text(body, encoding="utf-8")
     except OSError:
         pass

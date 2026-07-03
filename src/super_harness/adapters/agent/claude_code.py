@@ -217,7 +217,9 @@ class ClaudeCodeAdapter(AgentAdapter):
 
         # Snapshot the install transaction boundary: capture the file's exact
         # pre-install content, or that it was absent. Restored on ANY failure.
-        snapshot: str | None = settings_path.read_text() if settings_path.exists() else None
+        snapshot: str | None = (
+            settings_path.read_text(encoding="utf-8") if settings_path.exists() else None
+        )
         try:
             merge_pre_tool_use_hook(settings_path, command=pre_tool_use_command)
             merge_session_start_hook(settings_path, command=session_start_command)
@@ -236,7 +238,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         if snapshot is None:
             settings_path.unlink(missing_ok=True)
         else:
-            settings_path.write_text(snapshot)
+            settings_path.write_text(snapshot, encoding="utf-8")
 
     def stop_should_check(self, payload: dict[str, Any]) -> bool:
         """Skip the continuation turn a prior block created (loop-safety). Delegates to
@@ -316,7 +318,7 @@ class ClaudeCodeAdapter(AgentAdapter):
         )
         if not backups:
             return
-        settings_path.write_text(backups[0].read_text())
+        settings_path.write_text(backups[0].read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def _backup_sort_key(path: Path) -> int:

@@ -264,7 +264,7 @@ def load_verification_config(path: Path) -> VerificationConfig:
     # Let yaml.YAMLError propagate unwrapped (mirrors adapters.registry /
     # core._registry). `or {}` treats an empty file as an empty mapping → all
     # defaults.
-    raw = yaml.safe_load(path.read_text()) or {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise VerificationConfigError(
             f"{path}: top-level must be a mapping, got {type(raw).__name__}"
@@ -366,7 +366,7 @@ def merge_adapter_provided(path: Path, checks: list[dict[str, Any]]) -> None:
     cfg: dict[str, Any] = {}
     if path.exists():
         # yaml.YAMLError propagates — callers catch + surface it.
-        loaded = yaml.safe_load(path.read_text()) or {}
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
         if isinstance(loaded, dict):
             cfg = loaded
     existing = cfg.get("adapter_provided")
@@ -376,7 +376,9 @@ def merge_adapter_provided(path: Path, checks: list[dict[str, Any]]) -> None:
 
     cfg["adapter_provided"] = merge_adapter_provided_list(existing, checks)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False))
+    path.write_text(
+        yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False), encoding="utf-8"
+    )
 
 
 # --------------------------------------------------------------------------- #
