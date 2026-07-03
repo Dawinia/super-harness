@@ -41,10 +41,10 @@ def _safe_load(text: str) -> object:
     """Parse YAML with CSafeLoader when available, else the pure SafeLoader."""
     import yaml
 
-    try:
-        loader = yaml.CSafeLoader
-    except AttributeError:  # libyaml not built into this PyYAML
-        loader = yaml.SafeLoader
+    # getattr fallback (not try/except) so the two loader types don't produce an
+    # incompatible-assignment under mypy; CSafeLoader is absent when PyYAML was
+    # built without libyaml.
+    loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
     return yaml.load(text, Loader=loader)
 
 
