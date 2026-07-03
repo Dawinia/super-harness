@@ -89,3 +89,25 @@ def test_pathological_tzinfo_returns_none_not_raise():
 
     bad = datetime(2026, 1, 1, tzinfo=_BadTZ())
     assert parse_ts(bad) is None  # must not raise
+
+
+def test_str_subclass_with_raising_replace_returns_none():
+    """The 'never raises for ANY object' contract holds even for a str subclass
+    whose replace() raises (Codex code-review catch). Real callers only ever pass
+    stdlib str/datetime, but the primitive is the gate's fail-safe seam."""
+    class _BadStr(str):
+        def replace(self, *a, **k):
+            raise RuntimeError("replace boom")
+
+    assert parse_ts(_BadStr("2026-07-03T10:00:00Z")) is None  # must not raise
+
+
+def test_datetime_subclass_with_raising_replace_returns_none():
+    """Same contract for a naive datetime subclass whose replace() raises — the
+    naive-branch .replace(tzinfo=utc) must not propagate."""
+    class _BadDatetime(datetime):
+        def replace(self, *a, **k):
+            raise RuntimeError("replace boom")
+
+    bad = _BadDatetime(2026, 1, 1)  # naive → hits the .replace(tzinfo=utc) path
+    assert parse_ts(bad) is None  # must not raise

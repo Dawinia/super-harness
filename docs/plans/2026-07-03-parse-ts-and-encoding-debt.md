@@ -175,28 +175,26 @@ def parse_ts(value: object) -> datetime | None:
       then converted to aware UTC as above.
     - empty / malformed / ``None`` / any other type → ``None``.
     """
-    if isinstance(value, datetime):
-        return _to_utc(value)
-    if not isinstance(value, str) or not value:
-        return None
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        if isinstance(value, datetime):
+            return _to_utc(value)
+        if not isinstance(value, str) or not value:
+            return None
+        return _to_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except Exception:
         return None
-    return _to_utc(dt)
 ```
 
-where `_to_utc` guards the `astimezone` conversion so the never-raise contract holds even for a pathological `tzinfo` (whose `utcoffset` raises) or a min/max boundary `OverflowError` (round-2 Codex catch):
+A SINGLE outer `except Exception` is the never-raise belt (round-2 + code-review Codex catch): it covers not just the `astimezone` pathological-`tzinfo`/boundary-`OverflowError` case but also a hostile `str`/`datetime` **subclass** overriding `replace`/`fromisoformat` (the naive `.replace(tzinfo=utc)` and the `str.replace("Z",…)` are otherwise unguarded). `_to_utc` is then a plain helper that MAY raise; the belt turns any raise into `None`:
 
 ```python
-def _to_utc(dt: datetime) -> datetime | None:
+def _to_utc(dt: datetime) -> datetime:
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)  # cannot raise
-    try:
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None  # pathological tzinfo / boundary OverflowError → never raise
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 ```
+
+Regression tests: pathological `tzinfo` (utcoffset raises), `str` subclass with raising `replace`, `datetime` subclass with raising `replace` — all must resolve to `None`, never propagate.
 
 **Step 4: Run to verify pass**
 

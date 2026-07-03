@@ -23,25 +23,22 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 
-def _to_utc(dt: datetime) -> datetime | None:
-    """Normalize a ``datetime`` to aware UTC, or ``None`` if that is impossible.
-    A naive value gets UTC attached (cannot raise). An aware value is converted
-    via ``astimezone`` — which can raise for a pathological ``tzinfo`` whose
-    ``utcoffset`` raises, or ``OverflowError`` at the ``datetime.min``/``max``
-    boundary. Both collapse to ``None`` so ``parse_ts`` keeps its never-raise
-    contract on the gate hot path."""
+def _to_utc(dt: datetime) -> datetime:
+    """Normalize a ``datetime`` to aware UTC. A naive value gets UTC attached;
+    an aware value is converted to the same instant in UTC. May raise for exotic
+    inputs (a ``tzinfo`` whose ``utcoffset`` raises, a min/max boundary
+    ``OverflowError``, or a ``datetime`` subclass overriding ``replace``) — the
+    outer ``parse_ts`` guard turns any such raise into ``None``."""
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
-    try:
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
+    return dt.astimezone(timezone.utc)
 
 
 def parse_ts(value: object) -> datetime | None:
     """Parse a timestamp into an aware-UTC ``datetime``, or ``None`` if it is
-    absent/malformed/wrong-type/unnormalizable. NEVER raises (this feeds the gate
-    hot path via ``active_change``).
+    absent/malformed/wrong-type/unnormalizable. NEVER raises for ANY input (this
+    feeds the gate hot path via ``active_change`` — a raise there exits the hook
+    1, which Claude Code treats as non-blocking = silent fail-open).
 
     Accepts the shapes a state.yaml / events.jsonl value can take:
     - ``datetime`` → converted to aware UTC (naive gets UTC attached; a non-UTC
@@ -49,13 +46,17 @@ def parse_ts(value: object) -> datetime | None:
     - ISO ``str`` with ``Z`` or ``+00:00`` (or any offset, or tz-less) → parsed,
       then converted to aware UTC as above.
     - empty / malformed / ``None`` / any other type / unnormalizable → ``None``.
+
+    A single outer ``except Exception`` is the belt: real callers only ever pass
+    stdlib ``str``/``datetime`` (PyYAML / json / the events reader), but a hostile
+    subclass overriding ``replace``/``fromisoformat`` semantics must still resolve
+    to ``None``, never propagate.
     """
-    if isinstance(value, datetime):
-        return _to_utc(value)
-    if not isinstance(value, str) or not value:
-        return None
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
+        if isinstance(value, datetime):
+            return _to_utc(value)
+        if not isinstance(value, str) or not value:
+            return None
+        return _to_utc(datetime.fromisoformat(value.replace("Z", "+00:00")))
+    except Exception:
         return None
-    return _to_utc(dt)
