@@ -57,7 +57,7 @@ running the flow yourself.
 - **21 CLI command groups** spanning lifecycle (`init` / `change` / `plan` /
   `review` / `implementation` / `done` / `on-merge` / `status` / `sync`), gating
   (`verify` / `gate` / `pr` / `attest`), decision conformance (`decision` / `doc`),
-  and infrastructure (`daemon` / `event` / `state` / `adapter` / `sensor` /
+  and infrastructure (`observe` / `event` / `state` / `adapter` / `sensor` /
   `verification`).
 - **Reviewer verdict verbs** — `review approve | reject | skip` (emit
   `plan_approved` / `plan_rejected` / `code_review_passed` / `code_review_failed`)
@@ -65,9 +65,10 @@ running the flow yourself.
   lifecycle deterministically; the gate enforces a verdict exists, the agent/human
   produces it. Per-reviewer strategy (`subagent` / `human` / `hybrid`) is
   configurable in `.harness/policy.yaml` and surfaced by `super-harness status`.
-- **Hot-path PreToolUse gate** via a long-running workspace daemon over a Unix
-  domain socket — blocks Edit / Write tool calls in Claude Code when the
-  current lifecycle state forbids them.
+- **Hot-path PreToolUse gate** decided **in-process** (one `state.yaml` snapshot
+  → the pure `PreToolUseGate`; no resident process on the decision path) — blocks
+  Edit / Write tool calls in Claude Code when the current lifecycle state forbids
+  them. An optional `observe` host watches framework artifacts out-of-band.
 - **Cold-path PR gates** via CI — `pr validate` checks the PR metadata block
   and lifecycle state, `verify` runs the verification-runner sensor, `done`
   advances a change from `IMPLEMENTATION_IN_PROGRESS` to
@@ -155,8 +156,8 @@ bug (flagged explicitly).
 
 **Platform / integration:**
 - MCP integration — v0.2+.
-- Windows support — v0.2+; the daemon currently uses POSIX `os.fork`,
-  `fcntl.flock`, and `AF_UNIX` sockets.
+- Windows support — v0.2+; the optional observer host currently uses POSIX
+  `os.fork` and `fcntl.flock`.
 
 ## Relationship to neighboring tools
 
