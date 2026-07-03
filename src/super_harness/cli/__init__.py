@@ -11,7 +11,6 @@ import click
 from super_harness.cli.adapter import adapter_group
 from super_harness.cli.attest import attest_group
 from super_harness.cli.change import change_group
-from super_harness.cli.daemon import daemon_group
 from super_harness.cli.decision import decision_group
 from super_harness.cli.doc import doc_group
 from super_harness.cli.done import done_cmd
@@ -24,6 +23,7 @@ from super_harness.cli.group_options import (
 )
 from super_harness.cli.implementation import implementation_group
 from super_harness.cli.init import init_cmd
+from super_harness.cli.observe import observe_group
 from super_harness.cli.on_merge import on_merge_cli
 from super_harness.cli.plan import plan_group
 from super_harness.cli.pr import pr_group
@@ -86,7 +86,7 @@ main.add_command(change_group)
 main.add_command(status_cmd)
 main.add_command(sensor_group)
 main.add_command(gate_group)
-main.add_command(daemon_group)
+main.add_command(observe_group)
 main.add_command(adapter_group)
 main.add_command(verify_cmd)
 main.add_command(done_cmd)

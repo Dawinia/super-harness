@@ -3,9 +3,9 @@
 Two fixtures + a small helper API:
 
 - ``demo_repo`` — pytest fixture: a fresh ``git init``-ed tmp dir with one
-  empty initial commit, isolated git identity, and best-effort daemon-stop
-  on teardown. The fixture does NOT call ``super-harness init`` — each
-  test does that itself so it can assert on the bootstrap output.
+  empty initial commit and isolated git identity. The fixture does NOT call
+  ``super-harness init`` — each test does that itself so it can assert on the
+  bootstrap output.
 - ``mock_gh`` — pytest fixture: installs a PATH-shimmed fake ``gh``
   executable that records every invocation to ``calls.jsonl`` and emits
   canned stdout/stderr for the small set of subcommands the engineering
@@ -38,11 +38,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import signal
 import stat
 import subprocess
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,42 +51,12 @@ import pytest
 import yaml
 
 # ---------------------------------------------------------------------------
-# Autouse: widen the daemon hot-path query timeout for every E2E test.
-#
-# The production AC-2 budget is 200 ms (env-var-tunable via
-# ``SUPER_HARNESS_HOOK_QUERY_TIMEOUT``). On a loaded CI runner the hook
-# subprocess cold-start + import + socket connect can eat that whole
-# window before the daemon query lands, fail-opening the gate (exit 0
-# instead of exit 1/2 for BLOCK). The integration daemon tests already
-# carry this same widening (``tests/integration/daemon/conftest.py:30-38``);
-# E2E shares the same exposure surface so we hoist the override here.
-# Phase 15 OPEN-ITEM #4 documented this as MITIGATED-not-eliminated; this
-# is the defense-in-depth half of that mitigation. Child subprocesses
-# inherit the env var.
-# ---------------------------------------------------------------------------
-_HOOK_QUERY_TIMEOUT_FOR_TESTS = "5.0"
-
-# Foreground daemon-start socket-wait budget for E2E: 30s overrides the
-# production 5s ceiling so the blocking `super-harness daemon start` subprocess
-# (test_pre_tool_use_claude_code.py / test_full_lifecycle.py) can't flake when a
-# loaded CI runner stalls a daemon's spawn→boot→bind past 5s. Subprocess inherits
-# the env var. Sibling of the hot-path widening above; see
-# tests/unit/cli/test_daemon.py for the unit-level counterpart.
-_DAEMON_START_TIMEOUT_FOR_TESTS = "30"
-
-
-@pytest.fixture(autouse=True)
-def _hook_query_timeout_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setenv(
-        "SUPER_HARNESS_HOOK_QUERY_TIMEOUT", _HOOK_QUERY_TIMEOUT_FOR_TESTS
-    )
-    monkeypatch.setenv(
-        "SUPER_HARNESS_DAEMON_START_TIMEOUT", _DAEMON_START_TIMEOUT_FOR_TESTS
-    )
-    yield
-
-# ---------------------------------------------------------------------------
 # Helpers (importable from test modules; not pytest fixtures)
+#
+# Post-demotion (design 2026-07-03) the gate decides in-process, so there is no
+# resident process on the hot path and nothing to widen a query timeout for —
+# the old hot-path query-timeout / start-timeout autouse fixture and the
+# observer-stop teardown are gone.
 # ---------------------------------------------------------------------------
 
 
@@ -213,12 +182,12 @@ def _poll_until(
 ) -> subprocess.CompletedProcess[Any]:
     """Shared polling primitive for the two wait-for-* helpers below.
 
-    Absorbs the daemon HotState mtime-reload race: state.yaml is mtime-
-    cached on the daemon side, so the very-next-millisecond gate query
-    can observe stale state. Re-polls every ``interval`` seconds until
-    either ``run().returncode == expected`` or ``timeout`` elapses, then
-    returns the last attempt's CompletedProcess (matched-or-final) so the
-    caller's assertion message has honest data to display.
+    Absorbs residual filesystem-visibility lag: a state.yaml write followed by
+    an immediate hook subprocess can, on a loaded runner, race the write's
+    durability. Re-polls every ``interval`` seconds until either
+    ``run().returncode == expected`` or ``timeout`` elapses, then returns the
+    last attempt's CompletedProcess (matched-or-final) so the caller's assertion
+    message has honest data to display.
     """
     deadline = time.monotonic() + timeout
     last = run()
@@ -277,10 +246,8 @@ def demo_repo(tmp_path: Path) -> Any:
     has no HEAD and would crash those paths. One empty commit costs
     nothing and lets the test author make a real second commit later.
 
-    Teardown: best-effort ``super-harness daemon stop`` (the daemon
-    binary may not exist on PATH if test setup failed early — hence
-    ``check=False`` and a swallowed exception). pytest deletes the
-    ``tmp_path`` dir for us.
+    Teardown: none needed — the gate decides in-process (design 2026-07-03),
+    so no test spawns an observer host. pytest deletes ``tmp_path`` for us.
     """
     repo = tmp_path / "repo"
     repo.mkdir(parents=True, exist_ok=True)
@@ -310,34 +277,7 @@ def demo_repo(tmp_path: Path) -> Any:
         capture_output=True,
     )
 
-    try:
-        yield repo
-    finally:
-        # Best-effort daemon stop. Swallow everything — the test already
-        # failed (or passed) by this point, and a noisy teardown only
-        # obscures the real failure.
-        try:
-            subprocess.run(
-                ["super-harness", "daemon", "stop"],
-                cwd=str(repo),
-                check=False,
-                capture_output=True,
-                timeout=10,
-            )
-        except (OSError, subprocess.SubprocessError):
-            pass
-        # Belt-and-suspenders: if `daemon stop` failed (super-harness binary
-        # missing, CLI crash, etc.) the daemon process survives until killed.
-        # The daemon writes its PID to `.harness/daemon.pid` (supervisor.py:49);
-        # SIGTERM it directly so the process doesn't leak past the test.
-        pid_file = repo / ".harness" / "daemon.pid"
-        if pid_file.is_file():
-            try:
-                pid = int(pid_file.read_text().strip())
-                if pid > 0:
-                    os.kill(pid, signal.SIGTERM)
-            except (OSError, ValueError):
-                pass
+    yield repo
 
 
 @dataclass
@@ -449,11 +389,9 @@ def mock_gh(
 ) -> MockGh:
     """Install a fake ``gh`` at the front of PATH for the test process tree.
 
-    ``monkeypatch.setenv("PATH", ...)`` is inherited by every subprocess
-    the test spawns (and the daemon spawns its children via
-    ``subprocess.Popen`` without an explicit ``env=``, so the shim
-    propagates to daemon-launched sensor processes too — verified
-    against ``daemon/supervisor.py:103-110``).
+    ``monkeypatch.setenv("PATH", ...)`` is inherited by every subprocess the
+    test spawns (the engineering package invokes ``gh`` via ``subprocess`` with
+    the inherited environment, so the shim wins).
 
     The fake ``gh`` writes one JSON line per call to
     ``calls.jsonl`` next to the shim. The MockGh wrapper re-parses it

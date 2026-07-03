@@ -2,22 +2,26 @@
 id: d-single-gate-policy
 status: ratified
 ratified_by: dawinialo@163.com
-ratified_at: '2026-06-26T09:45:28.283402Z'
-ratified_text_hash: sha256:eb0b699fcbf282baf572bca5b20e0c5f79d8a7ae28065401ffd818ba344c034e
+ratified_at: '2026-07-02T19:24:14.868643Z'
+ratified_text_hash: sha256:99748d9db112f5b8a9b5949d97852d32a008e01405bb6d03247793faf670fd7b
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-06-26T09:45:27.960212Z'
+last_reconciled_at: '2026-07-02T19:24:14.702852Z'
 last_reconcile_kind: self
-last_reconcile_justification: 'Baseline arming: invariant holds at HEAD.'
+last_reconcile_justification: 'Demoted daemon reader; gate policy now has a single
+  in-process reader (PreToolUseGate, shared by super-harness-hook + gate check CLI).
+  Invariant holds: no reader forks the table.'
 reconciled_anchors:
-  src/super_harness/gates/decisions.py: sha256:419e2f157a97b5f8c7b3c434055f1a68611538d9b3925c00c88137920c429eae
+  src/super_harness/gates/decisions.py: sha256:e30b97614511fb7b495c6da41a1acbcfb9813cfe7b00786f967e9a915c06eb0b
 ---
-Gate policy lives in one literal (gates.decisions); daemon + in-process gate both read it, neither invents policy.
+Gate policy lives in one literal (gates.decisions); the in-process gate reads it, neither invents nor forks policy.
 
 ```review
 The gate decision policy lives in one literal (`gates.decisions`,
-PRE_TOOL_USE_DECISIONS); both the daemon hook path and the in-process gate read this
-single table — neither invents, hardcodes, or forks its own per-state allow/block
-policy. On any change to the gate paths, confirm both readers still defer to this
-single SSOT. Still holds -> `decision reconcile d-single-gate-policy`; broken ->
-`decision betray d-single-gate-policy` with a justification.
+PRE_TOOL_USE_DECISIONS); the in-process gate (`PreToolUseGate`, shared by the
+`super-harness-hook` decision path and the `gate check` CLI) reads this single
+table — it does not invent, hardcode, or fork its own per-state allow/block
+policy, and no future gate may fork it. On any change to the gate paths, confirm
+the reader still defers to this single SSOT. Still holds -> `decision reconcile
+d-single-gate-policy`; broken -> `decision betray d-single-gate-policy` with a
+justification.
 ```

@@ -12,9 +12,9 @@ Design contract (mirrors `cli/adapter.py::adapter_scan_once`'s emit idiom):
   one `EventWriter`, emit each yielded event in YIELDED order (observe yields
   `intent_declared` before `plan_ready` so the plan_ready emit precondition —
   a preceding intent_declared — holds), then `refresh_state_after_emit` so the
-  daemon's `HotState` (mtime-cached state.yaml) auto-refreshes on the next gate
-  query (no shared memory needed — that mtime reload is why this design is
-  clean).
+  decision plane's next `state.yaml` read observes the update (the gate decides
+  in-process — no shared memory needed; the two planes meet only through the
+  files on disk).
 - CRITICAL difference from `scan-once`: `scan-once` is a one-shot CLI that EXITS
   on an `EmitPreconditionError` (e.g. a malformed change with `tasks.md` but no
   `proposal.md` → a lone `plan_ready`). The daemon is LONG-RUNNING — a single
@@ -91,8 +91,9 @@ def _observe_and_emit(adapter: FrameworkAdapter, workspace_root: Path) -> None:
                 },
             )
             continue
-        # Keep state.yaml current after every emit so the daemon's HotState
-        # mtime-reload serves an up-to-date gate decision (mirrors scan-once).
+        # Keep state.yaml current after every emit so the decision plane's next
+        # in-process state.yaml read serves an up-to-date gate decision (mirrors
+        # scan-once).
         refresh_state_after_emit(workspace_root)
 
 
@@ -190,10 +191,10 @@ class FrameworkObserverManager:
     def stop(self) -> None:
         """Stop + join all Observers (bounded). Idempotent.
 
-        Safe to call from both `DaemonServer.shutdown()` and `serve_forever()`'s
-        `finally` block (both may fire). Each join is capped at
+        Safe to call from the observer host's `run_observer_host` shutdown path
+        (SIGTERM → stop event set → manager.stop()). Each join is capped at
         `_OBSERVER_JOIN_TIMEOUT_S` so a wedged Observer cannot hang shutdown past
-        the daemon's ~2s budget; a still-alive Observer after the bounded join is
+        the host's ~2s budget; a still-alive Observer after the bounded join is
         logged (it's a daemon thread — process exit reaps it).
         """
         with self._lock:

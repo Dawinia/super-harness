@@ -244,53 +244,6 @@ super-harness change start [OPTIONS] SLUG
 - `3` no `.harness/` (run `init` first)
 - `5` `state.yaml` lock contention
 
-## super-harness daemon
-
-Operate the workspace daemon (start / stop / status).
-
-```
-super-harness daemon COMMAND [ARGS...]
-```
-
-## super-harness daemon start
-
-Start the workspace daemon (idempotent; blocks until ready).
-
-```
-super-harness daemon start [OPTIONS]
-```
-
-**Exit codes:**
-
-- `0` running
-- `1` failed to start
-
-## super-harness daemon status
-
-Report daemon state: running / stopped / stale-pid.
-
-```
-super-harness daemon status [OPTIONS]
-```
-
-**Exit codes:**
-
-- `0` running
-- `1` stopped or stale PID
-
-## super-harness daemon stop
-
-Send SIGTERM; clean up socket + PID file (waits up to 2s).
-
-```
-super-harness daemon stop [OPTIONS]
-```
-
-**Exit codes:**
-
-- `0` stopped
-- `1` generic error
-
 ## super-harness decision
 
 Author, ratify, and check decision records.
@@ -655,6 +608,53 @@ super-harness init [OPTIONS]
 - `3` already initialized (no `--force`)
 - `4` `gh` CLI missing (with `--setup-github`)
 - `5` concurrent init lock contention
+
+## super-harness observe
+
+Operate the optional framework-observer host (start / stop / status).
+
+```
+super-harness observe COMMAND [ARGS...]
+```
+
+## super-harness observe start
+
+Start the observer host (idempotent; blocks until live).
+
+```
+super-harness observe start [OPTIONS]
+```
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+
+## super-harness observe status
+
+Report observer host state: running / not running.
+
+```
+super-harness observe status [OPTIONS]
+```
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+
+## super-harness observe stop
+
+SIGTERM the observer host; wait up to 2s for it to exit.
+
+```
+super-harness observe stop [OPTIONS]
+```
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
 
 ## super-harness on-merge
 

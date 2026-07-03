@@ -200,8 +200,9 @@ starts editing. The hot-path gate enforces lifecycle rules:
 > human/agent present); that is tracked as a follow-up. Plain-mode `plan_ready`
 > also still has no public CLI emitter — use a framework adapter for the full path.
 
-You don't have to do anything — the daemon + hooks installed by
-`adapter install claude-code` handle this transparently. If you want to
+You don't have to do anything — the hooks installed by
+`adapter install claude-code` handle this transparently. The gate enforces
+in-process (no background daemon required). If you want to
 inspect what the gate would decide right now:
 
 ```bash

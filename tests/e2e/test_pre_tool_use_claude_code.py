@@ -1,15 +1,14 @@
 """E2E: the pre-tool-use gate blocks/allows Edit via the Claude Code path.
 
 This is the payoff test for Phase 5. It drives the **production** entry points
-(subprocesses the installed ``super-harness`` / ``super-harness-daemon`` /
-``super-harness-hook`` binaries — they must be on PATH) end-to-end:
+(subprocesses the installed ``super-harness`` / ``super-harness-hook`` binaries
+— they must be on PATH) end-to-end:
 
   1. ``super-harness init``                  → scaffolds a real ``.harness/``
   2. ``super-harness adapter install claude-code``
                                              → registers the PreToolUse gate hook
                                                 in ``.claude/settings.local.json``
-  3. ``super-harness daemon start``          → brings up the gate decision engine
-  4. the **exact command string** registered in ``.claude/settings.local.json`` is
+  3. the **exact command string** registered in ``.claude/settings.local.json`` is
      invoked with a Claude-Code-shaped JSON payload on stdin, and we assert it
      BLOCKS (exit 2) in a blocking state (``INTENT_DECLARED``) and ALLOWS
      (exit 0) once the state advances (``PLAN_APPROVED``).
@@ -17,9 +16,8 @@ This is the payoff test for Phase 5. It drives the **production** entry points
 Why exit 2 (not a JSON ``deny`` decision): Claude Code treats a PreToolUse
 hook's exit 2 as a hard block (stderr is fed back to the model) and exit 1 as a
 *non-blocking* error (the tool would still proceed). The ``--agent claude-code``
-shim therefore exits 2 on block. The hook also **fail-opens to ALLOW when the
-daemon is down**, so the daemon MUST be up for a deterministic BLOCK — hence
-step 3 and the teardown in ``finally``.
+shim therefore exits 2 on block. The gate decides in-process (design 2026-07-03),
+so no host is needed for a deterministic BLOCK.
 
 MANUAL SCOPE NOTE (plan Step 2): that exit-2 *actually* halts an ``Edit`` inside
 a live Claude Code session is verified MANUALLY by a human in a real CC session
@@ -109,29 +107,10 @@ def test_pre_tool_use_blocks_then_allows(tmp_path: Path) -> None:
             cwd=ws,
         )
 
-    # 3. Daemon up so the gate decides for real (not fail-open ALLOW).
-    subprocess.run(
-        ["super-harness", "--workspace", str(ws), "daemon", "start"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    try:
-        # Blocking state → exit 2 (Claude Code BLOCK).
-        set_state("INTENT_DECLARED")
-        assert _wait_for_returncode(run_hook, 2) == 2, (
-            "expected BLOCK (exit 2) in INTENT_DECLARED; "
-            "is the daemon up (else it fail-opens to ALLOW)?"
-        )
+    # Blocking state → exit 2 (Claude Code BLOCK) — decided in-process, no host.
+    set_state("INTENT_DECLARED")
+    assert _wait_for_returncode(run_hook, 2) == 2, "expected BLOCK (exit 2) in INTENT_DECLARED"
 
-        # Advance to an allowing state → exit 0 (ALLOW).
-        set_state("PLAN_APPROVED")
-        assert _wait_for_returncode(run_hook, 0) == 0, (
-            "expected ALLOW (exit 0) in PLAN_APPROVED"
-        )
-    finally:
-        subprocess.run(
-            ["super-harness", "--workspace", str(ws), "daemon", "stop"],
-            capture_output=True,
-            text=True,
-        )
+    # Advance to an allowing state → exit 0 (ALLOW).
+    set_state("PLAN_APPROVED")
+    assert _wait_for_returncode(run_hook, 0) == 0, "expected ALLOW (exit 0) in PLAN_APPROVED"

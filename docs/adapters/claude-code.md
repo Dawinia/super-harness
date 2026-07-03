@@ -22,9 +22,10 @@ machine-specific absolute path that must not be committed):
 
 Claude Code's PreToolUse contract treats process exit code `2` as a hard
 deny — that is how the harness blocks an `Edit` / `Write` without a CC
-plugin API: `super-harness-hook` queries the daemon, then exits `2` (block,
-stderr → model) or `0` (allow). JSON `permissionDecision: deny` would be
-cleaner but is blocked upstream (OPEN-ITEMS #3); exit-2 is the v0.1 fallback.
+plugin API: `super-harness-hook` decides **in-process** (loads `state.yaml`
+once → `PreToolUseGate`), then exits `2` (block, stderr → model) or `0`
+(allow). No background daemon required. JSON `permissionDecision: deny` would
+be cleaner but is blocked upstream (OPEN-ITEMS #3); exit-2 is the v0.1 fallback.
 
 Auto-detected when the workspace contains a `.claude/` directory. If
 `.claude/` is absent at install time, `install_hooks` creates it.

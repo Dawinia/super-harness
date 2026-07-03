@@ -1,14 +1,15 @@
 """Single source of truth for the 10-state pre-tool-use gate matrix.
 
 This module is the **canonical** copy of lifecycle-event-model §3.7's "Gate
-矩阵": each of the 10 states maps to an `(decision, reason)` pair. Both the
-daemon (`super_harness.daemon.server.DaemonServer`) and the in-process
-`super_harness.gates.pre_tool_use.PreToolUseGate` read THIS literal so the
-policy lives in exactly one place. The daemon does NOT invent gate policy —
-it only executes this table.
+矩阵": each of the 10 states maps to an `(decision, reason)` pair. The in-process
+`super_harness.gates.pre_tool_use.PreToolUseGate` — used by both the
+`super-harness-hook` decision path and the `gate check` CLI — reads THIS literal
+so the policy lives in exactly one place. The gate does NOT invent policy — it
+only executes this table. (Cold-path gates in Phase 12/13 read their own tables;
+the invariant is that no reader forks THIS one.)
 
-Kept import-light on purpose (pure literals, no heavy imports) so that
-importing the policy never drags in the daemon, socket, or CLI stacks.
+Kept import-light on purpose (pure literals, no heavy imports) so that importing
+the policy never drags in the CLI or observer stacks.
 """
 from __future__ import annotations
 

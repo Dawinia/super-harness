@@ -1,43 +1,38 @@
-"""Integration test for the daemon-hosted framework watcher (Task 10.6 / OI-7).
+"""Integration test for the framework watcher + observer host (Task 10.6 / OI-7).
 
-Exercises a REAL watchdog ``Observer`` lifecycle (start → create artifact → poll
-events.jsonl with a BOUNDED wait → stop → assert joined). FSEvents delivery is
-inherently timing-sensitive, so the poll uses a generous bounded timeout to
-avoid CI flakiness; a SECOND deterministic test invokes the handler callback
-directly (no reliance on OS event delivery) so we still cover the scan-and-emit
-path even if the platform's real-event delivery is sluggish.
+Two layers:
+
+- The watchdog ``Observer`` lifecycle (start → create artifact → poll
+  events.jsonl with a BOUNDED wait → stop → assert joined). FSEvents delivery is
+  inherently timing-sensitive, so the poll uses a generous bounded timeout to
+  avoid CI flakiness; a SECOND deterministic test invokes the handler callback
+  directly (no reliance on OS event delivery) so we still cover the scan-and-emit
+  path even if the platform's real-event delivery is sluggish.
+- The ``run_observer_host`` host loop (design 2026-07-03): the Axiom-3 fail-safe
+  that formerly lived inside ``DaemonServer.serve_forever`` now lives here — a
+  raising manager build must NOT crash the host, and the happy path must start
+  then stop the manager on signal.
 
 Teardown safety: every test that starts a real Observer stops it in a
 ``finally`` so a failed assertion cannot leak a watcher thread and hang the
 suite. All joins are bounded inside ``manager.stop()``.
-
-``test_serve_forever_second_layer_failsafe_keeps_gate_serving`` (Task 10.6 review):
-Regression-locks the SECOND-LAYER fail-safe guard in ``DaemonServer.serve_forever``
-(lines ~179-188 in server.py). ``build_manager_failsafe`` has its own internal
-``try/except`` that swallows corrupt adapters.yaml errors; the serve_forever guard is
-the backstop that catches anything that escapes from there (e.g. a ``start()``
-failure or a future refactor that weakens ``build_manager_failsafe``'s guard).
-Non-vacuousness: temporarily removing the ``try/except`` block from ``serve_forever``
-makes this test fail — a patched ``build_manager_failsafe`` that raises propagates
-out and crashes ``serve_forever`` before ``bind()``, so ``start_server`` times out.
 """
 from __future__ import annotations
 
 import json
-import socket
 import threading
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+
+import pytest
 
 from super_harness.adapters.framework.openspec import OpenSpecAdapter
+from super_harness.daemon import server as observer_server
 from super_harness.daemon.framework_observer import (
     FrameworkObserverManager,
     _ObserveHandler,
 )
-from super_harness.daemon.server import DaemonServer
-from tests.integration.daemon.conftest import start_server
 
 
 def _events(ws: Path) -> list[dict[str, Any]]:
@@ -118,94 +113,44 @@ def test_handler_callback_simulated_event_is_deterministic(tmp_path: Path) -> No
     assert len(intents) == 1, events
 
 
-# --- serve_forever second-layer fail-safe (Task 10.6 review) ----------------
+# --- run_observer_host fail-safe + happy path (design 2026-07-03) -----------
 
 
-def _ping(socket_path: Path) -> dict[str, Any]:
-    """Send a ping to the daemon and return the decoded response dict."""
-    from super_harness.daemon.protocol import (
-        GateQueryRequest,
-        decode_response,
-        encode_request,
-    )
-
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(2.0)
-    try:
-        s.connect(str(socket_path))
-        s.sendall(encode_request(GateQueryRequest(method="ping", params={}, id="failsafe-test")))
-        line = s.makefile("rb").readline()
-    finally:
-        s.close()
-    resp = decode_response(line)
-    return {"result": resp.result, "error": resp.error}
-
-
-def test_serve_forever_second_layer_failsafe_keeps_gate_serving(
-    tmp_path: Path,
+def test_run_observer_host_idles_when_manager_build_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Axiom-3: a watcher-setup failure in serve_forever does NOT crash the daemon.
+    """A corrupt/raising adapter setup must NOT crash the host — run_observer_host
+    logs + idles, then returns cleanly when signalled (Axiom 3 fail-safe, formerly
+    locked inside DaemonServer.serve_forever)."""
+    (tmp_path / ".harness").mkdir()
 
-    The serve_forever try/except guard (lines ~179-188 in server.py) is the
-    SECOND layer of protection: it catches anything that escapes
-    ``build_manager_failsafe``'s own internal guard (e.g. a future refactor that
-    weakens it, or a ``start()`` failure). We trigger this second layer by patching
-    ``build_manager_failsafe`` in the ``server`` module to raise directly —
-    simulating a watcher-setup failure that bypasses the inner guard.
+    def boom(_root: Path):
+        raise RuntimeError("corrupt adapters.yaml")
 
-    Non-vacuousness contract (verified manually during review):
-    - Remove the ``try/except`` block from ``serve_forever`` (lines ~179-188 of
-      server.py, i.e. the ``try:`` through ``self._framework_observers = None``).
-    - With the guard removed, the patched ``build_manager_failsafe`` raises →
-      exception propagates out of ``serve_forever`` before ``bind()``, so
-      ``start_server`` times out with RuntimeError and this test FAILS.
-    - Restore the guard → test passes again.
+    monkeypatch.setattr(observer_server, "build_manager_failsafe", boom)
+    stop = threading.Event()
+    stop.set()  # return immediately after the guarded start
+    observer_server.run_observer_host(tmp_path, stop)  # must not raise
 
-    The corrupt ``adapters.yaml`` documents the intent (a real file would be swallowed
-    by ``build_manager_failsafe``'s own inner try/except, so we patch at the
-    server-module import level to reach serve_forever's second layer specifically).
 
-    Teardown: server.shutdown() + bounded thread join in finally — cannot hang suite.
-    """
-    harness = tmp_path / ".harness"
-    harness.mkdir(parents=True, exist_ok=True)
-    # Corrupt adapters.yaml — documents intent; real corruption is swallowed by
-    # build_manager_failsafe's own guard, hence the patch below targets the second
-    # layer in serve_forever instead.
-    (harness / "adapters.yaml").write_text("adapters: [unclosed\n", encoding="utf-8")
-    state_path = harness / "state.yaml"
-    events_path = harness / "events.jsonl"
-    socket_path = harness / "daemon.sock"
+def test_run_observer_host_starts_and_stops_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Happy path: run_observer_host starts the manager and stops it on signal."""
+    (tmp_path / ".harness").mkdir()
+    calls: list[str] = []
 
-    server = DaemonServer(
-        workspace_root=tmp_path,
-        socket_path=socket_path,
-        state_path=state_path,
-        events_path=events_path,
+    class _FakeManager:
+        def start(self) -> None:
+            calls.append("start")
+
+        def stop(self) -> None:
+            calls.append("stop")
+
+    monkeypatch.setattr(
+        observer_server, "build_manager_failsafe", lambda _root: _FakeManager()
     )
-
-    server_thread: threading.Thread | None = None
-    # Patch build_manager_failsafe in the server module (where it is CALLED) so the
-    # RuntimeError hits serve_forever's second-layer try/except, not the inner guard.
-    with patch(
-        "super_harness.daemon.server.build_manager_failsafe",
-        side_effect=RuntimeError("simulated watcher-setup failure"),
-    ):
-        try:
-            server_thread = start_server(server)
-
-            # Daemon is serving: send a live ping and assert a valid response.
-            ping_resp = _ping(server.socket_path)
-            assert ping_resp["error"] is None, (
-                f"ping returned error: {ping_resp['error']}"
-            )
-            assert ping_resp["result"] is not None
-
-            # Second-layer guard set _framework_observers to None on failure.
-            assert server._framework_observers is None, (
-                "_framework_observers must be None when watcher setup failed"
-            )
-        finally:
-            server.shutdown()
-            if server_thread is not None:
-                server_thread.join(timeout=3.0)
+    stop = threading.Event()
+    stop.set()
+    observer_server.run_observer_host(tmp_path, stop)
+    assert calls == ["start", "stop"]
