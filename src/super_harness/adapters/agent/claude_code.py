@@ -217,7 +217,9 @@ class ClaudeCodeAdapter(AgentAdapter):
 
         # Snapshot the install transaction boundary: capture the file's exact
         # pre-install content, or that it was absent. Restored on ANY failure.
-        snapshot: str | None = settings_path.read_text(encoding="utf-8") if settings_path.exists() else None
+        snapshot: str | None = (
+            settings_path.read_text(encoding="utf-8") if settings_path.exists() else None
+        )
         try:
             merge_pre_tool_use_hook(settings_path, command=pre_tool_use_command)
             merge_session_start_hook(settings_path, command=session_start_command)

@@ -127,7 +127,9 @@ class CodexAdapter(AgentAdapter):
         session_command = f"{resolved_cli} change resume"
         stop_command = f"{resolved_hook} --agent codex --event stop"
 
-        snapshot: str | None = hooks_path.read_text(encoding="utf-8") if hooks_path.exists() else None
+        snapshot: str | None = (
+            hooks_path.read_text(encoding="utf-8") if hooks_path.exists() else None
+        )
         try:
             merge_pre_tool_use_hook(
                 hooks_path, command=pre_command,

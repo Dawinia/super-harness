@@ -580,7 +580,9 @@ def _remove_verification_checks(
             and (row.get("provided_by"), row.get("id")) in owned
         )
     ]
-    path.write_text(yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False), encoding="utf-8")
+    path.write_text(
+        yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False), encoding="utf-8"
+    )
 
 
 def _read_adapter_cfg(path: Path) -> dict[str, Any]:

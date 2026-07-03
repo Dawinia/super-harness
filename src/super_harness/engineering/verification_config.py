@@ -376,7 +376,9 @@ def merge_adapter_provided(path: Path, checks: list[dict[str, Any]]) -> None:
 
     cfg["adapter_provided"] = merge_adapter_provided_list(existing, checks)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False), encoding="utf-8")
+    path.write_text(
+        yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False), encoding="utf-8"
+    )
 
 
 # --------------------------------------------------------------------------- #
