@@ -1,4 +1,4 @@
-<!--
+---
 # super-harness ⇄ superpowers integration marker (parsed by SuperpowersAdapter):
 change: 2026-07-04-architecture-fitness-doc
 stage: plan
@@ -10,7 +10,7 @@ scope:
     - docs/plans/2026-07-04-architecture-fitness-doc-design.md
     - docs/plans/2026-07-04-architecture-fitness-doc-plan.md
 tier_hint: Normal
--->
+---
 
 # Architecture-fitness Adoption Guide — Implementation Plan
 
