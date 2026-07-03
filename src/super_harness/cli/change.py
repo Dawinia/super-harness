@@ -278,7 +278,7 @@ def _tail_events_for_change(events_file: Path, slug: str, limit: int) -> list[Ev
     if not events_file.exists():
         return []
     matched: list[Event] = []
-    for line in events_file.read_text().splitlines():
+    for line in events_file.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:

@@ -41,7 +41,7 @@ def load_reviewer_strategy(root: Path, reviewer: str) -> str:
     if not policy_path.is_file():
         return _DEFAULT_STRATEGY
     try:
-        parsed: Any = yaml.safe_load(policy_path.read_text())
+        parsed: Any = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
         raise ReviewerPolicyError(f"policy.yaml is not valid YAML: {e}") from e
     if not isinstance(parsed, dict):

@@ -65,7 +65,7 @@ def event_log(
     events: list[Event] = []
     f = events_path(root)
     if f.exists():
-        for line in f.read_text().splitlines():
+        for line in f.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:

@@ -108,7 +108,7 @@ def load_components(
     if not yaml_path.exists():
         return []
 
-    cfg = yaml.safe_load(yaml_path.read_text()) or {}
+    cfg = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
     entries = cfg.get(yaml_top_key, []) or []
     if not isinstance(entries, list):
         raise ValueError(
@@ -153,7 +153,7 @@ def read_plugin_paths(yaml_path: Path, *, top_key: str) -> dict[str, str]:
     """
     if not yaml_path.exists():
         return {}
-    cfg = yaml.safe_load(yaml_path.read_text()) or {}
+    cfg = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
     entries = cfg.get(top_key, []) or []
     if not isinstance(entries, list):
         return {}

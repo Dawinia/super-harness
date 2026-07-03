@@ -164,6 +164,6 @@ def stop(workspace_root: Path, *, wait_seconds: float = 2.0) -> bool:
 
 def _read_pid(workspace_root: Path, *, default: int = 0) -> int:
     try:
-        return int(_pid_path(workspace_root).read_text().strip())
+        return int(_pid_path(workspace_root).read_text(encoding="utf-8").strip())
     except (ValueError, OSError):  # FileNotFoundError ⊂ OSError
         return default

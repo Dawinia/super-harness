@@ -559,7 +559,7 @@ def _remove_verification_checks(
     path = root / ".harness" / "verification.yaml"
     if not path.exists():
         return
-    loaded = yaml.safe_load(path.read_text()) or {}
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(loaded, dict):
         return
     provided = loaded.get("adapter_provided")
@@ -580,7 +580,7 @@ def _remove_verification_checks(
             and (row.get("provided_by"), row.get("id")) in owned
         )
     ]
-    path.write_text(yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False))
+    path.write_text(yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False), encoding="utf-8")
 
 
 def _read_adapter_cfg(path: Path) -> dict[str, Any]:
@@ -593,7 +593,7 @@ def _read_adapter_cfg(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     # NOTE: yaml.YAMLError propagates — callers catch it.
-    loaded = yaml.safe_load(path.read_text())
+    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
         return {}
     return loaded
@@ -619,7 +619,7 @@ def _write_adapter_cfg(path: Path, cfg: dict[str, Any]) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     body = yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False)
-    path.write_text(_ADAPTERS_YAML_HEADER + body)
+    path.write_text(_ADAPTERS_YAML_HEADER + body, encoding="utf-8")
 
 
 def _persist_install_entry(

@@ -81,7 +81,7 @@ def _current_state(events_file: Path, change_id: str) -> str | None:
     if not events_file.exists():
         return None
     current: str | None = None
-    for line in events_file.read_text().splitlines():
+    for line in events_file.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -103,7 +103,7 @@ def _change_event_types(events_file: Path, change_id: str) -> set[str]:
     if not events_file.exists():
         return set()
     seen: set[str] = set()
-    for line in events_file.read_text().splitlines():
+    for line in events_file.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:
@@ -189,7 +189,7 @@ def find_ordering_violations(events_file: Path, change_id: str) -> list[Ordering
     violations: list[OrderingViolation] = []
     current: str | None = None
     seen: set[str] = set()
-    for line in events_file.read_text().splitlines():
+    for line in events_file.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         try:

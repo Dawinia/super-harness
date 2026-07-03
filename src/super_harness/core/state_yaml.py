@@ -63,7 +63,7 @@ def write_state_yaml(
         "changes": {cid: asdict(cs) for cid, cs in changes.items()},
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(_HEADER)
         yaml.safe_dump(body, f, sort_keys=False, default_flow_style=False)
     os.replace(tmp, path)  # atomic on POSIX (Linux ext4, macOS APFS)
@@ -71,7 +71,7 @@ def write_state_yaml(
 
 def read_state_yaml(path: Path) -> dict[str, Any]:
     """Load state.yaml and return its parsed dict (empty dict for empty file)."""
-    result = yaml.safe_load(path.read_text()) or {}
+    result = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(result, dict):
         raise ValueError(
             f"state.yaml root must be a mapping, got {type(result).__name__}; "

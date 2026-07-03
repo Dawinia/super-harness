@@ -177,7 +177,7 @@ def _load_checks_file(path: Path) -> list[dict[str, Any]]:
     """
     if not path.exists():
         raise FileNotFoundError(path)
-    raw = yaml.safe_load(path.read_text()) or []
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or []
     if isinstance(raw, dict):
         checks = raw.get("checks")
         if checks is None:

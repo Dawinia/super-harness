@@ -164,7 +164,7 @@ def _iter_events(events_file: Path) -> Iterator[dict[str, Any]]:
     """
     if not events_file.exists():
         return
-    for raw in events_file.read_text().splitlines():
+    for raw in events_file.read_text(encoding="utf-8").splitlines():
         raw = raw.strip()
         if not raw:
             continue
