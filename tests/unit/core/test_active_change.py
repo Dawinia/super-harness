@@ -123,3 +123,25 @@ def test_read_tolerates_empty_list_state_yaml(tmp_path: Path):
 def test_read_tolerates_empty_state_yaml(tmp_path: Path):
     # behavior pin: safe_load("") is None → `or {}`
     assert read_active_change_id(_state_yaml(tmp_path, "")) is None
+
+
+# F11b (2026-07-03): pick_active_change now delegates to the shared core.parse_ts
+# primitive via `parse_ts(v) or _TS_MIN`. Pin the ordering semantics that the
+# sentinel wrap must preserve byte-for-byte.
+
+def test_unparseable_last_event_at_sorts_lowest():
+    # A change with a garbage timestamp must never win the "most recent" pick.
+    picked = pick_active_change([
+        ("good", "IMPLEMENTATION_IN_PROGRESS", "2026-07-03T10:00:00Z"),
+        ("bad", "IMPLEMENTATION_IN_PROGRESS", "not-a-date"),
+    ])
+    assert picked == "good"
+
+
+def test_all_unparseable_still_returns_a_change():
+    # All keys collapse to _TS_MIN → max breaks ties by change_id → "b" > "a".
+    picked = pick_active_change([
+        ("a", "IMPLEMENTATION_IN_PROGRESS", ""),
+        ("b", "IMPLEMENTATION_IN_PROGRESS", None),
+    ])
+    assert picked == "b"

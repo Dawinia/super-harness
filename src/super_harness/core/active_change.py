@@ -15,29 +15,11 @@ from collections.abc import Iterable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from super_harness.core.parse_ts import parse_ts
 
-def _parse_ts(value: object) -> datetime:
-    """Parse a ``last_event_at`` value for ORDERING, into an aware-UTC datetime.
-    NEVER raises — this feeds the gate hot path.
-
-    Robust to the shapes a state.yaml value can take: PyYAML loads an UNQUOTED ISO
-    timestamp as a ``datetime`` (a quoted one stays a ``str``), so accept either.
-    - ``datetime`` → normalized to aware UTC (naive gets UTC attached).
-    - ISO ``str`` with ``Z`` or ``+00:00`` → parsed (parse, don't string-compare —
-      mixed forms misfire lexically; a tz-less string parses to a NAIVE datetime,
-      normalized to aware UTC so it can't ``TypeError`` against the aware entries).
-    - empty / malformed / ``None`` / any other type → ``datetime.min`` (UTC), which
-      sorts LOWEST so it never wins unless everything is unparseable.
-    """
-    if isinstance(value, datetime):
-        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
-    if not isinstance(value, str) or not value:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+# Lowest-sorting sentinel: an unparseable/absent ``last_event_at`` sorts LOWEST so
+# it never wins the "most recent" pick unless every candidate is unparseable.
+_TS_MIN = datetime.min.replace(tzinfo=timezone.utc)
 
 
 def pick_active_change(candidates: Iterable[tuple[str, str, object]]) -> str | None:
@@ -46,13 +28,15 @@ def pick_active_change(candidates: Iterable[tuple[str, str, object]]) -> str | N
     the latest (parsed) ``last_event_at``, ties broken by ``change_id``. None if
     there is no non-terminal change. PURE — no I/O, no git. The ``last_event_at``
     slot is typed ``object`` because a state.yaml value may be a ``str`` OR a
-    ``datetime`` (PyYAML) — ``_parse_ts`` handles both and never raises."""
+    ``datetime`` (PyYAML loads an unquoted ISO timestamp as a ``datetime``);
+    ``parse_ts`` handles both and never raises, and ``or _TS_MIN`` turns its
+    ``None`` (unparseable/absent) into the lowest-sorting sentinel."""
     from super_harness.core.state import TERMINAL_STATES
 
     live = [(cid, at) for cid, st, at in candidates if st not in TERMINAL_STATES]
     if not live:
         return None
-    return max(live, key=lambda t: (_parse_ts(t[1]), t[0]))[0]
+    return max(live, key=lambda t: (parse_ts(t[1]) or _TS_MIN, t[0]))[0]
 
 
 def read_active_change_id(root: Path) -> str | None:
@@ -68,7 +52,7 @@ def read_active_change_id(root: Path) -> str | None:
     try:
         import yaml
 
-        data = yaml.safe_load(state_path.read_text()) or {}
+        data = yaml.safe_load(state_path.read_text(encoding="utf-8")) or {}
     except Exception:
         return None
     if not isinstance(data, dict):
