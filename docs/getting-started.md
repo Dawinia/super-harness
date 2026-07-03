@@ -390,6 +390,13 @@ super-harness decision check --changed  # local fast path: only touched anchors
 > show up in the `hard:context` ratio `decision check` prints, but never gate. This
 > is deliberate: there is no ground truth to mechanically judge prose intent against.
 
+> **Arming architecture rules.** The grep example above is a security rule; the
+> flagship use is dependency-direction / layering rules ("core must not import the
+> web layer"), where grep is a foot-gun and an import-graph checker is the right
+> tool. See [Arm an architecture rule](architecture-fitness.md) for a
+> language-by-language guide (Python / TypeScript / Go, and the honest gaps for
+> Rust / Java / C-C++).
+
 **Attestation trail.** When you open a PR, the CI `attest-verify` job requires every
 changed file to be covered by a complete, ordered lifecycle attestation
 (`super-harness attest write <slug>` snapshots it to `.harness/attestations/`). This
