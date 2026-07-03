@@ -64,10 +64,18 @@ def is_running(workspace_root: Path) -> bool:
     """True iff a live observer host holds the pidfile flock. No ping, no socket.
 
     Opens the pidfile O_RDONLY (flock is mode-independent — it works on a
-    read-only fd and conflicts across processes regardless — so O_RDONLY avoids
-    the EROFS/EACCES failure modes O_RDWR would add on a read-only mount/pidfile).
-    Any OSError other than the expected `BlockingIOError` (held) is treated as
-    'cannot determine → not running' so `status`/`start` never raise on a quirk."""
+    read-only fd — so O_RDONLY avoids the EROFS/EACCES failure modes O_RDWR would
+    add on a read-only mount/pidfile) and probes with a SHARED lock. LOCK_SH is
+    load-bearing, NOT LOCK_EX: the host holds LOCK_EX for its lifetime, so a
+    LOCK_SH probe still conflicts with a live host (→ BlockingIOError → running).
+    But two concurrent probe PROCESSES (the real case: parallel `observe
+    start`/`status`) using LOCK_EX would conflict with EACH OTHER on a stale/unheld
+    pidfile — one acquires, the other gets BlockingIOError and falsely reports
+    "running" when nobody holds the lock (→ `observe start` no-ops, host never
+    comes up). Shared-lock requests are mutually compatible across processes, so
+    concurrent probes on an unheld file all correctly report not-running. Any
+    OSError other than BlockingIOError → 'cannot determine → not running' so
+    `status`/`start` never raise on a quirk."""
     pid_path = _pid_path(workspace_root)
     if not pid_path.exists():
         return False
@@ -77,12 +85,12 @@ def is_running(workspace_root: Path) -> bool:
         return False
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
         except BlockingIOError:
-            return True  # held by a live host
+            return True  # held by a live host's LOCK_EX
         except OSError:
             return False  # can't probe → treat as not-running
-        # Acquired → nobody holds it; release and report dead.
+        # Acquired the shared lock → no host holds LOCK_EX; release and report dead.
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
         except OSError:
@@ -100,25 +108,30 @@ def ensure_running(workspace_root: Path, *, wait_seconds: float = 5.0) -> int:
         RuntimeError: sibling binary absent, spawn failed, or host did not become
         live in time.
     """
-    if is_running(workspace_root):
-        return _read_pid(workspace_root)
-    binary = _observer_binary()  # raises if absent
-    try:
-        subprocess.Popen(
-            [binary, "--workspace", str(workspace_root)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            close_fds=True,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        raise RuntimeError(f"could not spawn observer host ({binary}): {exc}") from exc
+    # Only spawn if not already live. Both paths (already-running and just-spawned)
+    # then fall through to the SAME wait loop — the fast path must NOT early-return
+    # `_read_pid()` directly, since is_running() flips True the instant the flock is
+    # held (in daemonize(), BEFORE ftruncate+write(pid)); a bare _read_pid() there
+    # can return 0 from a half-written pidfile.
+    if not is_running(workspace_root):
+        binary = _observer_binary()  # raises if absent
+        try:
+            subprocess.Popen(
+                [binary, "--workspace", str(workspace_root)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                close_fds=True,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"could not spawn observer host ({binary}): {exc}"
+            ) from exc
     deadline = time.monotonic() + wait_seconds
     while time.monotonic() < deadline:
-        # is_running flips True the instant the grandchild holds the flock, which
-        # in daemonize() PRECEDES the ftruncate+write(pid); poll until the pid is
-        # actually readable so a caller never gets 0 from a half-written pidfile.
+        # Poll until the host holds the flock AND the pid is readable, so a caller
+        # never gets 0 from a half-written pidfile (already-running or just-spawned).
         if is_running(workspace_root):
             pid = _read_pid(workspace_root)
             if pid > 0:

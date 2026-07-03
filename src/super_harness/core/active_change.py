@@ -85,4 +85,12 @@ def read_active_change_id(root: Path) -> str | None:
         for cid, r in changes.items()
         if isinstance(r, dict)
     )
-    return pick_active_change(candidates)
+    # Guard the pick too: an unhashable `current_state` (list/dict) would raise
+    # TypeError from pick_active_change's TERMINAL_STATES membership test. The
+    # PreToolUse hot path uses core.state_snapshot (which guards this), but the
+    # `done`/`verify`/`change`/`status` callers of read_active_change_id would
+    # otherwise crash with a traceback on a hand-corrupted state.yaml.
+    try:
+        return pick_active_change(candidates)
+    except Exception:
+        return None

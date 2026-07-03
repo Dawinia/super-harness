@@ -92,7 +92,16 @@ def run_observer_host(workspace_root: Path, stop: threading.Event) -> None:
             _log.info("observer host: no framework watchers configured; idling")
     except Exception:
         _log.warning("observer host: watcher start failed; idling with no watchers")
-        manager = None
+        # start() may have started SOME observers before raising — stop them now so
+        # we don't leak already-started watcher threads (the `finally` below can't,
+        # since we drop the reference). manager.stop() is idempotent + never raises
+        # on a partial start.
+        if manager is not None:
+            try:
+                manager.stop()
+            except Exception:
+                _log.exception("observer host: manager.stop() failed after start error")
+            manager = None
     try:
         stop.wait()
     finally:
