@@ -154,3 +154,29 @@ def test_run_observer_host_starts_and_stops_manager(
     stop.set()
     observer_server.run_observer_host(tmp_path, stop)
     assert calls == ["start", "stop"]
+
+
+def test_run_observer_host_stops_partially_started_manager_on_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression (#68 code review): if manager.start() starts SOME observers and
+    # then raises, run_observer_host must stop the manager on the error path — the
+    # `finally` block can't (it drops the reference), so a bare `manager = None`
+    # there would leak the already-started watcher threads.
+    (tmp_path / ".harness").mkdir()
+    stopped: list[bool] = []
+
+    class _PartialManager:
+        def start(self) -> None:
+            raise RuntimeError("watcher N failed to start (some already started)")
+
+        def stop(self) -> None:
+            stopped.append(True)
+
+    monkeypatch.setattr(
+        observer_server, "build_manager_failsafe", lambda _root: _PartialManager()
+    )
+    stop = threading.Event()
+    stop.set()
+    observer_server.run_observer_host(tmp_path, stop)  # must not raise
+    assert stopped == [True], "partially-started manager was not stopped on the error path"
