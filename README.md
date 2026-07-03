@@ -103,6 +103,9 @@ running the flow yourself.
     `--changed` runs only the checks whose anchored files moved (local speed; CI runs
     the full set); a `hard:context` ratio reports how much is mechanically enforced
     vs recorded-as-context-only.
+  - **Architecture fitness** — the executable-check layer's flagship use is
+    dependency-direction / layering rules via an import-graph checker; see
+    [Arm an architecture rule](docs/architecture-fitness.md).
 - **Derivable-doc drift gate** — `super-harness doc check` regenerates docs that
   have a generator (e.g. the CLI reference, the state-machine diagram) and blocks
   if the committed copy drifted; `--fix` rewrites them. Registered in
@@ -175,6 +178,7 @@ agent-wrapping projects in the ecosystem:
 ## Links
 
 - [Getting started](docs/getting-started.md)
+- [Arm an architecture rule](docs/architecture-fitness.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [CLI reference](docs/cli-reference.md)
 - [Adapter docs](docs/adapters/)
