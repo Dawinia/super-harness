@@ -107,3 +107,22 @@ def test_observer_binary_is_scripts_dir_sibling() -> None:
     resolved = supervisor._observer_binary()
     assert resolved == str(expected)
     assert Path(resolved).is_absolute()
+
+
+def test_ensure_running_never_returns_zero_from_half_written_pidfile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Regression (#68 code review): the already-running fast path must NOT return
+    # a bare _read_pid() — is_running flips True the instant the flock is held,
+    # which in daemonize() PRECEDES ftruncate+write(pid), so _read_pid can read 0
+    # from a half-written pidfile. ensure_running must poll until _read_pid > 0.
+    # Deterministic via monkeypatch: is_running is already True (no spawn), and
+    # _read_pid returns 0 twice (half-written) before the real pid lands.
+    from pathlib import Path
+
+    from super_harness.daemon import supervisor as sup
+
+    monkeypatch.setattr(sup, "is_running", lambda root: True)
+    pids = iter([0, 0, 4242])
+    monkeypatch.setattr(sup, "_read_pid", lambda root, **k: next(pids))
+    assert sup.ensure_running(Path("/nonexistent"), wait_seconds=5.0) == 4242
