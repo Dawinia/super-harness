@@ -189,9 +189,14 @@ rather than observation.
   produces the right candidate set and respects the "hypothesis not rule" framing →
   refactor to close loopholes.
 - **Reproducible acceptance via a vendored fixture** (not an external repo). Commit a
-  trimmed multi-layer sample repo under `examples/arch-norm-fixture/` — deliberately
-  chosen because `examples/**` is excluded from BOTH the doc-scan and source-scan
-  scopes, so the fixture cannot trip `doc check` / `decision check`. The fixture
+  trimmed multi-layer sample repo under `examples/arch-norm-fixture/`, which stays
+  gate-inert for two independent reasons: `examples/**` is in `doc_refs`'
+  `DEFAULT_DOC_EXCLUDE`, so it never trips `doc check`; and it carries **no
+  `@decision:` anchors** and is referenced by no decision, so `decision check` never
+  touches it. (Note: `examples/**` is NOT in the source-scope exclude — that is only
+  `docs/**`/`tests/**` — so the fixture's tokens do join the source-identifier set;
+  this is harmless, and the fixture is TS/JSON, not Python under `super_harness`, so
+  import-linter and mypy ignore it anyway.) The fixture
   encodes the OpenScreen-style shape (a framework-boundary norm currently clean; a
   layering rule with a planted leak; a pure sink; a coincidental symmetric zero) and
   ships a committed **golden candidate list** (`examples/arch-norm-fixture/EXPECTED.md`).
