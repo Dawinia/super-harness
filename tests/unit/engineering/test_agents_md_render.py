@@ -152,11 +152,16 @@ def test_decision_conformance_has_arming_recipe(tmp_path: Path) -> None:
 
 
 def test_section_points_to_norm_discovery_skill(tmp_path: Path) -> None:
-    """The managed section points adopters' agents at the norm-discovery skill."""
+    """The managed section points adopters' agents at the norm-discovery skill,
+    as a full absolute GitHub URL carrying the v0.1 private-access caveat."""
     agents = tmp_path / "AGENTS.md"
     render_super_harness_section(tmp_path, agents, "0.1.0")
     text = agents.read_text(encoding="utf-8")
-    assert "discovering-architecture-norms" in text
+    assert (
+        "https://github.com/Dawinia/super-harness/blob/main/"
+        "skills/discovering-architecture-norms/SKILL.md" in text
+    )
+    assert "repo access" in text
 
 
 def test_corrupt_adapters_yaml_broken_syntax_is_nonfatal(tmp_path: Path) -> None:
