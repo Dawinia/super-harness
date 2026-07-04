@@ -28,10 +28,12 @@ existing lock mechanism.
 
 **Non-goals (explicit):**
 
-- **The skill does not decide what is a *good* rule.** Discovery is descriptive;
-  reasonableness is normative and stays a human judgment at ratify. The skill
-  proposes, the human disposes. (Zero-import ≠ a good rule — do not ossify
-  accidents.)
+- **The skill does not decide what is a *good* rule.** In recover-mode (§5)
+  discovery is *descriptive* (read from code); in greenfield-mode (§7) it is
+  *intent-prescriptive* (read from product intent). Either way the skill only
+  **proposes candidates for the human to judge and ratify** — it never
+  auto-locks and never asserts a candidate is correct. (Zero-import ≠ a good
+  rule — do not ossify accidents.)
 - **Not a CLI command / no code.** super-harness never spawns an agent; the skill is
   invoked *by* the adopter's agent. This is a skill file + doc pointers, no Python.
 - **Not a re-implementation of the lock mechanism.** The skill ends by handing off to
@@ -57,26 +59,35 @@ against superpowers and andrej-karpathy-skills: both use `skills/<name>/SKILL.md
 ## 4. Distribution
 
 super-harness is a **pipx CLI, not a plugin/marketplace**, so the ecosystem's
-`/plugin install` path does not apply, and we do **not** build a custom installer
-(the ecosystem doesn't copy-to-`~/.claude/skills` either — that would be new,
-per-agent, fiddly surface = gilding). Distribution is doc-pointer:
+`/plugin install` path does not apply, and we do **not** build a custom installer or
+a CLI verb (that would be new, per-agent, fiddly surface = gilding, and breaks the
+no-code scope). **Critically, the pip wheel packages only `src/super_harness`
+(pyproject.toml), so a `pipx`-installed adopter never gets a `skills/` directory on
+disk** — repo-relative pointers would resolve to a nonexistent path in the adopter's
+tree. Therefore all pointers are **absolute GitHub URLs**, not repo-relative paths:
 
-- The skill lives in the repo at `skills/discovering-architecture-norms/`.
-- `README.md` tells new adopters they can point their Code Agent at this skill to
-  discover their architecture norms.
-- `docs/getting-started.md` + the injected `AGENTS.md` super-harness section carry
-  a pointer. The adopter installs it into their agent's skill directory by the
-  ecosystem convention (or points their agent at the repo path directly).
+- The skill lives in the super-harness repo at
+  `skills/discovering-architecture-norms/SKILL.md` (source of truth).
+- `README.md`, `docs/getting-started.md`, and the injected `AGENTS.md` super-harness
+  section each carry a one-line pointer **as a GitHub URL** to that SKILL.md. The
+  adopter's agent fetches/reads it from GitHub (or the user copies it into their
+  agent's skill directory by the ecosystem convention).
+- **Honest limitation:** the super-harness repo is private during v0.1 (public flip
+  is a Phase-15 backlog item), so the URL requires repo access until then — it fully
+  lands for arbitrary adopters at the public flip. This is called out in the pointer
+  text rather than pretending pipx adopters have the file locally.
 
 ## 5. The method (skill body) — multi-source sweep + strength ranking
 
-Proven live on OpenScreen (a TS/React/Electron app). The crown-jewel norm there was
-**not** a src-directory dependency rule — it was the Electron renderer/main
+Illustrated on OpenScreen (a TS/React/Electron app), where the highest-value norm
+was **not** a src-directory dependency rule — it was the Electron renderer/main
 process-isolation boundary (renderer `src/` must not import `electron`/`fs`/`path`/
 `child_process`/`os`; currently clean; security-critical), plus a cross-cutting
-i18n-completeness norm already mechanized as `scripts/i18n-check.mjs`. An
-import-matrix-only tool misses both. So the skill directs the agent to sweep **four
-sources**, in rough order of yield:
+i18n-completeness norm already mechanized as `scripts/i18n-check.mjs`. The
+generalizable lesson is **"the import graph alone is insufficient"** — NOT that a
+fixed category always outranks layering (in a hexagonal backend the domain⊥framework
+*import* rule may well be the load-bearing boundary). So the skill directs the agent
+to sweep **four sources**, in rough order of typical yield (a default, not a law):
 
 1. **Framework / stack** (`package.json`, manifests, lockfiles) → the known
    architectural boundaries *that stack implies* (Electron process isolation, Next
@@ -91,37 +102,57 @@ sources**, in rough order of yield:
    - a pure sink (all edges point in, e.g. `utils`) → "this layer imports nothing";
    - symmetric zero → coincidence, skip (don't ossify);
    - symmetric large → a cycle smell (flag, not a lockable direction rule).
+   - *Discovery-time graphing may be approximate.* A grep/heuristic import scan is
+     fine here — the skill only emits hypotheses; the precise per-language tool
+     (import-linter / dependency-cruiser, per `docs/architecture-fitness.md`) is
+     used later at the *lock* step. The skill should flag when its graph is
+     approximate rather than silently under-reporting.
 4. **Directory / naming patterns** → placement/naming conventions (lock cautiously;
    ceremony risk).
 
 ## 6. Output format
 
-A candidate list **grouped/ranked by architectural strength**:
+A candidate list **ranked by architectural strength**, where strength is scored on
+four factors, not a fixed category order:
 
-> framework-boundary + cross-cutting-correctness  >  layering  >  naming
+- **protected capability** — does it guard a real quality (security/isolation,
+  testability, replaceability, no-cycles)?
+- **evidence strength** — asymmetry / sink-shape / already-mechanized-in-config vs a
+  bare coincidental zero;
+- **blast radius** — how much breaks if violated;
+- **clean vs violated** — currently held (lockable now) vs leaking (fix-first).
 
-Each candidate carries: the norm (as a forbidden/required statement), the
-**evidence**, a **clean-vs-violated** marker, and is forced through the **"why +
-what breaks"** test (what capability it protects; what breaks if violated). Every
-candidate is explicitly a **hypothesis for the human to judge**, never an
-auto-lockable rule. The skill closes by pointing the human at the lock mechanism:
-`decision new` → write the check + counterexample per `docs/architecture-fitness.md`
-→ `ratify` (bite-test) → `decision check`. For already-clean candidates: lock now
-(prevent regression). For violated-but-real (e.g. `lib ⊥ components`): fix-first or
-use a known-violations baseline/ratchet.
+The category order *framework-boundary + cross-cutting-correctness > layering >
+naming* is a **useful default prior**, not a law: a load-bearing layering rule (e.g.
+domain⊥framework in a hexagonal backend) can and should outrank a weak framework
+hint. Each candidate carries the norm (as a forbidden/required statement), its
+**evidence**, the clean-vs-violated marker, and is forced through the **"why + what
+breaks"** test. Every candidate is explicitly a **hypothesis for the human to
+judge**, never an auto-lockable rule — the skill presents, it does not recommend
+locking. It closes by pointing the human at the lock mechanism: `decision new` →
+write the check + counterexample per `docs/architecture-fitness.md` → `ratify`
+(bite-test) → `decision check`, and by noting the two *options the human may choose*:
+for a clean candidate, locking can happen immediately (prevents regression); for a
+violated-but-real one (e.g. `lib ⊥ components`), fix-first or a known-violations
+baseline/ratchet.
 
 ## 7. Greenfield branch (detect + short route)
 
 The skill's core is *recover from existing code*. A greenfield repo has nothing to
 mine, so the skill must **detect "little/no code" first and route**, rather than
-mining an empty graph and emitting garbage. The greenfield branch is short: don't
-mine; instead derive a few high-confidence **intent** norms from product docs /
-vision / chosen stack; **text-lock** them as decisions (a ratified decision needs no
-check — it becomes a body-frozen `context` decision); **arm the checks that already
-fit** (a validator script → a decision check today); **defer** layering rules until
-a skeleton exists, then switch back to recover mode; ratify sparingly (early
-architecture churns). This is a routing branch, not a co-equal mode — the declare
-path mostly reuses the existing mechanism, so it stays brief.
+mining an empty graph and emitting garbage. **This is a deliberate single-
+responsibility risk**: greenfield is a *different-shaped job* — its input is product
+intent, not code; its mode is **intent-prescriptive, not descriptive** (see §2). The
+mitigation is to keep it a short *routing branch*, not a co-equal mode, so the
+recover method stays the skill's center of gravity. The branch: don't mine; instead
+**offer** a few high-confidence **intent** norms derived from product docs / vision /
+chosen stack **as candidate decisions for the human to ratify** (a ratified decision
+needs no check — it can be a body-frozen `context` decision); surface any **check
+that already fits** (a validator script → a candidate decision check today);
+**defer** layering rules until a skeleton exists, then switch back to recover mode;
+advise ratifying sparingly (early architecture churns). Note the philosophy still
+holds — the skill *offers*, the human ratifies — it is just sourced from intent
+rather than observation.
 
 ## 8. Relationship to the shipped guide and mechanism
 
@@ -140,26 +171,41 @@ path mostly reuses the existing mechanism, so it stays brief.
   adopter repo, so its wording must be agent-agnostic and stable.)
 - doc-refs gate: the SKILL.md **is** doc-scanned (the default doc scope is
   `**/*.md` minus `docs/plans/**` / `examples/**` / the two generated docs — `skills/**`
-  is not excluded), and so are the README/getting-started/AGENTS.md edits. So the
-  SKILL.md and the pointers must follow the same authoring rule as the
-  architecture-fitness guide — tool/API identifiers and capitalized proper nouns
-  (Electron, Biome, …) only inside fenced blocks, never inline backticks. Run
-  `super-harness doc check` as the backstop.
+  is not excluded), and so are the README/getting-started/AGENTS.md edits. The
+  **precise** authoring rule (per `core/doc_refs.py`): the gate extracts only inline
+  single-backtick spans and flags a span that is a single identifier with a camelCase
+  / TitleCase / snake_case shape absent from source. So the real risks are
+  TitleCase/camelCase proper nouns and snake_case symbols (`Electron`, `Biome`,
+  `child_process`, `mayDependOn`) — those go inside fenced blocks or as plain text.
+  Hyphenated / dotted / lowercase names (`lint-imports`, `dependency-cruiser`,
+  `.importlinter`, `depcruise`) are **safe inline** (they fail the identifier shape).
+  Run `super-harness doc check` as the backstop.
 
 ## 10. Implementation approach & verification
 
 - Author the SKILL.md via the **writing-skills** skill, which is TDD for skills:
   baseline pressure-test (does an agent, without the skill, mine badly / miss the
   framework boundary / ossify a zero?) → write the skill → verify an agent *with* it
-  discovers the OpenScreen-style candidate set correctly and respects the
-  "hypothesis not rule" framing → refactor to close loopholes.
-- Concrete acceptance: a fresh agent given the skill + the OpenScreen repo produces
-  a ranked candidate list that (a) surfaces the Electron process-isolation boundary
-  as top-tier, (b) flags `lib ⊥ components` as violated, (c) ranks by asymmetry not
-  zeros, (d) presents everything as hypotheses and hands off to `decision`/the guide.
-- Self-host lifecycle: docs+skill change; declared scope covers the SKILL.md, the
-  three pointer files, the AGENTS.md-template source, the design doc, and the plan.
-  `doc check` + `decision check` + `verify` + `attest verify` green. Tier: `Normal`.
+  produces the right candidate set and respects the "hypothesis not rule" framing →
+  refactor to close loopholes.
+- **Reproducible acceptance via a vendored fixture** (not an external repo). Commit a
+  trimmed multi-layer sample repo under `examples/arch-norm-fixture/` — deliberately
+  chosen because `examples/**` is excluded from BOTH the doc-scan and source-scan
+  scopes, so the fixture cannot trip `doc check` / `decision check`. The fixture
+  encodes the OpenScreen-style shape (a framework-boundary norm currently clean; a
+  layering rule with a planted leak; a pure sink; a coincidental symmetric zero) and
+  ships a committed **golden candidate list** (`examples/arch-norm-fixture/EXPECTED.md`).
+  Acceptance = a fresh agent given the skill + the fixture produces a ranked list
+  that (a) surfaces the framework-boundary norm top-tier, (b) flags the planted
+  layering leak as violated, (c) ranks by asymmetry/strength not raw zeros, (d)
+  skips the coincidental zero, (e) presents everything as hypotheses and hands off to
+  `decision`/the guide — matching EXPECTED.md. OpenScreen stays an *illustrative,
+  not-in-repo* real-world check, referenced but not depended on.
+- Self-host lifecycle: docs+skill+fixture change; declared scope covers the SKILL.md,
+  the fixture files, the three pointer files (README, getting-started, the AGENTS.md-
+  template source `agents_md_render.py` / its inline-primitives module), the design
+  doc, and the plan. `doc check` + `decision check` + `verify` + `attest verify` +
+  `sync --check` (AGENTS drift) green. Tier: `Normal`.
 
 ## 11. Risks & mitigations
 
