@@ -55,12 +55,16 @@ tier_hint: Normal
 - **doc-refs rule (SKILL.md and the README/getting-started edits ARE doc-scanned).** The gate flags inline single-backtick spans that are a single identifier with TitleCase/camelCase/snake_case shape absent from source. So keep `Electron`, `Biome`, `child_process`, `mayDependOn`, `ipcRenderer`, etc. **inside fenced blocks or as plain (un-backticked) text**. Hyphen/dot/lowercase names (`lint-imports`, `dependency-cruiser`, `.importlinter`, `depcruise`, `grep`) are safe inline. `super-harness doc check` is the backstop. (Fixture files under `examples/**` are doc-excluded — no constraint there.)
 - **Pointer URLs are absolute GitHub URLs**, base `https://github.com/Dawinia/super-harness/blob/main/…`, with an honest "(private during v0.1; requires repo access until the public flip)" note — never repo-relative paths (the wheel ships only `src/`).
 - **Hypotheses framing is load-bearing**: the skill presents candidates for the human to judge and hands off to `docs/architecture-fitness.md` + `decision` verbs; it never tells the human to lock.
+- **Judging gate results by exit code, not grep.** The lifecycle commands emit benign `unknown event type: l1_update_completed` warnings (pre-existing events replayed) — ignore them visually. Do **NOT** pipe a gate command through `grep` to hide them: `cmd | grep` returns grep's exit status and can mask a real gate failure. Read the command's own exit code / final verdict line.
+- **Edits are gate-blocked until `IMPLEMENTATION_IN_PROGRESS`.** Run Task 5 Steps 1–2 (`change start` → plan approve → `implementation start`) BEFORE creating/committing any file in Tasks 1–4; the in-process gate blocks Edit/Write in `AWAITING_PLAN_REVIEW`. (Lifecycle commands themselves run via Bash, which is ungated.)
 
 ---
 
 ## Task 1: Vendored fixture + golden EXPECTED.md (the test oracle)
 
-Build this FIRST — it is the acceptance oracle Task 2 verifies against.
+Build this FIRST (as authoring order) — it is the acceptance oracle Task 2 verifies
+against. **Prerequisite: the change must already be in `IMPLEMENTATION_IN_PROGRESS`
+(Task 5 Steps 1–2) before any file edit here, or the gate blocks it.**
 
 **Files:** create everything under `examples/arch-norm-fixture/`.
 
@@ -167,7 +171,7 @@ This directory is not built or tested; it is fixture data.
 
 - [ ] **Step 7: Confirm the fixture is gate-inert.**
 
-Run: `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check && super-harness decision check 2>&1 | grep -v "unknown event type"`
+Run: `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check && super-harness decision check`
 Expected: both clean. `examples/**` is doc-excluded, and the fixture has no `@decision:` anchors, so neither gate touches it.
 
 - [ ] **Step 8: Commit.** `git add examples/arch-norm-fixture && git commit -m "test: vendored fixture + golden EXPECTED for arch-norm discovery skill"`
@@ -194,7 +198,7 @@ Author with the **writing-skills** skill (skill-TDD: baseline → write → veri
 
 - [ ] **Step 3: Verify (GREEN) against the oracle.** Give a fresh subagent the skill + `examples/arch-norm-fixture/` and confirm its output matches `EXPECTED.md`: (a) framework-boundary norm surfaced top-tier, (b) `lib ⊥ components` flagged VIOLATED, (c) ranked by strength/asymmetry not raw zeros, (d) `i18n ⊥ lib` NOT proposed, (e) everything presented as hypotheses with hand-off to `decision`/the guide. If any miss, refactor the skill (close the loophole) and re-run.
 
-- [ ] **Step 4: doc-refs check.** Run: `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check 2>&1 | grep -v "unknown event type"`. Expected: no dead-reference finding for `skills/discovering-architecture-norms/SKILL.md`. If an identifier is flagged, move it into a fence / make it plain text.
+- [ ] **Step 4: doc-refs check.** Run: `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check`. Expected: no dead-reference finding for `skills/discovering-architecture-norms/SKILL.md`. If an identifier is flagged, move it into a fence / make it plain text.
 
 - [ ] **Step 5: Commit.** `git add skills/discovering-architecture-norms/SKILL.md && git commit -m "feat(skill): discovering-architecture-norms — mine candidate norms as hypotheses"`
 
@@ -220,7 +224,7 @@ Author with the **writing-skills** skill (skill-TDD: baseline → write → veri
   link requires repo access until the public release.
 ```
 
-- [ ] **Step 3: Verify.** `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check 2>&1 | grep -v "unknown event type"` — no findings for README.md / getting-started.md. (The URLs contain no backticked identifiers, so they are safe.)
+- [ ] **Step 3: Verify.** `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check` — no findings for README.md / getting-started.md. (The URLs contain no backticked identifiers, so they are safe.)
 
 - [ ] **Step 4: Commit.** `git add README.md docs/getting-started.md && git commit -m "docs: link the discovering-architecture-norms skill from README + getting-started"`
 
@@ -243,7 +247,7 @@ def test_section_points_to_norm_discovery_skill(tmp_path):
 
 - [ ] **Step 2: Run it — verify it fails.** Run: `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" python -m pytest tests/unit/engineering/test_agents_md_render.py::test_section_points_to_norm_discovery_skill -q`. Expected: FAIL (the string isn't in the template yet).
 
-- [ ] **Step 3: Add the pointer to the template.** In `src/super_harness/engineering/agents_md_render.py`, at the END of the `### Decision conformance` block in `_AGENTS_MD_SECTION_TEMPLATE` (right before the closing markers / next section), add one line:
+- [ ] **Step 3: Add the pointer to the template.** In `src/super_harness/engineering/agents_md_render.py`, inside `_AGENTS_MD_SECTION_TEMPLATE`, at the very end of the `### Decision conformance` content — **immediately before the `<!-- super-harness section end -->` marker, after the last "Keep the armed authoring set small" bullet** (there is no further `###` subsection) — add:
 
 ```
 - **Not sure which decisions to make?** To discover candidate architecture norms
@@ -255,7 +259,7 @@ def test_section_points_to_norm_discovery_skill(tmp_path):
 
 - [ ] **Step 4: Run the new test + the whole render test file.** Run: `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" python -m pytest tests/unit/engineering/test_agents_md_render.py -q`. Expected: PASS (new test green; existing marker/subsection assertions unaffected).
 
-- [ ] **Step 5: Regenerate this repo's own AGENTS.md.** The committed `AGENTS.md` must match the new template or `sync --check` fails. Run: `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" super-harness sync --agents-md`. Then verify no drift: `super-harness sync --check 2>&1 | grep -v "unknown event type"` (exit 0).
+- [ ] **Step 5: Regenerate this repo's own AGENTS.md.** The committed `AGENTS.md` must match the new template or `sync --check` fails. Run: `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" super-harness sync --agents-md`. Then verify no drift: `super-harness sync --check` (exit 0).
 
 - [ ] **Step 6: Commit.** `git add src/super_harness/engineering/agents_md_render.py tests/unit/engineering/test_agents_md_render.py AGENTS.md && git commit -m "feat(agents-md): point adopters' agents at the norm-discovery skill"`
 
@@ -274,7 +278,7 @@ def test_section_points_to_norm_discovery_skill(tmp_path):
   - Two-actor code review vs that bundle; produce a verdict JSON (`bundle_digest` copied from the bundle; every checklist item pass/na; findings) per `docs/cli-reference.md`.
   - `super-harness review approve 2026-07-04-architecture-norm-discovery-skill --reviewer code-reviewer --verdict-file <verdict.json>` → `READY_TO_MERGE`. (Bare code-reviewer approve is rejected — `--verdict-file` is mandatory.)
   - `super-harness attest write 2026-07-04-architecture-norm-discovery-skill` then commit `.harness/attestations/`.
-- [ ] **Step 5: Confirm merge gate.** `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" super-harness attest verify --base main --head HEAD 2>&1 | grep -v "unknown event type"`. Expected PASS — every scope file covered. If a "not in scope" blocker appears, add the path to this plan's frontmatter `scope.files`, re-attest, re-run.
+- [ ] **Step 5: Confirm merge gate.** `cd <repo> && PATH="$(pwd)/.venv/bin:$PATH" super-harness attest verify --base main --head HEAD`. Expected PASS — every scope file covered. If a "not in scope" blocker appears, add the path to this plan's frontmatter `scope.files`, re-attest, re-run.
 - [ ] **Step 6: Open the PR** with the metadata block naming the slug (getting-started §7).
 
 ---
