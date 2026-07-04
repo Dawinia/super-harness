@@ -211,7 +211,7 @@ Author with the **writing-skills** skill (skill-TDD: baseline → write → veri
 - [ ] **Step 1: README `## Links` entry.** In `README.md`'s `## Links` list, immediately after the "Arm an architecture rule" line, insert:
 
 ```
-- [Discover architecture norms (skill)](https://github.com/Dawinia/super-harness/blob/main/skills/discovering-architecture-norms/SKILL.md)
+- [Discover architecture norms (skill)](https://github.com/Dawinia/super-harness/blob/main/skills/discovering-architecture-norms/SKILL.md) — private repo during v0.1; needs repo access until the public release
 ```
 
 - [ ] **Step 2: getting-started pointer.** In `docs/getting-started.md`, at the end of the `## 11. Next steps` list, add a bullet:
@@ -253,6 +253,7 @@ def test_section_points_to_norm_discovery_skill(tmp_path):
 - **Not sure which decisions to make?** To discover candidate architecture norms
   in an existing codebase, point your agent at the discovering-architecture-norms
   skill: https://github.com/Dawinia/super-harness/blob/main/skills/discovering-architecture-norms/SKILL.md
+  (private repo during v0.1 — the link needs repo access until the public release).
 ```
 
 (A URL, agent-agnostic; no backticked identifiers.)
