@@ -179,6 +179,7 @@ agent-wrapping projects in the ecosystem:
 
 - [Getting started](docs/getting-started.md)
 - [Arm an architecture rule](docs/architecture-fitness.md)
+- [Discover architecture norms (skill)](https://github.com/Dawinia/super-harness/blob/main/skills/discovering-architecture-norms/SKILL.md) — private repo during v0.1; needs repo access until the public release
 - [Architecture](docs/ARCHITECTURE.md)
 - [CLI reference](docs/cli-reference.md)
 - [Adapter docs](docs/adapters/)

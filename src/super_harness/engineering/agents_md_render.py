@@ -146,6 +146,10 @@ yours, not the tool's — and the recipe is:
 - **Keep the armed authoring set small.** Each armed check spawns a subprocess
   concurrently every turn end; a large armed set misuses the interactive budget (CI
   is the exhaustive path).
+- **Not sure which decisions to make?** To discover candidate architecture norms
+  in an existing codebase, point your agent at the discovering-architecture-norms
+  skill: https://github.com/Dawinia/super-harness/blob/main/skills/discovering-architecture-norms/SKILL.md
+  (private repo during v0.1 — the link needs repo access until the public release).
 
 <!-- super-harness section end -->"""
 

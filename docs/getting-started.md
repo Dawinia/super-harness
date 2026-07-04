@@ -417,6 +417,11 @@ is what makes the merge gate refuse work that skipped a lifecycle step.
   `Normal`+).
 - **Read the full reference**: every command's flags, defaults, and exit
   codes are documented in [`cli-reference.md`](./cli-reference.md).
+- **Discover which rules to arm**: point your Code Agent at the
+  [discovering-architecture-norms skill](https://github.com/Dawinia/super-harness/blob/main/skills/discovering-architecture-norms/SKILL.md)
+  to sweep your codebase and propose candidate architecture norms (hypotheses you
+  then judge and ratify). The super-harness repo is private during v0.1, so the
+  link requires repo access until the public release.
 
 ---
 
