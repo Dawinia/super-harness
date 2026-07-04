@@ -1,0 +1,6 @@
+{
+  "name": "arch-norm-fixture",
+  "private": true,
+  "description": "Fixture for the discovering-architecture-norms skill. Not a real app.",
+  "dependencies": { "electron": "*", "react": "*" }
+}
