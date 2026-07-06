@@ -54,7 +54,7 @@ def test_load_returns_empty_when_yaml_missing(tmp_path: Path) -> None:
 def test_load_builtin_by_name(tmp_path: Path) -> None:
     yml = tmp_path / "sensors.yaml"
     yml.write_text(yaml.safe_dump({"sensors": ["stub-runner"]}))
-    sensors = load_sensors(yml, builtin_only=True)
+    sensors = load_sensors(yml)
     names = {s.name for s in sensors}
     assert "stub-runner" in names
 
@@ -93,184 +93,43 @@ def test_load_skips_unknown_builtin_with_warning(
     )
 
 
-def test_load_custom_plugin(tmp_path: Path) -> None:
-    mod = tmp_path / "my_sensor.py"
+def test_plugin_entry_is_rejected_without_executing(tmp_path: Path) -> None:
+    """A dict (plugin path+class) sensor entry must raise AND never import (exec)
+    its module. v0.1 is builtin-only — this is the F12 no-arbitrary-code guard.
+    """
+    sentinel = tmp_path / "EXECUTED"
+    mod = tmp_path / "evil_sensor.py"
     mod.write_text(
-        "from typing import ClassVar\n"
-        "from super_harness.sensors import Sensor, SensorResult\n"
-        "class MySensor(Sensor):\n"
-        "    name: ClassVar[str] = 'my'\n"
-        "    version: ClassVar[str] = '0.0.1'\n"
-        "    triggers_on_events: ClassVar[tuple[str, ...]] = ('plan_ready',)\n"
-        "    determinism: ClassVar[str] = 'computational'\n"
-        "    def check(self, trigger, context):\n"
-        "        return SensorResult(status='pass', summary='ok')\n"
+        "from pathlib import Path\n"
+        f"Path({str(sentinel)!r}).write_text('pwned')\n",
+        encoding="utf-8",
     )
     yml = tmp_path / "sensors.yaml"
     yml.write_text(
-        yaml.safe_dump(
-            {"sensors": [{"my-custom": {"path": str(mod), "class": "MySensor", "enabled": True}}]}
-        )
+        "sensors:\n"
+        "  - my-custom:\n"
+        f"      path: {mod}\n"
+        "      class: Evil\n",
+        encoding="utf-8",
     )
-    sensors = load_sensors(yml, builtin_only=False)
-    assert any(s.name == "my" for s in sensors)
-
-
-def test_load_skips_disabled_plugin(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    mod = tmp_path / "disabled_sensor.py"
-    mod.write_text(
-        "from typing import ClassVar\n"
-        "from super_harness.sensors import Sensor, SensorResult\n"
-        "class DisabledSensor(Sensor):\n"
-        "    name: ClassVar[str] = 'disabled'\n"
-        "    version: ClassVar[str] = '0.0.1'\n"
-        "    triggers_on_events: ClassVar[tuple[str, ...]] = ('plan_ready',)\n"
-        "    def check(self, trigger, context):\n"
-        "        return SensorResult(status='pass', summary='ok')\n"
-    )
-    yml = tmp_path / "sensors.yaml"
-    yml.write_text(
-        yaml.safe_dump(
-            {
-                "sensors": [
-                    {
-                        "disabled-one": {
-                            "path": str(mod),
-                            "class": "DisabledSensor",
-                            "enabled": False,
-                        }
-                    }
-                ]
-            }
-        )
-    )
-    with caplog.at_level(logging.INFO):
-        sensors = load_sensors(yml)
-    assert sensors == []
-    # The INFO log is a contributor-facing debug aid — silently dropping it
-    # would be a UX regression. Pin both level and id substring.
-    assert any(
-        rec.levelno == logging.INFO and "disabled-one" in rec.message
-        for rec in caplog.records
-    )
-
-
-def test_load_skips_all_plugins_when_builtin_only(tmp_path: Path) -> None:
-    mod = tmp_path / "plug.py"
-    mod.write_text(
-        "from typing import ClassVar\n"
-        "from super_harness.sensors import Sensor, SensorResult\n"
-        "class PlugSensor(Sensor):\n"
-        "    name: ClassVar[str] = 'plug'\n"
-        "    version: ClassVar[str] = '0.0.1'\n"
-        "    triggers_on_events: ClassVar[tuple[str, ...]] = ('plan_ready',)\n"
-        "    def check(self, trigger, context):\n"
-        "        return SensorResult(status='pass', summary='ok')\n"
-    )
-    yml = tmp_path / "sensors.yaml"
-    yml.write_text(
-        yaml.safe_dump(
-            {
-                "sensors": [
-                    "stub-runner",
-                    {"plug-id": {"path": str(mod), "class": "PlugSensor", "enabled": True}},
-                ]
-            }
-        )
-    )
-    sensors = load_sensors(yml, builtin_only=True)
-    names = {s.name for s in sensors}
-    assert names == {"stub-runner"}
-
-
-def test_load_rejects_non_sensor_plugin_class(tmp_path: Path) -> None:
-    mod = tmp_path / "bad_sensor.py"
-    mod.write_text("class NotASensor:\n    pass\n")
-    yml = tmp_path / "sensors.yaml"
-    yml.write_text(
-        yaml.safe_dump(
-            {"sensors": [{"bad": {"path": str(mod), "class": "NotASensor", "enabled": True}}]}
-        )
-    )
-    with pytest.raises(TypeError, match="not a Sensor subclass"):
+    with pytest.raises(ValueError, match="custom plugins are not supported"):
         load_sensors(yml)
-
-
-def test_load_rejects_plugin_with_missing_path(tmp_path: Path) -> None:
-    yml = tmp_path / "sensors.yaml"
-    yml.write_text(yaml.safe_dump({"sensors": [{"bad": {"class": "X", "enabled": True}}]}))
-    with pytest.raises(KeyError, match="missing required key 'path'"):
-        load_sensors(yml)
-
-
-def test_load_rejects_plugin_with_missing_class_key(tmp_path: Path) -> None:
-    mod = tmp_path / "x.py"
-    mod.write_text("class X: pass\n")
-    yml = tmp_path / "sensors.yaml"
-    yml.write_text(yaml.safe_dump({"sensors": [{"bad": {"path": str(mod), "enabled": True}}]}))
-    with pytest.raises(KeyError, match="missing required key 'class'"):
-        load_sensors(yml)
-
-
-def test_load_rejects_plugin_with_nonexistent_path(tmp_path: Path) -> None:
-    yml = tmp_path / "sensors.yaml"
-    yml.write_text(
-        yaml.safe_dump(
-            {
-                "sensors": [
-                    {
-                        "bad": {
-                            "path": str(tmp_path / "nonexistent.py"),
-                            "class": "X",
-                            "enabled": True,
-                        }
-                    }
-                ]
-            }
-        )
-    )
-    with pytest.raises(FileNotFoundError, match="does not exist"):
-        load_sensors(yml)
-
-
-def test_load_rejects_plugin_with_class_not_in_module(tmp_path: Path) -> None:
-    mod = tmp_path / "thin.py"
-    mod.write_text(
-        "from typing import ClassVar\n"
-        "from super_harness.sensors import Sensor, SensorResult\n"
-        "class Present(Sensor):\n"
-        "    name: ClassVar[str] = 'present'\n"
-        "    version: ClassVar[str] = '0.0.1'\n"
-        "    triggers_on_events: ClassVar[tuple[str, ...]] = ('plan_ready',)\n"
-        "    def check(self, trigger, context):\n"
-        "        return SensorResult(status='pass', summary='ok')\n"
-    )
-    yml = tmp_path / "sensors.yaml"
-    yml.write_text(
-        yaml.safe_dump(
-            {"sensors": [{"bad": {"path": str(mod), "class": "Missing", "enabled": True}}]}
-        )
-    )
-    with pytest.raises(AttributeError, match="has no attribute 'Missing'"):
-        load_sensors(yml)
-
-
-def test_load_rejects_plugin_with_multiple_keys(tmp_path: Path) -> None:
-    yml = tmp_path / "sensors.yaml"
-    # Two top-level keys on the dict entry — the typo case
-    yml.write_text(
-        "sensors:\n  - my-custom:\n      path: ./foo.py\n      class: Foo\n    enabled: true\n"
-    )
-    with pytest.raises(ValueError, match="exactly one key"):
-        load_sensors(yml)
+    assert not sentinel.exists(), "plugin module was executed — RCE surface still open"
 
 
 def test_load_rejects_non_list_entries(tmp_path: Path) -> None:
     yml = tmp_path / "sensors.yaml"
     yml.write_text(yaml.safe_dump({"sensors": "single-string"}))
     with pytest.raises(ValueError, match="must be a list"):
+        load_sensors(yml)
+
+
+def test_load_rejects_non_mapping_top_level(tmp_path: Path) -> None:
+    """A valid-but-non-mapping top level (bare list/scalar) → ValueError, not a
+    leaked AttributeError from `cfg.get(...)`."""
+    yml = tmp_path / "sensors.yaml"
+    yml.write_text("- a\n- b\n")
+    with pytest.raises(ValueError, match="top level must be a mapping"):
         load_sensors(yml)
 
 

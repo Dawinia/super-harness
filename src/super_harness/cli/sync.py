@@ -344,20 +344,17 @@ def _sync_adapter(
     root: Path, agents_path: Path, name: str, *, quiet: bool, assume_yes: bool
 ) -> None:
     """Re-inject ONLY ``name``'s subsection (no outer version bump)."""
-    # Mirror adapter.py's corrupt-yaml handling. `load_adapters` raises TWO error
-    # families: a syntactically-broken file (`yaml.YAMLError`, which does NOT derive
-    # from `ValueError`) AND a wrong-shape / unloadable config (`ValueError` /
-    # `OSError` / `ImportError` / `AttributeError` / `TypeError`) — list both.
+    # Catch only the CONFIG-driven failure surface of `load_adapters` (v0.1
+    # builtin-only): `yaml.YAMLError` (syntactically-broken file; does NOT derive
+    # from `ValueError`), `ValueError` (wrong-shape / non-mapping / non-builtin
+    # config), and `OSError` (unreadable file). A bad *builtin's* own constructor
+    # (a code bug, not a config problem) is deliberately NOT caught — it should
+    # fail loud, not be mislabeled as "adapters.yaml unreadable". (The old
+    # plugin-exec `ImportError`/`AttributeError`/`TypeError` families are gone
+    # with custom plugin loading; a non-mapping top level is now a `ValueError`.)
     try:
         frameworks, agents = load_adapters(adapters_yaml_path(root))
-    except (
-        yaml.YAMLError,
-        ValueError,
-        OSError,
-        ImportError,
-        AttributeError,
-        TypeError,
-    ) as e:
+    except (yaml.YAMLError, ValueError, OSError) as e:
         click.echo(
             format_error(
                 subcommand="sync",

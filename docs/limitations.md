@@ -15,6 +15,12 @@ deliberately deferred to a later version; one is blocked by an upstream bug
   the reference v0.1 adapter; Codex ships as an experimental second adapter (see
   [Codex adapter](adapters/codex.md)).
 
+**Custom plugins (v0.2+):**
+- Custom sensors / gates / framework adapters loaded from `.harness/*.yaml`
+  (`path` + `class`). v0.1 is builtin-only: loading contributor Python in-process
+  needs a trust/sandbox model, which lands with the plugins themselves in v0.2. A
+  non-builtin entry is rejected — it is not executed.
+
 **Process / orchestration:**
 - Unattended CI auto-review — a headless reviewer that produces the verdict with
   no human or interactive agent present (e.g. shelling out to a headless Claude

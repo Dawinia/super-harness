@@ -84,7 +84,8 @@ def sensors_yaml_path(root: Path) -> Path:
     """`.harness/sensors.yaml` — sensor registry config (sensor-gate-architecture §2.3).
 
     Optional file: absent → only built-in sensors are available. Phase 3.5
-    (`super-harness sensor list`) reads this to enumerate plugin entries.
+    (`super-harness sensor list`) reads this to list the built-in sensors named
+    in it (v0.1 is builtin-only).
     """
     return root / ".harness" / "sensors.yaml"
 
@@ -93,7 +94,8 @@ def gates_yaml_path(root: Path) -> Path:
     """`.harness/gates.yaml` — gate registry config (sensor-gate-architecture §2.3).
 
     Optional file: absent → only built-in gates are available. Phase 3.5
-    (`super-harness gate list`) reads this to enumerate plugin entries.
+    (`super-harness gate list`) reads this to list the built-in gates named in
+    it (v0.1 is builtin-only).
     """
     return root / ".harness" / "gates.yaml"
 
