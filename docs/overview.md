@@ -25,14 +25,15 @@ replacement for either.
   `done` / `on-merge` / `status` / `sync` drive a change end-to-end through a
   fixed state machine (see [Concepts](concepts.md)).
 - **Hot-path PreToolUse gate** — decided in-process from one state snapshot;
-  blocks Edit / Write tool calls in Claude Code when the current lifecycle state
-  forbids them.
+  blocks Edit / Write tool calls in Claude Code (and `apply_patch` in Codex,
+  experimental) when the current lifecycle state forbids them.
 - **Cold-path PR gates** — via CI: PR metadata + lifecycle-state validation, the
   verification-runner sensor, and a merge gate.
 - **Framework adapters** — OpenSpec, Superpowers (marker-driven, version-agnostic
   discovery), and Plain (fallback). See [Adapter docs](adapters/).
-- **Agent adapter** — Claude Code (PreToolUse + SessionStart hooks, injects an
-  AGENTS.md subsection).
+- **Agent adapters** — Claude Code (PreToolUse + SessionStart + Stop hooks,
+  injects an AGENTS.md subsection) and Codex (experimental; same hook surface,
+  requires a one-time `/hooks` trust step). See [Adapter docs](adapters/).
 - **Decision conformance** — make a human decision actually bind the AI's code:
   referential integrity, text-lock (a ratified decision can't be silently
   rewritten), and executable checks (the code can't silently violate it). The

@@ -1,7 +1,8 @@
 # Claude Code adapter
 
-The Claude Code adapter is super-harness's reference *agent* adapter and the
-only agent adapter shipped in v0.1. It wires Claude Code's runtime to the
+The Claude Code adapter is super-harness's reference *agent* adapter in v0.1
+(Codex ships as an experimental second adapter — see [Codex adapter](codex.md)).
+It wires Claude Code's runtime to the
 harness by registering three hooks directly in `.claude/settings.local.json`
 (the per-machine, conventionally-gitignored settings file — NEVER the committed
 shared `.claude/settings.json` — because the hook `command` pins a

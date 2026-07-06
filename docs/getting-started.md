@@ -96,7 +96,7 @@ events and a specific framework (e.g. OpenSpec, Spec Kit) or agent (e.g.
 Claude Code, Cursor). v0.1 ships:
 
 - **Framework adapters:** `openspec`, `superpowers`, and `plain`.
-- **Agent adapters:** `claude-code`.
+- **Agent adapters:** `claude-code` and `codex` (experimental).
 
 For this walkthrough we'll wire up the canonical pair:
 

@@ -11,8 +11,9 @@ deliberately deferred to a later version; one is blocked by an upstream bug
 - BMAD framework adapter
 
 **Agent adapters (v0.2+):**
-- Cursor / Codex / Aider agent adapters — platform hook capabilities vary;
-  Claude Code is the reference adapter for v0.1.
+- Cursor / Aider agent adapters — platform hook capabilities vary. Claude Code is
+  the reference v0.1 adapter; Codex ships as an experimental second adapter (see
+  [Codex adapter](adapters/codex.md)).
 
 **Process / orchestration:**
 - Unattended CI auto-review — a headless reviewer that produces the verdict with

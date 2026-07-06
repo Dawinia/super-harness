@@ -21,6 +21,6 @@ Start here.
 - [State machine](state-machine.md) — the authoritative transition matrix.
 - [Arm an architecture rule](architecture-fitness.md) — the decision-conformance
   worked example.
-- [Adapter docs](adapters/) — OpenSpec, Claude Code, Plain.
+- [Adapter docs](adapters/) — OpenSpec, Claude Code, Codex (experimental), Plain.
 - [Decision records](decisions/) — the ratified architecture decisions this repo
   binds on itself.
