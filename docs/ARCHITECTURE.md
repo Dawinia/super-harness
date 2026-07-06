@@ -69,8 +69,9 @@ verdict — a human or the agent's own reviewer subagent does.
 
 Two enforcement paths, sorted by how hard they are:
 
-- **Hot-path (local, fast feedback — in-process):** the Claude Code adapter installs
-  a **PreToolUse** hook (`super-harness-hook`) that makes the gate decision
+- **Hot-path (local, fast feedback — in-process):** the Claude Code adapter (and
+  the experimental Codex adapter) installs a **PreToolUse** hook
+  (`super-harness-hook`) that makes the gate decision
   **in-process** (`core.state_snapshot` → `gates.pre_tool_use.PreToolUseGate`) before
   every `Edit`/`Write`. No background daemon is required; the gate always enforces by
   reading `state.yaml` directly (one parse, never-raises, fail-open only on a missing
@@ -97,8 +98,9 @@ Adapters keep the core framework- and agent-agnostic:
   (marker-driven, version-agnostic: discovers design/plan artifacts by a `change:`
   frontmatter marker and `stage:`); `plain` (fallback).
 - **Agent adapters** wire the harness into an agent's hook surface. `claude-code`
-  writes the PreToolUse + SessionStart hooks and injects an `AGENTS.md` section that
-  tells the agent the conventions (lifecycle, review protocol, scope discipline).
+  and `codex` write the PreToolUse + SessionStart + Stop hooks and inject an `AGENTS.md`
+  section that tells the agent the conventions (lifecycle, review protocol, scope
+  discipline); Codex additionally needs a one-time `/hooks` trust step.
 
 ## 6. Verification
 

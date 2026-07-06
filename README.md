@@ -2,6 +2,8 @@
 
 > The missing CI layer for spec-driven AI coding workflows.
 
+**English** | [简体中文](README.zh-CN.md)
+
 ## What is super-harness?
 
 An open-source, CI-first, framework-agnostic, agent-agnostic harness that makes
@@ -28,8 +30,10 @@ point of the tool:
 
 ```bash
 pipx install super-harness
-cd your-repo && super-harness init          # create the .harness/ data plane
-super-harness change start "my-change"      # → INTENT_DECLARED
+cd your-repo && super-harness init            # create the .harness/ data plane
+super-harness adapter install claude-code     # wire your agent (auto-done by init if .claude/ exists)
+#   or, for Codex:  super-harness adapter install codex   → then run /hooks in Codex to trust it
+super-harness change start "my-change"        # → INTENT_DECLARED
 # now have your agent (or you) try to edit code → the gate blocks it,
 # because no plan review has happened yet. That block is the product.
 ```
@@ -48,6 +52,7 @@ demo [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/).
 - [Concepts](docs/concepts.md) — lifecycle, and what the harness does *not* do
 - [Adopting](docs/adopting.md) — lock architecture rules in your own project
 - [Limitations & FAQ](docs/limitations.md)
+- [Agent adapters](docs/adapters/) — [Claude Code](docs/adapters/claude-code.md) · [Codex](docs/adapters/codex.md) (experimental)
 - [CLI reference](docs/cli-reference.md)
 - [Architecture](docs/ARCHITECTURE.md)
 

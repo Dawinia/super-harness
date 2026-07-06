@@ -49,7 +49,8 @@ advancing — the content of the review is produced by the agent or human, the
 ## Two gate paths
 
 - **Hot path** — the PreToolUse gate, decided in-process from a single
-  `state.yaml` snapshot, blocks Edit / Write tool calls in Claude Code when the
+  `state.yaml` snapshot, blocks Edit / Write tool calls in Claude Code (and
+  `apply_patch` in Codex, experimental — see [Adapter docs](adapters/)) when the
   current state forbids them. No resident process is on the decision path.
 - **Cold path** — CI gates on the PR: metadata + lifecycle-state validation, the
   verification-runner sensor, and the merge gate.
