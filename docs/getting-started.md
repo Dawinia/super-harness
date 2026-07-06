@@ -15,6 +15,11 @@ copy-paste runnable. For the full CLI surface see
 [`cli-reference.md`](./cli-reference.md). For a runnable end-to-end example,
 see [`examples/demo-openspec-claude/`](../examples/demo-openspec-claude/).
 
+> **This is the full version of the README Quickstart.** The README shows the
+> shortest path to *seeing* the gate work (ending at `INTENT_DECLARED` with a
+> blocked edit). This guide takes a change all the way through every gate to a
+> merged, archived PR.
+
 ---
 
 ## 1. Install the CLI
@@ -68,7 +73,7 @@ What `init --setup-github` does:
    (skipped silently if you don't have admin on the repo).
 6. Lists `pre-commit` / `pre-push` in `.harness/gates.yaml` as planned
    cold-path gates. Actual `.git/hooks/` install is v0.2 — see the
-   project README's "What v0.1 does NOT ship yet" / OPEN-ITEMS #2.
+   [Limitations](limitations.md) / OPEN-ITEMS #2.
 
 Verify:
 
@@ -197,8 +202,9 @@ starts editing. The hot-path gate enforces lifecycle rules:
 > `implementation_started`, `code_review_passed`) now ship as the CLI verbs above —
 > the lifecycle runs end-to-end via the CLI. What is *not* yet shipped is an
 > unattended CI auto-reviewer (a headless LLM that produces the verdict with no
-> human/agent present); that is tracked as a follow-up. Plain-mode `plan_ready`
-> also still has no public CLI emitter — use a framework adapter for the full path.
+> human/agent present); that is tracked as a follow-up. Plain-mode advances past
+> `INTENT_DECLARED` with the manual verb `super-harness plan ready`; framework
+> adapters emit `plan_ready` automatically from their artifacts.
 
 You don't have to do anything — the hooks installed by
 `adapter install claude-code` handle this transparently. The gate enforces

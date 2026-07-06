@@ -128,10 +128,11 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   active change / change is still in `INTENT_DECLARED` or
   `AWAITING_PLAN_REVIEW` / etc.). The gate only allows mutations at
   `PLAN_APPROVED`, `IMPLEMENTATION_IN_PROGRESS`, or `CODE_REVIEW_REJECTED`
-  (see `src/super_harness/gates/decisions.py`). v0.1 has no public CLI
-  verb to advance `AWAITING_PLAN_REVIEW → PLAN_APPROVED`; multi-stage
-  plan-reviewer is deferred to v0.2 (see project README's "What v0.1
-  does NOT ship yet"). Framework adapters auto-emit `plan_ready` when
+  (see `src/super_harness/gates/decisions.py`). `AWAITING_PLAN_REVIEW →
+  PLAN_APPROVED` advances via `review approve --reviewer plan-reviewer`;
+  multi-stage (multiple sequential reviewers) plan review is deferred to
+  v0.2 (see [Limitations](../limitations.md)). Framework adapters auto-emit
+  `plan_ready` when
   their artifacts exist (OpenSpec watches `tasks.md`). If the gate is genuinely
   malfunctioning, a **human** (never an agent) can apply the emergency override
   documented in getting-started troubleshooting; any bypass is recorded and

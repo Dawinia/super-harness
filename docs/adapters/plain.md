@@ -6,18 +6,14 @@ layout, no Spec Kit metadata, etc.), the dispatcher force-activates Plain so
 the lifecycle still works — you drive it by hand instead of having artifacts
 on disk do it for you.
 
-> **v0.1 caveat — Plain's hand-driven lifecycle is incomplete.** Plain's
-> `agents_md_subsection()` (quoted verbatim below) advertises `super-harness
-> plan ready <slug>` as a CLI verb, but **v0.1 does not yet ship that
-> command** — the public CLI surface is `change start` / `change abandon` /
-> `change list` / `change resume` / `verify` / `done`. Advancing state from
-> `AWAITING_PLAN_REVIEW → PLAN_APPROVED` requires either a framework
-> adapter that auto-emits the events (e.g. OpenSpec on `tasks.md`) or
-> direct event emission via the internal `EventWriter` API. Multi-stage
-> plan-reviewer is v0.2 (see project README's "What v0.1 does NOT ship
-> yet"). The references to `plan ready` below mirror what Plain's
-> `agents_md_subsection()` returns; they describe Plain's *intended* v0.2+
-> lifecycle, not the v0.1 shipped surface.
+> **v0.1 note — Plain is hand-driven.** Without framework artifacts on disk to
+> drive it, you advance the lifecycle with explicit CLI verbs: `super-harness
+> plan ready <slug>` emits `plan_ready` (`INTENT_DECLARED → AWAITING_PLAN_REVIEW`)
+> and `super-harness review approve --reviewer plan-reviewer` advances
+> `AWAITING_PLAN_REVIEW → PLAN_APPROVED`. Multi-stage (multiple sequential
+> reviewers) plan review is v0.2 (see [Limitations](../limitations.md)). The
+> `plan ready` references below mirror what Plain's `agents_md_subsection()`
+> returns.
 
 Plain is a framework adapter (same ABC as OpenSpec), but it is deliberately
 inert: it emits no events, declares no verification checks, and watches no
