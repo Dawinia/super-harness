@@ -71,6 +71,16 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`3` no `.harness/`",
         "`5` `state.yaml` lock contention",
     ],
+    # `plan redeclare` shares `plan ready`'s emit path but takes no `--scope` (so no
+    # malformed-scope `2`) and cannot reach `5`: the emit path (EventWriter.emit /
+    # refresh_state_after_emit) takes state.yaml via blocking fcntl.LOCK_EX, and
+    # EXIT_CONCURRENCY is not emitted by any CLI path today. Accurate set: 0/1/2/3.
+    "plan redeclare": [
+        "`0` success",
+        "`1` generic error",
+        "`2` illegal lifecycle transition (terminal state / not-yet-started slug)",
+        "`3` no `.harness/`",
+    ],
     "change abandon": [
         "`0` success",
         "`1` generic error",

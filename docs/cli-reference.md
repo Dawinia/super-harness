@@ -705,6 +705,26 @@ super-harness plan ready [OPTIONS] SLUG
 - `3` no `.harness/`
 - `5` `state.yaml` lock contention
 
+## super-harness plan redeclare
+
+Emit `plan_redeclared` (any active state → INTENT_DECLARED).
+
+```
+super-harness plan redeclare [OPTIONS] SLUG
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `SLUG` | text | *required* |  |
+| `--reason` | text | `''` | Optional reason for reopening the change (recorded in redeclaration_history). |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+- `2` illegal lifecycle transition (terminal state / not-yet-started slug)
+- `3` no `.harness/`
+
 ## super-harness pr
 
 PR-side helpers (validate PR metadata + lifecycle).
