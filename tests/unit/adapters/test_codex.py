@@ -51,6 +51,11 @@ def test_agents_md_subsection_has_trust_and_caveat():
     assert "/hooks" in sub  # trust step
     assert "apply_patch" in sub
     assert "WebSearch" in sub  # coverage caveat
+    # Coverage caveat must not conflate what Codex *surfaces* to a hook with what
+    # super-harness *gates*: the old "intercepts only simple shell" phrasing read as
+    # a contradiction against "Bash is never gated" (PR#74 review).
+    assert "simple shell" not in sub.lower()
+    assert "Codex surfaces only shell commands" in sub  # caveat separates surface from gating
 
 
 def test_on_uninstall_restores_earliest_backup(tmp_path, monkeypatch):

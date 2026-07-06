@@ -56,9 +56,12 @@ new/changed hooks until trusted (trust is keyed to the hook's hash); if you
 reinstall or relocate the binary, re-trust it. On a pre-existing repo also run
 `super-harness sync --gitignore` so `.codex/hooks.json` is ignored.
 
-**Coverage caveat:** Codex PreToolUse intercepts only simple shell + `apply_patch`
-— it does NOT see `WebSearch` or other non-shell/non-MCP tools, so real-time
-coverage is narrower than Claude Code's. The CI cold floor backs the gap.
+**Coverage caveat:** Codex surfaces only shell commands and `apply_patch` to
+PreToolUse hooks — it does NOT expose `WebSearch` or other non-shell/non-MCP
+tools. super-harness gates `apply_patch` edits (never `Bash`, so the kill-switch
+keeps working); an action taken through a tool Codex does not surface isn't caught
+in real time, so real-time coverage is narrower than Claude Code's. The CI cold
+floor backs the gap.
 
 When a tool call is blocked:
 - Run `super-harness status` to see the change, its state, and the next step.
