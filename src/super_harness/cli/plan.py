@@ -1,4 +1,4 @@
-"""`super-harness plan` — plain-mode `plan_ready` emitter (HG-13).
+"""`super-harness plan` — plain-mode plan-phase emitters (HG-13): `ready` + `redeclare`.
 
 `plan ready <slug> [--scope <files-yaml>] [--tier-hint <t>]`
 (cli-command-surface §418) manually emits `plan_ready`, advancing
@@ -8,6 +8,21 @@ without it a `plain` change `change start`-ed into INTENT_DECLARED has no CLI
 verb to reach AWAITING_PLAN_REVIEW, so a cold-start change is stuck at the very
 first lifecycle stage (the HG-13 self-host blocker). Emit is STRICT — an illegal
 transition (e.g. from PLAN_APPROVED) is rejected and nothing is appended.
+
+`plan redeclare <slug> [--reason <text>]` emits `plan_redeclared`, rewinding a
+change from any active (non-terminal) state back to INTENT_DECLARED. It is the
+late-stage scope-expansion counterpart to `plan ready`: after `redeclare`, the
+scope is re-declared via `plan ready <slug> --scope @new`, which re-routes through
+AWAITING_PLAN_REVIEW and the plan scope-adherence review (plan + code review
+deliberately re-run — there is no silent scope-amend-without-review path). Without
+it, expanding scope late (e.g. from READY_TO_MERGE) forces a `change abandon` +
+new-slug workaround. Emit is STRICT — a terminal state (ARCHIVED/ABANDONED) or a
+not-yet-started slug is rejected with nothing appended. Exit codes: 0 / 2 / 3.
+`--reason` is optional (mirrors `change abandon --reason`); when supplied it is
+recorded on the event and the reducer appends it to `redeclaration_history`.
+Reconcile note: cli-command-surface §418 predates this verb; the spec's `plan`
+CLI signature should grow `redeclare` (same divergence-note convention as the
+`--tier-hint` flag below).
 
 The payload carries the lifecycle-event-model §3.2 fields the reducer already
 consumes (reducer.py): `scope` ({files: [...]}),
@@ -180,4 +195,81 @@ def ready(
         )
     elif not ctx.obj.get("quiet"):
         click.echo(f"super-harness: emitted plan_ready for {slug} → {new_state}")
+    sys.exit(EXIT_OK)
+
+
+@plan_group.command("redeclare")
+@click.argument("slug")
+@click.option(
+    "--reason",
+    default="",
+    help="Optional reason for reopening the change (recorded in redeclaration_history).",
+)
+@click.pass_context
+def redeclare(ctx: click.Context, slug: str, reason: str) -> None:
+    """Emit `plan_redeclared` (any active state → INTENT_DECLARED).
+
+    Rewinds a change to the first lifecycle stage so its scope can be
+    (re)declared via a subsequent `plan ready <slug> --scope @new` — which routes
+    back through AWAITING_PLAN_REVIEW and the plan scope-adherence review. This is
+    the late-stage scope-expansion counterpart to `plan ready`: `redeclare` rewinds
+    to before plan-ready, `ready` re-advances. Strict emit — a terminal state
+    (ARCHIVED/ABANDONED) or a not-yet-started slug is an illegal transition,
+    rejected with nothing appended.
+    """
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as e:
+        click.echo(
+            format_error(subcommand="plan redeclare", message=e.message, hint=e.hint),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
+
+    cs = derive_state(events_path(root)).get(slug)
+    framework = cs.framework if cs is not None else "plain"  # like the sibling emitter
+    payload: dict[str, object] = {}
+    if reason:
+        payload["reason"] = reason
+    ev = Event(
+        event_id=new_event_id(),
+        type="plan_redeclared",
+        change_id=slug,
+        timestamp=utc_now_iso(),
+        actor=Actor(type="human", identifier="cli"),
+        framework=framework,
+        payload=payload,
+    )
+    try:
+        EventWriter(events_path(root)).emit(ev)
+    except EmitPreconditionError as e:
+        click.echo(
+            format_error(
+                subcommand="plan redeclare",
+                message=str(e),
+                hint="`plan_redeclared` is only legal from an active (non-terminal) "
+                "state — the change must already be started and not ARCHIVED/ABANDONED.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    refresh_state_after_emit(root)
+
+    new_cs = derive_state(events_path(root)).get(slug)
+    new_state = new_cs.current_state if new_cs is not None else None
+    if ctx.obj.get("json"):
+        click.echo(
+            json_envelope(
+                command="plan redeclare",
+                status="pass",
+                exit_code=EXIT_OK,
+                data={
+                    "change": slug,
+                    "event_emitted": "plan_redeclared",
+                    "new_state": new_state,
+                },
+            )
+        )
+    elif not ctx.obj.get("quiet"):
+        click.echo(f"super-harness: emitted plan_redeclared for {slug} → {new_state}")
     sys.exit(EXIT_OK)
