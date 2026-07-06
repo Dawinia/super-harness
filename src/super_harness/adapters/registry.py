@@ -11,16 +11,15 @@ the sensors/gates schema — so this loader does NOT reuse `core._registry`:
          path: ./adapters/x.py, class: MyAdapter, version: 0.0.1, enabled: true}
 
 Built-ins are resolved from a process-global table (mirroring the sensors/gates
-`register_builtin` surface); custom (`builtin: false`) entries are dynamically
-imported via the shared `core._plugin_loader.load_class_from_path` primitive.
+`register_builtin` surface). **v0.1 is builtin-only:** an entry whose `builtin`
+is not literally `true` (`false`, or the key omitted) is REJECTED with a
+`ValueError` — it is NOT imported. Loading contributor Python in-process needs a
+trust/sandbox model, which lands with the plugins themselves in v0.2.
 
 **Import-cycle note:** this module imports the concrete builtin classes
 (`PlainAdapter`, `ClaudeCodeAdapter`), which import only the ABCs from
 `adapters/__init__`. `adapters/__init__` must stay ABC-only — do NOT import this
 registry from it.
-
-**v0.1 plugin scope:** custom adapters execute arbitrary code in the host
-process. Sandboxing / isolation deferred to v0.2.
 
 API stability: **experimental** (v0.1).
 """
@@ -37,7 +36,6 @@ from super_harness.adapters.agent.codex import CodexAdapter
 from super_harness.adapters.framework.openspec import OpenSpecAdapter
 from super_harness.adapters.framework.plain import PlainAdapter
 from super_harness.adapters.framework.superpowers import SuperpowersAdapter
-from super_harness.core._plugin_loader import load_class_from_path
 
 __all__ = [
     "activate_with_fallback",
@@ -47,14 +45,6 @@ __all__ = [
     "register_builtin",
     "resolve_spec_plan_paths",
 ]
-
-# FrameworkAdapter / AgentAdapter are abstract; mypy rejects passing them to
-# `type[T]` parameters (error: type-abstract) even under non-strict mode. Bind
-# each once here so `load_class_from_path` calls reuse the binding without
-# restating the ignore per call. (`cast(type[FrameworkAdapter], ...)` is
-# rejected as redundant in the strict `core.*` scope, so this is the pattern.)
-_FW_BASE: type[FrameworkAdapter] = FrameworkAdapter  # type: ignore[type-abstract]
-_AG_BASE: type[AgentAdapter] = AgentAdapter  # type: ignore[type-abstract]
 
 # A built-in is either a framework or an agent adapter class. The kind is
 # derived from the actual ABC at resolution time (not the yaml `type`).
@@ -125,16 +115,21 @@ def load_adapters(
             NOT `ValueError`, so callers building a best-effort catch tuple must
             list it explicitly alongside `ValueError`.
         ValueError: malformed schema (top key not a list, entry not a dict,
-            missing/non-string `name`, unknown builtin, missing `path`/`class`
-            on a custom entry, or a same-name conflict across the union of
-            resolved builtin names + all yaml names).
-        FileNotFoundError / ImportError / AttributeError / TypeError: a custom
-            adapter module cannot be loaded (see `load_class_from_path`).
+            missing/non-string `name`, a duplicate name, a non-builtin entry
+            (`builtin` not literally true — custom plugins are unsupported in
+            v0.1), or an unknown builtin name).
     """
     if not yaml_path.exists():
         return [], []
 
     cfg = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+    # A valid-but-non-mapping top level (a bare list / scalar) would make the
+    # `cfg.get(...)` below raise AttributeError; normalize it to a ValueError so
+    # the loader's failure surface stays `yaml.YAMLError | ValueError | OSError`.
+    if not isinstance(cfg, dict):
+        raise ValueError(
+            f"{yaml_path}: top level must be a mapping, got {type(cfg).__name__}"
+        )
     entries = cfg.get("adapters", []) or []
     if not isinstance(entries, list):
         raise ValueError(
@@ -165,13 +160,21 @@ def load_adapters(
             )
         seen_names.add(raw_name)
 
+        # v0.1 is builtin-only. Reject any non-builtin entry loudly, BEFORE the
+        # `enabled` check, so a disabled non-builtin can never slip through
+        # silently and no path can import a user-supplied module. `builtin: true`
+        # is the only accepted value (false / omitted / truthy-non-bool reject).
+        if entry.get("builtin", False) is not True:
+            raise ValueError(
+                f"{yaml_path}: adapter {raw_name!r} is not a built-in "
+                f"(builtin must be true); custom plugins are not supported in "
+                f"v0.1 (builtin-only). See docs/limitations.md."
+            )
+
         if not entry.get("enabled", True):
             continue
 
-        if entry.get("builtin", False):
-            _resolve_builtin(entry, raw_name, yaml_path, frameworks, agents)
-        else:
-            _resolve_custom(entry, raw_name, yaml_path, frameworks, agents)
+        _resolve_builtin(entry, raw_name, yaml_path, frameworks, agents)
 
     return frameworks, agents
 
@@ -197,61 +200,6 @@ def _resolve_builtin(
         frameworks.append(instance)
     else:
         agents.append(instance)
-
-
-def _resolve_custom(
-    entry: dict[str, object],
-    name: str,
-    yaml_path: Path,
-    frameworks: list[FrameworkAdapter],
-    agents: list[AgentAdapter],
-) -> None:
-    # Conflict: a custom entry whose name shadows a builtin (plain / claude-code).
-    if name in _BUILTIN:
-        raise ValueError(
-            f"{yaml_path}: adapter {name!r} conflicts with a built-in adapter "
-            f"of the same name; rename the custom adapter"
-        )
-
-    raw_type = entry.get("type")
-    if raw_type not in ("framework", "agent"):
-        raise ValueError(
-            f"{yaml_path}: adapter {name!r} 'type' must be 'framework' or "
-            f"'agent', got {raw_type!r}"
-        )
-    raw_path = entry.get("path")
-    raw_class = entry.get("class")
-    if not isinstance(raw_path, str):
-        raise ValueError(
-            f"{yaml_path}: custom adapter {name!r} is missing required string 'path'"
-        )
-    if not isinstance(raw_class, str):
-        raise ValueError(
-            f"{yaml_path}: custom adapter {name!r} is missing required string 'class'"
-        )
-
-    spec_path = Path(raw_path)
-    if not spec_path.exists():
-        raise FileNotFoundError(
-            f"{yaml_path}: adapter {name!r} path {str(spec_path)!r} does not exist"
-        )
-
-    # For custom entries we trust the yaml `type` discriminator (the class is
-    # opaque until imported, so we pick the expected base from `type`).
-    error_label = f"{yaml_path}: adapter {name!r}"
-    module_name = f"super_harness_user.{name}"
-    if raw_type == "framework":
-        fw_cls = load_class_from_path(
-            spec_path, raw_class, _FW_BASE,
-            module_name=module_name, error_label=error_label,
-        )
-        frameworks.append(fw_cls())
-    else:
-        ag_cls = load_class_from_path(
-            spec_path, raw_class, _AG_BASE,
-            module_name=module_name, error_label=error_label,
-        )
-        agents.append(ag_cls())
 
 
 def activate_with_fallback(

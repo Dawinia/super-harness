@@ -1,12 +1,12 @@
 """Unit tests for `super-harness sensor list` (Phase 3 Task 3.5).
 
-Covers the six mandatory shapes per the plan:
+v0.1 is builtin-only. Covers:
   1. No `.harness/` workspace → EXIT_NO_CONFIG
   2. Empty registry, no yaml → exit 0, helpful empty message
   3. Built-in only (no yaml) → output contains the registered builtin
-  4. Plugin via yaml path+class → output contains the plugin name
-  5. `--json` flag → valid JSON envelope with expected schema
-  6. Builtin + plugin combined → output distinguishes the two sources
+  4. `--json` flag → valid JSON envelope with expected schema (built-in rows only)
+  5. A dict/plugin entry → EXIT_VALIDATION ("not supported in v0.1"), no exec
+  6. Malformed yaml (non-list) → EXIT_VALIDATION with the registry's error
 """
 from __future__ import annotations
 
@@ -56,19 +56,6 @@ def harness_workspace(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _write_plugin_module(path: Path, class_name: str, sensor_name: str) -> None:
-    path.write_text(
-        "from typing import ClassVar\n"
-        "from super_harness.sensors import Sensor, SensorResult\n"
-        f"class {class_name}(Sensor):\n"
-        f"    name: ClassVar[str] = '{sensor_name}'\n"
-        "    version: ClassVar[str] = '0.0.1'\n"
-        "    triggers_on_events: ClassVar[tuple[str, ...]] = ('plan_ready',)\n"
-        "    def check(self, trigger, context):\n"
-        "        return SensorResult(status='pass', summary='ok')\n"
-    )
-
-
 def test_list_when_no_harness(tmp_path: Path, isolated_registry: None) -> None:
     """Outside a `.harness/` workspace, exit EXIT_NO_CONFIG with a hint."""
     r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "sensor", "list"])
@@ -105,33 +92,9 @@ def test_list_builtin_only(harness_workspace: Path, isolated_registry: None) -> 
     assert "built-in" in r.output
 
 
-def test_list_with_plugin_yaml(harness_workspace: Path, isolated_registry: None) -> None:
-    """Plugin yaml entry → output contains plugin name and 'plugin' label."""
-    plugin_path = harness_workspace / "my_sensor.py"
-    _write_plugin_module(plugin_path, "MySensor", "my-custom")
-    yml = harness_workspace / ".harness" / "sensors.yaml"
-    yml.write_text(
-        yaml.safe_dump(
-            {"sensors": [{"my-custom": {"path": str(plugin_path), "class": "MySensor"}}]}
-        )
-    )
-    r = CliRunner().invoke(main, ["--workspace", str(harness_workspace), "sensor", "list"])
-    assert r.exit_code == EXIT_OK
-    assert "my-custom" in r.output
-    assert "plugin" in r.output
-
-
 def test_list_json_output(harness_workspace: Path, isolated_registry: None) -> None:
-    """`--json` → valid envelope with sensors list shape."""
+    """`--json` → valid envelope with builtin-only sensors list shape."""
     register_builtin("stub-runner", _Stub)
-    plugin_path = harness_workspace / "p.py"
-    _write_plugin_module(plugin_path, "PluginSensor", "p-id")
-    yml = harness_workspace / ".harness" / "sensors.yaml"
-    yml.write_text(
-        yaml.safe_dump(
-            {"sensors": [{"p-id": {"path": str(plugin_path), "class": "PluginSensor"}}]}
-        )
-    )
     r = CliRunner().invoke(
         main, ["--workspace", str(harness_workspace), "--json", "sensor", "list"]
     )
@@ -145,37 +108,32 @@ def test_list_json_output(harness_workspace: Path, isolated_registry: None) -> N
     assert "stub-runner" in by_name
     assert by_name["stub-runner"]["source"] == "built-in"
     assert by_name["stub-runner"]["version"] == "0.1.0"
-    # M-4 symmetry: built-ins emit `path: null` so JSON consumers can
-    # rely on the key existing on every row.
+    # Built-ins emit `path: null` so JSON consumers can rely on the key
+    # existing on every row.
     assert "path" in by_name["stub-runner"]
     assert by_name["stub-runner"]["path"] is None
-    assert "p-id" in by_name
-    assert by_name["p-id"]["source"] == "plugin"
-    # Plugin entries expose the path so users can grep their config.
-    assert by_name["p-id"]["path"] == str(plugin_path)
 
 
-def test_list_marks_builtin_vs_plugin(
+def test_list_rejects_plugin_entry(
     harness_workspace: Path, isolated_registry: None
 ) -> None:
-    """Mixed builtin + plugin → human output distinguishes the two sources."""
-    register_builtin("stub-runner", _Stub)
-    plugin_path = harness_workspace / "p2.py"
-    _write_plugin_module(plugin_path, "PSensor", "p-name")
+    """A dict/plugin sensors.yaml entry → EXIT_VALIDATION, module never exec'd."""
+    sentinel = harness_workspace / "EXECUTED"
+    plugin_path = harness_workspace / "evil.py"
+    plugin_path.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(sentinel)!r}).write_text('pwned')\n"
+    )
     yml = harness_workspace / ".harness" / "sensors.yaml"
     yml.write_text(
         yaml.safe_dump(
-            {"sensors": [{"p-name": {"path": str(plugin_path), "class": "PSensor"}}]}
+            {"sensors": [{"my-custom": {"path": str(plugin_path), "class": "Evil"}}]}
         )
     )
     r = CliRunner().invoke(main, ["--workspace", str(harness_workspace), "sensor", "list"])
-    assert r.exit_code == EXIT_OK
-    # Both names present
-    assert "stub-runner" in r.output
-    assert "p-name" in r.output
-    # Sources differentiated
-    assert "built-in" in r.output
-    assert "plugin" in r.output
+    assert r.exit_code == EXIT_VALIDATION
+    assert "not supported in v0.1" in (r.output + (r.stderr or ""))
+    assert not sentinel.exists(), "plugin module was executed — RCE surface still open"
 
 
 def test_list_reports_yaml_validation_errors(
@@ -199,3 +157,17 @@ def test_list_reports_yaml_validation_errors(
     combined = r.output + (r.stderr or "")
     assert "must be a list" in combined
     assert "super-harness sensor list" in combined
+
+
+def test_list_corrupt_yaml_exits_validation_not_traceback(
+    harness_workspace: Path, isolated_registry: None
+) -> None:
+    """Syntactically corrupt sensors.yaml → EXIT_VALIDATION, not an uncaught
+    `yaml.YAMLError` traceback (the loader's `yaml.safe_load` is unguarded)."""
+    yml = harness_workspace / ".harness" / "sensors.yaml"
+    yml.write_text("sensors: [unclosed\n")  # invalid YAML
+    r = CliRunner().invoke(
+        main, ["--workspace", str(harness_workspace), "sensor", "list"]
+    )
+    assert r.exit_code == EXIT_VALIDATION
+    assert r.exception is None or isinstance(r.exception, SystemExit)

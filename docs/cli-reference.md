@@ -549,7 +549,7 @@ super-harness gate check [OPTIONS] {pre-tool-use|pre-commit|pre-push|pr-open|pr-
 
 ## super-harness gate list
 
-List built-in + plugin gates visible to the dispatcher.
+List built-in gates visible to the dispatcher.
 
 ```
 super-harness gate list [OPTIONS]
@@ -857,7 +857,7 @@ super-harness sensor COMMAND [ARGS...]
 
 ## super-harness sensor list
 
-List built-in + plugin sensors visible to the dispatcher.
+List built-in sensors visible to the dispatcher.
 
 ```
 super-harness sensor list [OPTIONS]

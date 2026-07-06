@@ -192,22 +192,26 @@ def _reinject_installed_adapters(root: Path, agents_path: Path) -> None:
     (by name), so re-running never duplicates a subsection.
 
     Error split:
-      - ONLY the `load_adapters` call is wrapped defensively. A corrupt /
-        unloadable adapters.yaml is NON-FATAL here: the base section + plain
-        block + anchor are already a valid baseline, so we emit an advisory and
-        return rather than crash the render. The catch tuple covers BOTH a
-        syntactically-broken file (`yaml.YAMLError`, raised by the unguarded
-        `yaml.safe_load` in `load_adapters`) AND a wrong-shape / unloadable
-        config (`ValueError` / `OSError` / `ImportError` / `AttributeError` /
-        `TypeError`) — `yaml.YAMLError` derives from `Exception`, NOT
-        `ValueError`, so it must be listed explicitly.
+      - ONLY the `load_adapters` call is wrapped defensively, and only for its
+        CONFIG-driven failures. A corrupt / malformed adapters.yaml is NON-FATAL
+        here: the base section + plain block + anchor are already a valid
+        baseline, so we emit an advisory and return rather than crash the render.
+        The catch tuple covers a syntactically-broken file (`yaml.YAMLError`,
+        raised by the unguarded `yaml.safe_load` in `load_adapters`), a
+        wrong-shape / non-mapping / non-builtin config (`ValueError`), and an
+        unreadable file (`OSError`) — `yaml.YAMLError` derives from `Exception`,
+        NOT `ValueError`, so it must be listed explicitly. A bad *builtin's* own
+        constructor (a code bug, not a config problem) is deliberately NOT caught
+        — it should fail loud rather than be mislabeled as "unreadable". (The old
+        plugin-exec `ImportError`/`AttributeError`/`TypeError` families are gone
+        with v0.1 builtin-only loading.)
       - The inject_* calls are deliberately OUTSIDE that catch: an OSError /
         AgentsMdInjectionError they raise propagates to the caller's AGENTS.md
         envelope (fail-loud), matching the base-section writes.
     """
     try:
         frameworks, agents = load_adapters(adapters_yaml_path(root))
-    except (yaml.YAMLError, ValueError, OSError, ImportError, AttributeError, TypeError) as e:
+    except (yaml.YAMLError, ValueError, OSError) as e:
         click.echo(
             "Note: couldn't re-inject installed adapters into AGENTS.md "
             f"(adapters.yaml unreadable: {e}); re-run "

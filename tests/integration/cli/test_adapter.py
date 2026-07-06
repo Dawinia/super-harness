@@ -301,6 +301,35 @@ def test_list_enabled_only_filter(tmp_path: Path) -> None:
     assert "No adapters installed." not in r.output
 
 
+@pytest.mark.parametrize("builtin_value", [False, 1, "yes"])
+def test_list_labels_hand_edited_non_builtin_as_unsupported(
+    tmp_path: Path, builtin_value: object
+) -> None:
+    """A hand-edited non-builtin row lists as 'unsupported', not 'custom'/'built-in'.
+
+    v0.1 is builtin-only: every loader rejects a non-builtin entry (only literal
+    `builtin: true` is accepted), so it can never activate. `adapter list` reads
+    raw yaml (never imports the path) and must match the loader's strict
+    predicate — a truthy-non-bool (`1`, `"yes"`) must NOT masquerade as a
+    "built-in" row. (F12 seam removal.)
+    """
+    (tmp_path / ".harness").mkdir()
+    _run(tmp_path, "install", "plain")
+    path = _adapters_yaml(tmp_path)
+    data = yaml.safe_load(path.read_text())
+    data["adapters"].append(
+        {"name": "sneaky", "type": "framework", "builtin": builtin_value,
+         "path": "./sneaky.py", "class": "Sneaky", "version": "0.0.1", "enabled": True}
+    )
+    path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+    r = _run(tmp_path, "list")
+    assert r.exit_code == 0, r.output
+    assert "sneaky" in r.output
+    assert "unsupported" in r.output
+    assert "custom" not in r.output
+
+
 def test_list_json_envelope(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

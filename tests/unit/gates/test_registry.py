@@ -3,7 +3,8 @@
 Schema / error-path coverage for the shared loader (`core/_registry.py`)
 lives in `tests/unit/sensors/test_registry.py`. This file verifies the
 Gate-side wrapper handles the gate-specific contract (top-key="gates",
-base-class rejection on non-Gate plugins, gate `enabled: false` path).
+builtin resolution, and the v0.1 builtin-only guarantee — a dict/plugin entry
+is rejected without executing its module).
 """
 from __future__ import annotations
 
@@ -57,7 +58,7 @@ def test_load_returns_empty_when_yaml_missing(tmp_path: Path) -> None:
 def test_register_builtin_then_load(tmp_path: Path) -> None:
     yml = tmp_path / "gates.yaml"
     yml.write_text(yaml.safe_dump({"gates": ["stub-gate"]}))
-    gates = load_gates(yml, builtin_only=True)
+    gates = load_gates(yml)
     assert len(gates) == 1
     assert isinstance(gates[0], _StubGate)
 
@@ -78,38 +79,28 @@ def test_load_skips_unknown_builtin_with_warning(
     )
 
 
-def test_load_custom_plugin(tmp_path: Path) -> None:
-    mod = tmp_path / "my_gate.py"
+def test_plugin_entry_is_rejected_without_executing(tmp_path: Path) -> None:
+    """A dict (plugin path+class) gate entry must raise AND never import (exec)
+    its module. v0.1 is builtin-only — this is the F12 no-arbitrary-code guard.
+    """
+    sentinel = tmp_path / "EXECUTED"
+    mod = tmp_path / "evil_gate.py"
     mod.write_text(
-        "from typing import ClassVar\n"
-        "from super_harness.gates import Gate, GateDecision, GateResult\n"
-        "class MyGate(Gate):\n"
-        "    name: ClassVar[str] = 'my-gate'\n"
-        "    version: ClassVar[str] = '0.0.1'\n"
-        "    def decide(self, action, state, events):\n"
-        "        return GateResult(decision=GateDecision.ALLOW)\n"
+        "from pathlib import Path\n"
+        f"Path({str(sentinel)!r}).write_text('pwned')\n",
+        encoding="utf-8",
     )
     yml = tmp_path / "gates.yaml"
     yml.write_text(
-        yaml.safe_dump(
-            {"gates": [{"my-id": {"path": str(mod), "class": "MyGate", "enabled": True}}]}
-        )
+        "gates:\n"
+        "  - my-custom:\n"
+        f"      path: {mod}\n"
+        "      class: Evil\n",
+        encoding="utf-8",
     )
-    gates = load_gates(yml)
-    assert any(g.name == "my-gate" for g in gates)
-
-
-def test_load_rejects_non_gate_plugin_class(tmp_path: Path) -> None:
-    mod = tmp_path / "bad_gate.py"
-    mod.write_text("class NotAGate:\n    pass\n")
-    yml = tmp_path / "gates.yaml"
-    yml.write_text(
-        yaml.safe_dump(
-            {"gates": [{"bad": {"path": str(mod), "class": "NotAGate", "enabled": True}}]}
-        )
-    )
-    with pytest.raises(TypeError, match="not a Gate subclass"):
+    with pytest.raises(ValueError, match="custom plugins are not supported"):
         load_gates(yml)
+    assert not sentinel.exists(), "plugin module was executed — RCE surface still open"
 
 
 def test_load_rejects_non_list_entries(tmp_path: Path) -> None:
@@ -119,44 +110,13 @@ def test_load_rejects_non_list_entries(tmp_path: Path) -> None:
         load_gates(yml)
 
 
-def test_load_skips_disabled_plugin(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    mod = tmp_path / "disabled_gate.py"
-    mod.write_text(
-        "from typing import ClassVar\n"
-        "from super_harness.gates import Gate, GateDecision, GateResult\n"
-        "class DisabledGate(Gate):\n"
-        "    name: ClassVar[str] = 'disabled-g'\n"
-        "    version: ClassVar[str] = '0.0.1'\n"
-        "    def decide(self, action, state, events):\n"
-        "        return GateResult(decision=GateDecision.ALLOW)\n"
-    )
+def test_load_rejects_non_mapping_top_level(tmp_path: Path) -> None:
+    """A valid-but-non-mapping top level (bare list/scalar) → ValueError, not a
+    leaked AttributeError from `cfg.get(...)`."""
     yml = tmp_path / "gates.yaml"
-    yml.write_text(
-        yaml.safe_dump(
-            {
-                "gates": [
-                    {
-                        "disabled-one": {
-                            "path": str(mod),
-                            "class": "DisabledGate",
-                            "enabled": False,
-                        }
-                    }
-                ]
-            }
-        )
-    )
-    with caplog.at_level(logging.INFO):
-        gates = load_gates(yml)
-    assert gates == []
-    # The INFO log is a contributor-facing debug aid — silently dropping it
-    # would be a UX regression. Pin both level and id substring.
-    assert any(
-        rec.levelno == logging.INFO and "disabled-one" in rec.message
-        for rec in caplog.records
-    )
+    yml.write_text("- a\n- b\n")
+    with pytest.raises(ValueError, match="top level must be a mapping"):
+        load_gates(yml)
 
 
 def test_get_builtin_known_and_unknown() -> None:

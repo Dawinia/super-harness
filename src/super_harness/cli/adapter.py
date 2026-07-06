@@ -687,7 +687,10 @@ def _collect_adapter_rows(path: Path) -> list[dict[str, Any]]:
             continue
         kind = entry.get("type")
         version = entry.get("version")
-        builtin = bool(entry.get("builtin", False))
+        # Match the loader's strict predicate (`load_adapters` accepts only
+        # literal `True`): a hand-edited truthy-non-bool (`1`, `"yes"`) is a
+        # non-builtin the loader rejects, so it must NOT display as "built-in".
+        builtin = entry.get("builtin", False) is True
         enabled = bool(entry.get("enabled", True))
         capabilities: dict[str, bool] | None = None
 
@@ -748,7 +751,11 @@ def _render_human_table(
             {
                 "name": str(r["name"]),
                 "type": str(r["type"]),
-                "source": "built-in" if r["builtin"] else "custom",
+                # v0.1 is builtin-only: a non-builtin row is a hand-edited entry
+                # that every loader now rejects (it can never activate), so it is
+                # labeled "unsupported" rather than presenting a live "custom"
+                # extension seam. See docs/limitations.md.
+                "source": "built-in" if r["builtin"] else "unsupported",
                 "version": str(r["version"]),
                 "enabled": "yes" if r["enabled"] else "no",
                 "capabilities": _capabilities_summary(r["capabilities"]),

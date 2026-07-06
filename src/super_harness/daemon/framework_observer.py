@@ -220,10 +220,11 @@ def build_manager_failsafe(workspace_root: Path) -> FrameworkObserverManager | N
     """Load adapters + activate frameworks + build a started-ready manager.
 
     FAIL-SAFE (Axiom 3 — the watcher must NEVER take the gate down): the ENTIRE
-    load + activate path is wrapped in `try/except Exception`. `load_adapters`
-    raises a six-family error set (yaml.YAMLError / ValueError / OSError /
-    ImportError / AttributeError / TypeError) on a corrupt or unloadable
-    `adapters.yaml`; were that to propagate to `serve_forever`, `main()`'s bare
+    load + activate path is wrapped in `try/except Exception` (the broadest catch
+    — Axiom 3: the watcher must NEVER take the gate down, so even an unexpected
+    error is absorbed). `load_adapters` (v0.1 builtin-only) raises yaml.YAMLError
+    / ValueError / OSError for a corrupt or non-builtin `adapters.yaml`; were that
+    to propagate to `serve_forever`, `main()`'s bare
     `except Exception` would log "daemon main loop crashed" + return 1, KILLING
     the gate hot-path. Mirrors the advisory-skip contract `cli/sync.py` uses for
     a corrupt adapters.yaml: on ANY failure here we LOG (warning, JSON-line) +

@@ -1,8 +1,8 @@
 """Sensor registry — load `.harness/sensors.yaml` into instantiated Sensors.
 
-Per sensor-gate-architecture §2.3 + §3.5. Supports two entry shapes:
+Per sensor-gate-architecture §2.3 + §3.5. **v0.1 is builtin-only** — the only
+supported entry shape is a built-in name (registered via `register_builtin`):
 
-- Built-in by name (registered via `register_builtin`):
     sensors:
       - verification-runner
 
@@ -12,17 +12,8 @@ Per sensor-gate-architecture §2.3 + §3.5. Supports two entry shapes:
   reviewer would mean the harness running an LLM, which it never does. A real
   reviewer sensor remains an unbuilt v0.2 question.)
 
-- Plugin via dynamic import (path + class):
-    sensors:
-      - my-custom:
-          path: ./sensors/my_custom_sensor.py
-          class: MyCustomSensor
-          enabled: true
-
-**v0.1 plugin scope (spec §3.5, AC-9):** Plugin sensors execute arbitrary Python
-in the daemon process. Sandboxing, permission isolation, and per-sensor resource
-limits are deferred to v0.2. Pin to v0.1 if depending on this loader; the
-v0.1 → v0.2 boundary may breaking-change the plugin interface.
+A dict (plugin `path` + `class`) entry is rejected — loading contributor Python
+in-process needs a trust/sandbox model, deferred with the plugins to v0.2.
 """
 
 from __future__ import annotations
@@ -55,12 +46,7 @@ def register_builtin(name: str, cls: type[Sensor]) -> None:
     `from super_harness.gates.registry import register_builtin as register_gate`.
 
     Recommended placement: call this from your sensor package's `__init__.py`
-    so registrations land at import time. Do NOT call it from a plugin module
-    that is also loaded via `.harness/sensors.yaml` path+class — `load_sensors`
-    re-execs the module each call (with `sys.modules` eviction for clean
-    semantics), so import-time `register_builtin` calls would overwrite
-    `_BUILTIN[name]` with a freshly-instantiated class on every load,
-    invalidating any class-identity comparisons held by earlier callers.
+    so registrations land at import time.
     """
     _BUILTIN[name] = cls
 
@@ -85,26 +71,25 @@ def get_builtin(name: str) -> type[Sensor] | None:
     return _BUILTIN.get(name)
 
 
-def load_sensors(yaml_path: Path, *, builtin_only: bool = False) -> list[Sensor]:
-    """Load sensors from `yaml_path` (typically `.harness/sensors.yaml`).
+def load_sensors(yaml_path: Path) -> list[Sensor]:
+    """Load built-in sensors from `yaml_path` (typically `.harness/sensors.yaml`).
+
+    v0.1 is builtin-only: only string entries naming a built-in are supported;
+    a dict (plugin path+class) entry raises ValueError (no module is imported).
 
     Args:
         yaml_path: Path to the sensors yaml. Returns `[]` if the file is absent.
-        builtin_only: If True, plugin entries (path + class) are skipped
-            silently. Useful for tests / safe mode where contributor code
-            should not execute.
 
     Returns:
         Newly instantiated Sensor subclasses in yaml order.
 
     Raises:
-        ValueError / KeyError / FileNotFoundError / ImportError /
-        AttributeError / TypeError: See `core._registry.load_components`.
+        ValueError: malformed schema, or a dict/plugin entry (unsupported in
+            v0.1). See `core._registry.load_components`.
     """
     return load_components(
         yaml_path,
         yaml_top_key="sensors",
         base_class=_BASE,
         builtin=_BUILTIN,
-        builtin_only=builtin_only,
     )
