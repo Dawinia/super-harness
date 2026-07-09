@@ -36,7 +36,9 @@ def build_rows() -> list[Row]:
             to = compute_target_state(frm, event)
             if to == INVALID:
                 continue
-            if to == frm:           # self-loop (informational / re-emit) → not a move
+            # Hide global no-op signals and active intent re-emits, but keep
+            # state-specific self-loops like partial review verdicts.
+            if to == frm and (event in NOOP_EVENTS or event == "intent_declared"):
                 continue
             rows.append(Row(frm=frm, event=event, to=to))
     rows.sort(key=lambda r: ("" if r.frm is None else r.frm, r.event))

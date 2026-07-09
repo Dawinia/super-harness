@@ -175,6 +175,35 @@ def test_independent_code_review_stale_partial_does_not_count_after_reject(tmp_p
     assert not any(e["type"] == "code_review_passed" for e in events)
 
 
+def test_independent_code_review_stale_digest_partial_does_not_count(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    _set_independent_policy(ws)
+    old_digest = _prepare_digest(ws)
+    old_verdict = _good_verdict(ws, old_digest)
+    first = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "approve", "c", "--reviewer", "code-reviewer",
+         "--verdict-file", str(old_verdict), "--source", "subagent"],
+    )
+    assert first.exit_code == EXIT_OK, first.output
+
+    (ws / "src" / "a.py").write_text("v3\n")
+    _git(ws, "add", "src/a.py")
+    _git(ws, "commit", "-qm", "more work")
+    current_digest = _prepare_digest(ws)
+    assert current_digest != old_digest
+    current_verdict = _good_verdict(ws, current_digest)
+    second = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "approve", "c", "--reviewer", "code-reviewer",
+         "--verdict-file", str(current_verdict), "--source", "external"],
+    )
+    assert second.exit_code == EXIT_OK, second.output
+    events = [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()]
+    assert events[-1]["type"] == "review_verdict_recorded"
+    assert not any(e["type"] == "code_review_passed" for e in events)
+
+
 def _to_rejected(ws: Path, finding_id: str = "f-001") -> None:
     """Drive c from AWAITING_CODE_REVIEW into CODE_REVIEW_REJECTED with one finding."""
     from super_harness.core.events import Actor, Event

@@ -107,6 +107,19 @@ def test_accepts_source_list_shorthand(tmp_path: Path) -> None:
     assert policy.allowed_sources == ("subagent", "external")
 
 
+def test_duplicate_source_list_entries_raise(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources: [subagent, subagent]\n"
+        "  plan-reviewer:\n"
+        "    min_independent: 2\n",
+    )
+
+    with pytest.raises(ReviewerPolicyError, match="duplicate reviewer source"):
+        load_reviewer_policy(tmp_path, "plan-reviewer")
+
+
 def test_min_independent_requires_enough_configured_sources(tmp_path: Path) -> None:
     _write_policy(
         tmp_path,

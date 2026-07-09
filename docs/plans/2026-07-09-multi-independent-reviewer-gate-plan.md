@@ -20,11 +20,13 @@ scope:
     - src/super_harness/core/transitions.py
     - src/super_harness/engineering/reviewer_policy.py
     - scripts/gen_cli_reference.py
+    - scripts/gen_state_machine.py
     - tests/integration/cli/test_init.py
     - tests/integration/cli/test_status.py
     - tests/unit/cli/test_review.py
     - tests/unit/cli/test_review_verdict_gate.py
     - tests/unit/engineering/test_reviewer_policy.py
+    - tests/unit/scripts/test_gen_state_machine.py
 ---
 
 # Multi-Independent Reviewer Gate Implementation Plan
@@ -49,6 +51,7 @@ scope:
 - `src/super_harness/adapters/agent/claude_code.py`, `src/super_harness/adapters/agent/codex.py`, `AGENTS.md`, generated docs, and tests document the new protocol.
 - `.harness/policy.yaml` dogfoods this change with `min_independent: 2` and vendor-neutral sources (`subagent`, `external`), where `external` is locally instructed to run `codex exec --sandbox read-only`.
 - `docs/decisions/d-events-append-only.md` and `docs/decisions/d-fixed-transition-matrix.md` are reconciled because this slice intentionally extends the event type list and declared transition matrix.
+- `scripts/gen_state_machine.py` and `tests/unit/scripts/test_gen_state_machine.py` document state-specific self-loops separately from global informational no-op events.
 
 ## Task 1: Parse Reviewer Independence Policy
 
@@ -82,6 +85,7 @@ Add `load_reviewer_policy(root, reviewer)` while keeping `load_reviewer_strategy
 - `reviewers.<role>.min_independent` must be an integer >= 1.
 - `reviewers.sources` accepts either a list of strings or a mapping from source name to `{instructions: <string>}`.
 - Built-in instructions exist for `subagent`, `external`, and `human`.
+- Source labels must be distinct; duplicate list entries are rejected before `min_independent` is evaluated.
 - If `min_independent >= 2`, at least `min_independent` allowed sources must be configured.
 - A source name is vendor/tool-neutral by default; `claude-subagent` and `codex` are not built-in defaults.
 
@@ -141,6 +145,7 @@ Cover these cases:
 - `min_independent: 2` rejects missing `--source`.
 - Stale partial approvals from an earlier plan attempt do not count after a later `plan_rejected` + `plan_ready`.
 - Stale partial approvals from an earlier code-review attempt do not count after a later `code_review_failed`.
+- Stale code-review partial approvals whose verdict digest no longer matches the current committed in-scope diff do not count toward the final threshold.
 - `review reject` remains immediate (`plan_rejected` / `code_review_failed`), with optional `--source` recorded when present.
 - `review skip` remains immediate; this slice does not make skip cumulative.
 
@@ -164,6 +169,8 @@ The current review attempt window is append-order based:
 
 - `plan-reviewer`: count only partial approvals after the latest `plan_ready`.
 - `code-reviewer`: count only partial approvals after the latest `implementation_complete` or `code_review_failed`, whichever is later.
+
+For `code-reviewer`, the distinct-source count additionally filters prior partial approvals to verdict payloads whose `bundle_digest` matches the current approving verdict. This preserves the existing structured-review freshness guarantee across cumulative partial approvals.
 
 For `reject`, preserve current immediate fail behavior and include `source` when supplied.
 
@@ -276,7 +283,48 @@ PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check
 
 Expected: generated `docs/cli-reference.md` and `docs/state-machine.md` are in sync and doc check passes.
 
-## Task 6: Full Verification and Self-Host Lifecycle
+## Task 6: Resolve Code Review Findings
+
+**Files:**
+- Modify: `src/super_harness/engineering/reviewer_policy.py`
+- Modify: `src/super_harness/cli/review.py`
+- Modify: `scripts/gen_state_machine.py`
+- Modify: `docs/state-machine.md` (regenerate)
+- Modify: `tests/unit/engineering/test_reviewer_policy.py`
+- Modify: `tests/unit/cli/test_review_verdict_gate.py`
+- Modify: `tests/unit/scripts/test_gen_state_machine.py`
+
+- [ ] **Step 1: Add failing regression tests for reviewer findings**
+
+Add tests that prove:
+
+- `reviewers.sources: [subagent, subagent]` is rejected as a duplicate source declaration.
+- A stale code-review partial approval with an older verdict `bundle_digest` does not count toward a later current-digest approval after committed in-scope changes.
+- The generated state-machine doc includes state-specific self-loop rows for `review_verdict_recorded`, while global informational no-op events remain in the separate no-op section.
+
+Run:
+
+```bash
+python -m pytest tests/unit/engineering/test_reviewer_policy.py tests/unit/cli/test_review_verdict_gate.py tests/unit/scripts/test_gen_state_machine.py -v
+```
+
+Expected: FAIL before the fix.
+
+- [ ] **Step 2: Implement reviewer-finding fixes**
+
+Implement duplicate source validation, code-review digest filtering for cumulative partial approvals, and state-machine generator support for state-specific self-loop rows. Regenerate `docs/state-machine.md` with `super-harness doc check --fix`.
+
+Run:
+
+```bash
+python -m pytest tests/unit/engineering/test_reviewer_policy.py tests/unit/cli/test_review_verdict_gate.py tests/unit/scripts/test_gen_state_machine.py -v
+PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check --fix
+PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check
+```
+
+Expected: PASS.
+
+## Task 7: Full Verification and Self-Host Lifecycle
 
 **Files:**
 - All scoped files above.
@@ -284,7 +332,7 @@ Expected: generated `docs/cli-reference.md` and `docs/state-machine.md` are in s
 - [ ] **Step 1: Run focused tests**
 
 ```bash
-python -m pytest tests/unit/engineering/test_reviewer_policy.py tests/unit/cli/test_review.py tests/unit/cli/test_review_verdict_gate.py tests/integration/cli/test_status.py tests/integration/cli/test_init.py -v
+python -m pytest tests/unit/engineering/test_reviewer_policy.py tests/unit/cli/test_review.py tests/unit/cli/test_review_verdict_gate.py tests/integration/cli/test_status.py tests/integration/cli/test_init.py tests/unit/scripts/test_gen_state_machine.py -v
 ```
 
 Expected: PASS.

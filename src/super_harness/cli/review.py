@@ -315,7 +315,14 @@ def _emit_cumulative_approve(
         subcommand=subcommand,
     )
     events = _change_events(root, change)
-    sources = sorted(approved_review_sources(events, reviewer))
+    bundle_digest: str | None = None
+    if reviewer == "code-reviewer":
+        verdict = (extra_payload or {}).get("verdict")
+        if isinstance(verdict, dict):
+            raw_digest = verdict.get("bundle_digest")
+            if isinstance(raw_digest, str):
+                bundle_digest = raw_digest
+    sources = sorted(approved_review_sources(events, reviewer, bundle_digest=bundle_digest))
     if len(sources) < policy.min_independent:
         refresh_state_after_emit(root)
         new_state = derive_state(events_path(root)).get(change).current_state  # type: ignore[union-attr]

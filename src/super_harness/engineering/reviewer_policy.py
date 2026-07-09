@@ -65,6 +65,12 @@ def _load_policy_yaml(root: Path) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _append_source(sources: list[str], source: str) -> None:
+    if source in sources:
+        raise ReviewerPolicyError(f"duplicate reviewer source: {source!r}")
+    sources.append(source)
+
+
 def _resolve_sources(raw: object) -> tuple[tuple[str, ...], dict[str, str]]:
     if raw is None:
         return (), {}
@@ -73,7 +79,7 @@ def _resolve_sources(raw: object) -> tuple[tuple[str, ...], dict[str, str]]:
         for item in raw:
             if not isinstance(item, str) or not item:
                 raise ReviewerPolicyError("reviewers.sources must contain non-empty strings")
-            sources.append(item)
+            _append_source(sources, item)
         instructions = {
             src: _BUILTIN_SOURCE_INSTRUCTIONS[src]
             for src in sources
@@ -86,7 +92,7 @@ def _resolve_sources(raw: object) -> tuple[tuple[str, ...], dict[str, str]]:
         for source, cfg in raw.items():
             if not isinstance(source, str) or not source:
                 raise ReviewerPolicyError("reviewers.sources keys must be non-empty strings")
-            sources.append(source)
+            _append_source(sources, source)
             if cfg is None:
                 cfg = {}
             if not isinstance(cfg, dict):
@@ -156,7 +162,9 @@ def load_reviewer_strategy(root: Path, reviewer: str) -> str:
     return load_reviewer_policy(root, reviewer).strategy
 
 
-def approved_review_sources(events: list[Event], reviewer: str) -> list[str]:
+def approved_review_sources(
+    events: list[Event], reviewer: str, *, bundle_digest: str | None = None,
+) -> list[str]:
     """Return distinct approving source labels in the current review attempt.
 
     Append order is causal truth. A new plan/code review attempt starts after the
@@ -176,6 +184,10 @@ def approved_review_sources(events: list[Event], reviewer: str) -> list[str]:
         payload = ev.payload or {}
         if payload.get("reviewer") != reviewer or payload.get("outcome") != "approved":
             continue
+        if bundle_digest is not None:
+            verdict = payload.get("verdict")
+            if not isinstance(verdict, dict) or verdict.get("bundle_digest") != bundle_digest:
+                continue
         source = payload.get("source")
         if isinstance(source, str) and source and source not in seen:
             seen.add(source)
