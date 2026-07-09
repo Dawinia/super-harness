@@ -272,10 +272,12 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`3` no `.harness/`",
     ],
     "review approve": [
-        "`0` verdict recorded (`plan_approved` / `code_review_passed` emitted)",
+        "`0` verdict recorded (or partial independent-source verdict recorded; "
+        "`plan_approved` / `code_review_passed` emitted once the configured "
+        "threshold is met)",
         "`2` verdict gate failed — code-reviewer: bare / incomplete checklist / stale "
         "digest; ANY reviewer whose verdict has a failing checklist item (use "
-        "`review reject`); or malformed `--verdict-file`",
+        "`review reject`); malformed `--verdict-file`; or invalid/missing `--source`",
         "`3` no `.harness/`",
     ],
     "review skip": [

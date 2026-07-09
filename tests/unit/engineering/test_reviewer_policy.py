@@ -13,7 +13,9 @@ import pytest
 
 from super_harness.engineering.reviewer_policy import (
     REVIEW_STATE_REVIEWER,
+    ReviewerIndependencePolicy,
     ReviewerPolicyError,
+    load_reviewer_policy,
     load_reviewer_strategy,
 )
 
@@ -57,3 +59,84 @@ def test_bad_strategy_raises(tmp_path: Path) -> None:
 def test_state_to_reviewer_mapping() -> None:
     assert REVIEW_STATE_REVIEWER["AWAITING_PLAN_REVIEW"] == "plan-reviewer"
     assert REVIEW_STATE_REVIEWER["AWAITING_CODE_REVIEW"] == "code-reviewer"
+
+
+# --- Multi-independent reviewer-source policy ------------------------------ #
+
+
+def test_default_reviewer_policy_preserves_single_review(tmp_path: Path) -> None:
+    (tmp_path / ".harness").mkdir()
+    assert load_reviewer_policy(tmp_path, "plan-reviewer") == ReviewerIndependencePolicy(
+        reviewer="plan-reviewer",
+        strategy="subagent",
+        min_independent=1,
+        allowed_sources=(),
+        source_instructions={},
+    )
+
+
+def test_reads_min_independent_and_source_mapping(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent: {}\n"
+        "    external:\n"
+        "      instructions: Run an external reviewer.\n"
+        "  plan-reviewer:\n"
+        "    strategy: hybrid\n"
+        "    min_independent: 2\n",
+    )
+    policy = load_reviewer_policy(tmp_path, "plan-reviewer")
+    assert policy.strategy == "hybrid"
+    assert policy.min_independent == 2
+    assert policy.allowed_sources == ("subagent", "external")
+    assert policy.source_instructions["external"] == "Run an external reviewer."
+    assert "independent subagent" in policy.source_instructions["subagent"]
+
+
+def test_accepts_source_list_shorthand(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources: [subagent, external]\n"
+        "  code-reviewer:\n"
+        "    min_independent: 2\n",
+    )
+    policy = load_reviewer_policy(tmp_path, "code-reviewer")
+    assert policy.allowed_sources == ("subagent", "external")
+
+
+def test_min_independent_requires_enough_configured_sources(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources: [subagent]\n"
+        "  plan-reviewer:\n"
+        "    min_independent: 2\n",
+    )
+    with pytest.raises(ReviewerPolicyError, match="at least 2"):
+        load_reviewer_policy(tmp_path, "plan-reviewer")
+
+
+def test_bad_min_independent_raises(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  plan-reviewer:\n"
+        "    min_independent: 0\n",
+    )
+    with pytest.raises(ReviewerPolicyError, match="min_independent"):
+        load_reviewer_policy(tmp_path, "plan-reviewer")
+
+
+def test_bad_source_shape_raises(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources:\n"
+        "    external:\n"
+        "      instructions: [not, a, string]\n",
+    )
+    with pytest.raises(ReviewerPolicyError, match="instructions"):
+        load_reviewer_policy(tmp_path, "plan-reviewer")

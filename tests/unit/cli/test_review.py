@@ -52,6 +52,19 @@ def _event_types(ws: Path) -> list[str]:
     return [json.loads(ln)["type"] for ln in events_path(ws).read_text().splitlines() if ln.strip()]
 
 
+def _events(ws: Path) -> list[dict]:
+    return [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()]
+
+
+def _set_independent_policy(ws: Path, *, reviewer: str, min_independent: int) -> None:
+    (ws / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources: [subagent, external]\n"
+        f"  {reviewer}:\n"
+        f"    min_independent: {min_independent}\n"
+    )
+
+
 def test_skip_plan_reviewer_advances_to_plan_approved(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
     r = CliRunner().invoke(
@@ -268,3 +281,164 @@ def test_bare_skip_defaults_reason_no_override(tmp_path: Path) -> None:
     last = json.loads(events_path(tmp_path).read_text().splitlines()[-1])
     assert last["payload"]["reason"] == "manual_skip"
     assert "override" not in last["payload"]
+
+
+# --- Multi-independent reviewer-source gate --------------------------------- #
+
+
+def test_independent_plan_first_source_records_partial_only(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
+    r = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(tmp_path), "review", "approve", "c",
+            "--reviewer", "plan-reviewer", "--source", "subagent",
+        ],
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert _event_types(tmp_path)[-1] == "review_verdict_recorded"
+    assert _state(tmp_path, "c") == "AWAITING_PLAN_REVIEW"
+    last = _events(tmp_path)[-1]
+    assert last["payload"]["source"] == "subagent"
+    assert last["payload"]["outcome"] == "approved"
+
+
+def test_independent_plan_second_source_emits_milestone(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
+    first = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "approve", "c",
+         "--reviewer", "plan-reviewer", "--source", "subagent"],
+    )
+    assert first.exit_code == EXIT_OK, first.output
+    second = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "approve", "c",
+         "--reviewer", "plan-reviewer", "--source", "external"],
+    )
+    assert second.exit_code == EXIT_OK, second.output
+    assert _event_types(tmp_path)[-2:] == ["review_verdict_recorded", "plan_approved"]
+    assert _state(tmp_path, "c") == "PLAN_APPROVED"
+    milestone = _events(tmp_path)[-1]
+    assert milestone["payload"]["independent_sources"] == ["external", "subagent"]
+    assert milestone["payload"]["min_independent"] == 2
+
+
+def test_independent_duplicate_source_does_not_satisfy_threshold(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
+    for _ in range(2):
+        r = CliRunner().invoke(
+            main,
+            ["--workspace", str(tmp_path), "review", "approve", "c",
+             "--reviewer", "plan-reviewer", "--source", "subagent"],
+        )
+        assert r.exit_code == EXIT_OK, r.output
+    assert _event_types(tmp_path)[-2:] == ["review_verdict_recorded", "review_verdict_recorded"]
+    assert "plan_approved" not in _event_types(tmp_path)
+    assert _state(tmp_path, "c") == "AWAITING_PLAN_REVIEW"
+
+
+def test_independent_unknown_source_rejected_before_append(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "approve", "c",
+         "--reviewer", "plan-reviewer", "--source", "robot"],
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert _event_types(tmp_path) == before
+
+
+def test_independent_min_one_without_source_preserves_milestone_only(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "review", "approve", "c",
+               "--reviewer", "plan-reviewer"]
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert _event_types(tmp_path)[-1] == "plan_approved"
+    assert "review_verdict_recorded" not in _event_types(tmp_path)
+
+
+def test_independent_min_two_requires_source_before_append(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "approve", "c",
+         "--reviewer", "plan-reviewer"],
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert _event_types(tmp_path) == before
+
+
+def test_independent_cross_role_plan_reviewer_in_code_review_state_rejected(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", *_PREFIX)
+    _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "approve", "c",
+         "--reviewer", "plan-reviewer", "--source", "subagent"],
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert _event_types(tmp_path) == before
+
+
+def test_independent_cross_role_code_reviewer_in_plan_review_state_rejected(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    _set_independent_policy(tmp_path, reviewer="code-reviewer", min_independent=2)
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "approve", "c",
+         "--reviewer", "code-reviewer", "--source", "subagent"],
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert _event_types(tmp_path) == before
+
+
+def test_independent_stale_plan_partial_does_not_count_after_rejection(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
+    first = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "approve", "c",
+         "--reviewer", "plan-reviewer", "--source", "subagent"],
+    )
+    assert first.exit_code == EXIT_OK, first.output
+    reject = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "reject", "c",
+         "--reviewer", "plan-reviewer"],
+    )
+    assert reject.exit_code == EXIT_OK, reject.output
+    _emit(tmp_path, "plan_ready", "c")
+    refresh_state_after_emit(tmp_path)
+    second = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "approve", "c",
+         "--reviewer", "plan-reviewer", "--source", "external"],
+    )
+    assert second.exit_code == EXIT_OK, second.output
+    assert _event_types(tmp_path)[-1] == "review_verdict_recorded"
+    assert _state(tmp_path, "c") == "AWAITING_PLAN_REVIEW"
+
+
+def test_independent_reject_remains_immediate_and_records_source(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "review", "reject", "c",
+         "--reviewer", "plan-reviewer", "--source", "subagent"],
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert _event_types(tmp_path)[-1] == "plan_rejected"
+    assert _events(tmp_path)[-1]["payload"]["source"] == "subagent"

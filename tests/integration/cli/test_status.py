@@ -210,6 +210,45 @@ def _set_strategy(tmp_path: Path, reviewer: str, strategy: str) -> None:
     )
 
 
+def _set_independent_policy(tmp_path: Path) -> None:
+    (tmp_path / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent: {}\n"
+        "    external:\n"
+        "      instructions: Run external verifier.\n"
+        "  plan-reviewer:\n"
+        "    strategy: subagent\n"
+        "    min_independent: 2\n"
+    )
+
+
+def _record_partial_review(tmp_path: Path, slug: str, source: str) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    EventWriter(events_path(tmp_path)).emit(
+        Event(
+            event_id=new_event_id(),
+            type="review_verdict_recorded",
+            change_id=slug,
+            timestamp="2026-06-02T00:00:01Z",
+            actor=Actor(type="human", identifier="cli"),
+            framework="plain",
+            payload={
+                "reviewer": "plan-reviewer",
+                "reason": "approved",
+                "source": source,
+                "outcome": "approved",
+            },
+        )
+    )
+    refresh_state_after_emit(tmp_path)
+
+
 def test_status_shows_reviewer_strategy_in_review_state(tmp_path: Path) -> None:
     _init(tmp_path)
     _seed_awaiting_plan_review(tmp_path, "demo")  # → AWAITING_PLAN_REVIEW
@@ -237,3 +276,35 @@ def test_status_json_carries_reviewer_strategy(tmp_path: Path) -> None:
     entry = json.loads(r.stdout)["data"]["changes"][0]
     assert entry["reviewer"] == "plan-reviewer"
     assert entry["reviewer_strategy"] == "human"
+
+
+def test_status_shows_independent_review_progress(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _seed_awaiting_plan_review(tmp_path, "demo")
+    _set_independent_policy(tmp_path)
+    _record_partial_review(tmp_path, "demo", "subagent")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "status", "demo"])
+    assert r.exit_code == 0, r.output
+    assert "review progress:" in r.output
+    assert "1/2 independent source(s)" in r.output
+    assert "accepted: subagent" in r.output
+    assert "remaining: external" in r.output
+    assert "Run external verifier." in r.output
+
+
+def test_status_json_carries_independent_review_progress(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _seed_awaiting_plan_review(tmp_path, "demo")
+    _set_independent_policy(tmp_path)
+    _record_partial_review(tmp_path, "demo", "subagent")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "--json", "status", "demo"])
+    assert r.exit_code == 0, r.output
+    progress = json.loads(r.output)["data"]["changes"][0]["review_progress"]
+    assert progress == {
+        "reviewer": "plan-reviewer",
+        "min_independent": 2,
+        "accepted_sources": ["subagent"],
+        "missing_independent": 1,
+        "remaining_sources": ["external"],
+        "instructions": {"external": "Run external verifier."},
+    }

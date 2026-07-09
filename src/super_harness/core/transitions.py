@@ -31,15 +31,18 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     ("INTENT_DECLARED", "plan_ready"): "AWAITING_PLAN_REVIEW",
     ("AWAITING_PLAN_REVIEW", "plan_approved"): "PLAN_APPROVED",
     ("AWAITING_PLAN_REVIEW", "plan_rejected"): "PLAN_REJECTED",
+    ("AWAITING_PLAN_REVIEW", "review_verdict_recorded"): "AWAITING_PLAN_REVIEW",
     ("PLAN_REJECTED", "plan_ready"): "AWAITING_PLAN_REVIEW",  # revise + resubmit
     ("PLAN_APPROVED", "implementation_started"): "IMPLEMENTATION_IN_PROGRESS",
     ("IMPLEMENTATION_IN_PROGRESS", "implementation_complete"): "AWAITING_CODE_REVIEW",
     ("AWAITING_CODE_REVIEW", "code_review_passed"): "READY_TO_MERGE",
     ("AWAITING_CODE_REVIEW", "code_review_failed"): "CODE_REVIEW_REJECTED",
+    ("AWAITING_CODE_REVIEW", "review_verdict_recorded"): "AWAITING_CODE_REVIEW",
     # Per §3.4 implementation_complete is single-fire; §3.7 line 438: user re-submits
     # by re-running code-reviewer which emits new code_review_passed/failed.
     ("CODE_REVIEW_REJECTED", "code_review_passed"): "READY_TO_MERGE",
     ("CODE_REVIEW_REJECTED", "code_review_failed"): "CODE_REVIEW_REJECTED",
+    ("CODE_REVIEW_REJECTED", "review_verdict_recorded"): "CODE_REVIEW_REJECTED",
     ("READY_TO_MERGE", "merged"): "ARCHIVED",
     # === Withdraw paths (§3.6) ===
     # NOTE: implementation_restarted / implementation_invalidated are universal

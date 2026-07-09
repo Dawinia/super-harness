@@ -796,12 +796,13 @@ super-harness review approve [OPTIONS] CHANGE
 | `--reason` | text | `'approved'` | Audit reason recorded on the event. |
 | `--verdict-file` | text | — | Structured verdict file (REQUIRED for code-reviewer; see `review prepare`). |
 | `--base` | text | — | Base branch for freshness check (default: policy.yaml review.base_branch, else main). |
+| `--source` | text | — | Reviewer source label from policy.yaml reviewers.sources. |
 | `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
-- `0` verdict recorded (`plan_approved` / `code_review_passed` emitted)
-- `2` verdict gate failed — code-reviewer: bare / incomplete checklist / stale digest; ANY reviewer whose verdict has a failing checklist item (use `review reject`); or malformed `--verdict-file`
+- `0` verdict recorded (or partial independent-source verdict recorded; `plan_approved` / `code_review_passed` emitted once the configured threshold is met)
+- `2` verdict gate failed — code-reviewer: bare / incomplete checklist / stale digest; ANY reviewer whose verdict has a failing checklist item (use `review reject`); malformed `--verdict-file`; or invalid/missing `--source`
 - `3` no `.harness/`
 
 ## super-harness review prepare
@@ -838,6 +839,7 @@ super-harness review reject [OPTIONS] CHANGE
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
 | `--reason` | text | `'rejected'` | Audit reason recorded on the event. |
 | `--verdict-file` | text | — | Structured verdict file (inlined if provided; never required for reject). |
+| `--source` | text | — | Reviewer source label from policy.yaml reviewers.sources. |
 | `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
@@ -859,6 +861,7 @@ super-harness review skip [OPTIONS] CHANGE
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
 | `--reason` | text | — | Audit reason recorded on the event (default: manual_skip; REQUIRED with --override). |
 | `--override` | flag | `False` | Deliberate, disclosed override: a bare skip blocks at the merge gate; --override (with --reason) passes-with-disclosure. |
+| `--source` | text | — | Reviewer source label from policy.yaml reviewers.sources. |
 | `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**

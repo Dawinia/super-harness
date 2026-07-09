@@ -21,6 +21,7 @@ from __future__ import annotations
 import sys
 from dataclasses import asdict
 from pathlib import Path
+from typing import TypedDict
 
 import click
 
@@ -33,13 +34,25 @@ from super_harness.core.paths import (
     find_harness_root,
 )
 from super_harness.core.reducer import derive_state
+from super_harness.core.review_verdict import read_change_events
 from super_harness.engineering.reviewer_policy import (
     REVIEW_STATE_REVIEWER,
+    ReviewerIndependencePolicy,
     ReviewerPolicyError,
-    load_reviewer_strategy,
+    approved_review_sources,
+    load_reviewer_policy,
 )
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.gates.decisions import SUGGESTIONS
+
+
+class _ReviewProgress(TypedDict):
+    reviewer: str
+    min_independent: int
+    accepted_sources: list[str]
+    missing_independent: int
+    remaining_sources: list[str]
+    instructions: dict[str, str]
 
 
 @click.command("status")
@@ -112,11 +125,30 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
     # reviewer strategy so the agent/human knows whether to dispatch a Task
     # subagent or hand the review off to a person. Read-only; a malformed
     # reviewers policy surfaces as a config error (exit 2).
-    def _reviewer_info(cs: object) -> tuple[str | None, str | None]:
+    def _reviewer_info(cs: object) -> tuple[str | None, ReviewerIndependencePolicy | None]:
         reviewer = REVIEW_STATE_REVIEWER.get(cs.current_state)  # type: ignore[attr-defined]
         if reviewer is None:
             return None, None
-        return reviewer, load_reviewer_strategy(root, reviewer)
+        return reviewer, load_reviewer_policy(root, reviewer)
+
+    def _review_progress(change_id: str, reviewer: str, policy: ReviewerIndependencePolicy
+                         ) -> _ReviewProgress:
+        events = read_change_events(events_path(root), change_id)
+        accepted = sorted(approved_review_sources(events, reviewer))
+        remaining = [s for s in policy.allowed_sources if s not in accepted]
+        missing = max(policy.min_independent - len(accepted), 0)
+        return {
+            "reviewer": reviewer,
+            "min_independent": policy.min_independent,
+            "accepted_sources": accepted,
+            "missing_independent": missing,
+            "remaining_sources": remaining,
+            "instructions": {
+                source: policy.source_instructions[source]
+                for source in remaining
+                if source in policy.source_instructions
+            },
+        }
 
     try:
         if ctx.obj.get("json"):
@@ -124,10 +156,14 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             for cs in target:
                 entry = asdict(cs)
                 entry["next"] = SUGGESTIONS.get(cs.current_state)
-                reviewer, strategy = _reviewer_info(cs)
+                reviewer, policy = _reviewer_info(cs)
                 if reviewer is not None:
+                    assert policy is not None
                     entry["reviewer"] = reviewer
-                    entry["reviewer_strategy"] = strategy
+                    entry["reviewer_strategy"] = policy.strategy
+                    entry["review_progress"] = _review_progress(
+                        cs.change_id, reviewer, policy
+                    )
                 changes_data.append(entry)
             click.echo(
                 json_envelope(
@@ -144,9 +180,24 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                 # `plan_ready` yet (scope is populated from plan_ready payload).
                 if cs.scope:
                     click.echo(f"  scope: {cs.scope}")
-                reviewer, strategy = _reviewer_info(cs)
+                reviewer, policy = _reviewer_info(cs)
                 if reviewer is not None:
-                    click.echo(f"  reviewer: {reviewer} (strategy: {strategy})")
+                    assert policy is not None
+                    click.echo(f"  reviewer: {reviewer} (strategy: {policy.strategy})")
+                    progress = _review_progress(cs.change_id, reviewer, policy)
+                    accepted = progress["accepted_sources"]
+                    remaining = progress["remaining_sources"]
+                    click.echo(
+                        "  review progress: "
+                        f"{len(accepted)}/{progress['min_independent']} independent source(s)"
+                    )
+                    if accepted:
+                        click.echo(f"    accepted: {', '.join(accepted)}")
+                    if remaining:
+                        click.echo(f"    remaining: {', '.join(remaining)}")
+                    instructions = progress["instructions"]
+                    for source, text in instructions.items():
+                        click.echo(f"    {source}: {text}")
                 nxt = SUGGESTIONS.get(cs.current_state)
                 if nxt:
                     click.echo(f"  next: {nxt}")
