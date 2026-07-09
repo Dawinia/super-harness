@@ -298,6 +298,9 @@ def test_agents_md_subsection_has_review_protocol() -> None:
     # it is `human`, hands off instead of self-approving.
     assert "strategy" in block.lower()
     assert "human" in block.lower()
+    assert "agent_options" in block
+    assert "bundle-only" in block
+    assert "incremental" in block
 
 
 def test_agents_md_subsection_frames_kill_switch_as_human_only() -> None:

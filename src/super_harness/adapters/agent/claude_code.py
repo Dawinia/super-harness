@@ -86,10 +86,11 @@ When a tool call is blocked by the gate:
 
 #### Review protocol
 
-super-harness does NOT review for you — it enforces (via the gate) that a review
-verdict is recorded before the lifecycle proceeds, and YOU produce the verdict.
-When `super-harness status <change>` reports a review state, it also prints the
-configured **strategy** for that reviewer (`subagent` / `human` / `hybrid`):
+super-harness does NOT review for you — it enforces (via the gate) that the
+configured number of independent reviewer-source verdicts is recorded before the
+lifecycle proceeds, and YOU produce those verdicts. When `super-harness status
+<change>` reports a review state, it prints the configured **strategy**
+(`subagent` / `human` / `hybrid`) and the independent-source progress:
 
 - **`subagent`** (default) — dispatch a genuinely independent reviewer **subagent**
   (your `Task` tool) to run the checklist, then record the verdict.
@@ -98,13 +99,26 @@ configured **strategy** for that reviewer (`subagent` / `human` / `hybrid`):
 - **`hybrid`** — run the subagent first; escalate to a human on a fail (or a Large
   tier change) before recording.
 
+Reviewer **sources** are configured labels from `.harness/policy.yaml`
+(`reviewers.sources`). They are not commands that super-harness executes. If
+`min_independent` is greater than 1, record each verdict with a different
+configured source, e.g. `--source subagent` then `--source external`; the final
+approval milestone is emitted only after enough distinct sources have approved.
+When `status` or the prepared review bundle shows a source profile, follow that
+profile's `agent`, `context`, and agent-specific `agent_options`. Do not infer a
+global effort/mode vocabulary: Codex, subagent runners, and human review use
+different option names. For `context: bundle-only` or `context: incremental`,
+keep the review scoped to the prepared bundle or latest delta unless the profile
+or human reviewer explicitly asks for `full-change`.
+
 Checklists & verdict verbs per review state:
 
 - **`AWAITING_PLAN_REVIEW`** (plan-reviewer) — check spec coverage / design / scope /
   declared anchors. Record with `super-harness review approve <change> --reviewer
-  plan-reviewer` or `super-harness review reject <change> --reviewer plan-reviewer
-  --reason "<why>"`. Approve → `PLAN_APPROVED` (gate then allows edits); reject →
-  `PLAN_REJECTED` for a revised plan.
+  plan-reviewer [--source <source>]` or `super-harness review reject <change>
+  --reviewer plan-reviewer --reason "<why>" [--source <source>]`. Approve →
+  `PLAN_APPROVED` once the configured independent-source threshold is met (gate
+  then allows edits); reject → `PLAN_REJECTED` for a revised plan.
 - **`AWAITING_CODE_REVIEW`** (code-reviewer) — a code-review approval now REQUIRES a
   structured verdict; a bare `super-harness review approve <change> --reviewer
   code-reviewer` is rejected. The flow:
@@ -113,15 +127,18 @@ Checklists & verdict verbs per review state:
   2. `super-harness review prepare <change> --reviewer code-reviewer` — assembles the
      bundle (in-scope diff ∩ scope, out-of-scope drift, spec/plan paths, checklist,
      committed-HEAD digest) to `.harness/pending-reviews/<change>/code-reviewer.bundle.json`.
-  3. Hand that bundle to a genuinely independent reviewer **subagent** to run the
-     checklist and produce a verdict file (every checklist item gets a status;
-     findings required when any item fails; verdict carries the bundle's digest).
+  3. Hand that bundle to the configured genuinely independent reviewer source to
+     run the checklist and produce a verdict file (every checklist item gets a
+     status; findings required when any item fails; verdict carries the bundle's
+     digest).
   4. `super-harness review approve <change> --reviewer code-reviewer --verdict-file
-     <path>` — the verdict is inlined into the emitted event. The approval is refused
-     if the verdict is missing/incomplete (a checklist item uncovered), stale (its
-     digest no longer matches the current in-scope committed diff), or has any
-     checklist item with status `fail` (record that with `review reject` instead).
-     Approve → `READY_TO_MERGE`. (`review reject ... [--verdict-file <path>]` records a fail.)
+     <path> [--source <source>]` — the verdict is inlined into the recorded event.
+     The approval is refused if the verdict is missing/incomplete (a checklist item
+     uncovered), stale (its digest no longer matches the current in-scope committed
+     diff), or has any checklist item with status `fail` (record that with `review
+     reject` instead). Approve → `READY_TO_MERGE` once the configured
+     independent-source threshold is met. (`review reject ... [--verdict-file
+     <path>]` records a fail.)
      If the approval comes out of a REJECTED review, the verdict's `prior_findings` must
      dispose EVERY open finding from the prior `code_review_failed` verdicts
      (`disposition: resolved | wontfix`; `wontfix` needs a `note`) or the approve is refused.

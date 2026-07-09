@@ -24,27 +24,43 @@ transition matrix.
 
 ## super-harness does not review your code for you
 
-The gate enforces that a review *verdict is recorded* before the lifecycle
-proceeds. It does **not** run the review. You — or, per the injected AGENTS.md
-protocol, your agent's own reviewer subagent — produce the verdict; the gate only
-checks one exists. This is deliberate: the harness is a governor, not a reviewer.
+The gate enforces that the configured number of independent review source
+verdicts is recorded before the lifecycle proceeds. It does **not** run the
+review. You, a human reviewer, or an agent-owned reviewer process produces the
+verdicts; the harness validates the policy and counts accepted sources. This is
+deliberate: the harness is a governor, not a reviewer.
 
-The per-reviewer **strategy** is set in `.harness/policy.yaml`:
+There are three separate axes:
 
-- `subagent` — an interactive agent dispatches its own reviewer subagent.
-- `human` — a person records the verdict (pick this when a token budget rules out
-  subagent review).
-- `hybrid` — a mix.
+- **Reviewer roles** are lifecycle positions, for example `plan-reviewer` and
+  `code-reviewer`.
+- **Reviewer strategy** tells the actor who should produce the verdict for that
+  role: `subagent`, `human`, or `hybrid`.
+- **Reviewer sources** are configured labels, for example `subagent`,
+  `external`, or `human`. They are not commands. If `.harness/policy.yaml` sets
+  `min_independent: 2`, approvals must arrive from two distinct configured
+  `--source` values before the lifecycle milestone is emitted.
+- **Reviewer source profiles** are optional execution hints attached to those
+  labels: the concrete agent family, the intended context window
+  (`bundle-only`, `incremental`, or `full-change`), and that agent's own
+  `agent_options`. The options intentionally stay under each source because
+  different agents use different names and categories for effort, model, and
+  mode. Root-level `effort` / `mode` on a source is rejected; put those knobs
+  under `agent_options` with an explicit `agent`.
 
-`super-harness status` surfaces the active strategy.
+`super-harness status` surfaces the active role, strategy, accepted source
+count, remaining configured sources, and any remaining source profiles. `review
+prepare` also embeds the active reviewer's source policy in the prepared bundle
+so a docs-only or delta follow-up can stay scoped to the intended context.
 
 ## super-harness does not spawn your agent
 
 The harness never launches a coding agent. The relationship is inverted: your
 agent calls the harness (via hooks and CLI), and the harness gates what the agent
-is allowed to do. Reviews happen because the gate *requires* a verdict before
-advancing — the content of the review is produced by the agent or human, the
-*occurrence* of the review is enforced mechanically.
+is allowed to do. Reviews happen because the gate *requires* enough configured
+source verdicts before advancing — the content of each review is produced by the
+agent or human, the *occurrence* and independence threshold are enforced
+mechanically.
 
 ## Two gate paths
 

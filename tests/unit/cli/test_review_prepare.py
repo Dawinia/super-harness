@@ -35,6 +35,28 @@ def _seed_change(ws: Path, declared: list[str], framework: str = "plain") -> Non
     refresh_state_after_emit(ws)
 
 
+def _set_reviewer_source_policy(ws: Path) -> None:
+    (ws / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent:\n"
+        "      agent: task-subagent\n"
+        "      context: incremental\n"
+        "      agent_options:\n"
+        "        effort: medium\n"
+        "    external:\n"
+        "      agent: codex\n"
+        "      context: bundle-only\n"
+        "      instructions: Run Codex against the prepared review bundle only.\n"
+        "      agent_options:\n"
+        "        reasoning_effort: medium\n"
+        "        sandbox: read-only\n"
+        "  code-reviewer:\n"
+        "    strategy: subagent\n"
+        "    min_independent: 2\n"
+    )
+
+
 def _repo(tmp_path: Path) -> Path:
     _git(tmp_path, "init", "-q", "-b", "main")
     _git(tmp_path, "config", "user.email", "t@t")
@@ -62,6 +84,40 @@ def test_prepare_writes_bundle(tmp_path: Path) -> None:
     bundle = json.loads(bundle_path.read_text())
     assert bundle["diff_in_scope"] == ["src/a.py"]
     assert bundle["bundle_digest"]
+
+
+def test_prepare_embeds_reviewer_source_policy_hints(tmp_path: Path) -> None:
+    ws = _repo(tmp_path)
+    _seed_change(ws, ["src/"])
+    _set_reviewer_source_policy(ws)
+
+    r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "prepare", "c",
+                                  "--reviewer", "code-reviewer"])
+
+    assert r.exit_code == EXIT_OK, r.output
+    bundle = json.loads(
+        (pending_reviews_dir(ws, "c") / "code-reviewer.bundle.json").read_text()
+    )
+    assert bundle["review_policy"] == {
+        "reviewer": "code-reviewer",
+        "strategy": "subagent",
+        "min_independent": 2,
+        "allowed_sources": ["subagent", "external"],
+        "source_profiles": {
+            "subagent": {
+                "instructions": "Dispatch an independent subagent reviewer and record its verdict.",
+                "agent": "task-subagent",
+                "context": "incremental",
+                "agent_options": {"effort": "medium"},
+            },
+            "external": {
+                "instructions": "Run Codex against the prepared review bundle only.",
+                "agent": "codex",
+                "context": "bundle-only",
+                "agent_options": {"reasoning_effort": "medium", "sandbox": "read-only"},
+            },
+        },
+    }
 
 
 def test_prepare_dirty_tree_errors(tmp_path: Path) -> None:

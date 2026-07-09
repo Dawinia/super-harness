@@ -74,13 +74,21 @@ When a tool call is blocked:
 
 #### Review protocol
 
-super-harness does NOT review for you — it enforces (via the gate) that a review
-verdict is recorded before the lifecycle proceeds, and YOU produce the verdict.
-Run `super-harness status <change>` to see the required reviewer + strategy, then
-record verdicts with `super-harness review approve/reject <change> --reviewer
-<name>` (code-reviewer approval requires a `--verdict-file` from a genuinely
-independent reviewer subagent; see `super-harness status` output). Run a real
-independent reviewer — don't self-rubber-stamp.
+super-harness does NOT review for you — it enforces (via the gate) that the
+configured number of independent reviewer-source verdicts is recorded before the
+lifecycle proceeds, and YOU produce those verdicts. Run `super-harness status
+<change>` to see the required reviewer, strategy, and independent-source progress,
+then record verdicts with `super-harness review approve/reject <change>
+--reviewer <name> [--source <source>]`. Reviewer sources are configured labels in
+`.harness/policy.yaml`; super-harness validates them but never executes reviewer
+commands itself. When `status` or the prepared bundle shows a source profile,
+follow its `agent`, `context`, and agent-specific `agent_options`; do not infer a
+global effort/mode vocabulary across Codex, subagent runners, and humans. If the
+profile says `context: bundle-only` or `context: incremental`, keep the review
+scoped to that bundle or latest delta unless the profile or human reviewer asks
+for `full-change`. Code-reviewer approval requires a `--verdict-file` from a
+genuinely independent reviewer; run real independent review — don't
+self-rubber-stamp.
 
 #### Turn-end authoring check
 

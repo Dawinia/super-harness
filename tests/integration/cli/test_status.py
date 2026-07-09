@@ -204,9 +204,127 @@ def _seed_awaiting_plan_review(tmp_path: Path, slug: str) -> None:
     refresh_state_after_emit(tmp_path)
 
 
+def _seed_awaiting_code_review(tmp_path: Path, slug: str) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    w = EventWriter(events_path(tmp_path))
+    for t in (
+        "intent_declared",
+        "plan_ready",
+        "plan_approved",
+        "implementation_started",
+        "verification_passed",
+        "implementation_complete",
+    ):
+        w.emit(
+            Event(
+                event_id=new_event_id(), type=t, change_id=slug,
+                timestamp="2026-06-02T00:00:00Z",
+                actor=Actor(type="human", identifier="cli"),
+                framework="plain", payload={},
+            )
+        )
+    refresh_state_after_emit(tmp_path)
+
+
 def _set_strategy(tmp_path: Path, reviewer: str, strategy: str) -> None:
     (tmp_path / ".harness" / "policy.yaml").write_text(
         f"reviewers:\n  {reviewer}:\n    strategy: {strategy}\n"
+    )
+
+
+def _set_independent_policy(tmp_path: Path) -> None:
+    (tmp_path / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent: {}\n"
+        "    external:\n"
+        "      agent: codex\n"
+        "      context: bundle-only\n"
+        "      instructions: Run external verifier.\n"
+        "      agent_options:\n"
+        "        reasoning_effort: medium\n"
+        "        sandbox: read-only\n"
+        "  plan-reviewer:\n"
+        "    strategy: subagent\n"
+        "    min_independent: 2\n"
+    )
+
+
+def _set_code_review_independent_policy(tmp_path: Path) -> None:
+    (tmp_path / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent: {}\n"
+        "    external: {}\n"
+        "  code-reviewer:\n"
+        "    strategy: subagent\n"
+        "    min_independent: 2\n"
+    )
+
+
+def _record_partial_review(tmp_path: Path, slug: str, source: str) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    EventWriter(events_path(tmp_path)).emit(
+        Event(
+            event_id=new_event_id(),
+            type="review_verdict_recorded",
+            change_id=slug,
+            timestamp="2026-06-02T00:00:01Z",
+            actor=Actor(type="human", identifier="cli"),
+            framework="plain",
+            payload={
+                "reviewer": "plan-reviewer",
+                "reason": "approved",
+                "source": source,
+                "outcome": "approved",
+            },
+        )
+    )
+    refresh_state_after_emit(tmp_path)
+
+
+def _record_code_review_partial(tmp_path: Path, slug: str, source: str, digest: str) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    EventWriter(events_path(tmp_path)).emit(
+        Event(
+            event_id=new_event_id(),
+            type="review_verdict_recorded",
+            change_id=slug,
+            timestamp="2026-06-02T00:00:01Z",
+            actor=Actor(type="human", identifier="cli"),
+            framework="plain",
+            payload={
+                "reviewer": "code-reviewer",
+                "reason": "approved",
+                "source": source,
+                "outcome": "approved",
+                "verdict": {"bundle_digest": digest},
+            },
+        )
+    )
+    refresh_state_after_emit(tmp_path)
+
+
+def _write_code_review_bundle(tmp_path: Path, slug: str, digest: str) -> None:
+    bundle_dir = tmp_path / ".harness" / "pending-reviews" / slug
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "code-reviewer.bundle.json").write_text(
+        json.dumps({"bundle_digest": digest}) + "\n"
     )
 
 
@@ -237,3 +355,90 @@ def test_status_json_carries_reviewer_strategy(tmp_path: Path) -> None:
     entry = json.loads(r.stdout)["data"]["changes"][0]
     assert entry["reviewer"] == "plan-reviewer"
     assert entry["reviewer_strategy"] == "human"
+
+
+def test_status_shows_independent_review_progress(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _seed_awaiting_plan_review(tmp_path, "demo")
+    _set_independent_policy(tmp_path)
+    _record_partial_review(tmp_path, "demo", "subagent")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "status", "demo"])
+    assert r.exit_code == 0, r.output
+    assert "review progress:" in r.output
+    assert "1/2 independent source(s)" in r.output
+    assert "accepted: subagent" in r.output
+    assert "remaining: external" in r.output
+    assert "Run external verifier." in r.output
+    assert "agent: codex" in r.output
+    assert "context: bundle-only" in r.output
+    assert "agent_options: reasoning_effort=medium, sandbox=read-only" in r.output
+
+
+def test_status_json_carries_independent_review_progress(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _seed_awaiting_plan_review(tmp_path, "demo")
+    _set_independent_policy(tmp_path)
+    _record_partial_review(tmp_path, "demo", "subagent")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "--json", "status", "demo"])
+    assert r.exit_code == 0, r.output
+    progress = json.loads(r.output)["data"]["changes"][0]["review_progress"]
+    assert progress == {
+        "reviewer": "plan-reviewer",
+        "min_independent": 2,
+        "accepted_sources": ["subagent"],
+        "missing_independent": 1,
+        "remaining_sources": ["external"],
+        "instructions": {"external": "Run external verifier."},
+        "source_profiles": {
+            "external": {
+                "instructions": "Run external verifier.",
+                "agent": "codex",
+                "context": "bundle-only",
+                "agent_options": {"reasoning_effort": "medium", "sandbox": "read-only"},
+            },
+        },
+    }
+
+
+def test_status_shows_profile_even_without_source_instructions(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _seed_awaiting_plan_review(tmp_path, "demo")
+    (tmp_path / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent: {}\n"
+        "    aux:\n"
+        "      agent: custom-runner\n"
+        "      context: incremental\n"
+        "      agent_options:\n"
+        "        effort: medium\n"
+        "  plan-reviewer:\n"
+        "    min_independent: 2\n"
+    )
+    _record_partial_review(tmp_path, "demo", "subagent")
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "status", "demo"])
+
+    assert r.exit_code == 0, r.output
+    assert "remaining: aux" in r.output
+    assert "    aux:" in r.output
+    assert "agent: custom-runner" in r.output
+    assert "context: incremental" in r.output
+    assert "agent_options: effort=medium" in r.output
+
+
+def test_status_code_review_progress_ignores_stale_digest_partial(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _seed_awaiting_code_review(tmp_path, "demo")
+    _set_code_review_independent_policy(tmp_path)
+    _record_code_review_partial(tmp_path, "demo", "subagent", "old-digest")
+    _write_code_review_bundle(tmp_path, "demo", "new-digest")
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "--json", "status", "demo"])
+
+    assert r.exit_code == 0, r.output
+    progress = json.loads(r.output)["data"]["changes"][0]["review_progress"]
+    assert progress["reviewer"] == "code-reviewer"
+    assert progress["accepted_sources"] == []
+    assert progress["missing_independent"] == 2
+    assert progress["remaining_sources"] == ["subagent", "external"]

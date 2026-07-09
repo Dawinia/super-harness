@@ -47,8 +47,11 @@ gates back the gap: even an edit the hot path misses is caught before merge.
 workspace; when a tool call is blocked, run `super-harness status` for the next
 step and `super-harness change resume <change_id>` to restore context; never work
 around the gate (overriding is a human-only decision, recorded and disclosed at
-the merge gate); the review protocol (super-harness enforces that a verdict is
-recorded, you produce it); and the turn-end authoring check.
+the merge gate); the review protocol (super-harness enforces the configured
+reviewer-source verdict threshold, you produce the verdicts); source profiles
+from `status` / `review prepare` (including context and agent-specific
+`agent_options`, such as Codex `reasoning_effort`); and the turn-end authoring
+check.
 
 ## Common issues
 

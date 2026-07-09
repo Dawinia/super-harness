@@ -59,6 +59,13 @@ from super_harness.core.scope_match import (
 )
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
+from super_harness.engineering.reviewer_policy import (
+    ReviewerIndependencePolicy,
+    ReviewerPolicyError,
+    approved_review_sources,
+    load_reviewer_policy,
+    reviewer_policy_payload,
+)
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
 # Reviewer name → the (pass, fail) extension events its verdict emits.
@@ -153,6 +160,242 @@ _as_opt = click.option(
     help="Reviewer identity recorded on the event "
     "(default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`).",
 )
+_source_opt = click.option(
+    "--source",
+    default=None,
+    help="Reviewer source label from policy.yaml reviewers.sources.",
+)
+
+_REVIEWER_STATES: dict[str, set[str]] = {
+    "plan-reviewer": {"AWAITING_PLAN_REVIEW"},
+    "code-reviewer": {"AWAITING_CODE_REVIEW", "CODE_REVIEW_REJECTED"},
+}
+
+def _load_policy_or_exit(root: Path, reviewer: str, subcommand: str) -> ReviewerIndependencePolicy:
+    try:
+        return load_reviewer_policy(root, reviewer)
+    except ReviewerPolicyError as e:
+        click.echo(format_error(subcommand=subcommand, message=str(e)), err=True)
+        sys.exit(EXIT_VALIDATION)
+
+
+def _validate_source_or_exit(
+    *,
+    policy: ReviewerIndependencePolicy,
+    source: str | None,
+    subcommand: str,
+    require_for_threshold: bool = True,
+) -> None:
+    if require_for_threshold and policy.min_independent >= 2 and not source:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message=(
+                    f"{policy.reviewer} requires {policy.min_independent} independent "
+                    "reviewer source(s); --source is required."
+                ),
+                hint="Pass --source <name> using a name from reviewers.sources in policy.yaml.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if source and policy.allowed_sources and source not in policy.allowed_sources:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message=f"unknown reviewer source for {policy.reviewer}: {source!r}",
+                hint=f"Configured sources: {', '.join(policy.allowed_sources)}",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+
+
+def _validate_reviewer_state_or_exit(
+    cs: object | None, *, reviewer: str, subcommand: str,
+) -> None:
+    current = getattr(cs, "current_state", None)
+    allowed = _REVIEWER_STATES[reviewer]
+    if current not in allowed:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message=f"{reviewer} cannot record a verdict from state {current!r}",
+                hint=f"Expected state: {', '.join(sorted(allowed))}.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+
+
+def _change_events(root: Path, change: str) -> list[Event]:
+    return read_change_events(events_path(root), change)
+
+
+def _emit_review_event(
+    root: Path,
+    *,
+    change: str,
+    reviewer: str,
+    event_type: str,
+    reason: str,
+    actor: Actor,
+    framework: str,
+    payload: dict[str, object],
+    subcommand: str,
+) -> None:
+    ev = Event(
+        event_id=new_event_id(),
+        type=event_type,
+        change_id=change,
+        timestamp=utc_now_iso(),
+        actor=actor,
+        framework=framework,  # type: ignore[arg-type]
+        payload={"reviewer": reviewer, "reason": reason, **payload},
+    )
+    try:
+        EventWriter(events_path(root)).emit(ev)
+    except EmitPreconditionError as e:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message=str(e),
+                hint=f"`{event_type}` is not legal from the change's current state.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+
+
+def _emit_cumulative_approve(
+    ctx: click.Context,
+    *,
+    change: str,
+    reviewer: str,
+    reason: str,
+    as_identity: str | None,
+    source: str | None,
+    extra_payload: dict[str, object] | None,
+) -> None:
+    subcommand = "review approve"
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as e:
+        click.echo(format_error(subcommand=subcommand, message=e.message, hint=e.hint), err=True)
+        sys.exit(EXIT_NO_CONFIG)
+
+    policy = _load_policy_or_exit(root, reviewer, subcommand)
+    _validate_source_or_exit(policy=policy, source=source, subcommand=subcommand)
+    cs = derive_state(events_path(root)).get(change)
+    _validate_reviewer_state_or_exit(cs, reviewer=reviewer, subcommand=subcommand)
+
+    # Backwards-compatible path: no source declaration means no partial source event.
+    if policy.min_independent == 1 and source is None:
+        _emit_verdict(
+            ctx, subcommand=subcommand, change=change, reviewer=reviewer,
+            event_type=_REVIEWER_PASS[reviewer], reason=reason, as_identity=as_identity,
+            extra_payload=extra_payload,
+        )
+
+    framework = cs.framework if cs is not None else "plain"
+    actor = Actor(type="human", identifier=resolve_identity(root, as_identity))
+    partial_payload: dict[str, object] = {
+        "source": source,
+        "outcome": "approved",
+        **(extra_payload or {}),
+    }
+    _emit_review_event(
+        root,
+        change=change,
+        reviewer=reviewer,
+        event_type="review_verdict_recorded",
+        reason=reason,
+        actor=actor,
+        framework=framework,
+        payload=partial_payload,
+        subcommand=subcommand,
+    )
+    events = _change_events(root, change)
+    bundle_digest: str | None = None
+    if reviewer == "code-reviewer":
+        verdict = (extra_payload or {}).get("verdict")
+        if isinstance(verdict, dict):
+            raw_digest = verdict.get("bundle_digest")
+            if isinstance(raw_digest, str):
+                bundle_digest = raw_digest
+    sources = sorted(approved_review_sources(events, reviewer, bundle_digest=bundle_digest))
+    if len(sources) < policy.min_independent:
+        refresh_state_after_emit(root)
+        new_state = derive_state(events_path(root)).get(change).current_state  # type: ignore[union-attr]
+        missing = policy.min_independent - len(sources)
+        if ctx.obj.get("json"):
+            click.echo(
+                json_envelope(
+                    command=subcommand,
+                    status="pass",
+                    exit_code=EXIT_OK,
+                    data={
+                        "change": change,
+                        "reviewer": reviewer,
+                        "event_emitted": "review_verdict_recorded",
+                        "new_state": new_state,
+                        "independent_sources": sources,
+                        "min_independent": policy.min_independent,
+                        "missing_independent": missing,
+                    },
+                )
+            )
+        elif not ctx.obj.get("quiet"):
+            click.echo(
+                f"super-harness: recorded review_verdict_recorded for {change} "
+                f"(reviewer={reviewer}, source={source}); waiting for {missing} "
+                f"more independent source(s) → {new_state}"
+            )
+        sys.exit(EXIT_OK)
+
+    milestone_payload: dict[str, object] = {
+        "source": source,
+        "independent_sources": sources,
+        "min_independent": policy.min_independent,
+        **(extra_payload or {}),
+    }
+    _emit_review_event(
+        root,
+        change=change,
+        reviewer=reviewer,
+        event_type=_REVIEWER_PASS[reviewer],
+        reason=reason,
+        actor=actor,
+        framework=framework,
+        payload=milestone_payload,
+        subcommand=subcommand,
+    )
+    refresh_state_after_emit(root)
+
+    new_cs = derive_state(events_path(root)).get(change)
+    new_state = new_cs.current_state if new_cs is not None else None
+    if ctx.obj.get("json"):
+        click.echo(
+            json_envelope(
+                command=subcommand,
+                status="pass",
+                exit_code=EXIT_OK,
+                data={
+                    "change": change,
+                    "reviewer": reviewer,
+                    "event_emitted": _REVIEWER_PASS[reviewer],
+                    "new_state": new_state,
+                    "independent_sources": sources,
+                    "min_independent": policy.min_independent,
+                },
+            )
+        )
+    elif not ctx.obj.get("quiet"):
+        click.echo(
+            f"super-harness: emitted {_REVIEWER_PASS[reviewer]} for {change} "
+            f"(reviewer={reviewer}, sources={', '.join(sources)}) → {new_state}"
+        )
+    sys.exit(EXIT_OK)
 
 
 def _reject_failing_checklist(verdict: dict[str, object], subcommand: str) -> None:
@@ -262,10 +505,12 @@ def _validate_code_review_verdict(
               "(REQUIRED for code-reviewer; see `review prepare`).")
 @click.option("--base", default=None, help="Base branch for freshness check "
               "(default: policy.yaml review.base_branch, else main).")
+@_source_opt
 @_as_opt
 @click.pass_context
 def approve(ctx: click.Context, change: str, reviewer: str, reason: str,
-            verdict_file: str | None, base: str | None, as_identity: str | None) -> None:
+            verdict_file: str | None, base: str | None, source: str | None,
+            as_identity: str | None) -> None:
     """Record a PASS verdict: emit `plan_approved` / `code_review_passed`."""
     extra: dict[str, object] | None = None
     if reviewer == "code-reviewer":
@@ -286,10 +531,9 @@ def approve(ctx: click.Context, change: str, reviewer: str, reason: str,
             sys.exit(EXIT_VALIDATION)
         _reject_failing_checklist(verdict, "review approve")
         extra = {"verdict": verdict}
-    _emit_verdict(
-        ctx, subcommand="review approve", change=change, reviewer=reviewer,
-        event_type=_REVIEWER_PASS[reviewer], reason=reason, as_identity=as_identity,
-        extra_payload=extra,
+    _emit_cumulative_approve(
+        ctx, change=change, reviewer=reviewer, reason=reason, as_identity=as_identity,
+        source=source, extra_payload=extra,
     )
 
 
@@ -299,15 +543,29 @@ def approve(ctx: click.Context, change: str, reviewer: str, reason: str,
 @click.option("--reason", default="rejected", help="Audit reason recorded on the event.")
 @click.option("--verdict-file", default=None, help="Structured verdict file "
               "(inlined if provided; never required for reject).")
+@_source_opt
 @_as_opt
 @click.pass_context
 def reject(ctx: click.Context, change: str, reviewer: str, reason: str,
-           verdict_file: str | None, as_identity: str | None) -> None:
+           verdict_file: str | None, source: str | None, as_identity: str | None) -> None:
     """Record a FAIL verdict: emit `plan_rejected` / `code_review_failed`."""
     extra: dict[str, object] | None = None
+    if source:
+        try:
+            root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+        except HarnessNotInitialized as e:
+            click.echo(format_error(subcommand="review reject", message=e.message, hint=e.hint),
+                       err=True)
+            sys.exit(EXIT_NO_CONFIG)
+        policy = _load_policy_or_exit(root, reviewer, "review reject")
+        _validate_source_or_exit(
+            policy=policy, source=source, subcommand="review reject",
+            require_for_threshold=False,
+        )
+        extra = {"source": source}
     if verdict_file:
         try:
-            extra = {"verdict": parse_verdict_file(Path(verdict_file))}
+            extra = {**(extra or {}), "verdict": parse_verdict_file(Path(verdict_file))}
         except VerdictError as e:
             click.echo(format_error(subcommand="review reject", message=str(e)), err=True)
             sys.exit(EXIT_VALIDATION)
@@ -326,10 +584,11 @@ def reject(ctx: click.Context, change: str, reviewer: str, reason: str,
 @click.option("--override", is_flag=True, default=False,
               help="Deliberate, disclosed override: a bare skip blocks at the merge "
                    "gate; --override (with --reason) passes-with-disclosure.")
+@_source_opt
 @_as_opt
 @click.pass_context
 def skip(ctx: click.Context, change: str, reviewer: str, reason: str | None,
-         override: bool, as_identity: str | None) -> None:
+         override: bool, source: str | None, as_identity: str | None) -> None:
     """Escape hatch — PASS a stuck reviewer (== approve with reason=manual_skip).
 
     Stamps ``payload["skipped"]=True`` so the merge-boundary disclosure can tell a
@@ -344,6 +603,19 @@ def skip(ctx: click.Context, change: str, reviewer: str, reason: str | None,
             err=True)
         sys.exit(EXIT_VALIDATION)
     extra: dict[str, object] = {"skipped": True}
+    if source:
+        try:
+            root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+        except HarnessNotInitialized as e:
+            click.echo(format_error(subcommand="review skip", message=e.message, hint=e.hint),
+                       err=True)
+            sys.exit(EXIT_NO_CONFIG)
+        policy = _load_policy_or_exit(root, reviewer, "review skip")
+        _validate_source_or_exit(
+            policy=policy, source=source, subcommand="review skip",
+            require_for_threshold=False,
+        )
+        extra["source"] = source
     if override:
         extra["override"] = True
     _emit_verdict(
@@ -371,6 +643,7 @@ def prepare(ctx: click.Context, change: str, reviewer: str, base: str | None) ->
         click.echo(format_error(subcommand="review prepare", message=e.message, hint=e.hint),
                    err=True)
         sys.exit(EXIT_NO_CONFIG)
+    policy = _load_policy_or_exit(root, reviewer, "review prepare")
     try:
         bundle = assemble_bundle(
             root, change_id=change, reviewer=reviewer, base=base,
@@ -381,6 +654,7 @@ def prepare(ctx: click.Context, change: str, reviewer: str, base: str | None) ->
                                 hint="Commit the in-scope changes, then re-run review prepare."),
                    err=True)
         sys.exit(EXIT_VALIDATION)
+    bundle["review_policy"] = reviewer_policy_payload(policy)
     out_dir = pending_reviews_dir(root, change)
     out_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = out_dir / f"{reviewer}.bundle.json"

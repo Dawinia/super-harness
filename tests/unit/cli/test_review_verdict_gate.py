@@ -53,6 +53,15 @@ def _good_verdict(ws: Path, digest: str) -> Path:
     return p
 
 
+def _set_independent_policy(ws: Path, *, min_independent: int = 2) -> None:
+    (ws / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources: [subagent, external]\n"
+        "  code-reviewer:\n"
+        f"    min_independent: {min_independent}\n"
+    )
+
+
 def _prepare_digest(ws: Path) -> str:
     r = CliRunner().invoke(main, ["--json", "--workspace", str(ws), "review", "prepare", "c",
                                   "--reviewer", "code-reviewer"])
@@ -101,6 +110,98 @@ def test_complete_fresh_verdict_passes_and_inlines(tmp_path: Path) -> None:
     last = [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()][-1]
     assert last["type"] == "code_review_passed"
     assert last["payload"]["verdict"]["bundle_digest"] == digest
+
+
+def test_independent_code_review_first_source_records_partial_only(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    _set_independent_policy(ws)
+    digest = _prepare_digest(ws)
+    p = _good_verdict(ws, digest)
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "approve", "c", "--reviewer", "code-reviewer",
+         "--verdict-file", str(p), "--source", "subagent"],
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    last = [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()][-1]
+    assert last["type"] == "review_verdict_recorded"
+    assert last["payload"]["source"] == "subagent"
+
+
+def test_independent_code_review_second_source_emits_milestone(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    _set_independent_policy(ws)
+    digest = _prepare_digest(ws)
+    p = _good_verdict(ws, digest)
+    first = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "approve", "c", "--reviewer", "code-reviewer",
+         "--verdict-file", str(p), "--source", "subagent"],
+    )
+    assert first.exit_code == EXIT_OK, first.output
+    second = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "approve", "c", "--reviewer", "code-reviewer",
+         "--verdict-file", str(p), "--source", "external"],
+    )
+    assert second.exit_code == EXIT_OK, second.output
+    events = [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()]
+    assert [e["type"] for e in events[-2:]] == ["review_verdict_recorded", "code_review_passed"]
+    assert events[-1]["payload"]["independent_sources"] == ["external", "subagent"]
+
+
+def test_independent_code_review_stale_partial_does_not_count_after_reject(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    _set_independent_policy(ws)
+    digest = _prepare_digest(ws)
+    p = _good_verdict(ws, digest)
+    first = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "approve", "c", "--reviewer", "code-reviewer",
+         "--verdict-file", str(p), "--source", "subagent"],
+    )
+    assert first.exit_code == EXIT_OK, first.output
+    _to_rejected(ws)
+    p2 = _verdict_with_prior(
+        ws, digest, "prior_findings:\n  - id: f-001\n    disposition: resolved\n")
+    second = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "approve", "c", "--reviewer", "code-reviewer",
+         "--verdict-file", str(p2), "--source", "external"],
+    )
+    assert second.exit_code == EXIT_OK, second.output
+    events = [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()]
+    assert events[-1]["type"] == "review_verdict_recorded"
+    assert not any(e["type"] == "code_review_passed" for e in events)
+
+
+def test_independent_code_review_stale_digest_partial_does_not_count(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    _set_independent_policy(ws)
+    old_digest = _prepare_digest(ws)
+    old_verdict = _good_verdict(ws, old_digest)
+    first = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "approve", "c", "--reviewer", "code-reviewer",
+         "--verdict-file", str(old_verdict), "--source", "subagent"],
+    )
+    assert first.exit_code == EXIT_OK, first.output
+
+    (ws / "src" / "a.py").write_text("v3\n")
+    _git(ws, "add", "src/a.py")
+    _git(ws, "commit", "-qm", "more work")
+    current_digest = _prepare_digest(ws)
+    assert current_digest != old_digest
+    current_verdict = _good_verdict(ws, current_digest)
+    second = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "approve", "c", "--reviewer", "code-reviewer",
+         "--verdict-file", str(current_verdict), "--source", "external"],
+    )
+    assert second.exit_code == EXIT_OK, second.output
+    events = [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()]
+    assert events[-1]["type"] == "review_verdict_recorded"
+    assert not any(e["type"] == "code_review_passed" for e in events)
 
 
 def _to_rejected(ws: Path, finding_id: str = "f-001") -> None:

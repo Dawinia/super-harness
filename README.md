@@ -42,7 +42,11 @@ That is the shortest path to *seeing* super-harness work. The full arc — insta
 a framework adapter, get the plan reviewed, implement, verify, review, merge — is
 the 10-minute [Getting started](docs/getting-started.md) walkthrough. To inspect a
 pre-seeded non-trivial `.harness/` state without running anything, see the in-tree
-demo [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/).
+demo [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/). The
+walkthrough also shows how to configure reviewer sources and `min_independent`
+when a change needs more than one independent review verdict, including
+agent-specific source profiles such as Codex `reasoning_effort` or a subagent
+runner's own `effort` knob.
 
 ## Links
 

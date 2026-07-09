@@ -58,7 +58,9 @@ super-harness init --setup-github
 What `init --setup-github` does:
 
 1. Creates `.harness/` with the lifecycle data plane: `events.jsonl` (the
-   append-only event log) + `state.yaml` (the derived current-state cache).
+   append-only event log), `state.yaml` (the derived current-state cache), and
+   `policy.yaml` (the default reviewer policy: `min_independent: 1` plus
+   vendor-neutral source labels such as `subagent`, `external`, and `human`).
 2. Writes `AGENTS.md` (or extends an existing one) with a `super-harness`
    section your AI agent will read.
    - If a `.claude/` directory is detected, `init` also auto-installs the
@@ -179,24 +181,87 @@ starts editing. The hot-path gate enforces lifecycle rules:
   OpenSpec adapter watches for these and emits `plan_ready` automatically →
   `AWAITING_PLAN_REVIEW`).
 - The plan is then reviewed. super-harness **does not run the review** — it
-  enforces (via the gate) that a verdict is recorded, and you (or the agent's
-  own reviewer subagent, per the `AGENTS.md` protocol) produce it:
+  enforces (via the gate) that the configured number of independent reviewer
+  source verdicts is recorded, and you (or the agent's reviewer process, per the
+  `AGENTS.md` protocol) produce those verdicts.
+
+  Reviewer **roles** are lifecycle positions such as `plan-reviewer` and
+  `code-reviewer`. Reviewer **sources** are policy labels such as `subagent`,
+  `external`, or `human`. A new repo starts with the compatible default:
+
+  ```yaml
+  reviewers:
+    sources:
+      subagent:
+        agent: task-subagent
+        context: incremental
+        instructions: "Dispatch an independent reviewer subagent against the current plan/review bundle or latest delta."
+        agent_options:
+          effort: medium
+      external:
+        agent: codex
+        context: bundle-only
+        instructions: "Run codex exec --sandbox read-only against the prepared plan or review bundle."
+        agent_options:
+          reasoning_effort: medium
+          sandbox: read-only
+      human:
+        agent: human
+        context: incremental
+    plan-reviewer:
+      strategy: subagent
+      min_independent: 1
+    code-reviewer:
+      strategy: subagent
+      min_independent: 1
+  ```
+
+  With `min_independent: 1`, the short form still advances exactly as before:
 
   ```bash
   super-harness review approve my-first-change --reviewer plan-reviewer   # → PLAN_APPROVED
   super-harness implementation start my-first-change                      # → IMPLEMENTATION_IN_PROGRESS
   ```
 
+  If a team sets `min_independent: 2`, each approval names a distinct
+  configured `--source`. The first approval records `review_verdict_recorded`
+  and stays in `AWAITING_PLAN_REVIEW`; the second independent source emits the
+  existing milestone:
+
+  ```bash
+  super-harness review approve my-first-change --reviewer plan-reviewer --source subagent   # stays in AWAITING_PLAN_REVIEW
+  super-harness review approve my-first-change --reviewer plan-reviewer --source external   # → PLAN_APPROVED
+  super-harness implementation start my-first-change                                        # → IMPLEMENTATION_IN_PROGRESS
+  ```
+
   (Use `review reject ... --reason "<why>"` to send the plan back, or
   `review skip ...` as an escape hatch. The per-reviewer strategy —
   `subagent` / `human` / `hybrid` — is set in `.harness/policy.yaml` and shown by
-  `super-harness status`.)
+  `super-harness status`, along with accepted and remaining reviewer sources.
+  Source profiles are hints for the actor that runs the review: `context`
+  distinguishes bundle-only, incremental, and full-change review; `agent_options`
+  keeps each agent's own knob names, such as Codex `reasoning_effort` or a
+  subagent runner's `effort`. Do not put a generic `effort` or `mode` at the
+  source root.)
 - Now in `IMPLEMENTATION_IN_PROGRESS`, the agent can edit source code. If it
   tries to `Edit` before the lifecycle permits it, the `PreToolUseGate` blocks
   the tool call.
-- After `done` (→ `AWAITING_CODE_REVIEW`), record the code-review verdict the
-  same way: `super-harness review approve my-first-change --reviewer code-reviewer`
-  (→ `READY_TO_MERGE`).
+- After `done` (→ `AWAITING_CODE_REVIEW`), code review uses the same source
+  threshold. Commit the in-scope files first, prepare the deterministic review
+  bundle, then record one structured verdict file per independent source:
+
+  ```bash
+  super-harness review prepare my-first-change --reviewer code-reviewer
+  super-harness review approve my-first-change --reviewer code-reviewer --source subagent --verdict-file .harness/pending-reviews/my-first-change/code-reviewer.subagent.yaml
+  super-harness review approve my-first-change --reviewer code-reviewer --source external --verdict-file .harness/pending-reviews/my-first-change/code-reviewer.external.yaml
+  ```
+
+  The review bundle digest is checked against the current committed in-scope
+  diff. If code changes after a partial approval, stale source verdicts no
+  longer count toward `READY_TO_MERGE`. The bundle also carries the active
+  reviewer's source policy, so a follow-up review can stay restricted to the
+  prepared bundle or latest delta instead of expanding to the whole PR unless
+  the policy or a human reviewer asks for that.
 
 > **Note**: the three reviewer-driven transitions (`plan_approved`,
 > `implementation_started`, `code_review_passed`) now ship as the CLI verbs above —

@@ -10,10 +10,13 @@ on disk do it for you.
 > drive it, you advance the lifecycle with explicit CLI verbs: `super-harness
 > plan ready <slug>` emits `plan_ready` (`INTENT_DECLARED → AWAITING_PLAN_REVIEW`)
 > and `super-harness review approve --reviewer plan-reviewer` advances
-> `AWAITING_PLAN_REVIEW → PLAN_APPROVED`. Multi-stage (multiple sequential
-> reviewers) plan review is v0.2 (see [Limitations](../limitations.md)). The
-> `plan ready` references below mirror what Plain's `agents_md_subsection()`
-> returns.
+> `AWAITING_PLAN_REVIEW → PLAN_APPROVED` once the configured independent
+> reviewer-source threshold is met. If `.harness/policy.yaml` sets
+> `min_independent: 2`, record approvals with distinct `--source` values. Plain
+> still does not run reviewers automatically; you provide the verdicts. If source
+> profiles are configured, `status` / `review prepare` show the intended context
+> and agent-specific `agent_options`, but Plain does not execute them. The `plan
+> ready` references below mirror what Plain's `agents_md_subsection()` returns.
 
 Plain is a framework adapter (same ABC as OpenSpec), but it is deliberately
 inert: it emits no events, declares no verification checks, and watches no
@@ -71,13 +74,9 @@ marker match. Do not edit content between the markers manually; re-run
 
 - **`super-harness status` shows no events even after I created proposal /
   task files.** Plain emits no events by design. Run `super-harness change
-  start <slug>` to register a change. Advancing past `INTENT_DECLARED`
-  under Plain currently requires a framework adapter that auto-emits
-  `plan_ready` (e.g. OpenSpec on `tasks.md`); see the v0.1 caveat at the
-  top of this page for why the `plan ready` CLI verb the AGENTS.md block
-  advertises is not yet shipped. If you want automatic event emission
-  from on-disk artifacts, switch to a framework adapter (`adapter install
-  openspec`).
+  start <slug>` to register a change, then `super-harness plan ready <slug>`
+  to advance past `INTENT_DECLARED`. If you want automatic event emission from
+  on-disk artifacts, switch to a framework adapter (`adapter install openspec`).
 - **`super-harness adapter scan-once plain` reports `0 events emitted`.**
   Expected. `PlainAdapter.observe()` returns an empty iterator; `scan-once`
   has nothing to do.
@@ -126,8 +125,6 @@ CLI surface, not adapter surface. Uninstall only removes the documented
   is installed.
 - [`docs/cli-reference.md`](../cli-reference.md) — the shipped v0.1 CLI
   commands (`change start`, `change abandon`, `change list`, `change
-  resume`, `verify`, `done`); note that `plan ready` referenced in the
-  AGENTS.md block above is NOT yet shipped (see the v0.1 caveat at the
-  top of this page).
+  resume`, `plan ready`, `review`, `verify`, `done`).
 - [`docs/adapters/openspec.md`](./openspec.md) — switch to the OpenSpec
   framework adapter to get automatic event emission.
