@@ -33,6 +33,7 @@ REVIEW_WINDOW_BOUNDARIES: dict[str, frozenset[str]] = {
 _STRATEGIES = ("subagent", "human", "hybrid")
 _DEFAULT_STRATEGY = "subagent"
 _DEFAULT_MIN_INDEPENDENT = 1
+_SOURCE_CONTEXTS = ("bundle-only", "incremental", "full-change")
 _BUILTIN_SOURCE_INSTRUCTIONS: dict[str, str] = {
     "subagent": "Dispatch an independent subagent reviewer and record its verdict.",
     "external": "Run an external reviewer and record its verdict.",
@@ -45,6 +46,22 @@ class ReviewerPolicyError(ValueError):
 
 
 @dataclass(frozen=True)
+class ReviewerSourcePolicy:
+    """Resolved execution/context hints for one configured reviewer source.
+
+    These are instructions for the actor that runs the reviewer. super-harness
+    validates and surfaces them, but it still never spawns the reviewer itself.
+    ``agent_options`` is intentionally agent-specific: Codex, Claude Code, human
+    review, and other runners do not share one universal effort/mode vocabulary.
+    """
+
+    instructions: str
+    agent: str | None
+    context: str | None
+    agent_options: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class ReviewerIndependencePolicy:
     """Resolved policy for one lifecycle reviewer role."""
 
@@ -53,6 +70,36 @@ class ReviewerIndependencePolicy:
     min_independent: int
     allowed_sources: tuple[str, ...]
     source_instructions: dict[str, str]
+    source_profiles: dict[str, ReviewerSourcePolicy]
+
+
+def _source_policy_payload(profile: ReviewerSourcePolicy) -> dict[str, Any]:
+    return {
+        "instructions": profile.instructions,
+        "agent": profile.agent,
+        "context": profile.context,
+        "agent_options": dict(profile.agent_options),
+    }
+
+
+def reviewer_policy_payload(policy: ReviewerIndependencePolicy) -> dict[str, Any]:
+    """Return the JSON/YAML-safe reviewer-source policy payload.
+
+    This shape is embedded in review bundles and status JSON. It deliberately
+    keeps runner knobs under each source's ``agent_options`` instead of
+    inventing one cross-agent effort/mode vocabulary.
+    """
+
+    return {
+        "reviewer": policy.reviewer,
+        "strategy": policy.strategy,
+        "min_independent": policy.min_independent,
+        "allowed_sources": list(policy.allowed_sources),
+        "source_profiles": {
+            source: _source_policy_payload(profile)
+            for source, profile in policy.source_profiles.items()
+        },
+    }
 
 
 def _load_policy_yaml(root: Path) -> dict[str, Any]:
@@ -101,24 +148,36 @@ def _append_source(sources: list[str], source: str) -> None:
     sources.append(source)
 
 
-def _resolve_sources(raw: object) -> tuple[tuple[str, ...], dict[str, str]]:
+def _resolve_sources(
+    raw: object,
+) -> tuple[tuple[str, ...], dict[str, str], dict[str, ReviewerSourcePolicy]]:
     if raw is None:
-        return (), {}
+        return (), {}, {}
     if isinstance(raw, list):
         sources: list[str] = []
         for item in raw:
             if not isinstance(item, str) or not item:
                 raise ReviewerPolicyError("reviewers.sources must contain non-empty strings")
             _append_source(sources, item)
-        instructions = {
+        list_instructions = {
             src: _BUILTIN_SOURCE_INSTRUCTIONS[src]
             for src in sources
             if src in _BUILTIN_SOURCE_INSTRUCTIONS
         }
-        return tuple(sources), instructions
+        list_profiles = {
+            src: ReviewerSourcePolicy(
+                instructions=text,
+                agent=None,
+                context=None,
+                agent_options={},
+            )
+            for src, text in list_instructions.items()
+        }
+        return tuple(sources), list_instructions, list_profiles
     if isinstance(raw, dict):
         sources = []
         mapped_instructions: dict[str, str] = {}
+        profiles: dict[str, ReviewerSourcePolicy] = {}
         for source, cfg in raw.items():
             if not isinstance(source, str) or not source:
                 raise ReviewerPolicyError("reviewers.sources keys must be non-empty strings")
@@ -127,6 +186,40 @@ def _resolve_sources(raw: object) -> tuple[tuple[str, ...], dict[str, str]]:
                 cfg = {}
             if not isinstance(cfg, dict):
                 raise ReviewerPolicyError(f"reviewers.sources.{source} must be a mapping")
+            if "effort" in cfg or "mode" in cfg:
+                raise ReviewerPolicyError(
+                    f"reviewers.sources.{source}: effort/mode are agent-specific; "
+                    "put them under agent_options with an explicit agent"
+                )
+            agent = cfg.get("agent")
+            if agent is not None and (not isinstance(agent, str) or not agent):
+                raise ReviewerPolicyError(f"reviewers.sources.{source}.agent must be a string")
+            context = cfg.get("context")
+            if context is not None:
+                if not isinstance(context, str) or context not in _SOURCE_CONTEXTS:
+                    raise ReviewerPolicyError(
+                        f"reviewers.sources.{source}.context must be one of "
+                        f"{list(_SOURCE_CONTEXTS)}"
+                    )
+            agent_options = cfg.get("agent_options")
+            if agent_options is None:
+                resolved_options: dict[str, Any] = {}
+            else:
+                if agent is None:
+                    raise ReviewerPolicyError(
+                        f"reviewers.sources.{source}.agent_options requires an explicit agent"
+                    )
+                if not isinstance(agent_options, dict):
+                    raise ReviewerPolicyError(
+                        f"reviewers.sources.{source}.agent_options must be a mapping"
+                    )
+                resolved_options = {}
+                for key, value in agent_options.items():
+                    if not isinstance(key, str) or not key:
+                        raise ReviewerPolicyError(
+                            f"reviewers.sources.{source}.agent_options keys must be strings"
+                        )
+                    resolved_options[key] = value
             instr = cfg.get("instructions")
             if instr is not None:
                 if not isinstance(instr, str):
@@ -137,7 +230,14 @@ def _resolve_sources(raw: object) -> tuple[tuple[str, ...], dict[str, str]]:
                     mapped_instructions[source] = instr
             elif source in _BUILTIN_SOURCE_INSTRUCTIONS:
                 mapped_instructions[source] = _BUILTIN_SOURCE_INSTRUCTIONS[source]
-        return tuple(sources), mapped_instructions
+            source_instruction = mapped_instructions.get(source, "")
+            profiles[source] = ReviewerSourcePolicy(
+                instructions=source_instruction,
+                agent=agent,
+                context=context,
+                agent_options=resolved_options,
+            )
+        return tuple(sources), mapped_instructions, profiles
     raise ReviewerPolicyError("reviewers.sources must be a list or mapping")
 
 
@@ -156,8 +256,11 @@ def load_reviewer_policy(root: Path, reviewer: str) -> ReviewerIndependencePolic
             min_independent=_DEFAULT_MIN_INDEPENDENT,
             allowed_sources=(),
             source_instructions={},
+            source_profiles={},
         )
-    allowed_sources, source_instructions = _resolve_sources(reviewers.get("sources"))
+    allowed_sources, source_instructions, source_profiles = _resolve_sources(
+        reviewers.get("sources")
+    )
     block = reviewers.get(reviewer)
     if not isinstance(block, dict):
         block = {}
@@ -184,6 +287,7 @@ def load_reviewer_policy(root: Path, reviewer: str) -> ReviewerIndependencePolic
         min_independent=min_independent,
         allowed_sources=allowed_sources,
         source_instructions=source_instructions,
+        source_profiles=source_profiles,
     )
 
 

@@ -13,7 +13,9 @@ on disk do it for you.
 > `AWAITING_PLAN_REVIEW → PLAN_APPROVED` once the configured independent
 > reviewer-source threshold is met. If `.harness/policy.yaml` sets
 > `min_independent: 2`, record approvals with distinct `--source` values. Plain
-> still does not run reviewers automatically; you provide the verdicts. The `plan
+> still does not run reviewers automatically; you provide the verdicts. If source
+> profiles are configured, `status` / `review prepare` show the intended context
+> and agent-specific `agent_options`, but Plain does not execute them. The `plan
 > ready` references below mirror what Plain's `agents_md_subsection()` returns.
 
 Plain is a framework adapter (same ABC as OpenSpec), but it is deliberately

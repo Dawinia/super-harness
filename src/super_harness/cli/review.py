@@ -64,6 +64,7 @@ from super_harness.engineering.reviewer_policy import (
     ReviewerPolicyError,
     approved_review_sources,
     load_reviewer_policy,
+    reviewer_policy_payload,
 )
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
@@ -642,6 +643,7 @@ def prepare(ctx: click.Context, change: str, reviewer: str, base: str | None) ->
         click.echo(format_error(subcommand="review prepare", message=e.message, hint=e.hint),
                    err=True)
         sys.exit(EXIT_NO_CONFIG)
+    policy = _load_policy_or_exit(root, reviewer, "review prepare")
     try:
         bundle = assemble_bundle(
             root, change_id=change, reviewer=reviewer, base=base,
@@ -652,6 +654,7 @@ def prepare(ctx: click.Context, change: str, reviewer: str, base: str | None) ->
                                 hint="Commit the in-scope changes, then re-run review prepare."),
                    err=True)
         sys.exit(EXIT_VALIDATION)
+    bundle["review_policy"] = reviewer_policy_payload(policy)
     out_dir = pending_reviews_dir(root, change)
     out_dir.mkdir(parents=True, exist_ok=True)
     bundle_path = out_dir / f"{reviewer}.bundle.json"

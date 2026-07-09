@@ -81,7 +81,12 @@ lifecycle proceeds, and YOU produce those verdicts. Run `super-harness status
 then record verdicts with `super-harness review approve/reject <change>
 --reviewer <name> [--source <source>]`. Reviewer sources are configured labels in
 `.harness/policy.yaml`; super-harness validates them but never executes reviewer
-commands itself. Code-reviewer approval requires a `--verdict-file` from a
+commands itself. When `status` or the prepared bundle shows a source profile,
+follow its `agent`, `context`, and agent-specific `agent_options`; do not infer a
+global effort/mode vocabulary across Codex, subagent runners, and humans. If the
+profile says `context: bundle-only` or `context: incremental`, keep the review
+scoped to that bundle or latest delta unless the profile or human reviewer asks
+for `full-change`. Code-reviewer approval requires a `--verdict-file` from a
 genuinely independent reviewer; run real independent review — don't
 self-rubber-stamp.
 

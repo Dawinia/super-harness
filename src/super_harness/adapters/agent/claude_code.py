@@ -104,6 +104,12 @@ Reviewer **sources** are configured labels from `.harness/policy.yaml`
 `min_independent` is greater than 1, record each verdict with a different
 configured source, e.g. `--source subagent` then `--source external`; the final
 approval milestone is emitted only after enough distinct sources have approved.
+When `status` or the prepared review bundle shows a source profile, follow that
+profile's `agent`, `context`, and agent-specific `agent_options`. Do not infer a
+global effort/mode vocabulary: Codex, subagent runners, and human review use
+different option names. For `context: bundle-only` or `context: incremental`,
+keep the review scoped to the prepared bundle or latest delta unless the profile
+or human reviewer explicitly asks for `full-change`.
 
 Checklists & verdict verbs per review state:
 
@@ -121,9 +127,10 @@ Checklists & verdict verbs per review state:
   2. `super-harness review prepare <change> --reviewer code-reviewer` — assembles the
      bundle (in-scope diff ∩ scope, out-of-scope drift, spec/plan paths, checklist,
      committed-HEAD digest) to `.harness/pending-reviews/<change>/code-reviewer.bundle.json`.
-  3. Hand that bundle to a genuinely independent reviewer **subagent** to run the
-     checklist and produce a verdict file (every checklist item gets a status;
-     findings required when any item fails; verdict carries the bundle's digest).
+  3. Hand that bundle to the configured genuinely independent reviewer source to
+     run the checklist and produce a verdict file (every checklist item gets a
+     status; findings required when any item fails; verdict carries the bundle's
+     digest).
   4. `super-harness review approve <change> --reviewer code-reviewer --verdict-file
      <path> [--source <source>]` — the verdict is inlined into the recorded event.
      The approval is refused if the verdict is missing/incomplete (a checklist item

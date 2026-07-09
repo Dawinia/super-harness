@@ -26,7 +26,9 @@ deliberately deferred to a later version; one is blocked by an upstream bug
   no human or interactive agent present (e.g. shelling out to a headless Claude
   run). v0.1 ships the verdict *recording* path (`review approve | reject | skip`),
   configured reviewer sources, and the `min_independent` source-threshold gate,
-  but it does not itself run an LLM review. Tracked as a follow-up.
+  plus source profiles for agent-specific review hints, but it does not itself
+  run an LLM review or translate `agent_options` into runner-specific command
+  flags. Tracked as a follow-up.
 - Daemon-autonomous event-driven dispatch — v0.1 uses CLI one-shot dispatchers
   (e.g., `super-harness on-merge` dispatches the merged-event sensors).
 

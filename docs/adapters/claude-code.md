@@ -133,8 +133,12 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   PLAN_APPROVED` advances via `review approve --reviewer plan-reviewer`; when
   `.harness/policy.yaml` requires multiple independent sources, repeat the
   approval with distinct configured `--source` values until the threshold is
-  met. That source-threshold gate ships in v0.1; only automatic headless
-  reviewer execution is deferred (see [Limitations](../limitations.md)).
+  met. If those sources carry profiles, `status` and `review prepare` expose the
+  source's intended agent, context (`bundle-only`, `incremental`, or
+  `full-change`), and agent-specific `agent_options`; the adapter text tells the
+  agent to follow those hints instead of inventing a global effort/mode setting.
+  That source-threshold gate ships in v0.1; only automatic headless reviewer
+  execution is deferred (see [Limitations](../limitations.md)).
   Framework adapters auto-emit `plan_ready` when
   their artifacts exist (OpenSpec watches `tasks.md`). If the gate is genuinely
   malfunctioning, a **human** (never an agent) can apply the emergency override

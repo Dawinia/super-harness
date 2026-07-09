@@ -39,7 +39,9 @@ super-harness change start "my-change"        # → INTENT_DECLARED
 实现、验证、评审、合并 —— 是 10 分钟的 [Getting started](docs/getting-started.md) 走查。
 想不跑任何东西就看一个预置的非平凡 `.harness/` 状态,见仓内示例
 [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/)。走查也展示了当一个
-change 需要多个独立 review verdict 时,如何配置 reviewer sources 和 `min_independent`。
+change 需要多个独立 review verdict 时,如何配置 reviewer sources、`min_independent`,
+以及按 agent 区分的 source profile(例如 Codex 的 `reasoning_effort`,或某个 subagent
+runner 自己的 `effort` 叫法)。
 
 ## 链接
 

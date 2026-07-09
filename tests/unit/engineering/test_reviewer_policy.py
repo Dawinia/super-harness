@@ -15,8 +15,10 @@ from super_harness.engineering.reviewer_policy import (
     REVIEW_STATE_REVIEWER,
     ReviewerIndependencePolicy,
     ReviewerPolicyError,
+    ReviewerSourcePolicy,
     load_reviewer_policy,
     load_reviewer_strategy,
+    reviewer_policy_payload,
 )
 
 
@@ -72,6 +74,7 @@ def test_default_reviewer_policy_preserves_single_review(tmp_path: Path) -> None
         min_independent=1,
         allowed_sources=(),
         source_instructions={},
+        source_profiles={},
     )
 
 
@@ -93,6 +96,104 @@ def test_reads_min_independent_and_source_mapping(tmp_path: Path) -> None:
     assert policy.allowed_sources == ("subagent", "external")
     assert policy.source_instructions["external"] == "Run an external reviewer."
     assert "independent subagent" in policy.source_instructions["subagent"]
+
+
+def test_reads_agent_specific_source_profile(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources:\n"
+        "    external:\n"
+        "      agent: codex\n"
+        "      context: bundle-only\n"
+        "      instructions: Run codex against the prepared bundle only.\n"
+        "      agent_options:\n"
+        "        reasoning_effort: medium\n"
+        "        sandbox: read-only\n"
+        "  code-reviewer:\n"
+        "    min_independent: 1\n",
+    )
+
+    policy = load_reviewer_policy(tmp_path, "code-reviewer")
+
+    assert policy.source_profiles["external"] == ReviewerSourcePolicy(
+        instructions="Run codex against the prepared bundle only.",
+        agent="codex",
+        context="bundle-only",
+        agent_options={"reasoning_effort": "medium", "sandbox": "read-only"},
+    )
+
+
+def test_policy_payload_preserves_agent_specific_source_options(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent:\n"
+        "      agent: task-subagent\n"
+        "      context: incremental\n"
+        "      agent_options:\n"
+        "        effort: medium\n"
+        "    external:\n"
+        "      agent: codex\n"
+        "      context: bundle-only\n"
+        "      agent_options:\n"
+        "        reasoning_effort: medium\n"
+        "        sandbox: read-only\n"
+        "  code-reviewer:\n"
+        "    strategy: subagent\n"
+        "    min_independent: 2\n",
+    )
+    policy = load_reviewer_policy(tmp_path, "code-reviewer")
+
+    assert reviewer_policy_payload(policy) == {
+        "reviewer": "code-reviewer",
+        "strategy": "subagent",
+        "min_independent": 2,
+        "allowed_sources": ["subagent", "external"],
+        "source_profiles": {
+            "subagent": {
+                "instructions": "Dispatch an independent subagent reviewer and record its verdict.",
+                "agent": "task-subagent",
+                "context": "incremental",
+                "agent_options": {"effort": "medium"},
+            },
+            "external": {
+                "instructions": "Run an external reviewer and record its verdict.",
+                "agent": "codex",
+                "context": "bundle-only",
+                "agent_options": {"reasoning_effort": "medium", "sandbox": "read-only"},
+            },
+        },
+    }
+
+
+def test_source_agent_options_require_agent(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources:\n"
+        "    external:\n"
+        "      agent_options:\n"
+        "        reasoning_effort: medium\n",
+    )
+
+    with pytest.raises(ReviewerPolicyError, match="agent"):
+        load_reviewer_policy(tmp_path, "code-reviewer")
+
+
+def test_source_rejects_agent_agnostic_effort_or_mode(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources:\n"
+        "    external:\n"
+        "      effort: medium\n"
+        "      mode: read-only\n",
+    )
+
+    with pytest.raises(ReviewerPolicyError, match="agent_options"):
+        load_reviewer_policy(tmp_path, "code-reviewer")
 
 
 def test_accepts_source_list_shorthand(tmp_path: Path) -> None:

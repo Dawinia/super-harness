@@ -143,3 +143,10 @@ def test_codex_agents_md_mentions_stop_authoring_check():
     assert "Stop" in sub
     assert "authoring" in sub.lower()
     assert "/hooks" in sub  # trust caveat still present
+
+
+def test_codex_agents_md_mentions_source_profiles():
+    sub = CodexAdapter().agents_md_subsection()
+    assert "agent_options" in sub
+    assert "bundle-only" in sub
+    assert "incremental" in sub

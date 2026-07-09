@@ -243,7 +243,12 @@ def _set_independent_policy(tmp_path: Path) -> None:
         "  sources:\n"
         "    subagent: {}\n"
         "    external:\n"
+        "      agent: codex\n"
+        "      context: bundle-only\n"
         "      instructions: Run external verifier.\n"
+        "      agent_options:\n"
+        "        reasoning_effort: medium\n"
+        "        sandbox: read-only\n"
         "  plan-reviewer:\n"
         "    strategy: subagent\n"
         "    min_independent: 2\n"
@@ -364,6 +369,9 @@ def test_status_shows_independent_review_progress(tmp_path: Path) -> None:
     assert "accepted: subagent" in r.output
     assert "remaining: external" in r.output
     assert "Run external verifier." in r.output
+    assert "agent: codex" in r.output
+    assert "context: bundle-only" in r.output
+    assert "agent_options: reasoning_effort=medium, sandbox=read-only" in r.output
 
 
 def test_status_json_carries_independent_review_progress(tmp_path: Path) -> None:
@@ -381,7 +389,42 @@ def test_status_json_carries_independent_review_progress(tmp_path: Path) -> None
         "missing_independent": 1,
         "remaining_sources": ["external"],
         "instructions": {"external": "Run external verifier."},
+        "source_profiles": {
+            "external": {
+                "instructions": "Run external verifier.",
+                "agent": "codex",
+                "context": "bundle-only",
+                "agent_options": {"reasoning_effort": "medium", "sandbox": "read-only"},
+            },
+        },
     }
+
+
+def test_status_shows_profile_even_without_source_instructions(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _seed_awaiting_plan_review(tmp_path, "demo")
+    (tmp_path / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent: {}\n"
+        "    aux:\n"
+        "      agent: custom-runner\n"
+        "      context: incremental\n"
+        "      agent_options:\n"
+        "        effort: medium\n"
+        "  plan-reviewer:\n"
+        "    min_independent: 2\n"
+    )
+    _record_partial_review(tmp_path, "demo", "subagent")
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "status", "demo"])
+
+    assert r.exit_code == 0, r.output
+    assert "remaining: aux" in r.output
+    assert "    aux:" in r.output
+    assert "agent: custom-runner" in r.output
+    assert "context: incremental" in r.output
+    assert "agent_options: effort=medium" in r.output
 
 
 def test_status_code_review_progress_ignores_stale_digest_partial(tmp_path: Path) -> None:

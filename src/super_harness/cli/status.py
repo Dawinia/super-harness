@@ -43,6 +43,7 @@ from super_harness.engineering.reviewer_policy import (
     ReviewerPolicyError,
     approved_review_sources,
     load_reviewer_policy,
+    reviewer_policy_payload,
 )
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.gates.decisions import SUGGESTIONS
@@ -55,6 +56,24 @@ class _ReviewProgress(TypedDict):
     missing_independent: int
     remaining_sources: list[str]
     instructions: dict[str, str]
+    source_profiles: dict[str, dict[str, object]]
+
+
+def _format_agent_option_value(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, sort_keys=True)
+    return str(value)
+
+
+def _format_agent_options(options: dict[str, object]) -> str:
+    return ", ".join(
+        f"{key}={_format_agent_option_value(value)}"
+        for key, value in sorted(options.items())
+    )
 
 
 @click.command("status")
@@ -143,6 +162,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
         )
         remaining = [s for s in policy.allowed_sources if s not in accepted]
         missing = max(policy.min_independent - len(accepted), 0)
+        source_profiles = reviewer_policy_payload(policy)["source_profiles"]
         return {
             "reviewer": reviewer,
             "min_independent": policy.min_independent,
@@ -153,6 +173,11 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                 source: policy.source_instructions[source]
                 for source in remaining
                 if source in policy.source_instructions
+            },
+            "source_profiles": {
+                source: source_profiles[source]
+                for source in remaining
+                if source in source_profiles
             },
         }
 
@@ -215,8 +240,19 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                     if remaining:
                         click.echo(f"    remaining: {', '.join(remaining)}")
                     instructions = progress["instructions"]
-                    for source, text in instructions.items():
-                        click.echo(f"    {source}: {text}")
+                    for source in remaining:
+                        text = instructions.get(source)
+                        click.echo(f"    {source}: {text}" if text else f"    {source}:")
+                        profile = progress["source_profiles"].get(source, {})
+                        agent = profile.get("agent")
+                        context = profile.get("context")
+                        options = profile.get("agent_options")
+                        if agent:
+                            click.echo(f"      agent: {agent}")
+                        if context:
+                            click.echo(f"      context: {context}")
+                        if isinstance(options, dict) and options:
+                            click.echo(f"      agent_options: {_format_agent_options(options)}")
                 nxt = SUGGESTIONS.get(cs.current_state)
                 if nxt:
                     click.echo(f"  next: {nxt}")

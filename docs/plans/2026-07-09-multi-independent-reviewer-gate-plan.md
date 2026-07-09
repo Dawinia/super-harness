@@ -30,9 +30,12 @@ scope:
     - src/super_harness/engineering/reviewer_policy.py
     - scripts/gen_cli_reference.py
     - scripts/gen_state_machine.py
+    - tests/unit/adapters/test_claude_code.py
+    - tests/unit/adapters/test_codex.py
     - tests/integration/cli/test_init.py
     - tests/integration/cli/test_status.py
     - tests/unit/cli/test_review.py
+    - tests/unit/cli/test_review_prepare.py
     - tests/unit/cli/test_review_verdict_gate.py
     - tests/unit/engineering/test_reviewer_policy.py
     - tests/unit/scripts/test_gen_state_machine.py
@@ -44,7 +47,7 @@ scope:
 
 **Goal:** Make review approval require N independent configured reviewer sources before the CLI emits the existing lifecycle milestone events.
 
-**Architecture:** Keep `plan_approved` and `code_review_passed` as the downstream lifecycle milestones. Add a review-state self-loop `review_verdict_recorded` event for each approving source; once the current review attempt has enough distinct sources for the reviewer role, emit the existing milestone event with a summary payload. Reviewer roles (`plan-reviewer`, `code-reviewer`) remain separate from reviewer sources (`subagent`, `external`, `human`, or user-defined names); super-harness stores and validates source declarations but never spawns or executes reviewers.
+**Architecture:** Keep `plan_approved` and `code_review_passed` as the downstream lifecycle milestones. Add a review-state self-loop `review_verdict_recorded` event for each approving source; once the current review attempt has enough distinct sources for the reviewer role, emit the existing milestone event with a summary payload. Reviewer roles (`plan-reviewer`, `code-reviewer`) remain separate from reviewer sources (`subagent`, `external`, `human`, or user-defined names); super-harness stores and validates source declarations but never spawns or executes reviewers. Source profiles can declare a concrete `agent`, a review `context` (`bundle-only`, `incremental`, `full-change`), and that agent's own `agent_options`; super-harness surfaces those hints in status and prepared bundles without translating or executing them.
 
 **Tech Stack:** Python 3, Click CLI, PyYAML policy parsing, existing event-sourced lifecycle reducer, pytest.
 
@@ -86,14 +89,17 @@ strategy: str
 min_independent: int
 allowed_sources: tuple[str, ...]
 source_instructions: dict[str, str]
+source_profiles: dict[str, ReviewerSourcePolicy]
 ```
 
 Add `load_reviewer_policy(root, reviewer)` while keeping `load_reviewer_strategy()` as a compatibility wrapper. Policy rules:
 
 - Missing config defaults to `strategy="subagent"`, `min_independent=1`, no required source allowlist.
 - `reviewers.<role>.min_independent` must be an integer >= 1.
-- `reviewers.sources` accepts either a list of strings or a mapping from source name to `{instructions: <string>}`.
+- `reviewers.sources` accepts either a list of strings or a mapping from source name to `{instructions, agent, context, agent_options}`.
 - Built-in instructions exist for `subagent`, `external`, and `human`.
+- `context` is one of `bundle-only`, `incremental`, or `full-change`.
+- `agent_options` requires an explicit `agent` and remains agent-specific; root-level source `effort` / `mode` is rejected.
 - Source labels must be distinct; duplicate list entries are rejected before `min_independent` is evaluated.
 - Mapping-form `reviewers.sources` duplicate keys are rejected during YAML load, before PyYAML can silently collapse them.
 - If `min_independent >= 2`, at least `min_independent` allowed sources must be configured.
@@ -237,7 +243,7 @@ Expected: PASS.
 
 - [ ] **Step 1: Write failing init/doc tests**
 
-Update init tests to assert the default skeleton includes `min_independent: 1`, vendor-neutral sources, and no `claude-subagent` default source.
+Update init tests to assert the default skeleton includes `min_independent: 1`, vendor-neutral sources, source profiles with agent-specific `agent_options`, and no `claude-subagent` default source.
 
 Run: `python -m pytest tests/integration/cli/test_init.py -v`
 
@@ -250,9 +256,22 @@ Default skeleton:
 ```yaml
 reviewers:
   sources:
-    subagent: {}
-    external: {}
-    human: {}
+    subagent:
+      agent: task-subagent
+      context: incremental
+      instructions: "Dispatch an independent reviewer subagent against the current plan/review bundle or latest delta."
+      agent_options:
+        effort: medium
+    external:
+      agent: codex
+      context: bundle-only
+      instructions: "Run codex exec --sandbox read-only against the prepared plan or review bundle."
+      agent_options:
+        reasoning_effort: medium
+        sandbox: read-only
+    human:
+      agent: human
+      context: incremental
   plan-reviewer:
     strategy: subagent
     min_independent: 1
@@ -266,10 +285,22 @@ Update local `.harness/policy.yaml` to dogfood:
 ```yaml
 reviewers:
   sources:
-    subagent: {}
+    subagent:
+      agent: task-subagent
+      context: incremental
+      instructions: "Dispatch an independent reviewer subagent against the current plan/review bundle or latest delta."
+      agent_options:
+        effort: medium
     external:
+      agent: codex
+      context: bundle-only
       instructions: "Run codex exec --sandbox read-only against the prepared plan or review bundle."
-    human: {}
+      agent_options:
+        reasoning_effort: medium
+        sandbox: read-only
+    human:
+      agent: human
+      context: incremental
   plan-reviewer:
     strategy: subagent
     min_independent: 2
@@ -278,7 +309,7 @@ reviewers:
     min_independent: 2
 ```
 
-Update agent docs to say source labels are configured reviewer sources and are not commands executed by super-harness.
+Update agent docs to say source labels are configured reviewer sources and are not commands executed by super-harness. The docs must also say source profile `agent_options` are agent-specific and `bundle-only` / `incremental` contexts should not be expanded to whole-PR review unless the profile or a human reviewer asks for it.
 
 Run: `python -m pytest tests/integration/cli/test_init.py -v`
 
@@ -426,8 +457,8 @@ Document the new multi-independent reviewer source gate in the public entry poin
 
 - README quickstart links the full walkthrough to configured reviewer sources.
 - Chinese README mirrors the same note.
-- Getting started shows `reviewers.sources`, `min_independent`, `--source`, and the two-step partial-to-milestone approval flow.
-- Concepts explains reviewer roles vs reviewer sources and makes clear the gate enforces N configured source verdicts, while still not spawning reviewers.
+- Getting started shows `reviewers.sources`, source profiles, `min_independent`, `--source`, and the two-step partial-to-milestone approval flow.
+- Concepts explains reviewer roles vs reviewer sources/source profiles and makes clear the gate enforces N configured source verdicts, while still not spawning reviewers.
 - Adapter docs and limitations stop claiming multi-stage review is deferred and instead describe the shipped source-threshold gate plus the still-deferred automatic reviewer executor.
 
 - [ ] **Step 2: Verify docs stayed consistent**
@@ -440,3 +471,58 @@ PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check
 ```
 
 Expected: no stale single-verdict / deferred-multi-review wording remains in current public docs, including split-line adapter prose, and generated docs are still clean.
+
+## Task 9: Bound Review Cost and Context Profiles
+
+**Files:**
+- Modify: `src/super_harness/engineering/reviewer_policy.py`
+- Modify: `src/super_harness/cli/status.py`
+- Modify: `src/super_harness/cli/review.py`
+- Modify: `src/super_harness/cli/init.py`
+- Modify: `.harness/policy.yaml`
+- Modify: `src/super_harness/adapters/agent/claude_code.py`
+- Modify: `src/super_harness/adapters/agent/codex.py`
+- Modify: `README.md`
+- Modify: `README.zh-CN.md`
+- Modify: `docs/README.md`
+- Modify: `docs/getting-started.md`
+- Modify: `docs/concepts.md`
+- Modify: `docs/limitations.md`
+- Modify: `docs/adapters/claude-code.md`
+- Modify: `docs/adapters/codex.md`
+- Modify: `docs/adapters/plain.md`
+- Test: `tests/unit/engineering/test_reviewer_policy.py`
+- Test: `tests/integration/cli/test_status.py`
+- Test: `tests/unit/cli/test_review_prepare.py`
+- Test: `tests/integration/cli/test_init.py`
+- Test: `tests/unit/adapters/test_claude_code.py`
+- Test: `tests/unit/adapters/test_codex.py`
+
+- [x] **Step 1: Write failing source-profile tests**
+
+Add tests proving policy accepts per-source `agent`, `context`, and
+agent-specific `agent_options`, rejects root-level `effort` / `mode`, rejects
+`agent_options` without an explicit `agent`, surfaces profiles in status JSON and
+human output, and embeds the active reviewer policy in `review prepare` bundles.
+
+Run:
+
+```bash
+python -m pytest tests/unit/engineering/test_reviewer_policy.py tests/integration/cli/test_status.py tests/unit/cli/test_review_prepare.py -q
+```
+
+Expected: FAIL until the parser/status/bundle paths are wired.
+
+- [x] **Step 2: Implement source profiles**
+
+Add `ReviewerSourcePolicy`, `source_profiles`, and a shared
+`reviewer_policy_payload()` serializer. `status` should show profiles for
+remaining sources. `review prepare` should write `review_policy` into the bundle
+without changing `bundle_digest`.
+
+- [x] **Step 3: Sync defaults and docs**
+
+Update the init skeleton, local policy, adapter text, and public docs to show that
+review cost/mode knobs live under source-specific `agent_options`. Document the
+YAGNI boundary: super-harness validates and surfaces the policy but still does not
+spawn reviewers or translate runner flags in this slice.

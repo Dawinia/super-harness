@@ -4,10 +4,22 @@
 # sources are configured labels that the CLI validates when verdicts are recorded.
 reviewers:
   sources:
-    subagent: {}
+    subagent:
+      agent: task-subagent
+      context: incremental
+      instructions: "Dispatch an independent reviewer subagent against the current plan/review bundle or latest delta."
+      agent_options:
+        effort: medium
     external:
+      agent: codex
+      context: bundle-only
       instructions: "Run codex exec --sandbox read-only against the prepared plan or review bundle."
-    human: {}
+      agent_options:
+        reasoning_effort: medium
+        sandbox: read-only
+    human:
+      agent: human
+      context: incremental
   plan-reviewer:
     strategy: subagent
     min_independent: 2

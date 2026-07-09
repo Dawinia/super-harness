@@ -40,9 +40,18 @@ There are three separate axes:
   `external`, or `human`. They are not commands. If `.harness/policy.yaml` sets
   `min_independent: 2`, approvals must arrive from two distinct configured
   `--source` values before the lifecycle milestone is emitted.
+- **Reviewer source profiles** are optional execution hints attached to those
+  labels: the concrete agent family, the intended context window
+  (`bundle-only`, `incremental`, or `full-change`), and that agent's own
+  `agent_options`. The options intentionally stay under each source because
+  different agents use different names and categories for effort, model, and
+  mode. Root-level `effort` / `mode` on a source is rejected; put those knobs
+  under `agent_options` with an explicit `agent`.
 
 `super-harness status` surfaces the active role, strategy, accepted source
-count, and remaining configured sources.
+count, remaining configured sources, and any remaining source profiles. `review
+prepare` also embeds the active reviewer's source policy in the prepared bundle
+so a docs-only or delta follow-up can stay scoped to the intended context.
 
 ## super-harness does not spawn your agent
 

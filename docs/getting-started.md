@@ -192,9 +192,22 @@ starts editing. The hot-path gate enforces lifecycle rules:
   ```yaml
   reviewers:
     sources:
-      subagent: {}
-      external: {}
-      human: {}
+      subagent:
+        agent: task-subagent
+        context: incremental
+        instructions: "Dispatch an independent reviewer subagent against the current plan/review bundle or latest delta."
+        agent_options:
+          effort: medium
+      external:
+        agent: codex
+        context: bundle-only
+        instructions: "Run codex exec --sandbox read-only against the prepared plan or review bundle."
+        agent_options:
+          reasoning_effort: medium
+          sandbox: read-only
+      human:
+        agent: human
+        context: incremental
     plan-reviewer:
       strategy: subagent
       min_independent: 1
@@ -224,7 +237,12 @@ starts editing. The hot-path gate enforces lifecycle rules:
   (Use `review reject ... --reason "<why>"` to send the plan back, or
   `review skip ...` as an escape hatch. The per-reviewer strategy —
   `subagent` / `human` / `hybrid` — is set in `.harness/policy.yaml` and shown by
-  `super-harness status`, along with accepted and remaining reviewer sources.)
+  `super-harness status`, along with accepted and remaining reviewer sources.
+  Source profiles are hints for the actor that runs the review: `context`
+  distinguishes bundle-only, incremental, and full-change review; `agent_options`
+  keeps each agent's own knob names, such as Codex `reasoning_effort` or a
+  subagent runner's `effort`. Do not put a generic `effort` or `mode` at the
+  source root.)
 - Now in `IMPLEMENTATION_IN_PROGRESS`, the agent can edit source code. If it
   tries to `Edit` before the lifecycle permits it, the `PreToolUseGate` blocks
   the tool call.
@@ -240,7 +258,10 @@ starts editing. The hot-path gate enforces lifecycle rules:
 
   The review bundle digest is checked against the current committed in-scope
   diff. If code changes after a partial approval, stale source verdicts no
-  longer count toward `READY_TO_MERGE`.
+  longer count toward `READY_TO_MERGE`. The bundle also carries the active
+  reviewer's source policy, so a follow-up review can stay restricted to the
+  prepared bundle or latest delta instead of expanding to the whole PR unless
+  the policy or a human reviewer asks for that.
 
 > **Note**: the three reviewer-driven transitions (`plan_approved`,
 > `implementation_started`, `code_review_passed`) now ship as the CLI verbs above —

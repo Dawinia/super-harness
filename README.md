@@ -44,7 +44,9 @@ the 10-minute [Getting started](docs/getting-started.md) walkthrough. To inspect
 pre-seeded non-trivial `.harness/` state without running anything, see the in-tree
 demo [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/). The
 walkthrough also shows how to configure reviewer sources and `min_independent`
-when a change needs more than one independent review verdict.
+when a change needs more than one independent review verdict, including
+agent-specific source profiles such as Codex `reasoning_effort` or a subagent
+runner's own `effort` knob.
 
 ## Links
 

@@ -30,6 +30,16 @@ def test_init_creates_harness_dir(tmp_path: Path):
     assert set(reviewers["sources"]) == {"subagent", "external", "human"}
     assert "claude-subagent" not in reviewers["sources"]
     assert "codex" not in reviewers["sources"]
+    assert reviewers["sources"]["external"]["agent"] == "codex"
+    assert reviewers["sources"]["external"]["context"] == "bundle-only"
+    assert reviewers["sources"]["external"]["agent_options"] == {
+        "reasoning_effort": "medium",
+        "sandbox": "read-only",
+    }
+    assert reviewers["sources"]["subagent"]["agent"] == "task-subagent"
+    assert reviewers["sources"]["subagent"]["agent_options"] == {"effort": "medium"}
+    assert "effort" not in reviewers["sources"]["external"]
+    assert "mode" not in reviewers["sources"]["external"]
     assert reviewers["plan-reviewer"]["min_independent"] == 1
     assert reviewers["code-reviewer"]["min_independent"] == 1
     assert (tmp_path / ".harness" / "sensors.yaml").exists()
