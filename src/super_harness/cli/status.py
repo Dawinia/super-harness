@@ -18,6 +18,7 @@ O(1) state.yaml lookup; Phase 8 daemon hot path will read state.yaml instead).
 """
 from __future__ import annotations
 
+import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -32,6 +33,7 @@ from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
     find_harness_root,
+    pending_reviews_dir,
 )
 from super_harness.core.reducer import derive_state
 from super_harness.core.review_verdict import read_change_events
@@ -134,7 +136,11 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
     def _review_progress(change_id: str, reviewer: str, policy: ReviewerIndependencePolicy
                          ) -> _ReviewProgress:
         events = read_change_events(events_path(root), change_id)
-        accepted = sorted(approved_review_sources(events, reviewer))
+        accepted = sorted(
+            approved_review_sources(
+                events, reviewer, bundle_digest=_current_review_bundle_digest(change_id, reviewer)
+            )
+        )
         remaining = [s for s in policy.allowed_sources if s not in accepted]
         missing = max(policy.min_independent - len(accepted), 0)
         return {
@@ -149,6 +155,19 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                 if source in policy.source_instructions
             },
         }
+
+    def _current_review_bundle_digest(change_id: str, reviewer: str) -> str | None:
+        if reviewer != "code-reviewer":
+            return None
+        bundle_path = pending_reviews_dir(root, change_id) / "code-reviewer.bundle.json"
+        try:
+            parsed = json.loads(bundle_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        digest = parsed.get("bundle_digest")
+        return digest if isinstance(digest, str) and digest else None
 
     try:
         if ctx.obj.get("json"):

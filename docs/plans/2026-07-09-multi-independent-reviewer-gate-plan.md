@@ -86,6 +86,7 @@ Add `load_reviewer_policy(root, reviewer)` while keeping `load_reviewer_strategy
 - `reviewers.sources` accepts either a list of strings or a mapping from source name to `{instructions: <string>}`.
 - Built-in instructions exist for `subagent`, `external`, and `human`.
 - Source labels must be distinct; duplicate list entries are rejected before `min_independent` is evaluated.
+- Mapping-form `reviewers.sources` duplicate keys are rejected during YAML load, before PyYAML can silently collapse them.
 - If `min_independent >= 2`, at least `min_independent` allowed sources must be configured.
 - A source name is vendor/tool-neutral by default; `claude-subagent` and `codex` are not built-in defaults.
 
@@ -171,6 +172,8 @@ The current review attempt window is append-order based:
 - `code-reviewer`: count only partial approvals after the latest `implementation_complete` or `code_review_failed`, whichever is later.
 
 For `code-reviewer`, the distinct-source count additionally filters prior partial approvals to verdict payloads whose `bundle_digest` matches the current approving verdict. This preserves the existing structured-review freshness guarantee across cumulative partial approvals.
+
+Status reporting uses the same digest-aware count for code-review progress when a current prepared bundle is available, so UI/CLI progress does not show stale code-review partial approvals as accepted after committed in-scope changes.
 
 For `reject`, preserve current immediate fail behavior and include `source` when supplied.
 
@@ -288,10 +291,12 @@ Expected: generated `docs/cli-reference.md` and `docs/state-machine.md` are in s
 **Files:**
 - Modify: `src/super_harness/engineering/reviewer_policy.py`
 - Modify: `src/super_harness/cli/review.py`
+- Modify: `src/super_harness/cli/status.py`
 - Modify: `scripts/gen_state_machine.py`
 - Modify: `docs/state-machine.md` (regenerate)
 - Modify: `tests/unit/engineering/test_reviewer_policy.py`
 - Modify: `tests/unit/cli/test_review_verdict_gate.py`
+- Modify: `tests/integration/cli/test_status.py`
 - Modify: `tests/unit/scripts/test_gen_state_machine.py`
 
 - [ ] **Step 1: Add failing regression tests for reviewer findings**
@@ -323,6 +328,26 @@ PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check
 ```
 
 Expected: PASS.
+
+- [ ] **Step 3: Resolve second-round code review findings**
+
+Add tests that prove:
+
+- Mapping-form duplicate source labels in `reviewers.sources` are rejected before PyYAML can collapse duplicate mapping keys.
+- Code-review status progress uses the same current-bundle digest filter as the approval gate and does not report stale partial approvals as accepted.
+
+Implement:
+
+- A policy YAML loader that detects duplicate mapping keys and raises `ReviewerPolicyError`.
+- Digest-aware code-review status progress when `.harness/pending-reviews/<change>/code-reviewer.bundle.json` exists.
+
+Run:
+
+```bash
+python -m pytest tests/unit/engineering/test_reviewer_policy.py tests/integration/cli/test_status.py -v
+```
+
+Expected: FAIL before the fix; PASS after the fix.
 
 ## Task 7: Full Verification and Self-Host Lifecycle
 

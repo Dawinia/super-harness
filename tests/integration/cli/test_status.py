@@ -204,6 +204,33 @@ def _seed_awaiting_plan_review(tmp_path: Path, slug: str) -> None:
     refresh_state_after_emit(tmp_path)
 
 
+def _seed_awaiting_code_review(tmp_path: Path, slug: str) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    w = EventWriter(events_path(tmp_path))
+    for t in (
+        "intent_declared",
+        "plan_ready",
+        "plan_approved",
+        "implementation_started",
+        "verification_passed",
+        "implementation_complete",
+    ):
+        w.emit(
+            Event(
+                event_id=new_event_id(), type=t, change_id=slug,
+                timestamp="2026-06-02T00:00:00Z",
+                actor=Actor(type="human", identifier="cli"),
+                framework="plain", payload={},
+            )
+        )
+    refresh_state_after_emit(tmp_path)
+
+
 def _set_strategy(tmp_path: Path, reviewer: str, strategy: str) -> None:
     (tmp_path / ".harness" / "policy.yaml").write_text(
         f"reviewers:\n  {reviewer}:\n    strategy: {strategy}\n"
@@ -218,6 +245,18 @@ def _set_independent_policy(tmp_path: Path) -> None:
         "    external:\n"
         "      instructions: Run external verifier.\n"
         "  plan-reviewer:\n"
+        "    strategy: subagent\n"
+        "    min_independent: 2\n"
+    )
+
+
+def _set_code_review_independent_policy(tmp_path: Path) -> None:
+    (tmp_path / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent: {}\n"
+        "    external: {}\n"
+        "  code-reviewer:\n"
         "    strategy: subagent\n"
         "    min_independent: 2\n"
     )
@@ -247,6 +286,41 @@ def _record_partial_review(tmp_path: Path, slug: str, source: str) -> None:
         )
     )
     refresh_state_after_emit(tmp_path)
+
+
+def _record_code_review_partial(tmp_path: Path, slug: str, source: str, digest: str) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    EventWriter(events_path(tmp_path)).emit(
+        Event(
+            event_id=new_event_id(),
+            type="review_verdict_recorded",
+            change_id=slug,
+            timestamp="2026-06-02T00:00:01Z",
+            actor=Actor(type="human", identifier="cli"),
+            framework="plain",
+            payload={
+                "reviewer": "code-reviewer",
+                "reason": "approved",
+                "source": source,
+                "outcome": "approved",
+                "verdict": {"bundle_digest": digest},
+            },
+        )
+    )
+    refresh_state_after_emit(tmp_path)
+
+
+def _write_code_review_bundle(tmp_path: Path, slug: str, digest: str) -> None:
+    bundle_dir = tmp_path / ".harness" / "pending-reviews" / slug
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "code-reviewer.bundle.json").write_text(
+        json.dumps({"bundle_digest": digest}) + "\n"
+    )
 
 
 def test_status_shows_reviewer_strategy_in_review_state(tmp_path: Path) -> None:
@@ -308,3 +382,20 @@ def test_status_json_carries_independent_review_progress(tmp_path: Path) -> None
         "remaining_sources": ["external"],
         "instructions": {"external": "Run external verifier."},
     }
+
+
+def test_status_code_review_progress_ignores_stale_digest_partial(tmp_path: Path) -> None:
+    _init(tmp_path)
+    _seed_awaiting_code_review(tmp_path, "demo")
+    _set_code_review_independent_policy(tmp_path)
+    _record_code_review_partial(tmp_path, "demo", "subagent", "old-digest")
+    _write_code_review_bundle(tmp_path, "demo", "new-digest")
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "--json", "status", "demo"])
+
+    assert r.exit_code == 0, r.output
+    progress = json.loads(r.output)["data"]["changes"][0]["review_progress"]
+    assert progress["reviewer"] == "code-reviewer"
+    assert progress["accepted_sources"] == []
+    assert progress["missing_independent"] == 2
+    assert progress["remaining_sources"] == ["subagent", "external"]

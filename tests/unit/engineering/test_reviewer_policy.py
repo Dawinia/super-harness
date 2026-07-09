@@ -120,6 +120,23 @@ def test_duplicate_source_list_entries_raise(tmp_path: Path) -> None:
         load_reviewer_policy(tmp_path, "plan-reviewer")
 
 
+def test_duplicate_source_mapping_keys_raise(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent: {}\n"
+        "    subagent:\n"
+        "      instructions: overwritten\n"
+        "    external: {}\n"
+        "  plan-reviewer:\n"
+        "    min_independent: 2\n",
+    )
+
+    with pytest.raises(ReviewerPolicyError, match="duplicate YAML key"):
+        load_reviewer_policy(tmp_path, "plan-reviewer")
+
+
 def test_min_independent_requires_enough_configured_sources(tmp_path: Path) -> None:
     _write_policy(
         tmp_path,

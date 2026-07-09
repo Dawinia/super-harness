@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
 from super_harness.core.events import Event
 
@@ -58,11 +59,40 @@ def _load_policy_yaml(root: Path) -> dict[str, Any]:
     policy_path = root / ".harness" / "policy.yaml"
     if not policy_path.is_file():
         return {}
+    text = policy_path.read_text(encoding="utf-8")
+    _reject_duplicate_yaml_keys(text)
     try:
-        parsed: Any = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+        parsed: Any = yaml.safe_load(text)
     except yaml.YAMLError as e:
         raise ReviewerPolicyError(f"policy.yaml is not valid YAML: {e}") from e
     return parsed if isinstance(parsed, dict) else {}
+
+
+def _reject_duplicate_yaml_keys(text: str) -> None:
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError as e:
+        raise ReviewerPolicyError(f"policy.yaml is not valid YAML: {e}") from e
+    if root is None:
+        return
+
+    def visit(node: object) -> None:
+        if isinstance(node, MappingNode):
+            seen: set[tuple[str, str]] = set()
+            for key_node, value_node in node.value:
+                if isinstance(key_node, ScalarNode):
+                    key = (key_node.tag, key_node.value)
+                    if key in seen:
+                        raise ReviewerPolicyError(
+                            f"duplicate YAML key in policy.yaml: {key_node.value!r}"
+                        )
+                    seen.add(key)
+                visit(value_node)
+        elif isinstance(node, SequenceNode):
+            for item in node.value:
+                visit(item)
+
+    visit(root)
 
 
 def _append_source(sources: list[str], source: str) -> None:
