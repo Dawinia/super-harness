@@ -6,9 +6,18 @@ scope:
   files:
     - .harness/policy.yaml
     - AGENTS.md
+    - README.md
+    - README.zh-CN.md
     - docs/cli-reference.md
+    - docs/README.md
+    - docs/concepts.md
     - docs/decisions/d-events-append-only.md
     - docs/decisions/d-fixed-transition-matrix.md
+    - docs/getting-started.md
+    - docs/limitations.md
+    - docs/adapters/claude-code.md
+    - docs/adapters/codex.md
+    - docs/adapters/plain.md
     - docs/state-machine.md
     - docs/plans/2026-07-09-multi-independent-reviewer-gate-plan.md
     - src/super_harness/adapters/agent/claude_code.py
@@ -397,3 +406,37 @@ Do not merge to `main` without explicit user confirmation.
 - Spec coverage: The plan covers policy declaration, cumulative N distinct reviewer-source verdicts within the current review attempt, default `1` compatibility, status reporting, docs, and self-host dogfooding. Automatic reviewer spawning is explicitly out of scope.
 - Placeholder scan: No task relies on TODO/TBD placeholders; all behavior gates and commands are concrete.
 - Type consistency: The reviewer role remains `reviewer`; the new execution-source axis is consistently named `source`.
+
+## Task 8: Sync Public Entry Documentation
+
+**Files:**
+- Modify: `README.md`
+- Modify: `README.zh-CN.md`
+- Modify: `docs/README.md`
+- Modify: `docs/getting-started.md`
+- Modify: `docs/concepts.md`
+- Modify: `docs/limitations.md`
+- Modify: `docs/adapters/claude-code.md`
+- Modify: `docs/adapters/codex.md`
+- Modify: `docs/adapters/plain.md`
+
+- [ ] **Step 1: Update quickstart and narrative docs**
+
+Document the new multi-independent reviewer source gate in the public entry points:
+
+- README quickstart links the full walkthrough to configured reviewer sources.
+- Chinese README mirrors the same note.
+- Getting started shows `reviewers.sources`, `min_independent`, `--source`, and the two-step partial-to-milestone approval flow.
+- Concepts explains reviewer roles vs reviewer sources and makes clear the gate enforces N configured source verdicts, while still not spawning reviewers.
+- Adapter docs and limitations stop claiming multi-stage review is deferred and instead describe the shipped source-threshold gate plus the still-deferred automatic reviewer executor.
+
+- [ ] **Step 2: Verify docs stayed consistent**
+
+Run:
+
+```bash
+! rg -nU "(?s)multi-stage \\(multiple sequential\\s+reviewers\\).*?(deferred|v0\\.2)|only checks one exists|enforces that a verdict exists before" README.md README.zh-CN.md docs/README.md docs/concepts.md docs/getting-started.md docs/limitations.md docs/adapters
+PATH="$(pwd)/.venv/bin:$PATH" super-harness doc check
+```
+
+Expected: no stale single-verdict / deferred-multi-review wording remains in current public docs, including split-line adapter prose, and generated docs are still clean.

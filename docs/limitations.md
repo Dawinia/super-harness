@@ -24,10 +24,9 @@ deliberately deferred to a later version; one is blocked by an upstream bug
 **Process / orchestration:**
 - Unattended CI auto-review — a headless reviewer that produces the verdict with
   no human or interactive agent present (e.g. shelling out to a headless Claude
-  run). v0.1 ships the verdict *recording* path (`review approve | reject | skip`)
-  and the agent-driven review protocol (the injected AGENTS.md tells the Claude
-  Code agent to dispatch its own reviewer subagent and record the verdict), but it
-  does not itself run an LLM review. Tracked as a follow-up.
+  run). v0.1 ships the verdict *recording* path (`review approve | reject | skip`),
+  configured reviewer sources, and the `min_independent` source-threshold gate,
+  but it does not itself run an LLM review. Tracked as a follow-up.
 - Daemon-autonomous event-driven dispatch — v0.1 uses CLI one-shot dispatchers
   (e.g., `super-harness on-merge` dispatches the merged-event sensors).
 
@@ -49,8 +48,9 @@ deliberately deferred to a later version; one is blocked by an upstream bug
 ## FAQ
 
 **Does super-harness run the review or write the verdict?**
-No. It enforces that a verdict exists before the lifecycle advances; the agent or
-human produces it. See [Concepts](concepts.md).
+No. It enforces that the configured number of independent reviewer-source
+verdicts exists before the lifecycle advances; the agent or human produces those
+verdicts. See [Concepts](concepts.md).
 
 **Does it spawn or manage my coding agent?**
 No. Your agent calls the harness; the harness gates the agent. See
