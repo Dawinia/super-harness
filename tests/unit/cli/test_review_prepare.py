@@ -16,7 +16,12 @@ def _git(ws: Path, *a: str) -> None:
     subprocess.run(["git", *a], cwd=ws, check=True, capture_output=True, text=True)
 
 
-def _seed_change(ws: Path, declared: list[str], framework: str = "plain") -> None:
+def _seed_change(
+    ws: Path,
+    declared: list[str],
+    framework: str = "plain",
+    plan_reviewed_head: str | None = None,
+) -> None:
     from super_harness.core.events import Actor, Event
     from super_harness.core.paths import events_path
     from super_harness.core.post_emit import refresh_state_after_emit
@@ -25,7 +30,8 @@ def _seed_change(ws: Path, declared: list[str], framework: str = "plain") -> Non
 
     (ws / ".harness").mkdir(parents=True, exist_ok=True)
     for t, p in [("intent_declared", {}), ("plan_ready", {"scope": {"files": declared}}),
-                 ("plan_approved", {}), ("implementation_started", {}),
+                 ("plan_approved", {"reviewed_head": plan_reviewed_head}
+                  if plan_reviewed_head else {}), ("implementation_started", {}),
                  ("verification_passed", {}),
                  ("implementation_complete", {})]:
         EventWriter(events_path(ws)).emit(Event(
@@ -54,6 +60,7 @@ def _set_reviewer_source_policy(ws: Path) -> None:
         "  code-reviewer:\n"
         "    strategy: subagent\n"
         "    min_independent: 2\n"
+        "    participants: [subagent, external]\n"
     )
 
 
@@ -69,6 +76,30 @@ def _repo(tmp_path: Path) -> Path:
     (tmp_path / "src" / "a.py").write_text("v2\n")
     _git(tmp_path, "commit", "-aqm", "work")
     return tmp_path
+
+
+def _record_source_result(ws: Path, source: str, reviewed_head: str) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    EventWriter(events_path(ws)).emit(
+        Event(
+            event_id=new_event_id(),
+            type="review_verdict_recorded",
+            change_id="c",
+            timestamp="2026-07-11T00:00:00Z",
+            actor=Actor(type="agent", identifier=source),
+            framework="plain",
+            payload={
+                "reviewer": "code-reviewer",
+                "source": source,
+                "outcome": "approved",
+                "reviewed_head": reviewed_head,
+            },
+        )
+    )
 
 
 def test_prepare_writes_bundle(tmp_path: Path) -> None:
@@ -103,6 +134,7 @@ def test_prepare_embeds_reviewer_source_policy_hints(tmp_path: Path) -> None:
         "strategy": "subagent",
         "min_independent": 2,
         "allowed_sources": ["subagent", "external"],
+        "participants": ["subagent", "external"],
         "source_profiles": {
             "subagent": {
                 "instructions": "Dispatch an independent subagent reviewer and record its verdict.",
@@ -118,6 +150,139 @@ def test_prepare_embeds_reviewer_source_policy_hints(tmp_path: Path) -> None:
             },
         },
     }
+
+
+def test_prepare_compiles_initial_full_change_assignments(tmp_path: Path) -> None:
+    ws = _repo(tmp_path)
+    _seed_change(ws, ["src/"])
+    _set_reviewer_source_policy(ws)
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "code-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_OK, result.output
+    bundle = json.loads(
+        (pending_reviews_dir(ws, "c") / "code-reviewer.bundle.json").read_text()
+    )
+    assert len(bundle["target_head"]) == 40
+    assert bundle["plan_review_required"] is False
+    assert [assignment["source"] for assignment in bundle["assignments"]] == [
+        "subagent", "external"
+    ]
+    subagent, external = bundle["assignments"]
+    assert subagent["agent_options"] == {"effort": "medium"}
+    assert external["agent_options"] == {
+        "reasoning_effort": "medium", "sandbox": "read-only"
+    }
+    for assignment in bundle["assignments"]:
+        assert assignment["inspection"]["mode"] == "full-change"
+        assert assignment["inspection"]["files"] == ["src/a.py"]
+        assert assignment["inspection"]["diff_argv"][:2] == ["git", "diff"]
+        assert "Review only the assigned target delta" in assignment["prompt"]
+
+
+def test_prepare_batches_code_and_docs_followups_into_one_incremental_assignment(
+    tmp_path: Path,
+) -> None:
+    ws = _repo(tmp_path)
+    _seed_change(ws, ["src/", "docs/"])
+    _set_reviewer_source_policy(ws)
+    baseline = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ws, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _record_source_result(ws, "subagent", baseline)
+    _record_source_result(ws, "external", baseline)
+    (ws / "src" / "a.py").write_text("v3\n")
+    _git(ws, "commit", "-aqm", "fix code review finding")
+    (ws / "docs").mkdir()
+    (ws / "docs" / "followup.md").write_text("follow-up\n")
+    _git(ws, "add", "docs/followup.md")
+    _git(ws, "commit", "-qm", "document follow-up")
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "code-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_OK, result.output
+    bundle = json.loads(
+        (pending_reviews_dir(ws, "c") / "code-reviewer.bundle.json").read_text()
+    )
+    assert bundle["plan_review_required"] is False
+    for assignment in bundle["assignments"]:
+        assert assignment["inspection"]["mode"] == "incremental"
+        assert assignment["inspection"]["base"] == baseline
+        assert assignment["inspection"]["files"] == ["docs/followup.md", "src/a.py"]
+
+
+def test_prepare_rejects_plan_changed_after_approval(tmp_path: Path) -> None:
+    ws = _repo(tmp_path)
+    (ws / "docs").mkdir()
+    plan = ws / "docs" / "plan.md"
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# Approved plan\n")
+    _git(ws, "add", "docs/plan.md")
+    _git(ws, "commit", "-qm", "approve plan content")
+    approved_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ws, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _seed_change(
+        ws,
+        ["src/", "docs/plan.md"],
+        plan_reviewed_head=approved_head,
+    )
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# Changed plan\n")
+    _git(ws, "commit", "-aqm", "change approved plan")
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "code-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION, result.output
+    assert "plan" in result.output.lower()
+
+
+def test_prepare_compiles_mixed_full_and_incremental_source_targets(tmp_path: Path) -> None:
+    ws = _repo(tmp_path)
+    _seed_change(ws, ["src/"])
+    baseline = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ws, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _record_source_result(ws, "subagent", baseline)
+    _record_source_result(ws, "external", baseline)
+    (ws / "src" / "a.py").write_text("v3\n")
+    _git(ws, "commit", "-aqm", "follow-up")
+    (ws / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent:\n"
+        "      agent: task-subagent\n"
+        "      context: full-change\n"
+        "      agent_options: {effort: medium}\n"
+        "    external:\n"
+        "      agent: codex\n"
+        "      context: incremental\n"
+        "      agent_options: {reasoning_effort: medium}\n"
+        "  code-reviewer:\n"
+        "    participants: [subagent, external]\n"
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "code-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_OK, result.output
+    bundle = json.loads(
+        (pending_reviews_dir(ws, "c") / "code-reviewer.bundle.json").read_text()
+    )
+    subagent, external = bundle["assignments"]
+    assert subagent["inspection"]["mode"] == "full-change"
+    assert subagent["inspection"]["base"] != baseline
+    assert external["inspection"]["mode"] == "incremental"
+    assert external["inspection"]["base"] == baseline
 
 
 def test_prepare_dirty_tree_errors(tmp_path: Path) -> None:

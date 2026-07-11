@@ -90,6 +90,15 @@ for `full-change`. Code-reviewer approval requires a `--verdict-file` from a
 genuinely independent reviewer; run real independent review — don't
 self-rubber-stamp.
 
+The prepared bundle is the execution contract: dispatch every assignment in listed
+order, apply its agent_options verbatim to that source's runner, pass its generated
+prompt unchanged, and collect every raw verdict before recording any approve or
+reject event. Batch all committed code-review fixes and docs follow-ups, then run
+review prepare once. A code-review finding fix does not trigger plan review unless
+the approved plan, scope, or requirements changed; use plan redeclare when they did.
+Never widen an assignment to the whole PR. If its target is insufficient, record a
+partial rejection so the next prepare fails closed to a full target for that source.
+
 #### Turn-end authoring check
 
 A **Stop** hook runs a turn-end authoring-time conformance check: when you finish a

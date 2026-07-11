@@ -40,6 +40,9 @@ There are three separate axes:
   `external`, or `human`. They are not commands. If `.harness/policy.yaml` sets
   `min_independent: 2`, approvals must arrive from two distinct configured
   `--source` values before the lifecycle milestone is emitted.
+- **Reviewer participants** are the fixed, ordered source labels used for one
+  role's normal review path. The code agent dispatches this configured list; it
+  does not choose among every installed reviewer at runtime.
 - **Reviewer source profiles** are optional execution hints attached to those
   labels: the concrete agent family, the intended context window
   (`bundle-only`, `incremental`, or `full-change`), and that agent's own
@@ -48,10 +51,20 @@ There are three separate axes:
   mode. Root-level `effort` / `mode` on a source is rejected; put those knobs
   under `agent_options` with an explicit `agent`.
 
-`super-harness status` surfaces the active role, strategy, accepted source
-count, remaining configured sources, and any remaining source profiles. `review
-prepare` also embeds the active reviewer's source policy in the prepared bundle
-so a docs-only or delta follow-up can stay scoped to the intended context.
+`super-harness status` remains the resume/recovery surface. `review prepare`
+compiles the normal execution contract: target commit, ordered participant
+assignments, each source's opaque `agent_options`, exact Git range/files/argv,
+and a canonical prompt. A trustworthy result at an ancestor commit becomes that
+source's incremental baseline; otherwise that source receives the full in-scope
+change. `full-change` always stays full.
+
+All committed code fixes, refactors, tests, and docs after a source baseline are
+batched into one follow-up assignment. A code-review finding does not cause plan
+review by itself. If the fix changes the approved plan, scope, or requirements,
+declare that semantic change explicitly with `plan redeclare`; undeclared
+plan/spec drift is rejected. A scoped reviewer may read directly affected
+context, but it must return a partial rejection instead of silently widening to
+the whole PR.
 
 ## super-harness does not spawn your agent
 

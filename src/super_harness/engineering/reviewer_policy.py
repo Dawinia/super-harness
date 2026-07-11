@@ -71,6 +71,7 @@ class ReviewerIndependencePolicy:
     allowed_sources: tuple[str, ...]
     source_instructions: dict[str, str]
     source_profiles: dict[str, ReviewerSourcePolicy]
+    participants: tuple[str, ...] = ()
 
 
 def _source_policy_payload(profile: ReviewerSourcePolicy) -> dict[str, Any]:
@@ -95,6 +96,7 @@ def reviewer_policy_payload(policy: ReviewerIndependencePolicy) -> dict[str, Any
         "strategy": policy.strategy,
         "min_independent": policy.min_independent,
         "allowed_sources": list(policy.allowed_sources),
+        "participants": list(policy.participants),
         "source_profiles": {
             source: _source_policy_payload(profile)
             for source, profile in policy.source_profiles.items()
@@ -269,18 +271,51 @@ def load_reviewer_policy(root: Path, reviewer: str) -> ReviewerIndependencePolic
         raise ReviewerPolicyError(
             f"reviewers.{reviewer}.strategy={strategy!r} is not one of {list(_STRATEGIES)}"
         )
-    min_independent = block.get("min_independent", _DEFAULT_MIN_INDEPENDENT)
+    raw_participants = block.get("participants")
+    if isinstance(raw_participants, list):
+        if any(not isinstance(source, str) or not source for source in raw_participants):
+            raise ReviewerPolicyError(
+                f"reviewers.{reviewer}.participants must contain non-empty strings"
+            )
+        participants = tuple(raw_participants)
+        if len(set(participants)) != len(participants):
+            raise ReviewerPolicyError(
+                f"reviewers.{reviewer}.participants has duplicate participant"
+            )
+        unknown = [source for source in participants if source not in allowed_sources]
+        if unknown:
+            raise ReviewerPolicyError(
+                f"reviewers.{reviewer}.participants has unknown participant: {unknown[0]!r}"
+            )
+    elif raw_participants is None:
+        participants = ()
+    else:
+        raise ReviewerPolicyError(f"reviewers.{reviewer}.participants must be a list")
+    default_threshold = len(participants) if participants else _DEFAULT_MIN_INDEPENDENT
+    min_independent = block.get("min_independent", default_threshold)
     if (
         not isinstance(min_independent, int)
         or isinstance(min_independent, bool)
         or min_independent < 1
     ):
         raise ReviewerPolicyError(f"reviewers.{reviewer}.min_independent must be an integer >= 1")
+    if participants and "min_independent" in block and min_independent != len(participants):
+        raise ReviewerPolicyError(
+            f"reviewers.{reviewer}.min_independent must match participants count "
+            f"({len(participants)})"
+        )
     if min_independent > 1 and len(allowed_sources) < min_independent:
         raise ReviewerPolicyError(
             f"reviewers.{reviewer}.min_independent requires at least "
             f"{min_independent} configured reviewer sources"
         )
+    if not participants and allowed_sources:
+        if len(allowed_sources) > min_independent:
+            raise ReviewerPolicyError(
+                f"reviewers.{reviewer} source selection is ambiguous; configure participants"
+            )
+        if len(allowed_sources) == min_independent:
+            participants = allowed_sources
     return ReviewerIndependencePolicy(
         reviewer=reviewer,
         strategy=str(strategy),
@@ -288,6 +323,7 @@ def load_reviewer_policy(root: Path, reviewer: str) -> ReviewerIndependencePolic
         allowed_sources=allowed_sources,
         source_instructions=source_instructions,
         source_profiles=source_profiles,
+        participants=participants,
     )
 
 

@@ -15,6 +15,7 @@ from typing import Any
 
 import yaml
 
+from super_harness.core.frontmatter import split_frontmatter
 from super_harness.core.paths import events_path
 from super_harness.core.reducer import derive_state
 from super_harness.core.review_checklist import resolve_checklist
@@ -71,6 +72,31 @@ def _no_spec_plan(framework: str | None, root: Path, change_id: str) -> tuple[st
     return "", ""
 
 
+def _declared_artifact_paths(
+    root: Path, declared: list[str], change_id: str
+) -> tuple[str, str]:
+    spec_path = ""
+    plan_path = ""
+    for relative in sorted(declared):
+        path = root / relative
+        if path.suffix != ".md" or not path.is_file():
+            continue
+        try:
+            parsed = split_frontmatter(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        if parsed is None:
+            continue
+        frontmatter, _ = parsed
+        if frontmatter.get("change") != change_id:
+            continue
+        if frontmatter.get("stage") == "design":
+            spec_path = relative
+        elif frontmatter.get("stage") in {None, "plan"}:
+            plan_path = relative
+    return spec_path, plan_path
+
+
 def assemble_bundle(
     root: Path,
     *,
@@ -101,6 +127,9 @@ def assemble_bundle(
 
     resolve = spec_plan_resolver or _no_spec_plan
     spec_path, plan_path = resolve(framework, root, change_id)
+    declared_spec, declared_plan = _declared_artifact_paths(root, declared, change_id)
+    spec_path = spec_path or declared_spec
+    plan_path = plan_path or declared_plan
     return {
         "change": change_id,
         "reviewer": reviewer,

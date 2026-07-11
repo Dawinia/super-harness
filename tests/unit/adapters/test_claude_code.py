@@ -284,6 +284,16 @@ def test_agents_md_subsection_has_markers() -> None:
     assert "super-harness status" in block
 
 
+def test_agents_md_subsection_teaches_compiled_review_contract() -> None:
+    block = " ".join(ClaudeCodeAdapter().agents_md_subsection().split()).lower()
+    assert "dispatch every assignment in listed order" in block
+    assert "apply its agent_options verbatim" in block
+    assert "collect every raw verdict before recording" in block
+    assert "does not trigger plan review" in block
+    assert "plan, scope, or requirements changed" in block
+    assert "never widen an assignment to the whole pr" in block
+
+
 def test_agents_md_subsection_has_review_protocol() -> None:
     # HG-02.B: teach the agent the review loop — dispatch a reviewer subagent and
     # record the verdict via the CLI (the harness never runs the review itself).

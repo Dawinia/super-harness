@@ -23,6 +23,8 @@ reviewers:
   plan-reviewer:
     strategy: subagent
     min_independent: 2
+    participants: [subagent, external]
   code-reviewer:
     strategy: subagent
     min_independent: 2
+    participants: [subagent, external]

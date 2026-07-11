@@ -807,7 +807,7 @@ super-harness review approve [OPTIONS] CHANGE
 
 ## super-harness review prepare
 
-Assemble the review bundle (diff∩scope + checklist + digest) → disk.
+Compile the review bundle and per-source scoped assignments → disk.
 
 ```
 super-harness review prepare [OPTIONS] CHANGE

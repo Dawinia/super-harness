@@ -151,9 +151,11 @@ def _skeleton_files() -> dict[str, str]:
             "  plan-reviewer:\n"
             "    strategy: subagent\n"
             "    min_independent: 1\n"
+            "    participants: [subagent]\n"
             "  code-reviewer:\n"
             "    strategy: subagent\n"
             "    min_independent: 1\n"
+            "    participants: [subagent]\n"
         ),
         "sensors.yaml": "sensors: []\n",
         "gates.yaml": (

@@ -42,6 +42,8 @@ def test_init_creates_harness_dir(tmp_path: Path):
     assert "mode" not in reviewers["sources"]["external"]
     assert reviewers["plan-reviewer"]["min_independent"] == 1
     assert reviewers["code-reviewer"]["min_independent"] == 1
+    assert reviewers["plan-reviewer"]["participants"] == ["subagent"]
+    assert reviewers["code-reviewer"]["participants"] == ["subagent"]
     assert (tmp_path / ".harness" / "sensors.yaml").exists()
     assert (tmp_path / ".harness" / "verification.yaml").exists()
     assert (tmp_path / ".harness" / "source-paths.yaml").exists()

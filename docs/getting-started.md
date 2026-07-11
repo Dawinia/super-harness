@@ -59,8 +59,8 @@ What `init --setup-github` does:
 
 1. Creates `.harness/` with the lifecycle data plane: `events.jsonl` (the
    append-only event log), `state.yaml` (the derived current-state cache), and
-   `policy.yaml` (the default reviewer policy: `min_independent: 1` plus
-   vendor-neutral source labels such as `subagent`, `external`, and `human`).
+   `policy.yaml` (the default reviewer policy: one `subagent` participant plus
+   optional vendor-neutral source profiles such as `external` and `human`).
 2. Writes `AGENTS.md` (or extends an existing one) with a `super-harness`
    section your AI agent will read.
    - If a `.claude/` directory is detected, `init` also auto-installs the
@@ -211,9 +211,11 @@ starts editing. The hot-path gate enforces lifecycle rules:
     plan-reviewer:
       strategy: subagent
       min_independent: 1
+      participants: [subagent]
     code-reviewer:
       strategy: subagent
       min_independent: 1
+      participants: [subagent]
   ```
 
   With `min_independent: 1`, the short form still advances exactly as before:
@@ -223,8 +225,10 @@ starts editing. The hot-path gate enforces lifecycle rules:
   super-harness implementation start my-first-change                      # → IMPLEMENTATION_IN_PROGRESS
   ```
 
-  If a team sets `min_independent: 2`, each approval names a distinct
-  configured `--source`. The first approval records `review_verdict_recorded`
+  `participants` fixes the normal source set and dispatch order so a code agent
+  does not choose among all configured or installed agents at runtime. If a team
+  sets `participants: [subagent, external]` and `min_independent: 2`, each
+  approval names its configured `--source`. The first approval records `review_verdict_recorded`
   and stays in `AWAITING_PLAN_REVIEW`; the second independent source emits the
   existing milestone:
 
@@ -238,11 +242,12 @@ starts editing. The hot-path gate enforces lifecycle rules:
   `review skip ...` as an escape hatch. The per-reviewer strategy —
   `subagent` / `human` / `hybrid` — is set in `.harness/policy.yaml` and shown by
   `super-harness status`, along with accepted and remaining reviewer sources.
-  Source profiles are hints for the actor that runs the review: `context`
-  distinguishes bundle-only, incremental, and full-change review; `agent_options`
-  keeps each agent's own knob names, such as Codex `reasoning_effort` or a
-  subagent runner's `effort`. Do not put a generic `effort` or `mode` at the
-  source root.)
+  Source profiles are execution inputs for the actor that runs the review:
+  `context` distinguishes bundle-only, incremental, and full-change review;
+  `agent_options` keeps each agent's own knob names, such as Codex
+  `reasoning_effort` or a subagent runner's `effort`. The code agent applies
+  those options verbatim; it never inherits its main-session effort. Do not put
+  a generic `effort` or `mode` at the source root.)
 - Now in `IMPLEMENTATION_IN_PROGRESS`, the agent can edit source code. If it
   tries to `Edit` before the lifecycle permits it, the `PreToolUseGate` blocks
   the tool call.
@@ -256,12 +261,19 @@ starts editing. The hot-path gate enforces lifecycle rules:
   super-harness review approve my-first-change --reviewer code-reviewer --source external --verdict-file .harness/pending-reviews/my-first-change/code-reviewer.external.yaml
   ```
 
-  The review bundle digest is checked against the current committed in-scope
-  diff. If code changes after a partial approval, stale source verdicts no
-  longer count toward `READY_TO_MERGE`. The bundle also carries the active
-  reviewer's source policy, so a follow-up review can stay restricted to the
-  prepared bundle or latest delta instead of expanding to the whole PR unless
-  the policy or a human reviewer asks for that.
+  The bundle contains one ordered assignment per participant: the exact target
+  commit, Git range, in-scope files, shell-free diff argv, source-specific
+  options, and canonical reviewer prompt. Dispatch every assignment as written,
+  collect all raw verdicts, then record them. The digest is checked against the
+  current committed in-scope diff for both approval and structured rejection.
+
+  After a code-review rejection, batch all finding fixes and docs follow-ups into
+  commits, then run `review prepare` once. Each source receives everything since
+  its latest trustworthy baseline. Do not repeat `done` or plan review for a
+  code-only fix. Use `plan redeclare` only when the approved plan, scope, or
+  requirements changed; the CLI rejects undeclared plan/spec drift. A scoped
+  reviewer returns a partial rejection when its target is insufficient instead
+  of expanding itself to the whole PR.
 
 > **Note**: the three reviewer-driven transitions (`plan_approved`,
 > `implementation_started`, `code_review_passed`) now ship as the CLI verbs above —

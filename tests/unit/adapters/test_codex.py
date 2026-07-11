@@ -150,3 +150,13 @@ def test_codex_agents_md_mentions_source_profiles():
     assert "agent_options" in sub
     assert "bundle-only" in sub
     assert "incremental" in sub
+
+
+def test_codex_agents_md_teaches_compiled_review_contract():
+    sub = " ".join(CodexAdapter().agents_md_subsection().split()).lower()
+    assert "dispatch every assignment in listed order" in sub
+    assert "apply its agent_options verbatim" in sub
+    assert "collect every raw verdict before recording" in sub
+    assert "does not trigger plan review" in sub
+    assert "plan, scope, or requirements changed" in sub
+    assert "never widen an assignment to the whole pr" in sub

@@ -127,3 +127,17 @@ def test_assemble_bundle_no_resolver_yields_empty_spec_plan(tmp_path: Path) -> N
     b = assemble_bundle(ws, change_id="c", reviewer="code-reviewer", base="main")
     assert b["spec_path"] == ""
     assert b["plan_path"] == ""
+
+
+def test_assemble_bundle_finds_declared_plain_plan_frontmatter(tmp_path: Path) -> None:
+    ws = _repo_with_change(tmp_path)
+    (ws / "docs").mkdir()
+    plan = ws / "docs" / "plan.md"
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# Plan\n")
+    _git(ws, "add", "docs/plan.md")
+    _git(ws, "commit", "-qm", "plan")
+    _change(ws, ["src/", "docs/plan.md"])
+
+    bundle = assemble_bundle(ws, change_id="c", reviewer="code-reviewer", base="main")
+
+    assert bundle["plan_path"] == "docs/plan.md"

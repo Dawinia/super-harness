@@ -126,6 +126,13 @@ def test_independent_code_review_first_source_records_partial_only(tmp_path: Pat
     last = [json.loads(ln) for ln in events_path(ws).read_text().splitlines() if ln.strip()][-1]
     assert last["type"] == "review_verdict_recorded"
     assert last["payload"]["source"] == "subagent"
+    assert last["payload"]["reviewed_head"] == subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ws,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
 
 def test_independent_code_review_second_source_emits_milestone(tmp_path: Path) -> None:
@@ -323,3 +330,22 @@ def test_reject_still_accepts_fail_verdict(tmp_path: Path) -> None:
     r = CliRunner().invoke(main, ["--workspace", str(ws), "review", "reject", "c",
                                   "--reviewer", "code-reviewer", "--verdict-file", str(p)])
     assert r.exit_code == EXIT_OK, r.output
+
+
+def test_structured_code_reject_refuses_stale_verdict(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    old_digest = _prepare_digest(ws)
+    verdict = _fail_verdict(ws, old_digest)
+    (ws / "src" / "a.py").write_text("v3\n")
+    _git(ws, "commit", "-aqm", "changed after review")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(ws), "review", "reject", "c",
+            "--reviewer", "code-reviewer", "--verdict-file", str(verdict),
+        ],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION, result.output
+    assert "stale" in result.output.lower()

@@ -15,7 +15,11 @@ on disk do it for you.
 > `min_independent: 2`, record approvals with distinct `--source` values. Plain
 > still does not run reviewers automatically; you provide the verdicts. If source
 > profiles are configured, `status` / `review prepare` show the intended context
-> and agent-specific `agent_options`, but Plain does not execute them. The `plan
+> and agent-specific `agent_options`, while role-level `participants` fixes the
+> normal source order. `review prepare` compiles exact per-source ranges, files,
+> options, and prompts, but Plain does not execute them. Batch code-review fixes
+> and docs into one prepare; repeat plan review only after an explicit plan,
+> scope, or requirements change. The `plan
 > ready` references below mirror what Plain's `agents_md_subsection()` returns.
 
 Plain is a framework adapter (same ABC as OpenSpec), but it is deliberately

@@ -59,6 +59,7 @@ from super_harness.core.scope_match import (
 )
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
+from super_harness.engineering.review_contract import ReviewContractError, compile_review_contract
 from super_harness.engineering.reviewer_policy import (
     ReviewerIndependencePolicy,
     ReviewerPolicyError,
@@ -230,6 +231,16 @@ def _validate_reviewer_state_or_exit(
 
 def _change_events(root: Path, change: str) -> list[Event]:
     return read_change_events(events_path(root), change)
+
+
+def _prepared_target_head(root: Path, change: str, reviewer: str) -> str | None:
+    bundle_path = pending_reviews_dir(root, change) / f"{reviewer}.bundle.json"
+    try:
+        parsed = json.loads(bundle_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    target = parsed.get("target_head") if isinstance(parsed, dict) else None
+    return target if isinstance(target, str) and target else None
 
 
 def _emit_review_event(
@@ -448,27 +459,8 @@ def _validate_code_review_verdict(
             hint="Every checklist item must have a status (pass/fail/na)."), err=True)
         sys.exit(EXIT_VALIDATION)
 
-    resolved_base = base or load_base_branch(root)
     cs = derive_state(events_path(root)).get(change)
-    declared = list(cs.scope.get("files", [])) if cs is not None else []
-    if working_tree_dirty(root, declared):
-        click.echo(format_error(subcommand=subcommand,
-            message="in-scope files have uncommitted changes; cannot verify the reviewed diff.",
-            hint="Commit the in-scope changes and re-run review prepare + approve."), err=True)
-        sys.exit(EXIT_VALIDATION)
-    try:
-        in_scope, _ = split_changed_by_scope(root, base=resolved_base, declared=declared)
-        current = committed_scope_digest(root, base=resolved_base, in_scope=in_scope)
-    except GitScopeError as e:
-        click.echo(format_error(subcommand=subcommand,
-            message=f"cannot verify review freshness (git error): {e}",
-            hint="Resolve the git/base-branch issue; the gate fails closed."), err=True)
-        sys.exit(EXIT_VALIDATION)
-    if verdict["bundle_digest"] != current:
-        click.echo(format_error(subcommand=subcommand,
-            message="verdict is stale — its bundle_digest does not match the in-scope diff.",
-            hint="The code changed since `review prepare`; re-prepare and re-review."), err=True)
-        sys.exit(EXIT_VALIDATION)
+    _validate_verdict_freshness(root, change, reviewer, verdict, base, subcommand)
 
     # D (slice-2): an approve emitted FROM CODE_REVIEW_REJECTED must dispose every
     # open finding from prior code_review_failed verdicts. Inert otherwise.
@@ -497,6 +489,37 @@ def _validate_code_review_verdict(
     return verdict
 
 
+def _validate_verdict_freshness(
+    root: Path,
+    change: str,
+    reviewer: str,
+    verdict: dict[str, object],
+    base: str | None,
+    subcommand: str,
+) -> None:
+    resolved_base = base or load_base_branch(root)
+    cs = derive_state(events_path(root)).get(change)
+    declared = list(cs.scope.get("files", [])) if cs is not None else []
+    if working_tree_dirty(root, declared):
+        click.echo(format_error(subcommand=subcommand,
+            message="in-scope files have uncommitted changes; cannot verify the reviewed diff.",
+            hint="Commit the in-scope changes and re-run review prepare + approve."), err=True)
+        sys.exit(EXIT_VALIDATION)
+    try:
+        in_scope, _ = split_changed_by_scope(root, base=resolved_base, declared=declared)
+        current = committed_scope_digest(root, base=resolved_base, in_scope=in_scope)
+    except GitScopeError as e:
+        click.echo(format_error(subcommand=subcommand,
+            message=f"cannot verify review freshness (git error): {e}",
+            hint="Resolve the git/base-branch issue; the gate fails closed."), err=True)
+        sys.exit(EXIT_VALIDATION)
+    if verdict["bundle_digest"] != current:
+        click.echo(format_error(subcommand=subcommand,
+            message="verdict is stale — its bundle_digest does not match the in-scope diff.",
+            hint="The code changed since `review prepare`; re-prepare and re-review."), err=True)
+        sys.exit(EXIT_VALIDATION)
+
+
 @review_group.command("approve")
 @click.argument("change")
 @_reviewer_opt
@@ -513,13 +536,13 @@ def approve(ctx: click.Context, change: str, reviewer: str, reason: str,
             as_identity: str | None) -> None:
     """Record a PASS verdict: emit `plan_approved` / `code_review_passed`."""
     extra: dict[str, object] | None = None
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as e:
+        click.echo(format_error(subcommand="review approve", message=e.message, hint=e.hint),
+                   err=True)
+        sys.exit(EXIT_NO_CONFIG)
     if reviewer == "code-reviewer":
-        try:
-            root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
-        except HarnessNotInitialized as e:
-            click.echo(format_error(subcommand="review approve", message=e.message, hint=e.hint),
-                       err=True)
-            sys.exit(EXIT_NO_CONFIG)
         verdict = _validate_code_review_verdict(
             root, change, reviewer, verdict_file, base, "review approve")
         extra = {"verdict": verdict}
@@ -531,6 +554,9 @@ def approve(ctx: click.Context, change: str, reviewer: str, reason: str,
             sys.exit(EXIT_VALIDATION)
         _reject_failing_checklist(verdict, "review approve")
         extra = {"verdict": verdict}
+    reviewed_head = _prepared_target_head(root, change, reviewer)
+    if reviewed_head is not None:
+        extra = {**(extra or {}), "reviewed_head": reviewed_head}
     _emit_cumulative_approve(
         ctx, change=change, reviewer=reviewer, reason=reason, as_identity=as_identity,
         source=source, extra_payload=extra,
@@ -550,6 +576,7 @@ def reject(ctx: click.Context, change: str, reviewer: str, reason: str,
            verdict_file: str | None, source: str | None, as_identity: str | None) -> None:
     """Record a FAIL verdict: emit `plan_rejected` / `code_review_failed`."""
     extra: dict[str, object] | None = None
+    root: Path | None = None
     if source:
         try:
             root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
@@ -569,6 +596,23 @@ def reject(ctx: click.Context, change: str, reviewer: str, reason: str,
         except VerdictError as e:
             click.echo(format_error(subcommand="review reject", message=str(e)), err=True)
             sys.exit(EXIT_VALIDATION)
+        if root is None:
+            try:
+                root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+            except HarnessNotInitialized as e:
+                click.echo(format_error(
+                    subcommand="review reject", message=e.message, hint=e.hint
+                ), err=True)
+                sys.exit(EXIT_NO_CONFIG)
+        if reviewer == "code-reviewer":
+            verdict = extra["verdict"]
+            assert isinstance(verdict, dict)
+            _validate_verdict_freshness(
+                root, change, reviewer, verdict, None, "review reject"
+            )
+        reviewed_head = _prepared_target_head(root, change, reviewer)
+        if reviewed_head is not None:
+            extra["reviewed_head"] = reviewed_head
     _emit_verdict(
         ctx, subcommand="review reject", change=change, reviewer=reviewer,
         event_type=_REVIEWER_FAIL[reviewer], reason=reason, as_identity=as_identity,
@@ -632,10 +676,11 @@ def skip(ctx: click.Context, change: str, reviewer: str, reason: str | None,
               "(default: .harness/policy.yaml review.base_branch, else main).")
 @click.pass_context
 def prepare(ctx: click.Context, change: str, reviewer: str, base: str | None) -> None:
-    """Assemble the review bundle (diff∩scope + checklist + digest) → disk.
+    """Compile the review bundle and per-source scoped assignments → disk.
 
-    The harness does NOT review — this hands the reviewer subagent a complete,
-    deterministic context to review against. Requires a clean in-scope tree.
+    The harness does NOT review. It derives exact committed inspection ranges,
+    source-specific options, and canonical prompts for the configured participants.
+    Requires a clean in-scope tree.
     """
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
@@ -653,6 +698,26 @@ def prepare(ctx: click.Context, change: str, reviewer: str, base: str | None) ->
         click.echo(format_error(subcommand="review prepare", message=str(e),
                                 hint="Commit the in-scope changes, then re-run review prepare."),
                    err=True)
+        sys.exit(EXIT_VALIDATION)
+    cs = derive_state(events_path(root)).get(change)
+    declared = list(cs.scope.get("files", [])) if cs is not None else []
+    try:
+        bundle = compile_review_contract(
+            root,
+            bundle=bundle,
+            policy=policy,
+            events=_change_events(root, change),
+            declared=declared,
+        )
+    except (GitScopeError, ReviewContractError) as e:
+        click.echo(
+            format_error(
+                subcommand="review prepare",
+                message=str(e),
+                hint="Resolve the Git history error, then re-run review prepare.",
+            ),
+            err=True,
+        )
         sys.exit(EXIT_VALIDATION)
     bundle["review_policy"] = reviewer_policy_payload(policy)
     out_dir = pending_reviews_dir(root, change)

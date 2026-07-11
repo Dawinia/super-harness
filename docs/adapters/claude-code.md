@@ -136,7 +136,11 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   met. If those sources carry profiles, `status` and `review prepare` expose the
   source's intended agent, context (`bundle-only`, `incremental`, or
   `full-change`), and agent-specific `agent_options`; the adapter text tells the
-  agent to follow those hints instead of inventing a global effort/mode setting.
+  agent to dispatch the bundle's ordered assignments, apply those options
+  verbatim, pass each canonical prompt unchanged, and collect all raw verdicts
+  before recording any result. Follow-up fixes and docs are batched into one
+  prepare; code-only findings do not repeat plan review, and scoped assignments
+  do not widen to the whole PR.
   That source-threshold gate ships in v0.1; only automatic headless reviewer
   execution is deferred (see [Limitations](../limitations.md)).
   Framework adapters auto-emit `plan_ready` when

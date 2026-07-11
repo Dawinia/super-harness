@@ -53,6 +53,13 @@ from `status` / `review prepare` (including context and agent-specific
 `agent_options`, such as Codex `reasoning_effort`); and the turn-end authoring
 check.
 
+The generated review protocol treats the prepared bundle as the execution
+contract. Codex dispatches its ordered assignments, applies each source's
+options verbatim, passes the generated prompt unchanged, and collects all raw
+verdicts before recording. A code-only finding fix is batched with docs
+follow-ups and prepared once; it does not repeat plan review or widen a scoped
+assignment to the whole PR.
+
 ## Common issues
 
 - **Edits aren't blocked** — you haven't `/hooks`-trusted the hook yet, or you

@@ -98,6 +98,103 @@ def test_reads_min_independent_and_source_mapping(tmp_path: Path) -> None:
     assert "independent subagent" in policy.source_instructions["subagent"]
 
 
+def test_participants_define_order_and_infer_threshold(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources:\n"
+        "    subagent: {}\n"
+        "    external: {}\n"
+        "    human: {}\n"
+        "  code-reviewer:\n"
+        "    participants: [external, subagent]\n",
+    )
+
+    policy = load_reviewer_policy(tmp_path, "code-reviewer")
+
+    assert policy.participants == ("external", "subagent")
+    assert policy.min_independent == 2
+
+
+def test_participants_and_threshold_must_match(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources: [subagent, external]\n"
+        "  code-reviewer:\n"
+        "    participants: [subagent, external]\n"
+        "    min_independent: 1\n",
+    )
+
+    with pytest.raises(ReviewerPolicyError, match="must match"):
+        load_reviewer_policy(tmp_path, "code-reviewer")
+
+
+def test_participants_must_be_distinct(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources: [subagent, external]\n"
+        "  code-reviewer:\n"
+        "    participants: [subagent, subagent]\n",
+    )
+
+    with pytest.raises(ReviewerPolicyError, match="duplicate participant"):
+        load_reviewer_policy(tmp_path, "code-reviewer")
+
+
+def test_participants_must_reference_configured_sources(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources: [subagent]\n"
+        "  code-reviewer:\n"
+        "    participants: [external]\n",
+    )
+
+    with pytest.raises(ReviewerPolicyError, match="unknown participant"):
+        load_reviewer_policy(tmp_path, "code-reviewer")
+
+
+def test_more_sources_than_threshold_requires_participants(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources: [subagent, external, human]\n"
+        "  code-reviewer:\n"
+        "    min_independent: 2\n",
+    )
+
+    with pytest.raises(ReviewerPolicyError, match="ambiguous"):
+        load_reviewer_policy(tmp_path, "code-reviewer")
+
+
+def test_participants_must_be_a_list_of_source_labels(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources: [subagent]\n"
+        "  code-reviewer:\n"
+        "    participants: subagent\n",
+    )
+
+    with pytest.raises(ReviewerPolicyError, match="participants must be a list"):
+        load_reviewer_policy(tmp_path, "code-reviewer")
+
+
+def test_participant_labels_must_be_nonempty_strings(tmp_path: Path) -> None:
+    _write_policy(
+        tmp_path,
+        "reviewers:\n"
+        "  sources: [subagent]\n"
+        "  code-reviewer:\n"
+        "    participants: [\"\"]\n",
+    )
+
+    with pytest.raises(ReviewerPolicyError, match="non-empty strings"):
+        load_reviewer_policy(tmp_path, "code-reviewer")
+
+
 def test_reads_agent_specific_source_profile(tmp_path: Path) -> None:
     _write_policy(
         tmp_path,
@@ -151,6 +248,7 @@ def test_policy_payload_preserves_agent_specific_source_options(tmp_path: Path) 
         "strategy": "subagent",
         "min_independent": 2,
         "allowed_sources": ["subagent", "external"],
+        "participants": ["subagent", "external"],
         "source_profiles": {
             "subagent": {
                 "instructions": "Dispatch an independent subagent reviewer and record its verdict.",

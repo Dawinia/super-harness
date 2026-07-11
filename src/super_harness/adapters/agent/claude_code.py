@@ -111,6 +111,15 @@ different option names. For `context: bundle-only` or `context: incremental`,
 keep the review scoped to the prepared bundle or latest delta unless the profile
 or human reviewer explicitly asks for `full-change`.
 
+The prepared bundle is the execution contract: dispatch every assignment in listed
+order, apply its agent_options verbatim to that source's runner, pass its generated
+prompt unchanged, and collect every raw verdict before recording any approve or
+reject event. Batch all committed code-review fixes and docs follow-ups, then run
+review prepare once. A code-review finding fix does not trigger plan review unless
+the approved plan, scope, or requirements changed; use plan redeclare when they did.
+Never widen an assignment to the whole PR. If its target is insufficient, record a
+partial rejection so the next prepare fails closed to a full target for that source.
+
 Checklists & verdict verbs per review state:
 
 - **`AWAITING_PLAN_REVIEW`** (plan-reviewer) — check spec coverage / design / scope /
