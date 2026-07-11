@@ -201,6 +201,13 @@ resolve HEAD, verify ancestry, and list in-scope changes between explicit refs.
 The engineering-layer contract compiler combines the core bundle with policy,
 events, and source assignments.
 
+Assignment scope follows the reviewer role. When declared spec/plan artifacts
+are resolved, `plan-reviewer` assignments contain only those artifacts, even
+after a late plan redeclaration when implementation commits already exist.
+`code-reviewer` assignments continue to use the complete declared change scope.
+Historical plain changes without a resolvable artifact retain their existing
+in-scope behavior.
+
 The bundle keeps existing compatibility fields and adds:
 
 ```yaml
@@ -294,7 +301,8 @@ agent reports it and must not silently inherit XHigh or switch sources.
 
 1. Add failing prepare/contract tests for initial full review, follow-up delta,
    mixed per-source targets, one batched docs/fix delta, exact argv, source options,
-   canonical prompt constraints, plan-review routing, and fixed current bundle.
+   canonical prompt constraints, plan-review routing, late-redeclaration plan-only
+   assignments, and fixed current bundle.
 2. Implement contract assembly and wire `review prepare` without new CLI options.
 3. Preserve existing bundle compatibility fields and JSON/human output.
 4. Run focused core and prepare tests.
@@ -350,3 +358,5 @@ agent reports it and must not silently inherit XHigh or switch sources.
 8. The normal CLI path adds no verb or argument and remains compatible with old
    single-source policies and old events.
 9. super-harness does not spawn, discover, retry, or select reviewer agents.
+10. A plan-review assignment uses only resolved spec/plan artifacts and never
+    absorbs existing implementation files after a late plan redeclaration.
