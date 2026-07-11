@@ -9,6 +9,7 @@ from typing import Any
 from super_harness.core.events import Event
 from super_harness.core.review_bundle import resolve_declared_artifact_paths
 from super_harness.core.scope_match import (
+    GitScopeError,
     is_ancestor,
     merge_base_commit,
     resolve_commit,
@@ -64,12 +65,18 @@ def _review_prompt(
     bundle_digest: str,
 ) -> str:
     argv = json.dumps(inspection["diff_argv"], separators=(",", ":"))
+    empty_target_guidance = (
+        "The assigned target is empty; do not construct a broader diff.\n"
+        if not inspection["diff_argv"]
+        else ""
+    )
     return (
         f"Review source: {source}\n"
         f"Context policy: {context or 'legacy'}\n"
         f"Inspection mode: {inspection['mode']}\n"
         f"Inspection argv: {argv}\n"
         f"Checklist: {json.dumps(checklist, separators=(',', ':'))}\n\n"
+        f"{empty_target_guidance}"
         "Review only the assigned target delta. Read unchanged files only for directly "
         "affected context. Report only issues caused by this target, dependencies or "
         "regressions made relevant by it, or unresolved prior findings. Do not expand to "
@@ -163,12 +170,23 @@ def compile_review_contract(
             source=source,
             required_checklist=tuple(checklist),
         )
+        resolved_baseline: str | None = None
+        if baseline is not None:
+            try:
+                resolved_baseline = resolve_commit(root, baseline)
+            except GitScopeError:
+                # Historical review events are not authoritative Git refs. An
+                # unresolvable one loses incremental eligibility; current target
+                # and ancestry failures still fail closed outside this branch.
+                resolved_baseline = None
         incremental = (
             profile.context != "full-change"
-            and baseline is not None
-            and is_ancestor(root, baseline, target_head)
+            and resolved_baseline is not None
+            and is_ancestor(root, resolved_baseline, target_head)
         )
-        inspection_base = baseline if incremental and baseline is not None else full_base
+        inspection_base = (
+            resolved_baseline if incremental and resolved_baseline is not None else full_base
+        )
         mode = "incremental" if incremental else "full-change"
         files, _ = split_changed_by_scope_between(
             root, base=inspection_base, head=target_head, declared=assignment_scope

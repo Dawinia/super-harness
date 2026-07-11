@@ -263,6 +263,42 @@ def test_prepare_keeps_declared_scope_for_artifactless_plain_plan_review(
         assert assignment["inspection"]["files"] == ["src/a.py"]
 
 
+def test_prepare_keeps_empty_plan_target_explicitly_empty(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "src" / "a.py").write_text("v1\n")
+    (tmp_path / "docs" / "plan.md").write_text(
+        "---\nchange: c\nstage: plan\n---\n# Existing plan\n"
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base with plan")
+    _git(tmp_path, "checkout", "-qb", "feature")
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "implementation only")
+    _seed_awaiting_plan_review(tmp_path, ["src/", "docs/"])
+    _set_reviewer_source_policy(tmp_path)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(tmp_path), "review", "prepare", "c",
+            "--reviewer", "plan-reviewer",
+        ],
+    )
+
+    assert result.exit_code == EXIT_OK, result.output
+    bundle = json.loads(
+        (pending_reviews_dir(tmp_path, "c") / "plan-reviewer.bundle.json").read_text()
+    )
+    for assignment in bundle["assignments"]:
+        assert assignment["inspection"]["files"] == []
+        assert assignment["inspection"]["diff_argv"] == []
+        assert "do not construct a broader diff" in assignment["prompt"]
+
+
 def test_prepare_batches_code_and_docs_followups_into_one_incremental_assignment(
     tmp_path: Path,
 ) -> None:

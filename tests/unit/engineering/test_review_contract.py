@@ -1,8 +1,18 @@
 """Behavior tests for compiling per-source review baselines and contracts."""
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 from super_harness.core.events import Actor, Event
-from super_harness.engineering.review_contract import resolve_source_baseline
+from super_harness.engineering.review_contract import (
+    compile_review_contract,
+    resolve_source_baseline,
+)
+from super_harness.engineering.reviewer_policy import (
+    ReviewerIndependencePolicy,
+    ReviewerSourcePolicy,
+)
 
 
 def _event(event_type: str, payload: dict[str, object]) -> Event:
@@ -15,6 +25,10 @@ def _event(event_type: str, payload: dict[str, object]) -> Event:
         framework="plain",
         payload=payload,
     )
+
+
+def _git(ws: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=ws, check=True, capture_output=True, text=True)
 
 
 def test_approved_source_result_establishes_baseline() -> None:
@@ -185,3 +199,59 @@ def test_approval_milestone_does_not_hide_source_result() -> None:
         source="external",
         required_checklist=("correctness",),
     ) == "c" * 40
+
+
+def test_unresolvable_source_baseline_falls_back_to_full_change(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("v1\n")
+    _git(tmp_path, "add", "src/a.py")
+    _git(tmp_path, "commit", "-qm", "base")
+    _git(tmp_path, "checkout", "-qb", "feature")
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "change")
+    event = _event(
+        "review_verdict_recorded",
+        {
+            "reviewer": "code-reviewer",
+            "source": "external",
+            "outcome": "approved",
+            "reviewed_head": "f" * 40,
+        },
+    )
+    profile = ReviewerSourcePolicy(
+        instructions="Review.",
+        agent="codex",
+        context="incremental",
+        agent_options={"reasoning_effort": "medium"},
+    )
+    policy = ReviewerIndependencePolicy(
+        reviewer="code-reviewer",
+        strategy="subagent",
+        min_independent=1,
+        allowed_sources=("external",),
+        source_instructions={"external": "Review."},
+        source_profiles={"external": profile},
+        participants=("external",),
+    )
+    bundle = {
+        "base": "main",
+        "change": "change",
+        "bundle_digest": "digest",
+        "checklist": ["correctness"],
+        "spec_path": "",
+        "plan_path": "",
+    }
+
+    compiled = compile_review_contract(
+        tmp_path,
+        bundle=bundle,
+        policy=policy,
+        events=[event],
+        declared=["src/"],
+    )
+
+    assert compiled["assignments"][0]["inspection"]["mode"] == "full-change"
+    assert compiled["assignments"][0]["inspection"]["files"] == ["src/a.py"]

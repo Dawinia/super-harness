@@ -115,6 +115,10 @@ def test_explicit_range_returns_scoped_files_and_ordered_diff_argv(tmp_path: Pat
     ]
 
 
+def test_empty_scope_has_no_diff_argv() -> None:
+    assert scope_diff_argv("base", "head", []) == []
+
+
 def test_merge_base_excludes_changes_added_only_to_base_branch(tmp_path: Path) -> None:
     _repo(tmp_path)
     (tmp_path / "f.py").write_text("base\n")

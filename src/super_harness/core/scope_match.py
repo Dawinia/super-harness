@@ -110,6 +110,8 @@ def split_changed_by_scope_between(
 
 def scope_diff_argv(base: str, head: str, in_scope: list[str]) -> list[str]:
     """Return the exact shell-free argv for inspecting one scoped commit range."""
+    if not in_scope:
+        return []
     return ["git", "diff", f"{base}..{head}", "--", *sorted(in_scope)]
 
 
