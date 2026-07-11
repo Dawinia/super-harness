@@ -22,7 +22,10 @@ from super_harness.core.review_checklist import resolve_checklist
 from super_harness.core.scope_match import (
     GitScopeError,
     committed_scope_digest,
+    covered_by_scope,
+    file_text_at_commit,
     split_changed_by_scope,
+    tracked_files_at_commit,
     working_tree_dirty,
 )
 
@@ -72,19 +75,15 @@ def _no_spec_plan(framework: str | None, root: Path, change_id: str) -> tuple[st
     return "", ""
 
 
-def _declared_artifact_paths(
-    root: Path, declared: list[str], change_id: str
+def resolve_declared_artifact_paths(
+    root: Path, declared: list[str], change_id: str, *, ref: str = "HEAD"
 ) -> tuple[str, str]:
     spec_path = ""
     plan_path = ""
-    for relative in sorted(declared):
-        path = root / relative
-        if path.suffix != ".md" or not path.is_file():
+    for relative in tracked_files_at_commit(root, ref):
+        if not relative.endswith(".md") or not covered_by_scope(relative, declared):
             continue
-        try:
-            parsed = split_frontmatter(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError):
-            continue
+        parsed = split_frontmatter(file_text_at_commit(root, ref, relative))
         if parsed is None:
             continue
         frontmatter, _ = parsed
@@ -127,7 +126,12 @@ def assemble_bundle(
 
     resolve = spec_plan_resolver or _no_spec_plan
     spec_path, plan_path = resolve(framework, root, change_id)
-    declared_spec, declared_plan = _declared_artifact_paths(root, declared, change_id)
+    try:
+        declared_spec, declared_plan = resolve_declared_artifact_paths(
+            root, declared, change_id
+        )
+    except GitScopeError as e:
+        raise BundleError(str(e)) from e
     spec_path = spec_path or declared_spec
     plan_path = plan_path or declared_plan
     return {

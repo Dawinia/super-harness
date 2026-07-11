@@ -41,6 +41,32 @@ def _seed_change(
     refresh_state_after_emit(ws)
 
 
+def _seed_awaiting_plan_review(ws: Path, declared: list[str]) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    (ws / ".harness").mkdir(parents=True, exist_ok=True)
+    for event_type, payload in [
+        ("intent_declared", {}),
+        ("plan_ready", {"scope": {"files": declared}}),
+    ]:
+        EventWriter(events_path(ws)).emit(
+            Event(
+                event_id=new_event_id(),
+                type=event_type,
+                change_id="c",
+                timestamp="2026-07-11T00:00:00Z",
+                actor=Actor(type="human", identifier="cli"),
+                framework="plain",
+                payload=payload,
+            )
+        )
+    refresh_state_after_emit(ws)
+
+
 def _set_reviewer_source_policy(ws: Path) -> None:
     (ws / ".harness" / "policy.yaml").write_text(
         "reviewers:\n"
@@ -58,6 +84,10 @@ def _set_reviewer_source_policy(ws: Path) -> None:
         "        reasoning_effort: medium\n"
         "        sandbox: read-only\n"
         "  code-reviewer:\n"
+        "    strategy: subagent\n"
+        "    min_independent: 2\n"
+        "    participants: [subagent, external]\n"
+        "  plan-reviewer:\n"
         "    strategy: subagent\n"
         "    min_independent: 2\n"
         "    participants: [subagent, external]\n"
@@ -181,6 +211,56 @@ def test_prepare_compiles_initial_full_change_assignments(tmp_path: Path) -> Non
         assert assignment["inspection"]["files"] == ["src/a.py"]
         assert assignment["inspection"]["diff_argv"][:2] == ["git", "diff"]
         assert "Review only the assigned target delta" in assignment["prompt"]
+        assert bundle["bundle_digest"] in assignment["prompt"]
+        assert "bundle_digest" in assignment["prompt"]
+        assert "blocker | major | minor" in assignment["prompt"]
+
+
+def test_prepare_scopes_plan_review_assignments_to_declared_artifacts(
+    tmp_path: Path,
+) -> None:
+    ws = _repo(tmp_path)
+    (ws / "docs").mkdir()
+    (ws / "docs" / "plan.md").write_text(
+        "---\nchange: c\nstage: plan\n---\n# Plan\n"
+    )
+    _git(ws, "add", "docs/plan.md")
+    _git(ws, "commit", "-qm", "add plan")
+    _seed_awaiting_plan_review(ws, ["src/", "docs/"])
+    _set_reviewer_source_policy(ws)
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "plan-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_OK, result.output
+    bundle = json.loads(
+        (pending_reviews_dir(ws, "c") / "plan-reviewer.bundle.json").read_text()
+    )
+    for assignment in bundle["assignments"]:
+        assert assignment["inspection"]["files"] == ["docs/plan.md"]
+        assert "src/a.py" not in assignment["inspection"]["diff_argv"]
+
+
+def test_prepare_keeps_declared_scope_for_artifactless_plain_plan_review(
+    tmp_path: Path,
+) -> None:
+    ws = _repo(tmp_path)
+    _seed_awaiting_plan_review(ws, ["src/"])
+    _set_reviewer_source_policy(ws)
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "plan-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_OK, result.output
+    bundle = json.loads(
+        (pending_reviews_dir(ws, "c") / "plan-reviewer.bundle.json").read_text()
+    )
+    for assignment in bundle["assignments"]:
+        assert assignment["inspection"]["files"] == ["src/a.py"]
 
 
 def test_prepare_batches_code_and_docs_followups_into_one_incremental_assignment(
@@ -244,6 +324,52 @@ def test_prepare_rejects_plan_changed_after_approval(tmp_path: Path) -> None:
     assert "plan" in result.output.lower()
 
 
+def test_prepare_rejects_changed_plan_inside_directory_scope(tmp_path: Path) -> None:
+    ws = _repo(tmp_path)
+    (ws / "docs" / "plans").mkdir(parents=True)
+    plan = ws / "docs" / "plans" / "plan.md"
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# Approved\n")
+    _git(ws, "add", "docs/plans/plan.md")
+    _git(ws, "commit", "-qm", "approved plan")
+    approved_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ws, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _seed_change(ws, ["src/", "docs/plans/"], plan_reviewed_head=approved_head)
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# Changed\n")
+    _git(ws, "commit", "-aqm", "change directory-scoped plan")
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "code-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION, result.output
+    assert "plan" in result.output.lower()
+
+
+def test_prepare_rejects_deleted_plan_after_approval(tmp_path: Path) -> None:
+    ws = _repo(tmp_path)
+    (ws / "docs").mkdir()
+    plan = ws / "docs" / "plan.md"
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# Approved\n")
+    _git(ws, "add", "docs/plan.md")
+    _git(ws, "commit", "-qm", "approved plan")
+    approved_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ws, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    _seed_change(ws, ["src/", "docs/plan.md"], plan_reviewed_head=approved_head)
+    _git(ws, "rm", "docs/plan.md")
+    _git(ws, "commit", "-qm", "delete approved plan")
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "code-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION, result.output
+    assert "plan" in result.output.lower()
+
+
 def test_prepare_compiles_mixed_full_and_incremental_source_targets(tmp_path: Path) -> None:
     ws = _repo(tmp_path)
     _seed_change(ws, ["src/"])
@@ -293,6 +419,20 @@ def test_prepare_dirty_tree_errors(tmp_path: Path) -> None:
                                   "--reviewer", "code-reviewer"])
     assert r.exit_code == EXIT_VALIDATION, r.output
     assert "commit" in r.output.lower()
+
+
+def test_prepare_rejects_reviewer_outside_its_lifecycle_state(tmp_path: Path) -> None:
+    ws = _repo(tmp_path)
+    _seed_change(ws, ["src/"])
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "plan-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION, result.output
+    assert "state" in result.output.lower()
+    assert not (pending_reviews_dir(ws, "c") / "plan-reviewer.bundle.json").exists()
 
 
 def test_prepare_wires_resolver_for_openspec(tmp_path: Path) -> None:

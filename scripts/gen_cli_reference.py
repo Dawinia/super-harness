@@ -280,6 +280,12 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`review reject`); malformed `--verdict-file`; or invalid/missing `--source`",
         "`3` no `.harness/`",
     ],
+    "review reject": [
+        "`0` rejection recorded",
+        "`2` invalid reviewer/source/state, malformed verdict, or stale structured "
+        "code-review verdict",
+        "`3` no `.harness/`",
+    ],
     "review skip": [
         "`0` skip recorded (`code_review_passed` / `plan_approved` emitted, `skipped=True`)",
         "`2` --override without --reason",

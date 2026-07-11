@@ -844,8 +844,9 @@ super-harness review reject [OPTIONS] CHANGE
 
 **Exit codes:**
 
-- `0` success
-- `1` generic error
+- `0` rejection recorded
+- `2` invalid reviewer/source/state, malformed verdict, or stale structured code-review verdict
+- `3` no `.harness/`
 
 ## super-harness review skip
 

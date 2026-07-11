@@ -99,6 +99,76 @@ def test_stale_digest_rejected(tmp_path: Path) -> None:
     assert "stale" in r.output.lower() or "digest" in r.output.lower()
 
 
+def test_prepared_target_head_rejects_out_of_scope_commit_after_review(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    digest = _prepare_digest(ws)
+    verdict = _good_verdict(ws, digest)
+    (ws / "docs").mkdir()
+    (ws / "docs" / "outside.md").write_text("outside declared scope\n")
+    _git(ws, "add", "docs/outside.md")
+    _git(ws, "commit", "-qm", "out-of-scope commit after prepare")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(ws), "review", "approve", "c",
+            "--reviewer", "code-reviewer", "--verdict-file", str(verdict),
+        ],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION, result.output
+    assert "target" in result.output.lower() or "head" in result.output.lower()
+
+
+def test_plan_approval_rejects_commit_after_prepare(tmp_path: Path) -> None:
+    ws = _repo_change(tmp_path)
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    EventWriter(events_path(ws)).emit(
+        Event(
+            event_id=new_event_id(),
+            type="plan_redeclared",
+            change_id="c",
+            timestamp="2026-07-11T00:00:00Z",
+            actor=Actor(type="human", identifier="cli"),
+            framework="plain",
+            payload={"scope": {"files": ["src/"]}},
+        )
+    )
+    EventWriter(events_path(ws)).emit(
+        Event(
+            event_id=new_event_id(),
+            type="plan_ready",
+            change_id="c",
+            timestamp="2026-07-11T00:00:01Z",
+            actor=Actor(type="human", identifier="cli"),
+            framework="plain",
+            payload={"scope": {"files": ["src/"]}},
+        )
+    )
+    refresh_state_after_emit(ws)
+    prepared = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "plan-reviewer"],
+    )
+    assert prepared.exit_code == EXIT_OK, prepared.output
+    (ws / "outside.md").write_text("after prepare\n")
+    _git(ws, "add", "outside.md")
+    _git(ws, "commit", "-qm", "commit after plan review prepare")
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "approve", "c", "--reviewer", "plan-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION, result.output
+    assert "target" in result.output.lower() or "head" in result.output.lower()
+
+
 def test_complete_fresh_verdict_passes_and_inlines(tmp_path: Path) -> None:
     ws = _repo_change(tmp_path)
     digest = _prepare_digest(ws)

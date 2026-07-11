@@ -72,6 +72,17 @@ def merge_base_commit(root: Path, base: str, head: str) -> str:
     return _git(root, "merge-base", base, head).strip()
 
 
+def tracked_files_at_commit(root: Path, ref: str) -> list[str]:
+    """List tracked files at ``ref`` in deterministic order."""
+    out = _git(root, "ls-tree", "-r", "--name-only", ref)
+    return sorted(line for line in out.splitlines() if line.strip())
+
+
+def file_text_at_commit(root: Path, ref: str, path: str) -> str:
+    """Read one tracked text file from ``ref``, failing closed."""
+    return _git(root, "show", f"{ref}:{path}")
+
+
 def split_changed_by_scope(
     root: Path, *, base: str, declared: list[str]
 ) -> tuple[list[str], list[str]]:

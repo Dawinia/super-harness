@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from super_harness.core.events import Event
+from super_harness.core.review_bundle import resolve_declared_artifact_paths
 from super_harness.core.scope_match import (
     is_ancestor,
     merge_base_commit,
@@ -55,7 +56,12 @@ def resolve_source_baseline(
 
 
 def _review_prompt(
-    *, source: str, context: str | None, inspection: dict[str, Any], checklist: list[str]
+    *,
+    source: str,
+    context: str | None,
+    inspection: dict[str, Any],
+    checklist: list[str],
+    bundle_digest: str,
 ) -> str:
     argv = json.dumps(inspection["diff_argv"], separators=(",", ":"))
     return (
@@ -69,8 +75,16 @@ def _review_prompt(
         "regressions made relevant by it, or unresolved prior findings. Do not expand to "
         "the whole PR or unrelated pre-existing issues. Continue through the full assigned "
         "target after finding a blocker. If this scope is insufficient, return a partial "
-        "rejection instead of expanding it. Return a verdict only; do not edit files or "
-        "invoke super-harness verdict commands."
+        "rejection instead of expanding it. Return YAML only with this recordable shape:\n"
+        f"bundle_digest: {bundle_digest}\n"
+        "checklist:\n"
+        "  - item: <copy each assigned checklist item exactly, once>\n"
+        "    status: pass | fail | na\n"
+        "    note: <optional>\n"
+        "findings: []  # required non-empty when any checklist item fails\n"
+        "# finding fields: id, severity (blocker | major | minor), file, summary\n"
+        "prior_findings: []  # dispose open ids with resolved or wontfix + note\n"
+        "Do not edit files or invoke super-harness verdict commands."
     )
 
 
@@ -87,6 +101,11 @@ def compile_review_contract(
     full_base = merge_base_commit(root, str(bundle["base"]), target_head)
     checklist = [str(item) for item in bundle.get("checklist", [])]
     assignments: list[dict[str, Any]] = []
+    current_artifacts = [
+        path
+        for path in (bundle.get("spec_path"), bundle.get("plan_path"))
+        if isinstance(path, str) and path
+    ]
 
     if policy.reviewer == "code-reviewer":
         approved_plan_head = next(
@@ -98,11 +117,19 @@ def compile_review_contract(
             ),
             None,
         )
-        artifact_paths = [
-            path
-            for path in (bundle.get("spec_path"), bundle.get("plan_path"))
-            if isinstance(path, str) and path
-        ]
+        approved_artifacts: list[str] = []
+        if isinstance(approved_plan_head, str):
+            approved_artifacts = [
+                path
+                for path in resolve_declared_artifact_paths(
+                    root,
+                    declared,
+                    str(bundle["change"]),
+                    ref=approved_plan_head,
+                )
+                if path
+            ]
+        artifact_paths = sorted(set(current_artifacts + approved_artifacts))
         if isinstance(approved_plan_head, str) and artifact_paths:
             if not is_ancestor(root, approved_plan_head, target_head):
                 raise ReviewContractError(
@@ -119,6 +146,12 @@ def compile_review_contract(
                     "approved plan/spec changed without plan redeclaration; run "
                     "`super-harness plan redeclare <change> --reason <why>`"
                 )
+
+    assignment_scope = (
+        current_artifacts
+        if policy.reviewer == "plan-reviewer" and current_artifacts
+        else declared
+    )
 
     for source in policy.participants:
         profile = policy.source_profiles.get(source)
@@ -138,7 +171,7 @@ def compile_review_contract(
         inspection_base = baseline if incremental and baseline is not None else full_base
         mode = "incremental" if incremental else "full-change"
         files, _ = split_changed_by_scope_between(
-            root, base=inspection_base, head=target_head, declared=declared
+            root, base=inspection_base, head=target_head, declared=assignment_scope
         )
         inspection = {
             "mode": mode,
@@ -159,6 +192,7 @@ def compile_review_contract(
                     context=profile.context,
                     inspection=inspection,
                     checklist=checklist,
+                    bundle_digest=str(bundle["bundle_digest"]),
                 ),
             }
         )

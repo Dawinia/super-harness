@@ -194,6 +194,18 @@ def test_header_notice_references_doc_check_gate() -> None:
     assert "python -m scripts.gen_cli_reference" not in notice
 
 
+def test_real_review_reject_reference_documents_validation_exit() -> None:
+    """Structured reject validation failures are part of the generated contract."""
+    from super_harness.cli import main as real_main
+
+    rendered = gen_cli_reference.render_markdown(real_main, root_name="super-harness")
+    section = rendered.split("## super-harness review reject", 1)[1].split(
+        "## super-harness review skip", 1
+    )[0]
+
+    assert "- `2`" in section
+
+
 def test_emit_mode_prints_rendered_markdown(capsys) -> None:
     """`main(["--emit"])` prints the real CLI reference to stdout and returns 0."""
     from super_harness.cli import main as real_main

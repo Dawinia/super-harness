@@ -84,6 +84,37 @@ def test_approve_plan_reviewer_advances_to_plan_approved(tmp_path: Path) -> None
     assert _state(tmp_path, "c") == "PLAN_APPROVED"
 
 
+def test_nonparticipant_source_cannot_satisfy_review_role(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    (tmp_path / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources: [subagent, external, human]\n"
+        "  plan-reviewer:\n"
+        "    min_independent: 2\n"
+        "    participants: [subagent, external]\n"
+    )
+    first = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(tmp_path), "review", "approve", "c",
+            "--reviewer", "plan-reviewer", "--source", "subagent",
+        ],
+    )
+
+    second = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(tmp_path), "review", "approve", "c",
+            "--reviewer", "plan-reviewer", "--source", "human",
+        ],
+    )
+
+    assert first.exit_code == EXIT_OK, first.output
+    assert second.exit_code == EXIT_VALIDATION, second.output
+    assert "participant" in second.output.lower()
+    assert "plan_approved" not in _event_types(tmp_path)
+
+
 def test_approve_plan_reviewer_rejects_fail_verdict(tmp_path: Path) -> None:
     # F1 (review 2026-07-02): the OPTIONAL plan-reviewer verdict, when provided,
     # must not carry a failing checklist item on an approve.

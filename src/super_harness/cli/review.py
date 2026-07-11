@@ -54,6 +54,7 @@ from super_harness.core.review_verdict import (
 from super_harness.core.scope_match import (
     GitScopeError,
     committed_scope_digest,
+    resolve_commit,
     split_changed_by_scope,
     working_tree_dirty,
 )
@@ -210,6 +211,16 @@ def _validate_source_or_exit(
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
+    if source and policy.participants and source not in policy.participants:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message=f"source {source!r} is not a participant for {policy.reviewer}",
+                hint=f"Configured participants: {', '.join(policy.participants)}",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
 
 
 def _validate_reviewer_state_or_exit(
@@ -241,6 +252,37 @@ def _prepared_target_head(root: Path, change: str, reviewer: str) -> str | None:
         return None
     target = parsed.get("target_head") if isinstance(parsed, dict) else None
     return target if isinstance(target, str) and target else None
+
+
+def _validate_prepared_target_head(
+    root: Path, change: str, reviewer: str, subcommand: str
+) -> str | None:
+    prepared = _prepared_target_head(root, change, reviewer)
+    if prepared is None:
+        return None
+    try:
+        current = resolve_commit(root)
+    except GitScopeError as e:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message=f"cannot verify prepared target HEAD: {e}",
+                hint="Resolve the Git history error and re-run review prepare.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if prepared != current:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message="prepared review target HEAD is stale",
+                hint="HEAD changed after review prepare; re-prepare and re-review.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    return prepared
 
 
 def _emit_review_event(
@@ -334,7 +376,13 @@ def _emit_cumulative_approve(
             raw_digest = verdict.get("bundle_digest")
             if isinstance(raw_digest, str):
                 bundle_digest = raw_digest
-    sources = sorted(approved_review_sources(events, reviewer, bundle_digest=bundle_digest))
+    sources = sorted(
+        source_name
+        for source_name in approved_review_sources(
+            events, reviewer, bundle_digest=bundle_digest
+        )
+        if not policy.participants or source_name in policy.participants
+    )
     if len(sources) < policy.min_independent:
         refresh_state_after_emit(root)
         new_state = derive_state(events_path(root)).get(change).current_state  # type: ignore[union-attr]
@@ -542,6 +590,7 @@ def approve(ctx: click.Context, change: str, reviewer: str, reason: str,
         click.echo(format_error(subcommand="review approve", message=e.message, hint=e.hint),
                    err=True)
         sys.exit(EXIT_NO_CONFIG)
+    reviewed_head = _validate_prepared_target_head(root, change, reviewer, "review approve")
     if reviewer == "code-reviewer":
         verdict = _validate_code_review_verdict(
             root, change, reviewer, verdict_file, base, "review approve")
@@ -554,7 +603,6 @@ def approve(ctx: click.Context, change: str, reviewer: str, reason: str,
             sys.exit(EXIT_VALIDATION)
         _reject_failing_checklist(verdict, "review approve")
         extra = {"verdict": verdict}
-    reviewed_head = _prepared_target_head(root, change, reviewer)
     if reviewed_head is not None:
         extra = {**(extra or {}), "reviewed_head": reviewed_head}
     _emit_cumulative_approve(
@@ -610,7 +658,9 @@ def reject(ctx: click.Context, change: str, reviewer: str, reason: str,
             _validate_verdict_freshness(
                 root, change, reviewer, verdict, None, "review reject"
             )
-        reviewed_head = _prepared_target_head(root, change, reviewer)
+        reviewed_head = _validate_prepared_target_head(
+            root, change, reviewer, "review reject"
+        )
         if reviewed_head is not None:
             extra["reviewed_head"] = reviewed_head
     _emit_verdict(
@@ -689,6 +739,10 @@ def prepare(ctx: click.Context, change: str, reviewer: str, base: str | None) ->
                    err=True)
         sys.exit(EXIT_NO_CONFIG)
     policy = _load_policy_or_exit(root, reviewer, "review prepare")
+    cs = derive_state(events_path(root)).get(change)
+    _validate_reviewer_state_or_exit(
+        cs, reviewer=reviewer, subcommand="review prepare"
+    )
     try:
         bundle = assemble_bundle(
             root, change_id=change, reviewer=reviewer, base=base,
@@ -699,7 +753,6 @@ def prepare(ctx: click.Context, change: str, reviewer: str, base: str | None) ->
                                 hint="Commit the in-scope changes, then re-run review prepare."),
                    err=True)
         sys.exit(EXIT_VALIDATION)
-    cs = derive_state(events_path(root)).get(change)
     declared = list(cs.scope.get("files", [])) if cs is not None else []
     try:
         bundle = compile_review_contract(
