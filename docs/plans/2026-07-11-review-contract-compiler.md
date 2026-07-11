@@ -18,6 +18,7 @@ scope:
     - private/CAPABILITY-CONVERGENCE-LEDGER.md
     - private/NEXT-SESSION-PROMPT.md
     - private/OPEN-ITEMS.md
+    - scripts/gen_cli_reference.py
     - src/super_harness/adapters/agent/claude_code.py
     - src/super_harness/adapters/agent/codex.py
     - src/super_harness/cli/init.py
@@ -36,6 +37,7 @@ scope:
     - tests/unit/core/test_scope_match.py
     - tests/unit/engineering/test_review_contract.py
     - tests/unit/engineering/test_reviewer_policy.py
+    - tests/unit/scripts/test_gen_cli_reference.py
 ---
 
 # Review Contract Compiler
@@ -313,8 +315,9 @@ agent reports it and must not silently inherit XHigh or switch sources.
    source options, dispatch all assignments, collect verdicts before recording,
    do not repeat plan review for code-only fixes, and do not expand scoped targets.
 3. Update generated AGENTS content and adapter docs.
-4. Update concepts/getting-started/CLI reference without duplicating the prompt's
-   detailed decision logic.
+4. Update concepts/getting-started without duplicating the prompt's detailed
+   decision logic. Update CLI reference exit semantics in its generator mapping,
+   then regenerate the derived document rather than editing it directly.
 
 ### Task 7: Verification and self-host lifecycle
 
