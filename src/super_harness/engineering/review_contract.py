@@ -8,6 +8,7 @@ from typing import Any
 
 from super_harness.core.events import Event
 from super_harness.core.review_bundle import resolve_declared_artifact_paths
+from super_harness.core.review_verdict import derive_open_finding_records
 from super_harness.core.scope_match import (
     GitScopeError,
     is_ancestor,
@@ -63,11 +64,20 @@ def _review_prompt(
     inspection: dict[str, Any],
     checklist: list[str],
     bundle_digest: str,
+    open_findings: list[dict[str, Any]],
 ) -> str:
     argv = json.dumps(inspection["diff_argv"], separators=(",", ":"))
     empty_target_guidance = (
         "The assigned target is empty; do not construct a broader diff.\n"
         if not inspection["diff_argv"]
+        else ""
+    )
+    prior_finding_guidance = (
+        "Open prior findings: "
+        f"{json.dumps(open_findings, separators=(',', ':'))}\n"
+        "Verify each against the assigned target and include one prior_findings "
+        "disposition for every id.\n"
+        if open_findings
         else ""
     )
     return (
@@ -77,6 +87,7 @@ def _review_prompt(
         f"Inspection argv: {argv}\n"
         f"Checklist: {json.dumps(checklist, separators=(',', ':'))}\n\n"
         f"{empty_target_guidance}"
+        f"{prior_finding_guidance}"
         "Review only the assigned target delta. Read unchanged files only for directly "
         "affected context. Report only issues caused by this target, dependencies or "
         "regressions made relevant by it, or unresolved prior findings. Do not expand to "
@@ -108,6 +119,11 @@ def compile_review_contract(
     full_base = merge_base_commit(root, str(bundle["base"]), target_head)
     checklist = [str(item) for item in bundle.get("checklist", [])]
     assignments: list[dict[str, Any]] = []
+    open_findings = (
+        derive_open_finding_records(events, str(bundle["change"]))
+        if policy.reviewer == "code-reviewer"
+        else []
+    )
     current_artifacts = [
         path
         for path in (bundle.get("spec_path"), bundle.get("plan_path"))
@@ -211,6 +227,7 @@ def compile_review_contract(
                     inspection=inspection,
                     checklist=checklist,
                     bundle_digest=str(bundle["bundle_digest"]),
+                    open_findings=open_findings,
                 ),
             }
         )

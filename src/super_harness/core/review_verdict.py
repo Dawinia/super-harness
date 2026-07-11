@@ -108,8 +108,10 @@ def read_change_events(events_file: Path, change_id: str) -> list[Event]:
     return out
 
 
-def derive_open_findings(events: list[Event], change_id: str) -> list[str]:
-    """Open-finding ids the next approve must dispose, in append order.
+def derive_open_finding_records(
+    events: list[Event], change_id: str
+) -> list[dict[str, Any]]:
+    """Open finding records the next approve must dispose, in append order.
 
     Walk every `code_review_failed` verdict for the change in append order; per
     verdict dispose its `prior_findings` ids FIRST, then add its `findings` ids
@@ -117,7 +119,7 @@ def derive_open_findings(events: list[Event], change_id: str) -> list[str]:
     Tolerant: entries with a missing/non-string `id` are skipped (the raw stream
     can carry pre-validation payloads). See design slice-2 §4.D.
     """
-    open_ids: dict[str, None] = {}  # ordered set: insertion-order preserved
+    open_findings: dict[str, dict[str, Any]] = {}
     for ev in events:
         if ev.change_id != change_id or ev.type != "code_review_failed":
             continue
@@ -125,12 +127,21 @@ def derive_open_findings(events: list[Event], change_id: str) -> list[str]:
         for pf in verdict.get("prior_findings") or []:
             pid = pf.get("id") if isinstance(pf, dict) else None
             if isinstance(pid, str):
-                open_ids.pop(pid, None)
+                open_findings.pop(pid, None)
         for f in verdict.get("findings") or []:
             fid = f.get("id") if isinstance(f, dict) else None
-            if isinstance(fid, str):
-                open_ids[fid] = None
-    return list(open_ids)
+            if isinstance(fid, str) and isinstance(f, dict):
+                open_findings[fid] = dict(f)
+    return list(open_findings.values())
+
+
+def derive_open_findings(events: list[Event], change_id: str) -> list[str]:
+    """Open-finding ids the next approve must dispose, in append order."""
+    return [
+        finding["id"]
+        for finding in derive_open_finding_records(events, change_id)
+        if isinstance(finding.get("id"), str)
+    ]
 
 
 def check_disposed(verdict: dict[str, Any], open_ids: list[str]) -> list[str]:

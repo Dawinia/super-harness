@@ -213,12 +213,22 @@ def test_unresolvable_source_baseline_falls_back_to_full_change(tmp_path: Path) 
     (tmp_path / "src" / "a.py").write_text("v2\n")
     _git(tmp_path, "commit", "-aqm", "change")
     event = _event(
-        "review_verdict_recorded",
+        "code_review_failed",
         {
             "reviewer": "code-reviewer",
             "source": "external",
-            "outcome": "approved",
             "reviewed_head": "f" * 40,
+            "verdict": {
+                "checklist": [{"item": "correctness", "status": "fail"}],
+                "findings": [
+                    {
+                        "id": "RC-001",
+                        "severity": "major",
+                        "file": "src/a.py",
+                        "summary": "Historical baseline cannot be resolved.",
+                    }
+                ],
+            },
         },
     )
     profile = ReviewerSourcePolicy(
@@ -255,3 +265,6 @@ def test_unresolvable_source_baseline_falls_back_to_full_change(tmp_path: Path) 
 
     assert compiled["assignments"][0]["inspection"]["mode"] == "full-change"
     assert compiled["assignments"][0]["inspection"]["files"] == ["src/a.py"]
+    prompt = compiled["assignments"][0]["prompt"]
+    assert '"id":"RC-001"' in prompt
+    assert '"summary":"Historical baseline cannot be resolved."' in prompt
