@@ -20,22 +20,15 @@ scope:
     - private/OPEN-ITEMS.md
     - src/super_harness/adapters/agent/claude_code.py
     - src/super_harness/adapters/agent/codex.py
-    - src/super_harness/cli/done.py
     - src/super_harness/cli/init.py
-    - src/super_harness/cli/plan.py
     - src/super_harness/cli/review.py
-    - src/super_harness/cli/status.py
     - src/super_harness/core/review_bundle.py
     - src/super_harness/core/scope_match.py
     - src/super_harness/engineering/review_contract.py
     - src/super_harness/engineering/reviewer_policy.py
-    - src/super_harness/gates/decisions.py
     - tests/integration/cli/test_init.py
-    - tests/integration/cli/test_status.py
     - tests/unit/adapters/test_claude_code.py
     - tests/unit/adapters/test_codex.py
-    - tests/unit/cli/test_done.py
-    - tests/unit/cli/test_plan.py
     - tests/unit/cli/test_review.py
     - tests/unit/cli/test_review_prepare.py
     - tests/unit/cli/test_review_verdict_gate.py
@@ -43,7 +36,6 @@ scope:
     - tests/unit/core/test_scope_match.py
     - tests/unit/engineering/test_review_contract.py
     - tests/unit/engineering/test_reviewer_policy.py
-    - tests/unit/gates/test_decisions.py
 ---
 
 # Review Contract Compiler
@@ -91,9 +83,11 @@ review prepare
 review approve|reject --source ... --verdict-file ...
 ```
 
-The CLI returns a deterministic normal action only when the lifecycle proves
-one. For non-deterministic recovery it reports the violated condition and leaves
-the repair method to the code agent.
+This slice does not introduce a cross-lifecycle action schema. Existing `status`
+output remains the resume and recovery surface. On the normal review path,
+`review prepare` compiles the participant order, exact assignments, and canonical
+prompts into the bundle so the code agent can dispatch without another policy
+decision.
 
 ### Review responsibility versus inspection target
 
@@ -255,14 +249,6 @@ the current prepared bundle when a source verdict is accepted.
 - A stale verdict is not recorded and cannot become review evidence.
 - Existing `review skip` semantics remain unchanged.
 
-### Normal actions
-
-Keep `SUGGESTIONS` as the human explanation surface and add a structured normal
-action resolver for states with one normal lifecycle route. `status`, successful
-`plan ready`, successful `done`, and review command outputs use the same resolver.
-When no command is provably correct, return only a stable reason/condition rather
-than choosing a semantic repair.
-
 ## Error Semantics
 
 `review prepare` fails closed for an invalid reviewer state, dirty in-scope tree,
@@ -320,16 +306,7 @@ agent reports it and must not silently inherit XHigh or switch sources.
 3. Implement shared freshness/target metadata validation.
 4. Run review and verdict-gate tests.
 
-### Task 6: Normal-action surfaces
-
-1. Add failing resolver/status tests for review states and blocked conditions.
-2. Add failing tests that successful `plan ready` and `done` return the same
-   structured normal action as status.
-3. Implement the shared resolver and output wiring without prescribing semantic
-   repairs.
-4. Run focused plan/done/status/gate tests.
-
-### Task 7: Generated policy and agent protocol
+### Task 6: Generated policy and agent protocol
 
 1. Add failing init tests for participant-based generated policy.
 2. Add failing adapter tests for the canonical execution discipline: apply exact
@@ -339,7 +316,7 @@ agent reports it and must not silently inherit XHigh or switch sources.
 4. Update concepts/getting-started/CLI reference without duplicating the prompt's
    detailed decision logic.
 
-### Task 8: Verification and self-host lifecycle
+### Task 7: Verification and self-host lifecycle
 
 1. Run focused tests after each red-green task.
 2. Run decision checks at natural checkpoints.
