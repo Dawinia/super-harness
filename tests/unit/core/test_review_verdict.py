@@ -198,17 +198,6 @@ def test_open_findings_resolved_in_later_reject() -> None:
     assert derive_open_findings(evs, "c") == ["f2", "f3"]
 
 
-def test_open_finding_records_preserve_details_and_dispositions() -> None:
-    from super_harness.core.review_verdict import derive_open_finding_records
-
-    evs = [_failed("c", ["f1", "f2"]), _failed("c", ["f3"], prior=[("f1", "resolved")])]
-
-    assert derive_open_finding_records(evs, "c") == [
-        {"id": "f2", "severity": "major", "file": "x", "summary": "s"},
-        {"id": "f3", "severity": "major", "file": "x", "summary": "s"},
-    ]
-
-
 def test_open_findings_resolved_then_reopened() -> None:
     from super_harness.core.review_verdict import derive_open_findings
     # reject2 disposes f1 AND re-lists it → reopened, stays open

@@ -8,7 +8,7 @@ from typing import Any
 
 from super_harness.core.events import Event
 from super_harness.core.review_bundle import resolve_declared_artifact_paths
-from super_harness.core.review_verdict import derive_open_finding_records
+from super_harness.core.review_verdict import derive_open_findings
 from super_harness.core.scope_match import (
     GitScopeError,
     is_ancestor,
@@ -22,6 +22,25 @@ from super_harness.engineering.reviewer_policy import ReviewerIndependencePolicy
 
 class ReviewContractError(ValueError):
     """Repository state cannot compile to a trustworthy review contract."""
+
+
+def _open_finding_records(
+    events: list[Event], change_id: str
+) -> list[dict[str, Any]]:
+    open_ids = derive_open_findings(events, change_id)
+    latest_by_id: dict[str, dict[str, Any]] = {}
+    for event in events:
+        if event.change_id != change_id or event.type != "code_review_failed":
+            continue
+        verdict = (event.payload or {}).get("verdict")
+        findings = verdict.get("findings") if isinstance(verdict, dict) else None
+        if not isinstance(findings, list):
+            continue
+        for finding in findings:
+            finding_id = finding.get("id") if isinstance(finding, dict) else None
+            if isinstance(finding_id, str):
+                latest_by_id[finding_id] = dict(finding)
+    return [latest_by_id[finding_id] for finding_id in open_ids if finding_id in latest_by_id]
 
 
 def resolve_source_baseline(
@@ -120,7 +139,7 @@ def compile_review_contract(
     checklist = [str(item) for item in bundle.get("checklist", [])]
     assignments: list[dict[str, Any]] = []
     open_findings = (
-        derive_open_finding_records(events, str(bundle["change"]))
+        _open_finding_records(events, str(bundle["change"]))
         if policy.reviewer == "code-reviewer"
         else []
     )
