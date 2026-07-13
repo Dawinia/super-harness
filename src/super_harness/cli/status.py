@@ -202,6 +202,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
         imported = sorted(
             source for source, run in latest.items() if run.status == "imported"
         )
+        stale.difference_update(imported)
         current_round = execution.rounds[-1] if execution.rounds else None
         pending = sorted(
             source
@@ -234,6 +235,16 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             for source in role.participants
             if governance.sources[source].kind == "automated"
         ]
+        human_participants = [
+            source
+            for source in role.participants
+            if governance.sources[source].kind == "human"
+        ]
+        human_flags = (
+            f" --source {human_participants[0]}" if human_participants else ""
+        )
+        retry_sources = [source for source in automated if source not in imported]
+        retry_flags = "".join(f" --source {source}" for source in retry_sources)
         remaining_rounds = max(
             role.max_automatic_rounds_per_epoch - execution.automatic_rounds_used, 0
         )
@@ -248,16 +259,30 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             )
         elif not automated:
             next_command = (
-                f"super-harness review human inspect {change_id} --reviewer {reviewer} --pager"
+                f"super-harness review human inspect {change_id} --reviewer {reviewer}"
+                f"{human_flags} --pager"
             )
         elif remaining_rounds == 0 and not execution.available_authorization_ids:
-            next_command = (
-                f"super-harness review human inspect {change_id} --reviewer {reviewer} --pager "
-                f"or review authorize {change_id} --reviewer {reviewer} --reason <why>"
-            )
+            if human_participants:
+                next_command = (
+                    f"super-harness review human inspect {change_id} "
+                    f"--reviewer {reviewer}{human_flags} --pager"
+                )
+            else:
+                failed_retry = ", ".join(retry_sources) or "(none)"
+                next_command = (
+                    f"restore failed source(s): {failed_retry}; then in a human-owned "
+                    "TTY run super-harness review authorize "
+                    f"{change_id} --reviewer {reviewer}{retry_flags} --reason <why>; "
+                    f"then super-harness review begin {change_id} --reviewer {reviewer}"
+                    f"{retry_flags}; otherwise human-only terminal decision: "
+                    f"super-harness review skip {change_id} --reviewer {reviewer} "
+                    "--override --reason <why>"
+                )
         else:
             next_command = (
                 f"super-harness review begin {change_id} --reviewer {reviewer}"
+                f"{retry_flags}"
             )
         return {
             "reviewer": reviewer,

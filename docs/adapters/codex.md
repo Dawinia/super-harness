@@ -62,6 +62,13 @@ unchanged repository material may be read as supporting architectural context.
 Human receipts use draft plus TTY confirmation, which a code agent must not
 self-confirm.
 
+Codex reviewer invocations combine `--output-schema` and
+`--output-last-message` for the schema-bound verdict with `--json` for a
+separate JSONL telemetry stream. The frozen invocation records the stdout
+capture path explicitly. On import, super-harness preserves available thread,
+usage, duration, and compact tool evidence in the receipt; fields the Codex CLI
+does not report remain unknown and do not block review.
+
 ## Common issues
 
 - **Edits aren't blocked** — you haven't `/hooks`-trusted the hook yet, or you

@@ -547,3 +547,256 @@ def test_status_code_review_progress_ignores_stale_digest_partial(tmp_path: Path
     assert progress["imported_sources"] == []
     assert progress["stale_sources"] == ["subagent"]
     assert progress["required_sources"] == ["subagent", "external"]
+
+
+def _write_exhausted_review_governance(
+    tmp_path: Path, *, participants: str = "[codex, claude]"
+) -> None:
+    human_role = "human" in participants
+    (tmp_path / ".harness" / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  sources:\n"
+        "    codex:\n"
+        "      kind: automated\n"
+        "    claude:\n"
+        "      kind: automated\n"
+        "    human:\n"
+        "      kind: human\n"
+        "    observer:\n"
+        "      kind: human\n"
+        "  roles:\n"
+        "    plan-reviewer:\n"
+        "      participants: [human]\n"
+        "      min_independent: 1\n"
+        "    code-reviewer:\n"
+        f"      participants: {participants}\n"
+        "      min_independent: 2\n"
+        f"      max_automatic_rounds_per_epoch: {1 if human_role else 2}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / ".harness" / "review-profiles.local.yaml").write_text(
+        "version: 1\n"
+        "sources:\n"
+        "  codex:\n"
+        "    protocol: codex-cli\n"
+        "    model: gpt-review\n"
+        "    agent_options: {reasoning_effort: medium, sandbox: read-only}\n"
+        + (
+            "  claude:\n"
+            "    protocol: claude-cli\n"
+            "    model: claude-review\n"
+            "    agent_options: {effort: medium}\n"
+            if not human_role
+            else ""
+        ),
+        encoding="utf-8",
+    )
+
+
+def _record_review_round(
+    tmp_path: Path,
+    slug: str,
+    *,
+    round_id: str,
+    contract_digest: str,
+    target_head: str,
+    profile_digest: str,
+    include_failed_claude: bool,
+) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    events = read_change_events(events_path(tmp_path), slug)
+    epoch_id = next(
+        event.event_id for event in reversed(events) if event.type == "implementation_complete"
+    )
+    writer = EventWriter(events_path(tmp_path))
+    runs = [
+        {
+            "run_id": f"{round_id}-codex",
+            "source": "codex",
+            "protocol": "codex-cli",
+            "requested_model": "gpt-review",
+            "requested_options": {},
+        }
+    ]
+    if include_failed_claude:
+        runs.append(
+            {
+                "run_id": f"{round_id}-claude",
+                "source": "claude",
+                "protocol": "claude-cli",
+                "requested_model": "claude-review",
+                "requested_options": {},
+            }
+        )
+    common = {
+        "reviewer": "code-reviewer",
+        "epoch_id": epoch_id,
+        "round_id": round_id,
+        "contract_digest": contract_digest,
+        "target_head": target_head,
+        "profile_digest": profile_digest,
+    }
+    writer.emit(
+        Event(
+            event_id=new_event_id(),
+            type="review_round_started",
+            change_id=slug,
+            timestamp="2026-06-02T00:00:01Z",
+            actor=Actor(type="agent", identifier="cli"),
+            framework="plain",
+            payload={**common, "runs": runs},
+        )
+    )
+    writer.emit(
+        Event(
+            event_id=new_event_id(),
+            type="review_result_imported",
+            change_id=slug,
+            timestamp="2026-06-02T00:00:02Z",
+            actor=Actor(type="agent", identifier="codex"),
+            framework="plain",
+            payload={
+                **common,
+                "run_id": f"{round_id}-codex",
+                "source": "codex",
+                "result_digest": f"{round_id}-result",
+                "verdict": {
+                    "scope_sufficient": True,
+                    "checklist": [],
+                    "findings": [],
+                },
+                "receipt": {},
+            },
+        )
+    )
+    if include_failed_claude:
+        writer.emit(
+            Event(
+                event_id=new_event_id(),
+                type="review_run_failed",
+                change_id=slug,
+                timestamp="2026-06-02T00:00:03Z",
+                actor=Actor(type="agent", identifier="cli"),
+                framework="plain",
+                payload={
+                    **common,
+                    "run_id": f"{round_id}-claude",
+                    "source": "claude",
+                    "reason": "subscription unavailable",
+                },
+            )
+        )
+    writer.emit(
+        Event(
+            event_id=new_event_id(),
+            type="review_round_closed",
+            change_id=slug,
+            timestamp="2026-06-02T00:00:04Z",
+            actor=Actor(type="agent", identifier="cli"),
+            framework="plain",
+            payload={**common, "outcome": "execution_failed"},
+        )
+    )
+    refresh_state_after_emit(tmp_path)
+
+
+def _write_current_code_packet(tmp_path: Path, slug: str) -> None:
+    packet_dir = tmp_path / ".harness" / "pending-reviews" / slug / "code-reviewer"
+    packet_dir.mkdir(parents=True, exist_ok=True)
+    (packet_dir / "draft.packet.json").write_text(
+        json.dumps(
+            {
+                "contract_digest": "current-contract",
+                "target_head": "current-head",
+                "profile_digest": "current-profiles",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_status_current_imported_source_is_not_also_stale_and_exhaustion_is_actionable(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    _seed_awaiting_code_review(tmp_path, "demo")
+    _write_exhausted_review_governance(tmp_path)
+    _record_review_round(
+        tmp_path,
+        "demo",
+        round_id="old-round",
+        contract_digest="old-contract",
+        target_head="old-head",
+        profile_digest="old-profiles",
+        include_failed_claude=False,
+    )
+    _record_review_round(
+        tmp_path,
+        "demo",
+        round_id="current-round",
+        contract_digest="current-contract",
+        target_head="current-head",
+        profile_digest="current-profiles",
+        include_failed_claude=True,
+    )
+    _write_current_code_packet(tmp_path, "demo")
+
+    result = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "--json", "status", "demo"]
+    )
+
+    assert result.exit_code == 0, result.output
+    progress = json.loads(result.output)["data"]["changes"][0]["review_progress"]
+    assert progress["imported_sources"] == ["codex"]
+    assert progress["retained_sources"] == ["codex"]
+    assert progress["stale_sources"] == []
+    assert progress["automatic_rounds_remaining"] == 0
+    assert "restore failed source(s): claude" in progress["next_command"]
+    assert "review authorize demo --reviewer code-reviewer" in progress["next_command"]
+    assert "review begin demo --reviewer code-reviewer --source claude" in progress[
+        "next_command"
+    ]
+    assert "review skip demo --reviewer code-reviewer --override" in progress[
+        "next_command"
+    ]
+    assert "human-only" in progress["next_command"]
+    assert "review human inspect" not in progress["next_command"]
+
+
+def test_status_exhaustion_recommends_human_path_only_for_role_participant(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    _seed_awaiting_code_review(tmp_path, "demo")
+    _write_exhausted_review_governance(tmp_path, participants="[codex, human]")
+    _record_review_round(
+        tmp_path,
+        "demo",
+        round_id="current-round",
+        contract_digest="current-contract",
+        target_head="current-head",
+        profile_digest="current-profiles",
+        include_failed_claude=False,
+    )
+    _write_current_code_packet(tmp_path, "demo")
+
+    result = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "--json", "status", "demo"]
+    )
+
+    assert result.exit_code == 0, result.output
+    next_command = json.loads(result.output)["data"]["changes"][0][
+        "review_progress"
+    ]["next_command"]
+    assert (
+        "review human inspect demo --reviewer code-reviewer --source human --pager"
+        in next_command
+    )
+    assert "review skip --override" not in next_command

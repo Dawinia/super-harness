@@ -272,12 +272,91 @@ def test_begin_freezes_invocation_without_executing_producer(
         "--model",
     ]
     assert data["runs"][0]["requested_model"] == "gpt-review"
+    assert data["runs"][0]["capture_stdout"] is True
+    assert data["runs"][0]["telemetry_path"].endswith("/events.jsonl")
+    assert data["runs"][0]["stdout_path"] == data["runs"][0]["telemetry_path"]
     assert not executable.with_name("codex.executed").exists()
     assert Path(data["runs"][0]["invocation_path"]).is_file()
     events = read_change_events(events_path(root), "change")
     starts = [event for event in events if event.type == "review_round_started"]
     assert len(starts) == 1
     assert starts[0].payload["automatic"] is True
+
+
+def test_import_records_frozen_codex_jsonl_telemetry(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    run = cast(list[dict[str, object]], begun["runs"])[0]
+    telemetry_path = Path(cast(str, run["telemetry_path"]))
+    telemetry_path.write_text(
+        "\n".join(
+            [
+                '{"type":"thread.started","thread_id":"thread-import",'
+                '"model":"gpt-review"}',
+                '{"type":"item.completed","item":{"id":"item-1",'
+                '"type":"command_execution","command":"git diff",'
+                '"aggregated_output":"large command output",'
+                '"exit_code":0,"status":"completed"}}',
+                '{"type":"turn.completed","duration_ms":321,"usage":'
+                '{"input_tokens":50,"cached_input_tokens":20,'
+                '"output_tokens":5}}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    result_path = root / "codex-result.json"
+    result_path.write_text(json.dumps(_result_for_run(begun)), encoding="utf-8")
+
+    imported = CliRunner().invoke(
+        main,
+        [
+            "--json",
+            "--workspace",
+            str(root),
+            "review",
+            "result",
+            "import",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, run["run_id"]),
+            "--result-file",
+            str(result_path),
+        ],
+    )
+
+    assert imported.exit_code == EXIT_OK, imported.output
+    data = json.loads(imported.output)["data"]
+    assert data["actual_model"] == "gpt-review"
+    assert data["session_id"] == "thread-import"
+    assert data["usage_available"] is True
+    receipt = next(
+        event.payload["receipt"]
+        for event in read_change_events(events_path(root), "change")
+        if event.type == "review_result_imported"
+    )
+    assert receipt["session_id"] == "thread-import"
+    assert receipt["usage"] == {
+        "input_tokens": 50,
+        "cached_input_tokens": 20,
+        "output_tokens": 5,
+    }
+    assert receipt["duration_ms"] == 321
+    assert receipt["tool_trace"] == [
+        {
+            "id": "item-1",
+            "type": "command_execution",
+            "command": "git diff",
+            "exit_code": 0,
+            "status": "completed",
+        }
+    ]
 
 
 def test_begin_rejects_stale_prepared_packet(

@@ -25,6 +25,8 @@ class ReviewerInvocation:
     requested_model: str
     requested_options: dict[str, Any]
     capture_stdout: bool = False
+    stdout_path: Path | None = None
+    telemetry_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class ReviewerProtocolResult:
 
     verdict: dict[str, Any]
     actual_model: str | None = None
+    session_id: str | None = None
     usage: dict[str, Any] | None = None
     duration_ms: int | float | None = None
     tool_trace: object | None = None
@@ -72,7 +75,10 @@ class ReviewerProtocolAdapter(ABC):
             )
         return parsed
 
-    def parse_result(self, output_path: Path) -> ReviewerProtocolResult:
+    def parse_result(
+        self, output_path: Path, *, telemetry_path: Path | None = None
+    ) -> ReviewerProtocolResult:
         """Normalize a direct structured verdict with unknown telemetry."""
 
+        del telemetry_path
         return ReviewerProtocolResult(verdict=self._read_json_object(output_path))

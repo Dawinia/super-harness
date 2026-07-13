@@ -41,6 +41,7 @@ def test_compiles_fresh_claude_invocation_without_executing(tmp_path: Path) -> N
     )
     assert invocation.stdin_path == prompt_path
     assert invocation.output_path == run_dir / "result.raw.json"
+    assert invocation.stdout_path == run_dir / "result.raw.json"
     assert invocation.cwd == tmp_path
     assert invocation.capture_stdout is True
     assert invocation.requested_model == "claude-review"

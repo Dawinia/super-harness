@@ -88,11 +88,15 @@ class ClaudeCliReviewerProtocol(ReviewerProtocolAdapter):
             requested_model=model,
             requested_options=dict(agent_options),
             capture_stdout=True,
+            stdout_path=output_path,
         )
 
-    def parse_result(self, output_path: Path) -> ReviewerProtocolResult:
+    def parse_result(
+        self, output_path: Path, *, telemetry_path: Path | None = None
+    ) -> ReviewerProtocolResult:
         """Unwrap Claude JSON output and preserve optional reported telemetry."""
 
+        del telemetry_path
         raw = self._read_json_object(output_path)
         verdict = raw.get("structured_output")
         if not isinstance(verdict, dict):

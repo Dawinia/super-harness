@@ -856,6 +856,16 @@ def begin(
                 "stdin_path": str(invocation.stdin_path),
                 "output_path": str(invocation.output_path),
                 "capture_stdout": invocation.capture_stdout,
+                "stdout_path": (
+                    str(invocation.stdout_path)
+                    if invocation.stdout_path is not None
+                    else None
+                ),
+                "telemetry_path": (
+                    str(invocation.telemetry_path)
+                    if invocation.telemetry_path is not None
+                    else None
+                ),
                 "requested_model": invocation.requested_model,
                 "requested_options": invocation.requested_options,
             }
@@ -1497,7 +1507,12 @@ def import_result(
         adapter = get_reviewer_protocol(
             run.protocol, executable=run.protocol
         )
-        parsed = adapter.parse_result(raw_path)
+        telemetry_path: Path | None = None
+        if isinstance(run.invocation, dict):
+            frozen_telemetry_path = run.invocation.get("telemetry_path")
+            if isinstance(frozen_telemetry_path, str) and frozen_telemetry_path:
+                telemetry_path = Path(frozen_telemetry_path)
+        parsed = adapter.parse_result(raw_path, telemetry_path=telemetry_path)
         verdict = validate_verdict_mapping(parsed.verdict)
     except (ReviewerProtocolError, VerdictError, ValueError) as exc:
         click.echo(
@@ -1608,6 +1623,7 @@ def import_result(
         "requested_model": run.requested_model,
         "requested_options": run.requested_options,
         "actual_model": parsed.actual_model,
+        "session_id": parsed.session_id,
         "usage": parsed.usage,
         "duration_ms": parsed.duration_ms,
         "tool_trace": parsed.tool_trace,
@@ -1650,6 +1666,7 @@ def import_result(
         "receipt_id": receipt_id,
         "result_digest": result_digest,
         "actual_model": parsed.actual_model,
+        "session_id": parsed.session_id,
         "usage_available": parsed.usage is not None,
         "round_outcome": outcome,
         "milestone": milestone,
