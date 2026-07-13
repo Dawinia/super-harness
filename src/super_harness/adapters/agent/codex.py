@@ -74,30 +74,39 @@ When a tool call is blocked:
 
 #### Review protocol
 
-super-harness does NOT review for you — it enforces (via the gate) that the
-configured number of independent reviewer-source verdicts is recorded before the
-lifecycle proceeds, and YOU produce those verdicts. Run `super-harness status
-<change>` to see the required reviewer, strategy, and independent-source progress,
-then record verdicts with `super-harness review approve/reject <change>
---reviewer <name> [--source <source>]`. Reviewer sources are configured labels in
-`.harness/policy.yaml`; super-harness validates them but never executes reviewer
-commands itself. When `status` or the prepared bundle shows a source profile,
-follow its `agent`, `context`, and agent-specific `agent_options`; do not infer a
-global effort/mode vocabulary across Codex, subagent runners, and humans. If the
-profile says `context: bundle-only` or `context: incremental`, keep the review
-scoped to that bundle or latest delta unless the profile or human reviewer asks
-for `full-change`. Code-reviewer approval requires a `--verdict-file` from a
-genuinely independent reviewer; run real independent review — don't
-self-rubber-stamp.
+super-harness does NOT start, spawn, or host reviewers. It compiles immutable
+contracts and records independent receipts. Tracked project requirements live in
+`.harness/review-governance.yaml`; each user's explicit models and producer options
+live in the gitignored `.harness/review-profiles.local.yaml`. Do not assume a Codex
+agent can spawn another agent, and do not substitute an in-session self-review for
+an external or human source.
 
-The prepared bundle is the execution contract: dispatch every assignment in listed
-order, apply its agent_options verbatim to that source's runner, pass its generated
-prompt unchanged, and collect every raw verdict before recording any approve or
-reject event. Batch all committed code-review fixes and docs follow-ups, then run
-review prepare once. A code-review finding fix does not trigger plan review unless
-the approved plan, scope, or requirements changed; use plan redeclare when they did.
-Never widen an assignment to the whole PR. If its target is insufficient, record a
-partial rejection so the next prepare fails closed to a full target for that source.
+For each review epoch:
+
+1. Commit the exact in-scope change, then run `super-harness review prepare
+   <change> --reviewer <name>` once.
+2. Run `super-harness review begin <change> --reviewer <name>` to freeze the
+   automated round. The command returns per-run prompt, schema, output, and
+   invocation files; it never invokes the producer.
+3. The caller runs every issued invocation outside super-harness, unchanged and in
+   listed order. Apply the source's explicit model and agent-specific options
+   verbatim. Do not edit while any issued run is pending.
+4. Import each completed output with `super-harness review result import ...`; if a
+   producer crashes, record it once with `super-harness review run fail ...`.
+   Collect every source before responding to findings, even if one reports a
+   blocker. Then batch the fixes and prepare one follow-up round.
+
+The frozen inspection target is strict: findings may address only its exact range
+and files. A reviewer may read unchanged repository material as supporting context.
+It must continue the whole target after finding a blocker. If the target itself is
+insufficient, return `scope_sufficient: false` with a finding; never widen it to the
+whole PR ad hoc. A code-only finding fix does not trigger plan review unless the
+approved plan, scope, or requirements changed; use `plan redeclare` when they did.
+
+Human review is first-class: use `review human inspect`, validate a verdict with
+`review human draft`, then leave `review human confirm` to a human in a TTY. An
+agent must never confirm the human nonce. `review skip` remains a disclosed escape
+hatch; a code-review skip needs an explicit override and reason to pass attestation.
 
 #### Turn-end authoring check
 

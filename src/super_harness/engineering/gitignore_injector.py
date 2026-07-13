@@ -85,6 +85,7 @@ _CANONICAL_PATHS: tuple[str, ...] = (
     ".harness/verification-results/",
     ".harness/operation-logs/",
     ".harness/pending-reviews/",
+    ".harness/review-profiles.local.yaml",
     ".harness/gate-disabled",
     ".harness/daemon.pid",
     ".harness/daemon.log",

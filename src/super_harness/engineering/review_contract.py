@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,8 @@ from super_harness.core.scope_match import (
     scope_diff_argv,
     split_changed_by_scope_between,
 )
-from super_harness.engineering.reviewer_policy import ReviewerIndependencePolicy
+from super_harness.engineering.review_governance import ReviewGovernance
+from super_harness.engineering.review_profiles import ReviewProducerProfile
 
 
 class ReviewContractError(ValueError):
@@ -54,6 +56,27 @@ def resolve_source_baseline(
     for event in reversed(list(events)):
         if event.type in {"plan_redeclared", "intent_redeclared"}:
             return None
+        if event.type == "review_result_imported":
+            payload = event.payload or {}
+            if payload.get("reviewer") != reviewer or payload.get("source") != source:
+                continue
+            verdict = payload.get("verdict")
+            if not isinstance(verdict, dict) or verdict.get("scope_sufficient") is False:
+                return None
+            checklist = verdict.get("checklist")
+            covered = {
+                row.get("item")
+                for row in checklist
+                if isinstance(row, dict) and isinstance(row.get("item"), str)
+            } if isinstance(checklist, list) else set()
+            if not set(required_checklist).issubset(covered):
+                return None
+            reviewed_head = payload.get("target_head")
+            return (
+                reviewed_head
+                if isinstance(reviewed_head, str) and reviewed_head
+                else None
+            )
         if event.type not in {"review_verdict_recorded", "code_review_failed", "plan_rejected"}:
             continue
         payload = event.payload or {}
@@ -101,18 +124,19 @@ def _review_prompt(
     )
     return (
         f"Review source: {source}\n"
-        f"Context policy: {context or 'legacy'}\n"
+        f"Supporting context: {context or 'repository'}\n"
         f"Inspection mode: {inspection['mode']}\n"
         f"Inspection argv: {argv}\n"
         f"Checklist: {json.dumps(checklist, separators=(',', ':'))}\n\n"
         f"{empty_target_guidance}"
         f"{prior_finding_guidance}"
-        "Review only the assigned target delta. Read unchanged files only for directly "
-        "affected context. Report only issues caused by this target, dependencies or "
+        "Review only the assigned target delta. You may read any unchanged repository "
+        "context needed to understand architecture, binding decisions, and impact. "
+        "Report only issues caused by this target, dependencies or "
         "regressions made relevant by it, or unresolved prior findings. Do not expand to "
         "the whole PR or unrelated pre-existing issues. Continue through the full assigned "
         "target after finding a blocker. If this scope is insufficient, return a partial "
-        "rejection instead of expanding it. Return YAML only with this recordable shape:\n"
+        "rejection instead of expanding it. Return one JSON object with this recordable shape:\n"
         f"bundle_digest: {bundle_digest}\n"
         "checklist:\n"
         "  - item: <copy each assigned checklist item exactly, once>\n"
@@ -125,22 +149,37 @@ def _review_prompt(
     )
 
 
+def _digest(value: object) -> str:
+    encoded = json.dumps(
+        value, separators=(",", ":"), sort_keys=True, ensure_ascii=False
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
 def compile_review_contract(
     root: Path,
     *,
     bundle: dict[str, Any],
-    policy: ReviewerIndependencePolicy,
+    governance: ReviewGovernance,
+    profiles: dict[str, ReviewProducerProfile] | None = None,
     events: list[Event],
     declared: list[str],
 ) -> dict[str, Any]:
     """Add target and deterministic per-participant assignments to ``bundle``."""
+    reviewer = str(bundle.get("reviewer") or "")
+    role = governance.roles.get(reviewer)
+    if role is None:
+        raise ReviewContractError(f"review role {reviewer!r} is not configured")
+    participants = role.participants
+    resolved_profiles = profiles or {}
+
     target_head = resolve_commit(root)
     full_base = merge_base_commit(root, str(bundle["base"]), target_head)
     checklist = [str(item) for item in bundle.get("checklist", [])]
     assignments: list[dict[str, Any]] = []
     open_findings = (
         _open_finding_records(events, str(bundle["change"]))
-        if policy.reviewer == "code-reviewer"
+        if reviewer == "code-reviewer"
         else []
     )
     current_artifacts = [
@@ -149,7 +188,7 @@ def compile_review_contract(
         if isinstance(path, str) and path
     ]
 
-    if policy.reviewer == "code-reviewer":
+    if reviewer == "code-reviewer":
         approved_plan_head = next(
             (
                 event.payload.get("reviewed_head")
@@ -191,17 +230,34 @@ def compile_review_contract(
 
     assignment_scope = (
         current_artifacts
-        if policy.reviewer == "plan-reviewer" and current_artifacts
+        if reviewer == "plan-reviewer" and current_artifacts
         else declared
     )
 
-    for source in policy.participants:
-        profile = policy.source_profiles.get(source)
-        if profile is None:
-            continue
+    profile_payload: dict[str, object] = {}
+    for source in participants:
+        source_kind = governance.sources[source].kind
+        profile = resolved_profiles.get(source)
+        if source_kind == "automated" and profile is None:
+            raise ReviewContractError(
+                f"automated source {source!r} has no resolved local profile"
+            )
+        context = "repository"
+        protocol = profile.protocol if profile is not None else "human"
+        model = profile.model if profile is not None else None
+        cost_class = profile.cost_class if profile is not None else None
+        agent_options = dict(profile.agent_options) if profile is not None else {}
+
+        profile_payload[source] = {
+            "kind": source_kind,
+            "protocol": protocol,
+            "model": model,
+            "cost_class": cost_class,
+            "agent_options": agent_options,
+        }
         baseline = resolve_source_baseline(
             events,
-            reviewer=policy.reviewer,
+            reviewer=reviewer,
             source=source,
             required_checklist=tuple(checklist),
         )
@@ -214,10 +270,8 @@ def compile_review_contract(
                 # unresolvable one loses incremental eligibility; current target
                 # and ancestry failures still fail closed outside this branch.
                 resolved_baseline = None
-        incremental = (
-            profile.context != "full-change"
-            and resolved_baseline is not None
-            and is_ancestor(root, resolved_baseline, target_head)
+        incremental = resolved_baseline is not None and is_ancestor(
+            root, resolved_baseline, target_head
         )
         inspection_base = (
             resolved_baseline if incremental and resolved_baseline is not None else full_base
@@ -233,25 +287,43 @@ def compile_review_contract(
             "files": files,
             "diff_argv": scope_diff_argv(inspection_base, target_head, files),
         }
+        prompt = _review_prompt(
+            source=source,
+            context=context,
+            inspection=inspection,
+            checklist=checklist,
+            bundle_digest=str(bundle["bundle_digest"]),
+            open_findings=open_findings,
+        )
         assignments.append(
             {
                 "source": source,
-                "agent": profile.agent,
-                "context": profile.context,
-                "agent_options": dict(profile.agent_options),
+                "kind": source_kind,
+                "protocol": protocol,
+                "model": model,
+                "cost_class": cost_class,
+                "context": context,
+                "agent_options": agent_options,
                 "inspection": inspection,
-                "prompt": _review_prompt(
-                    source=source,
-                    context=profile.context,
-                    inspection=inspection,
-                    checklist=checklist,
-                    bundle_digest=str(bundle["bundle_digest"]),
-                    open_findings=open_findings,
-                ),
+                "prompt": prompt,
+                "prompt_digest": sha256(prompt.encode("utf-8")).hexdigest(),
             }
         )
 
     bundle["target_head"] = target_head
-    bundle["plan_review_required"] = policy.reviewer == "plan-reviewer"
+    bundle["plan_review_required"] = reviewer == "plan-reviewer"
     bundle["assignments"] = assignments
+    bundle["participant_digest"] = _digest(sorted(participants))
+    bundle["profile_digest"] = _digest(profile_payload)
+    bundle["warnings"] = (
+        [
+            "large inspection target; review remains one complete assignment and "
+            "is not automatically sharded"
+        ]
+        if any(len(assignment["inspection"]["files"]) >= 50 for assignment in assignments)
+        else []
+    )
+    contract_payload = dict(bundle)
+    contract_payload.pop("contract_digest", None)
+    bundle["contract_digest"] = _digest(contract_payload)
     return bundle

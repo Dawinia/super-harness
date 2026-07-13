@@ -89,3 +89,23 @@ def test_gate_bypass_events_are_informational_and_known():
         assert t in KNOWN_EVENT_TYPES
         assert t in _INFORMATIONAL
         assert compute_target_state("INTENT_DECLARED", t) == "INTENT_DECLARED"
+
+
+def test_review_execution_events_are_informational_and_known() -> None:
+    from super_harness.core.events import KNOWN_EVENT_TYPES
+    from super_harness.core.transitions import _INFORMATIONAL
+
+    review_events = {
+        "review_round_started",
+        "review_result_imported",
+        "review_run_failed",
+        "review_round_closed",
+        "review_round_authorized",
+    }
+    assert review_events <= KNOWN_EVENT_TYPES
+    assert review_events <= _INFORMATIONAL
+    for event_type in review_events:
+        assert (
+            compute_target_state("AWAITING_CODE_REVIEW", event_type)
+            == "AWAITING_CODE_REVIEW"
+        )

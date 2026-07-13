@@ -97,7 +97,9 @@ def test_assemble_bundle_empty_scope_inert_digest(tmp_path: Path) -> None:
 def test_load_base_branch_default_and_override(tmp_path: Path) -> None:
     (tmp_path / ".harness").mkdir(parents=True)
     assert load_base_branch(tmp_path) == "main"
-    (tmp_path / ".harness" / "policy.yaml").write_text("review:\n  base_branch: develop\n")
+    (tmp_path / ".harness" / "review-governance.yaml").write_text(
+        "review:\n  base_branch: develop\n"
+    )
     assert load_base_branch(tmp_path) == "develop"
 
 

@@ -59,80 +59,39 @@ When a tool call is blocked by the gate:
 
 #### Review protocol
 
-super-harness does NOT review for you — it enforces (via the gate) that the
-configured number of independent reviewer-source verdicts is recorded before the
-lifecycle proceeds, and YOU produce those verdicts. When `super-harness status
-<change>` reports a review state, it prints the configured **strategy**
-(`subagent` / `human` / `hybrid`) and the independent-source progress:
+super-harness does NOT start, spawn, or host reviewers. It compiles immutable
+contracts and records independent receipts. Tracked project requirements live in
+`.harness/review-governance.yaml`; each user's explicit models and producer options
+live in the gitignored `.harness/review-profiles.local.yaml`. Do not assume a Claude
+Code `Task` subagent is the review protocol, and do not substitute an in-session
+self-review for an external or human source.
 
-- **`subagent`** (default) — dispatch a genuinely independent reviewer **subagent**
-  (your `Task` tool) to run the checklist, then record the verdict.
-- **`human`** — do NOT self-approve. A human reviews and records the verdict; leave
-  the change in its review state for them.
-- **`hybrid`** — run the subagent first; escalate to a human on a fail (or a Large
-  tier change) before recording.
+For each review epoch:
 
-Reviewer **sources** are configured labels from `.harness/policy.yaml`
-(`reviewers.sources`). They are not commands that super-harness executes. If
-`min_independent` is greater than 1, record each verdict with a different
-configured source, e.g. `--source subagent` then `--source external`; the final
-approval milestone is emitted only after enough distinct sources have approved.
-When `status` or the prepared review bundle shows a source profile, follow that
-profile's `agent`, `context`, and agent-specific `agent_options`. Do not infer a
-global effort/mode vocabulary: Codex, subagent runners, and human review use
-different option names. For `context: bundle-only` or `context: incremental`,
-keep the review scoped to the prepared bundle or latest delta unless the profile
-or human reviewer explicitly asks for `full-change`.
+1. Commit the exact in-scope change, then run `super-harness review prepare
+   <change> --reviewer <name>` once.
+2. Run `super-harness review begin <change> --reviewer <name>` to freeze the
+   automated round. The command returns per-run prompt, schema, output, and
+   invocation files; it never invokes the producer.
+3. The caller runs every issued invocation outside super-harness, unchanged and in
+   listed order. Apply the source's explicit model and agent-specific options
+   verbatim. Do not edit while any issued run is pending.
+4. Import each completed output with `super-harness review result import ...`; if a
+   producer crashes, record it once with `super-harness review run fail ...`.
+   Collect every source before responding to findings, even if one reports a
+   blocker. Then batch the fixes and prepare one follow-up round.
 
-The prepared bundle is the execution contract: dispatch every assignment in listed
-order, apply its agent_options verbatim to that source's runner, pass its generated
-prompt unchanged, and collect every raw verdict before recording any approve or
-reject event. Batch all committed code-review fixes and docs follow-ups, then run
-review prepare once. A code-review finding fix does not trigger plan review unless
-the approved plan, scope, or requirements changed; use plan redeclare when they did.
-Never widen an assignment to the whole PR. If its target is insufficient, record a
-partial rejection so the next prepare fails closed to a full target for that source.
+The frozen inspection target is strict: findings may address only its exact range
+and files. A reviewer may read unchanged repository material as supporting context.
+It must continue the whole target after finding a blocker. If the target itself is
+insufficient, return `scope_sufficient: false` with a finding; never widen it to the
+whole PR ad hoc. A code-only finding fix does not trigger plan review unless the
+approved plan, scope, or requirements changed; use `plan redeclare` when they did.
 
-Checklists & verdict verbs per review state:
-
-- **`AWAITING_PLAN_REVIEW`** (plan-reviewer) — check spec coverage / design / scope /
-  declared anchors. Record with `super-harness review approve <change> --reviewer
-  plan-reviewer [--source <source>]` or `super-harness review reject <change>
-  --reviewer plan-reviewer --reason "<why>" [--source <source>]`. Approve →
-  `PLAN_APPROVED` once the configured independent-source threshold is met (gate
-  then allows edits); reject → `PLAN_REJECTED` for a revised plan.
-- **`AWAITING_CODE_REVIEW`** (code-reviewer) — a code-review approval now REQUIRES a
-  structured verdict; a bare `super-harness review approve <change> --reviewer
-  code-reviewer` is rejected. The flow:
-  1. Commit the in-scope files first — the review digest is taken over the committed
-     HEAD diff, so an uncommitted in-scope tree is refused.
-  2. `super-harness review prepare <change> --reviewer code-reviewer` — assembles the
-     bundle (in-scope diff ∩ scope, out-of-scope drift, spec/plan paths, checklist,
-     committed-HEAD digest) to `.harness/pending-reviews/<change>/code-reviewer.bundle.json`.
-  3. Hand that bundle to the configured genuinely independent reviewer source to
-     run the checklist and produce a verdict file (every checklist item gets a
-     status; findings required when any item fails; verdict carries the bundle's
-     digest).
-  4. `super-harness review approve <change> --reviewer code-reviewer --verdict-file
-     <path> [--source <source>]` — the verdict is inlined into the recorded event.
-     The approval is refused if the verdict is missing/incomplete (a checklist item
-     uncovered), stale (its digest no longer matches the current in-scope committed
-     diff), or has any checklist item with status `fail` (record that with `review
-     reject` instead). Approve → `READY_TO_MERGE` once the configured
-     independent-source threshold is met. (`review reject ... [--verdict-file
-     <path>]` records a fail.)
-     If the approval comes out of a REJECTED review, the verdict's `prior_findings` must
-     dispose EVERY open finding from the prior `code_review_failed` verdicts
-     (`disposition: resolved | wontfix`; `wontfix` needs a `note`) or the approve is refused.
-  - plan-reviewer: approve/reject take an optional `--verdict-file` (inlined when
-    present, never required) — but when one IS provided on an approve, a failing
-    checklist item refuses it the same way (any reviewer branch).
-- `super-harness review skip <change> --reviewer <name>` PASSes a stuck reviewer, but for
-  `code-reviewer` a BARE skip is a MERGE-GATE BLOCKER (`attest verify` fails). To merge with
-  a skip you must record a deliberate, disclosed override:
-  `review skip <change> --reviewer code-reviewer --override --reason "<why>"`.
-
-When you do run a subagent, run a genuinely independent one — don't self-rubber-stamp.
+Human review is first-class: use `review human inspect`, validate a verdict with
+`review human draft`, then leave `review human confirm` to a human in a TTY. An
+agent must never confirm the human nonce. `review skip` remains a disclosed escape
+hatch; a code-review skip needs an explicit override and reason to pass attestation.
 <!-- /super-harness agent: claude-code -->
 
 ### Before opening PR

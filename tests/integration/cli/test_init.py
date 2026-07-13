@@ -18,35 +18,139 @@ def test_init_creates_harness_dir(tmp_path: Path):
     assert r.exit_code == 0
     assert (tmp_path / ".harness").is_dir()
     assert (tmp_path / ".harness" / "events.jsonl").exists()
-    assert (tmp_path / ".harness" / "policy.yaml").exists()
-    # HG-02.C: policy.yaml ships a discoverable reviewers block so a user can
-    # switch a reviewer to `human` when token budget rules out subagent review.
-    policy = (tmp_path / ".harness" / "policy.yaml").read_text()
-    assert "reviewers:" in policy
-    assert "plan-reviewer:" in policy
-    assert "code-reviewer:" in policy
-    parsed = yaml.safe_load(policy)
-    reviewers = parsed["reviewers"]
-    assert set(reviewers["sources"]) == {"subagent", "external", "human"}
-    assert "claude-subagent" not in reviewers["sources"]
-    assert "codex" not in reviewers["sources"]
-    assert reviewers["sources"]["external"]["agent"] == "codex"
-    assert reviewers["sources"]["external"]["context"] == "bundle-only"
-    assert reviewers["sources"]["external"]["agent_options"] == {
-        "reasoning_effort": "medium",
-        "sandbox": "read-only",
+    assert not (tmp_path / ".harness" / "policy.yaml").exists()
+    governance = yaml.safe_load(
+        (tmp_path / ".harness" / "review-governance.yaml").read_text()
+    )
+    review = governance["review"]
+    assert review["sources"] == {"human": {"kind": "human"}}
+    assert review["roles"]["plan-reviewer"] == {
+        "participants": ["human"],
+        "min_independent": 1,
+        "max_automatic_rounds_per_epoch": 2,
     }
-    assert reviewers["sources"]["subagent"]["agent"] == "task-subagent"
-    assert reviewers["sources"]["subagent"]["agent_options"] == {"effort": "medium"}
-    assert "effort" not in reviewers["sources"]["external"]
-    assert "mode" not in reviewers["sources"]["external"]
-    assert reviewers["plan-reviewer"]["min_independent"] == 1
-    assert reviewers["code-reviewer"]["min_independent"] == 1
-    assert reviewers["plan-reviewer"]["participants"] == ["subagent"]
-    assert reviewers["code-reviewer"]["participants"] == ["subagent"]
+    assert review["roles"]["code-reviewer"] == {
+        "participants": ["human"],
+        "min_independent": 1,
+        "max_automatic_rounds_per_epoch": 2,
+    }
+    assert not (tmp_path / ".harness" / "review-profiles.local.yaml").exists()
     assert (tmp_path / ".harness" / "sensors.yaml").exists()
     assert (tmp_path / ".harness" / "verification.yaml").exists()
     assert (tmp_path / ".harness" / "source-paths.yaml").exists()
+
+
+def test_init_non_tty_configures_explicit_codex_review_producer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/bin/{name}")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(tmp_path),
+            "init",
+            "--review-producer",
+            "codex-cli",
+            "--review-model",
+            "codex=gpt-review",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    governance = yaml.safe_load(
+        (tmp_path / ".harness" / "review-governance.yaml").read_text()
+    )["review"]
+    assert governance["sources"] == {
+        "codex": {"kind": "automated"},
+        "human": {"kind": "human"},
+    }
+    assert governance["roles"]["plan-reviewer"]["participants"] == ["codex"]
+    assert governance["roles"]["code-reviewer"]["participants"] == ["codex"]
+    profiles = yaml.safe_load(
+        (tmp_path / ".harness" / "review-profiles.local.yaml").read_text()
+    )
+    assert profiles["sources"]["codex"] == {
+        "protocol": "codex-cli",
+        "model": "gpt-review",
+        "cost_class": "standard",
+        "agent_options": {
+            "reasoning_effort": "medium",
+            "sandbox": "read-only",
+        },
+    }
+
+
+def test_init_non_tty_configures_multiple_agent_integrations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.codex.shutil.which",
+        lambda name: f"/abs/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        lambda name: f"/abs/bin/{name}",
+    )
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(tmp_path),
+            "init",
+            "--integration",
+            "codex",
+            "--integration",
+            "claude-code",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    adapters = yaml.safe_load(
+        (tmp_path / ".harness" / "adapters.yaml").read_text()
+    )["adapters"]
+    assert [entry["name"] for entry in adapters] == ["codex", "claude-code"]
+    assert (tmp_path / ".codex" / "hooks.json").exists()
+    assert (tmp_path / ".claude" / "settings.local.json").exists()
+
+
+def test_init_tty_wizard_multi_selects_integrations_and_review_producers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("super_harness.cli.init._stdin_is_tty", lambda: True)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/bin/{name}")
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.codex.shutil.which",
+        lambda name: f"/abs/bin/{name}",
+    )
+    monkeypatch.setattr(
+        "super_harness.adapters.agent.claude_code.shutil.which",
+        lambda name: f"/abs/bin/{name}",
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init"],
+        input="\n\ngpt-review\nclaude-review\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "1. codex" in result.output
+    assert "2. claude-code" in result.output
+    assert "1. codex-cli" in result.output
+    assert "2. claude-cli" in result.output
+    assert "both" not in result.output.lower()
+    adapters = yaml.safe_load(
+        (tmp_path / ".harness" / "adapters.yaml").read_text()
+    )["adapters"]
+    assert [entry["name"] for entry in adapters] == ["codex", "claude-code"]
+    profiles = yaml.safe_load(
+        (tmp_path / ".harness" / "review-profiles.local.yaml").read_text()
+    )["sources"]
+    assert profiles["codex"]["model"] == "gpt-review"
+    assert profiles["claude"]["model"] == "claude-review"
 
 
 def test_init_scaffolds_derived_docs_skeleton(tmp_path: Path):
@@ -81,6 +185,36 @@ def test_init_force_overwrites(tmp_path: Path):
     (tmp_path / ".harness" / "policy.yaml").write_text("# user-edit\n")
     r2 = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
     assert r2.exit_code == 0
+
+
+def test_init_force_preserves_review_selection_without_new_flags(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/bin/{name}")
+    runner = CliRunner()
+    first = runner.invoke(
+        main,
+        [
+            "--workspace",
+            str(tmp_path),
+            "init",
+            "--review-producer",
+            "codex-cli",
+            "--review-model",
+            "codex=gpt-review",
+        ],
+    )
+    assert first.exit_code == 0, first.output
+    governance = tmp_path / ".harness" / "review-governance.yaml"
+    profiles = tmp_path / ".harness" / "review-profiles.local.yaml"
+    before = (governance.read_bytes(), profiles.read_bytes())
+
+    forced = runner.invoke(
+        main, ["--workspace", str(tmp_path), "init", "--force"]
+    )
+
+    assert forced.exit_code == 0, forced.output
+    assert (governance.read_bytes(), profiles.read_bytes()) == before
 
 
 def test_init_creates_all_subdirs(tmp_path: Path):
@@ -142,11 +276,10 @@ def test_init_help_advertises_v01_caveat(tmp_path: Path):
 # --------------------------------------------------------------------------- #
 
 
-def test_init_auto_installs_agent_hook_when_claude_dir_present(
+def test_init_non_tty_does_not_auto_install_detected_integration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """init with `.claude/` present installs the PreToolUse hook into
-    settings.local.json and registers claude-code in adapters.yaml."""
+    """Detection informs the TTY wizard; non-TTY init requires explicit flags."""
     monkeypatch.setattr(
         "super_harness.adapters.agent.claude_code.shutil.which",
         lambda name: f"/abs/bin/{name}",
@@ -156,20 +289,15 @@ def test_init_auto_installs_agent_hook_when_claude_dir_present(
     result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
     assert result.exit_code == 0, result.output
     settings = tmp_path / ".claude" / "settings.local.json"
-    assert settings.exists()
-    assert "--agent claude-code" in settings.read_text()
-    adapters = (tmp_path / ".harness" / "adapters.yaml").read_text()
-    assert "claude-code" in adapters
-    # success advisory on stdout (security-relevant side effect surfaced).
-    assert "registered PreToolUse gate hook" in result.output
+    assert not settings.exists()
+    assert not (tmp_path / ".harness" / "adapters.yaml").exists()
+    assert "registered PreToolUse gate hook" not in result.output
 
 
-def test_init_agent_install_yaml_error_is_nonfatal(
+def test_init_selected_integration_registry_error_fails_actionably(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A ``yaml.YAMLError`` from ``_persist_install_entry`` (corrupt/unreadable
-    ``.harness/adapters.yaml``) is non-fatal: the hook is installed but
-    registration fails, init still completes, and an advisory is printed."""
+    """An explicit integration selection must not hide partial installation."""
     monkeypatch.setattr(
         "super_harness.adapters.agent.claude_code.shutil.which",
         lambda name: f"/abs/bin/{name}",
@@ -179,45 +307,36 @@ def test_init_agent_install_yaml_error_is_nonfatal(
         raise yaml.YAMLError("boom")
 
     monkeypatch.setattr(
-        "super_harness.cli.init._persist_install_entry", _raise
+        "super_harness.cli.adapter._persist_install_entry", _raise
     )
-    (tmp_path / ".claude").mkdir()
     runner = CliRunner()
-    result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
-    assert result.exit_code == 0, result.output
-    # init still completes: .harness/ scaffolded.
+    result = runner.invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--integration", "claude-code"],
+    )
+    assert result.exit_code == 1, result.output
     assert (tmp_path / ".harness").is_dir()
-    assert (tmp_path / ".harness" / "events.jsonl").exists()
-    # advisory text appears (hook installed but could not be registered).
-    assert "could not be registered" in result.output
+    assert "could not configure claude-code integration" in result.output
 
 
-def test_init_agent_install_runtime_error_is_nonfatal(
+def test_init_selected_integration_missing_hook_fails_actionably(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When `super-harness-hook` is off PATH, ``install_hooks`` raises its
-    documented ``RuntimeError`` — init must treat this as NON-fatal: scaffold
-    `.harness/`, skip the gate (no settings.local.json written), and surface an
-    advisory. ``install_hooks`` checks the hook binary before the CLI binary, so
-    returning None for the hook is enough to trigger the RuntimeError."""
+    """Explicit integration selection fails when its hook cannot be installed."""
     monkeypatch.setattr(
         "super_harness.adapters.agent.claude_code.shutil.which",
         lambda name: None,
     )
-    (tmp_path / ".claude").mkdir()
     runner = CliRunner()
-    result = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
-    # Non-fatal: init still completes.
-    assert result.exit_code == 0, result.output
-    # .harness/ scaffolded.
+    result = runner.invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--integration", "claude-code"],
+    )
+    assert result.exit_code == 1, result.output
     assert (tmp_path / ".harness").is_dir()
-    # Install failed before writing the gate hook — settings.local.json absent.
     assert not (tmp_path / ".claude" / "settings.local.json").exists()
-    # Advisory text surfaced (hook not installed / not found on PATH).
-    assert (
-        "gate hook not installed" in result.output
-        or "not found on PATH" in result.output
-    ), result.output
+    assert "could not configure claude-code integration" in result.output
+    assert "not found on PATH" in result.output
 
 
 def test_init_no_agent_flag_skips_hook(

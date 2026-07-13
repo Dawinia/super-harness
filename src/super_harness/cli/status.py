@@ -22,7 +22,7 @@ import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import click
 
@@ -37,14 +37,16 @@ from super_harness.core.paths import (
 )
 from super_harness.core.reducer import derive_state
 from super_harness.core.review_verdict import read_change_events
-from super_harness.engineering.reviewer_policy import (
-    REVIEW_STATE_REVIEWER,
-    ReviewerIndependencePolicy,
-    ReviewerPolicyError,
-    approved_review_sources,
-    load_reviewer_policy,
-    reviewer_policy_payload,
+from super_harness.engineering.review_governance import (
+    ReviewGovernance,
+    ReviewGovernanceError,
+    load_review_governance,
 )
+from super_harness.engineering.review_profiles import (
+    ReviewProfilesError,
+    load_review_profiles,
+)
+from super_harness.engineering.review_runs import derive_review_execution
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.gates.decisions import SUGGESTIONS
 
@@ -52,11 +54,25 @@ from super_harness.gates.decisions import SUGGESTIONS
 class _ReviewProgress(TypedDict):
     reviewer: str
     min_independent: int
-    accepted_sources: list[str]
-    missing_independent: int
-    remaining_sources: list[str]
-    instructions: dict[str, str]
+    required_sources: list[str]
+    imported_sources: list[str]
+    pending_sources: list[str]
+    failed_sources: list[str]
+    retained_sources: list[str]
+    stale_sources: list[str]
+    automatic_rounds_used: int
+    automatic_rounds_remaining: int
+    available_authorizations: list[str]
+    packet: dict[str, object] | None
     source_profiles: dict[str, dict[str, object]]
+    next_command: str
+
+
+REVIEW_STATE_REVIEWER: dict[str, str] = {
+    "AWAITING_PLAN_REVIEW": "plan-reviewer",
+    "AWAITING_CODE_REVIEW": "code-reviewer",
+    "CODE_REVIEW_REJECTED": "code-reviewer",
+}
 
 
 def _format_agent_option_value(value: object) -> str:
@@ -142,57 +158,131 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             (cid, cs.current_state, cs.last_event_at) for cid, cs in derived.items()
         )
         target = [derived[active_id]] if active_id else []
-    # HG-02.C: when a change sits in a review state, surface the configured
-    # reviewer strategy so the agent/human knows whether to dispatch a Task
-    # subagent or hand the review off to a person. Read-only; a malformed
-    # reviewers policy surfaces as a config error (exit 2).
-    def _reviewer_info(cs: object) -> tuple[str | None, ReviewerIndependencePolicy | None]:
-        reviewer = REVIEW_STATE_REVIEWER.get(cs.current_state)  # type: ignore[attr-defined]
+    def _reviewer_info(cs: Any) -> tuple[str | None, ReviewGovernance | None]:
+        reviewer = REVIEW_STATE_REVIEWER.get(cs.current_state)
         if reviewer is None:
             return None, None
-        return reviewer, load_reviewer_policy(root, reviewer)
+        governance = load_review_governance(root)
+        if reviewer not in governance.roles:
+            raise ReviewGovernanceError(f"review role {reviewer!r} is not configured")
+        return reviewer, governance
 
-    def _review_progress(change_id: str, reviewer: str, policy: ReviewerIndependencePolicy
-                         ) -> _ReviewProgress:
+    def _review_progress(
+        change_id: str, reviewer: str, governance: ReviewGovernance
+    ) -> _ReviewProgress:
         events = read_change_events(events_path(root), change_id)
-        accepted = sorted(
-            approved_review_sources(
-                events, reviewer, bundle_digest=_current_review_bundle_digest(change_id, reviewer)
-            )
+        execution = derive_review_execution(events, reviewer)
+        role = governance.roles[reviewer]
+        packet_path = (
+            pending_reviews_dir(root, change_id) / reviewer / "draft.packet.json"
         )
-        remaining = [s for s in policy.allowed_sources if s not in accepted]
-        missing = max(policy.min_independent - len(accepted), 0)
-        source_profiles = reviewer_policy_payload(policy)["source_profiles"]
+        packet: dict[str, Any] | None = None
+        try:
+            raw_packet: object = json.loads(packet_path.read_text(encoding="utf-8"))
+            if isinstance(raw_packet, dict):
+                packet = raw_packet
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        contract_digest = packet.get("contract_digest") if packet is not None else None
+        target_head = packet.get("target_head") if packet is not None else None
+        profile_digest = packet.get("profile_digest") if packet is not None else None
+        latest: dict[str, Any] = {}
+        stale: set[str] = set()
+        for round_state in execution.rounds:
+            matches = (
+                round_state.contract_digest == contract_digest
+                and round_state.target_head == target_head
+                and round_state.profile_digest == profile_digest
+            )
+            for source, run in round_state.runs.items():
+                if matches:
+                    latest[source] = run
+                elif run.status == "imported":
+                    stale.add(source)
+        imported = sorted(
+            source for source, run in latest.items() if run.status == "imported"
+        )
+        current_round = execution.rounds[-1] if execution.rounds else None
+        pending = sorted(
+            source
+            for source, run in (current_round.runs.items() if current_round else [])
+            if run.status == "pending"
+        )
+        failed = sorted(
+            source
+            for source, run in (current_round.runs.items() if current_round else [])
+            if run.status == "failed"
+        )
+        profiles = load_review_profiles(root)
+        source_profiles: dict[str, dict[str, object]] = {}
+        for source in role.participants:
+            profile_payload: dict[str, object] = {
+                "kind": governance.sources[source].kind,
+            }
+            if source in profiles.sources:
+                profile_payload.update(
+                    {
+                        "protocol": profiles.sources[source].protocol,
+                        "model": profiles.sources[source].model,
+                        "cost_class": profiles.sources[source].cost_class,
+                        "agent_options": profiles.sources[source].agent_options,
+                    }
+                )
+            source_profiles[source] = profile_payload
+        automated = [
+            source
+            for source in role.participants
+            if governance.sources[source].kind == "automated"
+        ]
+        remaining_rounds = max(
+            role.max_automatic_rounds_per_epoch - execution.automatic_rounds_used, 0
+        )
+        if packet is None:
+            next_command = (
+                f"super-harness review prepare {change_id} --reviewer {reviewer}"
+            )
+        elif pending:
+            next_command = (
+                "super-harness review result import ... or review run fail ... "
+                f"for pending source(s): {', '.join(pending)}"
+            )
+        elif not automated:
+            next_command = (
+                f"super-harness review human inspect {change_id} --reviewer {reviewer} --pager"
+            )
+        elif remaining_rounds == 0 and not execution.available_authorization_ids:
+            next_command = (
+                f"super-harness review human inspect {change_id} --reviewer {reviewer} --pager "
+                f"or review authorize {change_id} --reviewer {reviewer} --reason <why>"
+            )
+        else:
+            next_command = (
+                f"super-harness review begin {change_id} --reviewer {reviewer}"
+            )
         return {
             "reviewer": reviewer,
-            "min_independent": policy.min_independent,
-            "accepted_sources": accepted,
-            "missing_independent": missing,
-            "remaining_sources": remaining,
-            "instructions": {
-                source: policy.source_instructions[source]
-                for source in remaining
-                if source in policy.source_instructions
-            },
-            "source_profiles": {
-                source: source_profiles[source]
-                for source in remaining
-                if source in source_profiles
-            },
+            "min_independent": role.min_independent,
+            "required_sources": list(role.participants),
+            "imported_sources": imported,
+            "pending_sources": pending,
+            "failed_sources": failed,
+            "retained_sources": list(execution.retained_sources),
+            "stale_sources": sorted(stale),
+            "automatic_rounds_used": execution.automatic_rounds_used,
+            "automatic_rounds_remaining": remaining_rounds,
+            "available_authorizations": list(execution.available_authorization_ids),
+            "packet": (
+                {
+                    "path": str(packet_path),
+                    "contract_digest": contract_digest,
+                    "target_head": target_head,
+                }
+                if packet is not None
+                else None
+            ),
+            "source_profiles": source_profiles,
+            "next_command": next_command,
         }
-
-    def _current_review_bundle_digest(change_id: str, reviewer: str) -> str | None:
-        if reviewer != "code-reviewer":
-            return None
-        bundle_path = pending_reviews_dir(root, change_id) / "code-reviewer.bundle.json"
-        try:
-            parsed = json.loads(bundle_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(parsed, dict):
-            return None
-        digest = parsed.get("bundle_digest")
-        return digest if isinstance(digest, str) and digest else None
 
     try:
         if ctx.obj.get("json"):
@@ -200,13 +290,12 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             for cs in target:
                 entry = asdict(cs)
                 entry["next"] = SUGGESTIONS.get(cs.current_state)
-                reviewer, policy = _reviewer_info(cs)
+                reviewer, governance = _reviewer_info(cs)
                 if reviewer is not None:
-                    assert policy is not None
+                    assert governance is not None
                     entry["reviewer"] = reviewer
-                    entry["reviewer_strategy"] = policy.strategy
                     entry["review_progress"] = _review_progress(
-                        cs.change_id, reviewer, policy
+                        cs.change_id, reviewer, governance
                     )
                 changes_data.append(entry)
             click.echo(
@@ -224,39 +313,63 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                 # `plan_ready` yet (scope is populated from plan_ready payload).
                 if cs.scope:
                     click.echo(f"  scope: {cs.scope}")
-                reviewer, policy = _reviewer_info(cs)
+                reviewer, governance = _reviewer_info(cs)
                 if reviewer is not None:
-                    assert policy is not None
-                    click.echo(f"  reviewer: {reviewer} (strategy: {policy.strategy})")
-                    progress = _review_progress(cs.change_id, reviewer, policy)
-                    accepted = progress["accepted_sources"]
-                    remaining = progress["remaining_sources"]
+                    assert governance is not None
+                    progress = _review_progress(cs.change_id, reviewer, governance)
+                    imported = progress["imported_sources"]
+                    required = progress["required_sources"]
+                    click.echo(f"  reviewer: {reviewer} (execution protocol)")
                     click.echo(
                         "  review progress: "
-                        f"{len(accepted)}/{progress['min_independent']} independent source(s)"
+                        f"{len(imported)}/{progress['min_independent']} imported source(s)"
                     )
-                    if accepted:
-                        click.echo(f"    accepted: {', '.join(accepted)}")
+                    click.echo(
+                        "    automatic rounds: "
+                        f"{progress['automatic_rounds_used']} used, "
+                        f"{progress['automatic_rounds_remaining']} remaining"
+                    )
+                    if imported:
+                        click.echo(f"    imported: {', '.join(imported)}")
+                    remaining = [source for source in required if source not in imported]
                     if remaining:
                         click.echo(f"    remaining: {', '.join(remaining)}")
-                    instructions = progress["instructions"]
-                    for source in remaining:
-                        text = instructions.get(source)
-                        click.echo(f"    {source}: {text}" if text else f"    {source}:")
+                    if progress["pending_sources"]:
+                        click.echo(
+                            f"    pending: {', '.join(progress['pending_sources'])}"
+                        )
+                    if progress["failed_sources"]:
+                        click.echo(
+                            f"    failed: {', '.join(progress['failed_sources'])}"
+                        )
+                    if progress["retained_sources"]:
+                        click.echo(
+                            f"    retained: {', '.join(progress['retained_sources'])}"
+                        )
+                    if progress["stale_sources"]:
+                        click.echo(
+                            f"    stale: {', '.join(progress['stale_sources'])}"
+                        )
+                    for source in required:
+                        click.echo(f"    {source}:")
                         profile = progress["source_profiles"].get(source, {})
-                        agent = profile.get("agent")
-                        context = profile.get("context")
+                        protocol = profile.get("protocol")
+                        model = profile.get("model")
+                        cost_class = profile.get("cost_class")
                         options = profile.get("agent_options")
-                        if agent:
-                            click.echo(f"      agent: {agent}")
-                        if context:
-                            click.echo(f"      context: {context}")
+                        if protocol:
+                            click.echo(f"      protocol: {protocol}")
+                        if model:
+                            click.echo(f"      model: {model}")
+                        if cost_class:
+                            click.echo(f"      cost_class: {cost_class}")
                         if isinstance(options, dict) and options:
                             click.echo(f"      agent_options: {_format_agent_options(options)}")
+                    click.echo(f"  review next: {progress['next_command']}")
                 nxt = SUGGESTIONS.get(cs.current_state)
                 if nxt:
                     click.echo(f"  next: {nxt}")
-    except ReviewerPolicyError as e:
+    except (ReviewGovernanceError, ReviewProfilesError) as e:
         click.echo(format_error(subcommand="status", message=str(e)), err=True)
         sys.exit(EXIT_VALIDATION)
     sys.exit(EXIT_OK)

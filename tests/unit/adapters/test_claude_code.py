@@ -286,31 +286,27 @@ def test_agents_md_subsection_has_markers() -> None:
 
 def test_agents_md_subsection_teaches_compiled_review_contract() -> None:
     block = " ".join(ClaudeCodeAdapter().agents_md_subsection().split()).lower()
-    assert "dispatch every assignment in listed order" in block
-    assert "apply its agent_options verbatim" in block
-    assert "collect every raw verdict before recording" in block
+    assert "does not start, spawn, or host reviewers" in block
+    assert "review prepare" in block
+    assert "review begin" in block
+    assert "review result import" in block
+    assert "outside super-harness" in block
+    assert "do not edit while any issued run is pending" in block
     assert "does not trigger plan review" in block
     assert "plan, scope, or requirements changed" in block
-    assert "never widen an assignment to the whole pr" in block
+    assert "never widen it to the whole pr" in block
 
 
 def test_agents_md_subsection_has_review_protocol() -> None:
-    # HG-02.B: teach the agent the review loop — dispatch a reviewer subagent and
-    # record the verdict via the CLI (the harness never runs the review itself).
     block = ClaudeCodeAdapter().agents_md_subsection()
-    assert "AWAITING_PLAN_REVIEW" in block
-    assert "AWAITING_CODE_REVIEW" in block
-    assert "super-harness review approve" in block
-    assert "super-harness review reject" in block
-    # Tells the agent to dispatch a reviewer subagent (uses its own Task tool).
-    assert "subagent" in block.lower()
-    # HG-02.C: strategy-aware — the agent checks the configured strategy and, when
-    # it is `human`, hands off instead of self-approving.
-    assert "strategy" in block.lower()
-    assert "human" in block.lower()
-    assert "agent_options" in block
-    assert "bundle-only" in block
-    assert "incremental" in block
+    assert ".harness/review-governance.yaml" in block
+    assert ".harness/review-profiles.local.yaml" in block
+    assert "explicit model" in block
+    assert "review run fail" in block
+    assert "review human draft" in block
+    assert "review human confirm" in block
+    assert "must never confirm the human nonce" in block
+    assert "supporting context" in block
 
 
 def test_agents_md_subsection_frames_kill_switch_as_human_only() -> None:

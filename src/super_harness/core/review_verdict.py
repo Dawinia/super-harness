@@ -43,6 +43,12 @@ def parse_verdict_file(path: Path) -> dict[str, Any]:
         parsed: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
         raise VerdictError(f"verdict file is not valid YAML: {e}") from e
+    return validate_verdict_mapping(parsed)
+
+
+def validate_verdict_mapping(parsed: object) -> dict[str, Any]:
+    """Structurally validate an already parsed human or producer verdict."""
+
     if not isinstance(parsed, dict):
         raise VerdictError("verdict file must be a YAML mapping")
     if not isinstance(parsed.get("bundle_digest"), str) or not parsed["bundle_digest"]:
@@ -82,7 +88,79 @@ def parse_verdict_file(path: Path) -> dict[str, Any]:
             )
         if pf["disposition"] == "wontfix" and not (isinstance(pf.get("note"), str) and pf["note"]):
             raise VerdictError(f"prior_finding[{pf['id']!r}] disposition=wontfix requires a note")
+    scope_sufficient = parsed.get("scope_sufficient", True)
+    if not isinstance(scope_sufficient, bool):
+        raise VerdictError("verdict.scope_sufficient must be a boolean when present")
     return parsed
+
+
+def review_verdict_json_schema(checklist: list[str]) -> dict[str, Any]:
+    """JSON Schema for one frozen automated reviewer run result."""
+
+    checklist_entry = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["item", "status"],
+        "properties": {
+            "item": {"type": "string", "enum": checklist},
+            "status": {"type": "string", "enum": sorted(_STATUSES)},
+            "note": {"type": "string"},
+        },
+    }
+    finding = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["id", "severity", "file", "summary"],
+        "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "severity": {"type": "string", "enum": sorted(_SEVERITIES)},
+            "file": {"type": "string"},
+            "line": {"type": "integer", "minimum": 1},
+            "summary": {"type": "string"},
+        },
+    }
+    prior_finding = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["id", "disposition"],
+        "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "disposition": {"type": "string", "enum": sorted(_DISPOSITIONS)},
+            "note": {"type": "string"},
+        },
+    }
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "run_id",
+            "source",
+            "target_head",
+            "contract_digest",
+            "bundle_digest",
+            "scope_sufficient",
+            "checklist",
+            "findings",
+            "prior_findings",
+        ],
+        "properties": {
+            "run_id": {"type": "string", "minLength": 1},
+            "source": {"type": "string", "minLength": 1},
+            "target_head": {"type": "string", "minLength": 1},
+            "contract_digest": {"type": "string", "minLength": 1},
+            "bundle_digest": {"type": "string", "minLength": 1},
+            "scope_sufficient": {"type": "boolean"},
+            "checklist": {
+                "type": "array",
+                "minItems": len(checklist),
+                "maxItems": len(checklist),
+                "items": checklist_entry,
+            },
+            "findings": {"type": "array", "items": finding},
+            "prior_findings": {"type": "array", "items": prior_finding},
+        },
+    }
 
 
 def read_change_events(events_file: Path, change_id: str) -> list[Event]:

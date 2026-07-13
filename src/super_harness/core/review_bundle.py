@@ -37,12 +37,12 @@ class BundleError(ValueError):
 
 
 def load_base_branch(root: Path) -> str:
-    """Base branch for the in-scope diff: `.harness/policy.yaml` review.base_branch, else `main`.
+    """Read tracked review governance's base branch, else ``main``.
 
     Tolerant: absent/corrupt yaml → default. This is the single config location
     for the base branch so the implementer never re-hardcodes `main`.
     """
-    f = root / ".harness" / "policy.yaml"
+    f = root / ".harness" / "review-governance.yaml"
     if not f.is_file():
         return _DEFAULT_BASE
     try:

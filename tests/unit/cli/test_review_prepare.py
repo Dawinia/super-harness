@@ -39,6 +39,7 @@ def _seed_change(
             timestamp="2026-06-23T00:00:00Z",
             actor=Actor(type="human", identifier="cli"), framework=framework, payload=p))
     refresh_state_after_emit(ws)
+    _set_reviewer_source_policy(ws)
 
 
 def _seed_awaiting_plan_review(ws: Path, declared: list[str]) -> None:
@@ -65,32 +66,41 @@ def _seed_awaiting_plan_review(ws: Path, declared: list[str]) -> None:
             )
         )
     refresh_state_after_emit(ws)
+    _set_reviewer_source_policy(ws)
 
 
 def _set_reviewer_source_policy(ws: Path) -> None:
-    (ws / ".harness" / "policy.yaml").write_text(
-        "reviewers:\n"
+    (ws / ".harness" / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  base_branch: main\n"
         "  sources:\n"
         "    subagent:\n"
-        "      agent: task-subagent\n"
-        "      context: incremental\n"
-        "      agent_options:\n"
-        "        effort: medium\n"
+        "      kind: automated\n"
         "    external:\n"
-        "      agent: codex\n"
-        "      context: bundle-only\n"
-        "      instructions: Run Codex against the prepared review bundle only.\n"
-        "      agent_options:\n"
-        "        reasoning_effort: medium\n"
-        "        sandbox: read-only\n"
-        "  code-reviewer:\n"
-        "    strategy: subagent\n"
-        "    min_independent: 2\n"
-        "    participants: [subagent, external]\n"
-        "  plan-reviewer:\n"
-        "    strategy: subagent\n"
-        "    min_independent: 2\n"
-        "    participants: [subagent, external]\n"
+        "      kind: automated\n"
+        "  roles:\n"
+        "    code-reviewer:\n"
+        "      min_independent: 2\n"
+        "      participants: [subagent, external]\n"
+        "    plan-reviewer:\n"
+        "      min_independent: 2\n"
+        "      participants: [subagent, external]\n"
+    )
+    (ws / ".harness" / "review-profiles.local.yaml").write_text(
+        "version: 1\n"
+        "sources:\n"
+        "  subagent:\n"
+        "    protocol: claude-cli\n"
+        "    model: claude-review\n"
+        "    agent_options:\n"
+        "      effort: medium\n"
+        "  external:\n"
+        "    protocol: codex-cli\n"
+        "    model: gpt-review\n"
+        "    agent_options:\n"
+        "      reasoning_effort: medium\n"
+        "      sandbox: read-only\n"
     )
 
 
@@ -140,14 +150,14 @@ def test_prepare_writes_bundle(tmp_path: Path) -> None:
     assert r.exit_code == EXIT_OK, r.output
     out = json.loads(r.output)
     assert out["status"] == "pass"
-    bundle_path = pending_reviews_dir(ws, "c") / "code-reviewer.bundle.json"
+    bundle_path = pending_reviews_dir(ws, "c") / "code-reviewer" / "draft.packet.json"
     assert bundle_path.is_file()
     bundle = json.loads(bundle_path.read_text())
     assert bundle["diff_in_scope"] == ["src/a.py"]
     assert bundle["bundle_digest"]
 
 
-def test_prepare_embeds_reviewer_source_policy_hints(tmp_path: Path) -> None:
+def test_prepare_embeds_tracked_reviewer_governance(tmp_path: Path) -> None:
     ws = _repo(tmp_path)
     _seed_change(ws, ["src/"])
     _set_reviewer_source_policy(ws)
@@ -157,29 +167,21 @@ def test_prepare_embeds_reviewer_source_policy_hints(tmp_path: Path) -> None:
 
     assert r.exit_code == EXIT_OK, r.output
     bundle = json.loads(
-        (pending_reviews_dir(ws, "c") / "code-reviewer.bundle.json").read_text()
+        (pending_reviews_dir(ws, "c") / "code-reviewer" / "draft.packet.json").read_text()
     )
-    assert bundle["review_policy"] == {
+    assert bundle["review_governance"] == {
         "reviewer": "code-reviewer",
-        "strategy": "subagent",
         "min_independent": 2,
-        "allowed_sources": ["subagent", "external"],
         "participants": ["subagent", "external"],
-        "source_profiles": {
-            "subagent": {
-                "instructions": "Dispatch an independent subagent reviewer and record its verdict.",
-                "agent": "task-subagent",
-                "context": "incremental",
-                "agent_options": {"effort": "medium"},
-            },
-            "external": {
-                "instructions": "Run Codex against the prepared review bundle only.",
-                "agent": "codex",
-                "context": "bundle-only",
-                "agent_options": {"reasoning_effort": "medium", "sandbox": "read-only"},
-            },
+        "max_automatic_rounds_per_epoch": 2,
+        "require_distinct_model_families": False,
+        "sources": {
+            "subagent": {"kind": "automated"},
+            "external": {"kind": "automated"},
         },
     }
+    assert bundle["profile_digest"]
+    assert bundle["contract_digest"]
 
 
 def test_prepare_compiles_initial_full_change_assignments(tmp_path: Path) -> None:
@@ -194,7 +196,7 @@ def test_prepare_compiles_initial_full_change_assignments(tmp_path: Path) -> Non
 
     assert result.exit_code == EXIT_OK, result.output
     bundle = json.loads(
-        (pending_reviews_dir(ws, "c") / "code-reviewer.bundle.json").read_text()
+        (pending_reviews_dir(ws, "c") / "code-reviewer" / "draft.packet.json").read_text()
     )
     assert len(bundle["target_head"]) == 40
     assert bundle["plan_review_required"] is False
@@ -236,7 +238,7 @@ def test_prepare_scopes_plan_review_assignments_to_declared_artifacts(
 
     assert result.exit_code == EXIT_OK, result.output
     bundle = json.loads(
-        (pending_reviews_dir(ws, "c") / "plan-reviewer.bundle.json").read_text()
+        (pending_reviews_dir(ws, "c") / "plan-reviewer" / "draft.packet.json").read_text()
     )
     for assignment in bundle["assignments"]:
         assert assignment["inspection"]["files"] == ["docs/plan.md"]
@@ -257,7 +259,7 @@ def test_prepare_keeps_declared_scope_for_artifactless_plain_plan_review(
 
     assert result.exit_code == EXIT_OK, result.output
     bundle = json.loads(
-        (pending_reviews_dir(ws, "c") / "plan-reviewer.bundle.json").read_text()
+        (pending_reviews_dir(ws, "c") / "plan-reviewer" / "draft.packet.json").read_text()
     )
     for assignment in bundle["assignments"]:
         assert assignment["inspection"]["files"] == ["src/a.py"]
@@ -291,7 +293,7 @@ def test_prepare_keeps_empty_plan_target_explicitly_empty(tmp_path: Path) -> Non
 
     assert result.exit_code == EXIT_OK, result.output
     bundle = json.loads(
-        (pending_reviews_dir(tmp_path, "c") / "plan-reviewer.bundle.json").read_text()
+        (pending_reviews_dir(tmp_path, "c") / "plan-reviewer" / "draft.packet.json").read_text()
     )
     for assignment in bundle["assignments"]:
         assert assignment["inspection"]["files"] == []
@@ -324,7 +326,7 @@ def test_prepare_batches_code_and_docs_followups_into_one_incremental_assignment
 
     assert result.exit_code == EXIT_OK, result.output
     bundle = json.loads(
-        (pending_reviews_dir(ws, "c") / "code-reviewer.bundle.json").read_text()
+        (pending_reviews_dir(ws, "c") / "code-reviewer" / "draft.packet.json").read_text()
     )
     assert bundle["plan_review_required"] is False
     for assignment in bundle["assignments"]:
@@ -406,7 +408,9 @@ def test_prepare_rejects_deleted_plan_after_approval(tmp_path: Path) -> None:
     assert "plan" in result.output.lower()
 
 
-def test_prepare_compiles_mixed_full_and_incremental_source_targets(tmp_path: Path) -> None:
+def test_prepare_compiles_incremental_targets_from_complete_source_baselines(
+    tmp_path: Path,
+) -> None:
     ws = _repo(tmp_path)
     _seed_change(ws, ["src/"])
     baseline = subprocess.run(
@@ -416,20 +420,6 @@ def test_prepare_compiles_mixed_full_and_incremental_source_targets(tmp_path: Pa
     _record_source_result(ws, "external", baseline)
     (ws / "src" / "a.py").write_text("v3\n")
     _git(ws, "commit", "-aqm", "follow-up")
-    (ws / ".harness" / "policy.yaml").write_text(
-        "reviewers:\n"
-        "  sources:\n"
-        "    subagent:\n"
-        "      agent: task-subagent\n"
-        "      context: full-change\n"
-        "      agent_options: {effort: medium}\n"
-        "    external:\n"
-        "      agent: codex\n"
-        "      context: incremental\n"
-        "      agent_options: {reasoning_effort: medium}\n"
-        "  code-reviewer:\n"
-        "    participants: [subagent, external]\n"
-    )
 
     result = CliRunner().invoke(
         main,
@@ -438,11 +428,11 @@ def test_prepare_compiles_mixed_full_and_incremental_source_targets(tmp_path: Pa
 
     assert result.exit_code == EXIT_OK, result.output
     bundle = json.loads(
-        (pending_reviews_dir(ws, "c") / "code-reviewer.bundle.json").read_text()
+        (pending_reviews_dir(ws, "c") / "code-reviewer" / "draft.packet.json").read_text()
     )
     subagent, external = bundle["assignments"]
-    assert subagent["inspection"]["mode"] == "full-change"
-    assert subagent["inspection"]["base"] != baseline
+    assert subagent["inspection"]["mode"] == "incremental"
+    assert subagent["inspection"]["base"] == baseline
     assert external["inspection"]["mode"] == "incremental"
     assert external["inspection"]["base"] == baseline
 
@@ -468,7 +458,7 @@ def test_prepare_rejects_reviewer_outside_its_lifecycle_state(tmp_path: Path) ->
 
     assert result.exit_code == EXIT_VALIDATION, result.output
     assert "state" in result.output.lower()
-    assert not (pending_reviews_dir(ws, "c") / "plan-reviewer.bundle.json").exists()
+    assert not (pending_reviews_dir(ws, "c") / "plan-reviewer" / "draft.packet.json").exists()
 
 
 def test_prepare_wires_resolver_for_openspec(tmp_path: Path) -> None:
@@ -481,7 +471,14 @@ def test_prepare_wires_resolver_for_openspec(tmp_path: Path) -> None:
     )
     assert r.exit_code == 0, r.output
     bundle = json.loads(
-        (ws / ".harness" / "pending-reviews" / "c" / "code-reviewer.bundle.json").read_text()
+        (
+            ws
+            / ".harness"
+            / "pending-reviews"
+            / "c"
+            / "code-reviewer"
+            / "draft.packet.json"
+        ).read_text()
     )
     assert bundle["spec_path"].endswith("openspec/changes/c/proposal.md")
     assert bundle["plan_path"].endswith("openspec/changes/c/tasks.md")

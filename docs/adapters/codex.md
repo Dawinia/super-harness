@@ -47,18 +47,20 @@ gates back the gap: even an edit the hot path misses is caught before merge.
 workspace; when a tool call is blocked, run `super-harness status` for the next
 step and `super-harness change resume <change_id>` to restore context; never work
 around the gate (overriding is a human-only decision, recorded and disclosed at
-the merge gate); the review protocol (super-harness enforces the configured
-reviewer-source verdict threshold, you produce the verdicts); source profiles
-from `status` / `review prepare` (including context and agent-specific
-`agent_options`, such as Codex `reasoning_effort`); and the turn-end authoring
-check.
+the merge gate); the receipt-backed review protocol; tracked governance plus
+gitignored user-local profiles (including an explicit model and Codex-specific
+`reasoning_effort`); and the turn-end authoring check.
 
-The generated review protocol treats the prepared bundle as the execution
-contract. Codex dispatches its ordered assignments, applies each source's
-options verbatim, passes the generated prompt unchanged, and collects all raw
-verdicts before recording. A code-only finding fix is batched with docs
-follow-ups and prepared once; it does not repeat plan review or widen a scoped
-assignment to the whole PR.
+The generated protocol is deliberately compatible with a CLI that cannot spawn
+an agent. `review prepare` compiles the target and `review begin` writes exact,
+caller-owned invocation files; super-harness never starts Codex. The caller runs
+every argv/stdin contract outside the harness, unchanged, then uses `review
+result import` or `review run fail`. All issued sources finish before editing.
+A code-only finding fix is batched with docs follow-ups and prepared once; it does
+not repeat plan review. Findings remain scoped to the exact Git target, while
+unchanged repository material may be read as supporting architectural context.
+Human receipts use draft plus TTY confirmation, which a code agent must not
+self-confirm.
 
 ## Common issues
 

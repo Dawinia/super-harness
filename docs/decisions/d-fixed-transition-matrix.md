@@ -5,13 +5,12 @@ ratified_by: dawinialo@163.com
 ratified_at: '2026-06-26T09:45:27.695262Z'
 ratified_text_hash: sha256:bd22ae2dcac7f0630529e2d42457b809858d2ca19e33a4bf870b1bc76b1ba52b
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-07-09T07:46:13.022139Z'
-last_reconcile_kind: independent
-last_reconcile_justification: Multi-independent reviewer gate adds explicit review-state
-  self-loops to the declared transition matrix; compute_target_state remains the sole
-  transition authority.
+last_reconciled_at: '2026-07-13T10:53:18.209733Z'
+last_reconcile_kind: self
+last_reconcile_justification: Review execution events are declared informational self-loops;
+  compute_target_state and the fixed matrix remain the sole transition authority.
 reconciled_anchors:
-  src/super_harness/core/transitions.py: sha256:a94bf1fec1190a9b47a70cb07f4006697d447a4757b4d7057576658c3d3f403d
+  src/super_harness/core/transitions.py: sha256:8d04b5b5b6a48c6d80075e934e4f672996e40d055cc1e31c4069e222d6bc7cf9
 ---
 State transitions come only from the fixed declared matrix; no ad-hoc transition.
 

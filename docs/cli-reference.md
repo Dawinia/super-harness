@@ -600,6 +600,9 @@ super-harness init [OPTIONS]
 | `--framework` | {openspec\|spec-kit\|superpowers\|plain} | — | Explicit framework; default = auto-detect (v0.1: no-op placeholder; framework adapters auto-detect at install time.) |
 | `--force` | flag | `False` |  |
 | `--no-agent` | flag | `False` | Skip auto-installing the detected agent's gate hook. |
+| `--integration` | {codex\|claude-code} | — | Coding-agent integration to configure; repeat for multiple selections. |
+| `--review-producer` | {claude-cli\|codex-cli} | — | Local review producer protocol to configure; repeat for multiple selections. |
+| `--review-model` | text (repeatable) | — | Explicit model for a selected review source; repeat per source. |
 
 **Exit codes:**
 
@@ -775,7 +778,7 @@ super-harness pr validate [OPTIONS] PR_NUMBER
 
 ## super-harness review
 
-Record reviewer verdicts (approve / reject) or skip a stuck reviewer.
+Compile contracts, import receipts, or disclose a review skip.
 
 ```
 super-harness review COMMAND [ARGS...]
@@ -783,7 +786,7 @@ super-harness review COMMAND [ARGS...]
 
 ## super-harness review approve
 
-Record a PASS verdict: emit `plan_approved` / `code_review_passed`.
+Fail loudly: direct PASS evidence is disabled; import a receipt.
 
 ```
 super-harness review approve [OPTIONS] CHANGE
@@ -793,16 +796,127 @@ super-harness review approve [OPTIONS] CHANGE
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--reason` | text | `'approved'` | Audit reason recorded on the event. |
-| `--verdict-file` | text | — | Structured verdict file (REQUIRED for code-reviewer; see `review prepare`). |
-| `--base` | text | — | Base branch for freshness check (default: policy.yaml review.base_branch, else main). |
-| `--source` | text | — | Reviewer source label from policy.yaml reviewers.sources. |
+| `--reason` | text | `'approved'` | Compatibility option; no evidence is recorded. |
+| `--verdict-file` | text | — | Compatibility option; use `review result import`. |
+| `--base` | text | — | Compatibility option; direct evidence is disabled. |
+| `--source` | text | — | Reviewer source label from review-governance.yaml. |
 | `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
-- `0` verdict recorded (or partial independent-source verdict recorded; `plan_approved` / `code_review_passed` emitted once the configured threshold is met)
-- `2` verdict gate failed — code-reviewer: bare / incomplete checklist / stale digest; ANY reviewer whose verdict has a failing checklist item (use `review reject`); malformed `--verdict-file`; or invalid/missing `--source`
+- `2` direct evidence is disabled; use `review result import` or the human draft/confirm workflow
+- `3` no `.harness/`
+
+## super-harness review authorize
+
+Interactively authorize one exact expensive or over-budget round.
+
+```
+super-harness review authorize [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--source` | text (repeatable) | — |  |
+| `--reason` | text | *required* |  |
+
+**Exit codes:**
+
+- `0` one-shot authorization recorded
+- `1` human declined the interactive confirmation
+- `2` non-TTY, stale contract, invalid source set, or invalid lifecycle state
+- `3` no `.harness/`
+
+## super-harness review begin
+
+Freeze one automated round and return caller-owned invocation contracts.
+
+```
+super-harness review begin [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--source` | text (repeatable) | — | Retry source; repeat for the complete currently failed subset. |
+
+**Exit codes:**
+
+- `0` round and caller-owned invocation contracts frozen; no producer executed
+- `2` stale/missing packet, open round, incomplete retry set, exhausted or unauthorized budget, or invalid profile
+- `3` no `.harness/`
+
+## super-harness review human
+
+Inspect and explicitly confirm first-class human review receipts.
+
+```
+super-harness review human COMMAND [ARGS...]
+```
+
+## super-harness review human confirm
+
+Confirm a nonce-bound human verdict in a human-owned interactive TTY.
+
+```
+super-harness review human confirm [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--nonce` | text | *required* |  |
+
+**Exit codes:**
+
+- `0` human receipt recorded (already-confirmed nonce is idempotent)
+- `1` human declined the interactive confirmation
+- `2` non-TTY, invalid/expired/stale nonce, or invalid lifecycle state
+- `3` no `.harness/`
+
+## super-harness review human draft
+
+Validate a human verdict and create a short-lived confirmation nonce.
+
+```
+super-harness review human draft [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--source` | text | — |  |
+| `--verdict-file` | file | *required* |  |
+
+**Exit codes:**
+
+- `0` validated human verdict and short-lived confirmation nonce written
+- `2` invalid source/verdict/checklist/dispositions, stale packet, or invalid state
+- `3` no `.harness/`
+
+## super-harness review human inspect
+
+Show compact packet metadata or page its human-readable inspection contract.
+
+```
+super-harness review human inspect [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--pager` | flag | `False` | Render the review packet through a pager. |
+
+**Exit codes:**
+
+- `0` compact packet metadata shown, or packet paged in a human TTY
+- `2` missing packet, invalid lifecycle state, or `--pager` without a TTY
 - `3` no `.harness/`
 
 ## super-harness review prepare
@@ -817,17 +931,17 @@ super-harness review prepare [OPTIONS] CHANGE
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--base` | text | — | Base branch for the in-scope diff (default: .harness/policy.yaml review.base_branch, else main). |
+| `--base` | text | — | Base branch for the in-scope diff (default: tracked review governance, else main). |
 
 **Exit codes:**
 
-- `0` bundle written
-- `2` validation error (dirty in-scope tree / git failure — fail-closed)
+- `0` draft packet written
+- `2` governance/profile/lifecycle/clean-tree/Git validation failure
 - `3` no `.harness/`
 
 ## super-harness review reject
 
-Record a FAIL verdict: emit `plan_rejected` / `code_review_failed`.
+Fail loudly: direct FAIL evidence is disabled; import a receipt.
 
 ```
 super-harness review reject [OPTIONS] CHANGE
@@ -837,15 +951,72 @@ super-harness review reject [OPTIONS] CHANGE
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--reason` | text | `'rejected'` | Audit reason recorded on the event. |
-| `--verdict-file` | text | — | Structured verdict file (inlined if provided; never required for reject). |
-| `--source` | text | — | Reviewer source label from policy.yaml reviewers.sources. |
+| `--reason` | text | `'rejected'` | Compatibility option; no evidence is recorded. |
+| `--verdict-file` | text | — | Compatibility option; use `review result import`. |
+| `--source` | text | — | Reviewer source label from review-governance.yaml. |
 | `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
-- `0` rejection recorded
-- `2` invalid reviewer/source/state, malformed verdict, or stale structured code-review verdict
+- `2` direct evidence is disabled; use `review result import` or the human draft/confirm workflow
+- `3` no `.harness/`
+
+## super-harness review result
+
+Import completed caller-owned reviewer results.
+
+```
+super-harness review result COMMAND [ARGS...]
+```
+
+## super-harness review result import
+
+Parse and record one completed external result; never run its producer.
+
+```
+super-harness review result import [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--run-id` | text | *required* | Frozen reviewer run identifier. |
+| `--result-file` | file | *required* | Completed raw producer output file. |
+
+**Exit codes:**
+
+- `0` result and receipt imported (byte-identical duplicate is idempotent)
+- `2` unknown/terminal run, conflicting duplicate, malformed or stale result, binding/checklist/model/disposition failure, or invalid lifecycle state
+- `3` no `.harness/`
+
+## super-harness review run
+
+Record failures for caller-owned reviewer runs.
+
+```
+super-harness review run COMMAND [ARGS...]
+```
+
+## super-harness review run fail
+
+Record an external producer failure without retrying it.
+
+```
+super-harness review run fail [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
+| `--run-id` | text | *required* |  |
+| `--reason` | text | *required* |  |
+
+**Exit codes:**
+
+- `0` external producer failure recorded (same reason is idempotent)
+- `2` unknown/imported run, conflicting failure, or invalid lifecycle state
 - `3` no `.harness/`
 
 ## super-harness review skip
@@ -862,7 +1033,7 @@ super-harness review skip [OPTIONS] CHANGE
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
 | `--reason` | text | — | Audit reason recorded on the event (default: manual_skip; REQUIRED with --override). |
 | `--override` | flag | `False` | Deliberate, disclosed override: a bare skip blocks at the merge gate; --override (with --reason) passes-with-disclosure. |
-| `--source` | text | — | Reviewer source label from policy.yaml reviewers.sources. |
+| `--source` | text | — | Reviewer source label from review-governance.yaml. |
 | `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**

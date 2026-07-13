@@ -59,13 +59,17 @@ What `init --setup-github` does:
 
 1. Creates `.harness/` with the lifecycle data plane: `events.jsonl` (the
    append-only event log), `state.yaml` (the derived current-state cache), and
-   `policy.yaml` (the default reviewer policy: one `subagent` participant plus
-   optional vendor-neutral source profiles such as `external` and `human`).
+   tracked `review-governance.yaml`. In an interactive terminal, init detects
+   installed Codex and Claude tooling and offers independent multi-select prompts
+   for coding-agent integrations and review producers. Selecting a producer also
+   prompts for its explicit model and writes the choice to the gitignored,
+   user-editable `review-profiles.local.yaml`. Selecting none creates a fully
+   usable human-only review configuration. Init never installs a third-party
+   agent or producer binary.
 2. Writes `AGENTS.md` (or extends an existing one) with a `super-harness`
    section your AI agent will read.
-   - If a `.claude/` directory is detected, `init` also auto-installs the
-     Claude Code agent adapter's gate hook (see step 3). Pass `init
-     --no-agent` to skip this.
+   Selected integrations install their existing local gate hooks. Pass
+   `--no-agent` to skip integration configuration.
 3. Writes `.github/workflows/super-harness.yml` — the 7-job CI workflow
    (pr-decorate / pr-validate / verification / attest-verify / decision-check /
    doc-check / on-merge).
@@ -181,105 +185,119 @@ starts editing. The hot-path gate enforces lifecycle rules:
   OpenSpec adapter watches for these and emits `plan_ready` automatically →
   `AWAITING_PLAN_REVIEW`).
 - The plan is then reviewed. super-harness **does not run the review** — it
-  enforces (via the gate) that the configured number of independent reviewer
-  source verdicts is recorded, and you (or the agent's reviewer process, per the
-  `AGENTS.md` protocol) produce those verdicts.
+  compiles immutable contracts and enforces that all configured independent
+  sources produce valid receipts. Reviewer **roles** are lifecycle positions
+  such as `plan-reviewer` and `code-reviewer`; reviewer **sources** are evidence
+  labels, not commands or subagent APIs.
 
-  Reviewer **roles** are lifecycle positions such as `plan-reviewer` and
-  `code-reviewer`. Reviewer **sources** are policy labels such as `subagent`,
-  `external`, or `human`. A new repo starts with the compatible default:
+  Shared requirements live in tracked `.harness/review-governance.yaml`:
 
   ```yaml
-  reviewers:
+  version: 1
+  review:
+    base_branch: main
     sources:
-      subagent:
-        agent: task-subagent
-        context: incremental
-        instructions: "Dispatch an independent reviewer subagent against the current plan/review bundle or latest delta."
-        agent_options:
-          effort: medium
-      external:
-        agent: codex
-        context: bundle-only
-        instructions: "Run codex exec --sandbox read-only against the prepared plan or review bundle."
-        agent_options:
-          reasoning_effort: medium
-          sandbox: read-only
+      codex:
+        kind: automated
+      claude:
+        kind: automated
       human:
-        agent: human
-        context: incremental
-    plan-reviewer:
-      strategy: subagent
-      min_independent: 1
-      participants: [subagent]
-    code-reviewer:
-      strategy: subagent
-      min_independent: 1
-      participants: [subagent]
+        kind: human
+    roles:
+      plan-reviewer:
+        participants: [codex, claude]
+        min_independent: 2
+        max_automatic_rounds_per_epoch: 2
+      code-reviewer:
+        participants: [codex, claude]
+        min_independent: 2
+        max_automatic_rounds_per_epoch: 2
+    require_distinct_model_families: false
   ```
 
-  With `min_independent: 1`, the short form still advances exactly as before:
+  Each user's explicit producer choices stay out of Git:
+
+  ```yaml
+  # .harness/review-profiles.local.yaml
+  version: 1
+  sources:
+    codex:
+      protocol: codex-cli
+      model: <your-codex-model>
+      cost_class: standard
+      agent_options:
+        reasoning_effort: medium
+        sandbox: read-only
+    claude:
+      protocol: claude-cli
+      model: <your-claude-model>
+      cost_class: standard
+      agent_options:
+        effort: medium
+  ```
+
+  Model and option names are producer-specific and explicit. A profile marked
+  `cost_class: expensive` requires one-shot human authorization before begin;
+  unavailable token telemetry never blocks review.
+
+  The automated plan-review protocol is prepare → begin → caller execution →
+  import/fail:
 
   ```bash
-  super-harness review approve my-first-change --reviewer plan-reviewer   # → PLAN_APPROVED
-  super-harness implementation start my-first-change                      # → IMPLEMENTATION_IN_PROGRESS
+  super-harness review prepare my-first-change --reviewer plan-reviewer
+  super-harness review begin my-first-change --reviewer plan-reviewer
+  # Run every argv/stdin contract printed by begin outside super-harness, unchanged.
+  super-harness review result import my-first-change --reviewer plan-reviewer \
+    --run-id <codex-run-id> --result-file <codex-output-path>
+  super-harness review result import my-first-change --reviewer plan-reviewer \
+    --run-id <claude-run-id> --result-file <claude-output-path>
+  super-harness implementation start my-first-change  # after → PLAN_APPROVED
   ```
 
-  `participants` fixes the normal source set and dispatch order so a code agent
-  does not choose among all configured or installed agents at runtime. If a team
-  sets `participants: [subagent, external]` and `min_independent: 2`, each
-  approval names its configured `--source`. The first approval records `review_verdict_recorded`
-  and stays in `AWAITING_PLAN_REVIEW`; the second independent source emits the
-  existing milestone:
+  `begin` never launches Codex, Claude, a Task subagent, or any other producer.
+  If an external process crashes, record that exact run with `review run fail`;
+  the harness never retries it silently. Wait for every issued run before editing,
+  even after an early blocker. `super-harness status` reports pending/failed/
+  retained sources, round budget, authorizations, packet digests, and the next
+  legal command. Direct `review approve|reject` cannot create new evidence.
 
-  ```bash
-  super-harness review approve my-first-change --reviewer plan-reviewer --source subagent   # stays in AWAITING_PLAN_REVIEW
-  super-harness review approve my-first-change --reviewer plan-reviewer --source external   # → PLAN_APPROVED
-  super-harness implementation start my-first-change                                        # → IMPLEMENTATION_IN_PROGRESS
-  ```
-
-  (Use `review reject ... --reason "<why>"` to send the plan back, or
-  `review skip ...` as an escape hatch. The per-reviewer strategy —
-  `subagent` / `human` / `hybrid` — is set in `.harness/policy.yaml` and shown by
-  `super-harness status`, along with accepted and remaining reviewer sources.
-  Source profiles are execution inputs for the actor that runs the review:
-  `context` distinguishes bundle-only, incremental, and full-change review;
-  `agent_options` keeps each agent's own knob names, such as Codex
-  `reasoning_effort` or a subagent runner's `effort`. The code agent applies
-  those options verbatim; it never inherits its main-session effort. Do not put
-  a generic `effort` or `mode` at the source root.)
+  For a human participant, use `review human inspect`, write the structured
+  verdict, validate it with `review human draft`, and have the human run
+  TTY-only `review human confirm --nonce <nonce>`. A code agent must not confirm
+  that nonce. `review skip` remains the disclosed escape hatch; code-review skip
+  requires `--override --reason <why>` to pass attestation.
 - Now in `IMPLEMENTATION_IN_PROGRESS`, the agent can edit source code. If it
   tries to `Edit` before the lifecycle permits it, the `PreToolUseGate` blocks
   the tool call.
 - After `done` (→ `AWAITING_CODE_REVIEW`), code review uses the same source
-  threshold. Commit the in-scope files first, prepare the deterministic review
-  bundle, then record one structured verdict file per independent source:
+  protocol. Commit the in-scope files first, then freeze the round:
 
   ```bash
   super-harness review prepare my-first-change --reviewer code-reviewer
-  super-harness review approve my-first-change --reviewer code-reviewer --source subagent --verdict-file .harness/pending-reviews/my-first-change/code-reviewer.subagent.yaml
-  super-harness review approve my-first-change --reviewer code-reviewer --source external --verdict-file .harness/pending-reviews/my-first-change/code-reviewer.external.yaml
+  super-harness review begin my-first-change --reviewer code-reviewer
+  # Caller runs each frozen invocation, then imports every result as above.
   ```
 
-  The bundle contains one ordered assignment per participant: the exact target
-  commit, Git range, in-scope files, shell-free diff argv, source-specific
-  options, and canonical reviewer prompt. Dispatch every assignment as written,
-  collect all raw verdicts, then record them. The digest is checked against the
-  current committed in-scope diff for both approval and structured rejection.
+  Each run binds source, explicit requested model/options, exact target commit,
+  Git range/files/argv, prompt/checklist, and contract digest. Reviewers may read
+  unchanged repository material for architecture context, but findings stay on
+  the frozen target. A reviewer that cannot complete the target returns
+  `scope_sufficient: false` with a finding; it does not widen to the whole PR.
 
   After a code-review rejection, batch all finding fixes and docs follow-ups into
   commits, then run `review prepare` once. Each source receives everything since
   its latest trustworthy baseline. Do not repeat `done` or plan review for a
   code-only fix. Use `plan redeclare` only when the approved plan, scope, or
   requirements changed; the CLI rejects undeclared plan/spec drift. A scoped
-  reviewer returns a partial rejection when its target is insufficient instead
-  of expanding itself to the whole PR.
+  A started round consumes the automatic-round budget even if a producer crashes.
+  The default ceiling is two automated rounds per epoch; exhaustion requires a
+  human reviewer or one-shot authorization for an exact additional round.
 
 > **Note**: the three reviewer-driven transitions (`plan_approved`,
-> `implementation_started`, `code_review_passed`) now ship as the CLI verbs above —
-> the lifecycle runs end-to-end via the CLI. What is *not* yet shipped is an
-> unattended CI auto-reviewer (a headless LLM that produces the verdict with no
-> human/agent present); that is tracked as a follow-up. Plain-mode advances past
+> `implementation_started`, `code_review_passed`) are still lifecycle milestones;
+> review milestones are emitted by deterministic round closure after valid
+> receipts, not by direct approve/reject. super-harness deliberately does not ship
+> a headless reviewer executor. Plain-mode advances past
 > `INTENT_DECLARED` with the manual verb `super-harness plan ready`; framework
 > adapters emit `plan_ready` automatically from their artifacts.
 

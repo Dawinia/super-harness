@@ -151,7 +151,61 @@ def check_attestation(attestation_path: Path, slug: str) -> list[str]:
     missing = sorted(MILESTONE_EVENTS - set(cs.event_counts.keys()))
     if missing:
         blockers.append(f"attestation {slug}: missing milestone event(s) {missing}")
+    events: list[Event] = []
+    for raw in attestation_path.read_text(encoding="utf-8").splitlines():
+        try:
+            event = parse_event_line(raw)
+        except EventSchemaError:
+            continue
+        if event.change_id == slug:
+            events.append(event)
+    blockers.extend(_review_receipt_blockers(events, slug))
     return blockers
+
+
+def _review_receipt_blockers(events: list[Event], slug: str) -> list[str]:
+    """Require imported receipts once a stream opts into the new run protocol."""
+
+    if not any(event.type == "review_round_started" for event in events):
+        return []  # Historical lifecycle events remain readable and verifiable.
+    milestone = next(
+        (event for event in reversed(events) if event.type == "code_review_passed"),
+        None,
+    )
+    if milestone is None or milestone.payload.get("skipped") is True:
+        return []
+    receipt_ids = milestone.payload.get("receipt_ids")
+    if not isinstance(receipt_ids, list) or not receipt_ids or any(
+        not isinstance(receipt_id, str) or not receipt_id for receipt_id in receipt_ids
+    ):
+        return [
+            f"attestation {slug}: protocol code review approval has no imported receipt_ids"
+        ]
+    imported: dict[str, str] = {}
+    for event in events:
+        if event.type != "review_result_imported":
+            continue
+        receipt = event.payload.get("receipt")
+        if not isinstance(receipt, dict):
+            continue
+        receipt_id = receipt.get("receipt_id")
+        source = receipt.get("source")
+        if isinstance(receipt_id, str) and isinstance(source, str):
+            imported[receipt_id] = source
+    missing_receipts = [receipt_id for receipt_id in receipt_ids if receipt_id not in imported]
+    if missing_receipts:
+        return [
+            f"attestation {slug}: code review references missing imported receipt(s) "
+            f"{missing_receipts}"
+        ]
+    expected_sources = milestone.payload.get("independent_sources")
+    if isinstance(expected_sources, list) and set(expected_sources) != {
+        imported[receipt_id] for receipt_id in receipt_ids
+    }:
+        return [
+            f"attestation {slug}: imported receipt sources do not match independent_sources"
+        ]
+    return []
 
 
 @dataclass

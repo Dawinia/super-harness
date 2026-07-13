@@ -126,6 +126,88 @@ def test_check_attestation_clean_ready_stream_passes(tmp_path):
     assert check_attestation(att, "s") == []
 
 
+def test_check_attestation_protocol_stream_requires_imported_receipt(tmp_path):
+    att = tmp_path / "s.jsonl"
+    w = EventWriter(att)
+    _emit(w, "intent_declared", "s")
+    _emit(w, "plan_ready", "s", {"scope": {"files": ["src/x.py"]}})
+    _emit(w, "plan_approved", "s")
+    _emit(w, "implementation_started", "s")
+    _emit(w, "verification_passed", "s")
+    _emit(w, "implementation_complete", "s")
+    _emit(
+        w,
+        "review_round_started",
+        "s",
+        {
+            "reviewer": "code-reviewer",
+            "epoch_id": "epoch",
+            "round_id": "round",
+            "contract_digest": "contract",
+            "target_head": "head",
+            "profile_digest": "profiles",
+            "runs": [],
+        },
+    )
+    _emit(w, "code_review_passed", "s", {"independent_sources": ["codex"]})
+
+    blockers = check_attestation(att, "s")
+
+    assert any("no imported receipt_ids" in blocker for blocker in blockers)
+
+
+def test_check_attestation_protocol_stream_accepts_bound_imported_receipt(tmp_path):
+    att = tmp_path / "s.jsonl"
+    w = EventWriter(att)
+    _emit(w, "intent_declared", "s")
+    _emit(w, "plan_ready", "s", {"scope": {"files": ["src/x.py"]}})
+    _emit(w, "plan_approved", "s")
+    _emit(w, "implementation_started", "s")
+    _emit(w, "verification_passed", "s")
+    _emit(w, "implementation_complete", "s")
+    common = {
+        "reviewer": "code-reviewer",
+        "epoch_id": "epoch",
+        "round_id": "round",
+        "contract_digest": "contract",
+        "target_head": "head",
+    }
+    _emit(
+        w,
+        "review_round_started",
+        "s",
+        {
+            **common,
+            "profile_digest": "profiles",
+            "runs": [],
+        },
+    )
+    _emit(
+        w,
+        "review_result_imported",
+        "s",
+        {
+            **common,
+            "run_id": "run",
+            "source": "codex",
+            "result_digest": "result",
+            "verdict": {},
+            "receipt": {"receipt_id": "receipt", "source": "codex"},
+        },
+    )
+    _emit(
+        w,
+        "code_review_passed",
+        "s",
+        {
+            "independent_sources": ["codex"],
+            "receipt_ids": ["receipt"],
+        },
+    )
+
+    assert check_attestation(att, "s") == []
+
+
 def test_check_attestation_not_ready_fails(tmp_path):
     att = tmp_path / "s.jsonl"
     w = EventWriter(att)

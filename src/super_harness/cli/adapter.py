@@ -96,6 +96,24 @@ _ADAPTERS_YAML_HEADER = (
 )
 
 
+def install_agent_integration(root: Path, name: str) -> AgentAdapter:
+    """Install one built-in coding-agent integration for init or adapter CLI.
+
+    This wires only super-harness hooks and registry metadata. It never installs
+    the coding-agent binary itself.
+    """
+
+    cls = get_builtin(name)
+    if cls is None or not issubclass(cls, AgentAdapter):
+        raise ValueError(f"{name!r} is not a built-in agent integration")
+    adapter = cls()
+    adapter.install_hooks(root)
+    _persist_install_entry(
+        root, name=adapter.name, kind="agent", version=adapter.version
+    )
+    return adapter
+
+
 @click.group("adapter")
 def adapter_group() -> None:
     """Install / uninstall / list super-harness integrations for frameworks + agents."""

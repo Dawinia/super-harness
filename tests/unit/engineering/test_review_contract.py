@@ -9,10 +9,12 @@ from super_harness.engineering.review_contract import (
     compile_review_contract,
     resolve_source_baseline,
 )
-from super_harness.engineering.reviewer_policy import (
-    ReviewerIndependencePolicy,
-    ReviewerSourcePolicy,
+from super_harness.engineering.review_governance import (
+    ReviewerRoleGovernance,
+    ReviewerSourceGovernance,
+    ReviewGovernance,
 )
+from super_harness.engineering.review_profiles import ReviewProducerProfile
 
 
 def _event(event_type: str, payload: dict[str, object]) -> Event:
@@ -231,24 +233,35 @@ def test_unresolvable_source_baseline_falls_back_to_full_change(tmp_path: Path) 
             },
         },
     )
-    profile = ReviewerSourcePolicy(
-        instructions="Review.",
-        agent="codex",
-        context="incremental",
+    profile = ReviewProducerProfile(
+        source="external",
+        protocol="codex-cli",
+        model="review-model",
+        cost_class="standard",
         agent_options={"reasoning_effort": "medium"},
     )
-    policy = ReviewerIndependencePolicy(
-        reviewer="code-reviewer",
-        strategy="subagent",
-        min_independent=1,
-        allowed_sources=("external",),
-        source_instructions={"external": "Review."},
-        source_profiles={"external": profile},
-        participants=("external",),
+    governance = ReviewGovernance(
+        version=1,
+        base_branch="main",
+        sources={
+            "external": ReviewerSourceGovernance(
+                name="external", kind="automated"
+            )
+        },
+        roles={
+            "code-reviewer": ReviewerRoleGovernance(
+                reviewer="code-reviewer",
+                participants=("external",),
+                min_independent=1,
+                max_automatic_rounds_per_epoch=2,
+            )
+        },
+        require_distinct_model_families=False,
     )
     bundle = {
         "base": "main",
         "change": "change",
+        "reviewer": "code-reviewer",
         "bundle_digest": "digest",
         "checklist": ["correctness"],
         "spec_path": "",
@@ -258,7 +271,8 @@ def test_unresolvable_source_baseline_falls_back_to_full_change(tmp_path: Path) 
     compiled = compile_review_contract(
         tmp_path,
         bundle=bundle,
-        policy=policy,
+        governance=governance,
+        profiles={"external": profile},
         events=[event],
         declared=["src/"],
     )
