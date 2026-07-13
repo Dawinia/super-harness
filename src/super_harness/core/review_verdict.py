@@ -100,33 +100,33 @@ def review_verdict_json_schema(checklist: list[str]) -> dict[str, Any]:
     checklist_entry = {
         "type": "object",
         "additionalProperties": False,
-        "required": ["item", "status"],
+        "required": ["item", "status", "note"],
         "properties": {
             "item": {"type": "string", "enum": checklist},
             "status": {"type": "string", "enum": sorted(_STATUSES)},
-            "note": {"type": "string"},
+            "note": {"type": ["string", "null"]},
         },
     }
     finding = {
         "type": "object",
         "additionalProperties": False,
-        "required": ["id", "severity", "file", "summary"],
+        "required": ["id", "severity", "file", "line", "summary"],
         "properties": {
             "id": {"type": "string", "minLength": 1},
             "severity": {"type": "string", "enum": sorted(_SEVERITIES)},
             "file": {"type": "string"},
-            "line": {"type": "integer", "minimum": 1},
+            "line": {"type": ["integer", "null"], "minimum": 1},
             "summary": {"type": "string"},
         },
     }
     prior_finding = {
         "type": "object",
         "additionalProperties": False,
-        "required": ["id", "disposition"],
+        "required": ["id", "disposition", "note"],
         "properties": {
             "id": {"type": "string", "minLength": 1},
             "disposition": {"type": "string", "enum": sorted(_DISPOSITIONS)},
-            "note": {"type": "string"},
+            "note": {"type": ["string", "null"]},
         },
     }
     return {
@@ -189,17 +189,24 @@ def read_change_events(events_file: Path, change_id: str) -> list[Event]:
 def derive_open_findings(events: list[Event], change_id: str) -> list[str]:
     """Open-finding ids the next approve must dispose, in append order.
 
-    Walk every `code_review_failed` verdict for the change in append order; per
+    Walk every structured code-review result for the change in append order; per
     verdict dispose its `prior_findings` ids FIRST, then add its `findings` ids
-    (discard-then-add → a resolved finding re-listed by a later reject reopens).
+    (discard-then-add → a resolved finding re-listed by a later result reopens).
     Tolerant: entries with a missing/non-string `id` are skipped (the raw stream
     can carry pre-validation payloads). See design slice-2 §4.D.
     """
     open_ids: dict[str, None] = {}  # ordered set: insertion-order preserved
     for ev in events:
-        if ev.change_id != change_id or ev.type != "code_review_failed":
+        if ev.change_id != change_id:
             continue
-        verdict = (ev.payload or {}).get("verdict") or {}
+        payload = ev.payload or {}
+        is_code_result = ev.type == "code_review_failed" or (
+            ev.type in {"review_result_imported", "review_verdict_recorded"}
+            and payload.get("reviewer") == "code-reviewer"
+        )
+        if not is_code_result:
+            continue
+        verdict = payload.get("verdict") or {}
         for pf in verdict.get("prior_findings") or []:
             pid = pf.get("id") if isinstance(pf, dict) else None
             if isinstance(pid, str):

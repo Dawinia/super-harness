@@ -362,6 +362,64 @@ def test_prepare_rejects_plan_changed_after_approval(tmp_path: Path) -> None:
     assert "plan" in result.output.lower()
 
 
+def test_prepare_does_not_reuse_plan_head_from_before_redeclaration(
+    tmp_path: Path,
+) -> None:
+    from super_harness.core.clock import utc_now_iso
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    ws = _repo(tmp_path)
+    (ws / "docs").mkdir()
+    plan = ws / "docs" / "plan.md"
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# Old approved plan\n")
+    _git(ws, "add", "docs/plan.md")
+    _git(ws, "commit", "-qm", "approve old plan")
+    old_approved_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ws,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    declared = ["src/", "docs/plan.md"]
+    _seed_change(ws, declared, plan_reviewed_head=old_approved_head)
+
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# New approved plan\n")
+    _git(ws, "commit", "-aqm", "approve redeclared plan")
+    writer = EventWriter(events_path(ws))
+    for event_type, payload in [
+        ("plan_redeclared", {"reason": "requirements changed"}),
+        ("plan_ready", {"scope": {"files": declared}}),
+        ("plan_approved", {}),
+        ("implementation_started", {}),
+        ("verification_passed", {}),
+        ("implementation_complete", {}),
+    ]:
+        writer.emit(
+            Event(
+                event_id=new_event_id(),
+                type=event_type,
+                change_id="c",
+                timestamp=utc_now_iso(),
+                actor=Actor(type="human", identifier="cli"),
+                framework="plain",
+                payload=payload,
+            )
+        )
+    refresh_state_after_emit(ws)
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(ws), "review", "prepare", "c", "--reviewer", "code-reviewer"],
+    )
+
+    assert result.exit_code == EXIT_OK, result.output
+
+
 def test_prepare_rejects_changed_plan_inside_directory_scope(tmp_path: Path) -> None:
     ws = _repo(tmp_path)
     (ws / "docs" / "plans").mkdir(parents=True)

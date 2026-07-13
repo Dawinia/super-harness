@@ -27,7 +27,8 @@ deliberately deferred to a later version; one is blocked by an upstream bug
   it never starts, monitors, retries, or kills those processes. The caller owns
   execution. This boundary is intentional, not a pending headless-executor feature.
 - Host-native subagents are not a universal review primitive. The CLI does not
-  assume `spawn_agent`, Claude `Task`, or another in-session subagent API exists.
+  assume a Codex spawn-agent API, Claude Task, or another in-session subagent API
+  exists.
   Evidence comes from configured external producer protocols or a human receipt.
 - Daemon-autonomous event-driven dispatch — v0.1 uses CLI one-shot dispatchers
   (e.g., `super-harness on-merge` dispatches the merged-event sensors).

@@ -189,14 +189,15 @@ def compile_review_contract(
     ]
 
     if reviewer == "code-reviewer":
-        approved_plan_head = next(
-            (
-                event.payload.get("reviewed_head")
-                for event in reversed(events)
-                if event.type == "plan_approved"
-                and isinstance(event.payload.get("reviewed_head"), str)
-            ),
+        latest_plan_approval = next(
+            (event for event in reversed(events) if event.type == "plan_approved"),
             None,
+        )
+        approved_plan_head = (
+            latest_plan_approval.payload.get("reviewed_head")
+            if latest_plan_approval is not None
+            and isinstance(latest_plan_approval.payload.get("reviewed_head"), str)
+            else None
         )
         approved_artifacts: list[str] = []
         if isinstance(approved_plan_head, str):

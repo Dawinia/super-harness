@@ -108,6 +108,30 @@ def test_check_coverage_complete(tmp_path: Path) -> None:
                               "code-quality", "edge-cases"]) == []
 
 
+def test_json_schema_is_strict_with_nullable_optional_fields() -> None:
+    from super_harness.core.review_verdict import review_verdict_json_schema
+
+    schema = review_verdict_json_schema(["spec-compliance"])
+
+    def assert_all_object_properties_required(node: object) -> None:
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            assert set(node.get("required", [])) == set(properties)
+            for child in properties.values():
+                assert_all_object_properties_required(child)
+        assert_all_object_properties_required(node.get("items"))
+
+    assert_all_object_properties_required(schema)
+    checklist_item = schema["properties"]["checklist"]["items"]
+    finding = schema["properties"]["findings"]["items"]
+    prior_finding = schema["properties"]["prior_findings"]["items"]
+    assert checklist_item["properties"]["note"]["type"] == ["string", "null"]
+    assert finding["properties"]["line"]["type"] == ["integer", "null"]
+    assert prior_finding["properties"]["note"]["type"] == ["string", "null"]
+
+
 def test_read_change_events_filters_and_tolerates(tmp_path: Path) -> None:
     from super_harness.core.review_verdict import read_change_events
 
@@ -196,6 +220,37 @@ def test_open_findings_resolved_in_later_reject() -> None:
     from super_harness.core.review_verdict import derive_open_findings
     evs = [_failed("c", ["f1", "f2"]), _failed("c", ["f3"], prior=[("f1", "resolved")])]
     assert derive_open_findings(evs, "c") == ["f2", "f3"]
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    ["review_verdict_recorded", "review_result_imported"],
+)
+def test_open_findings_resolved_by_later_approved_result(event_type: str) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.review_verdict import derive_open_findings
+    from super_harness.core.ulid import new_event_id
+
+    approved = Event(
+        event_id=new_event_id(),
+        type=event_type,
+        change_id="c",
+        timestamp="2026-06-23T00:00:01Z",
+        actor=Actor(type="human", identifier="t"),
+        framework="plain",
+        payload={
+            "reviewer": "code-reviewer",
+            "outcome": "approved",
+            "verdict": {
+                "findings": [],
+                "prior_findings": [
+                    {"id": "f1", "disposition": "resolved"},
+                ],
+            },
+        },
+    )
+
+    assert derive_open_findings([_failed("c", ["f1"]), approved], "c") == []
 
 
 def test_open_findings_resolved_then_reopened() -> None:
