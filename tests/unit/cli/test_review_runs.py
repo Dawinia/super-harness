@@ -719,6 +719,63 @@ def test_stale_head_prevents_rejection_milestone_when_peer_execution_fails(
     assert events[-1].payload["target_stale"] is True
 
 
+def test_legacy_round_without_frozen_governance_cannot_approve(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    verdict = _result_for_run(begun)
+    result_path = root / "codex-result.json"
+    result_path.write_text(json.dumps(verdict), encoding="utf-8")
+
+    log_path = events_path(root)
+    records = [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    started = next(record for record in records if record["type"] == "review_round_started")
+    payload = cast(dict[str, object], started["payload"])
+    payload.pop("required_sources")
+    payload.pop("min_independent")
+    payload.pop("require_distinct_model_families")
+    log_path.write_text(
+        "\n".join(json.dumps(record, separators=(",", ":")) for record in records)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    imported = CliRunner().invoke(
+        main,
+        [
+            "--json",
+            "--workspace",
+            str(root),
+            "review",
+            "result",
+            "import",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, verdict["run_id"]),
+            "--result-file",
+            str(result_path),
+        ],
+    )
+
+    assert imported.exit_code == EXIT_OK, imported.output
+    data = json.loads(imported.output)["data"]
+    assert data["round_outcome"] == "execution_failed"
+    assert data["milestone"] is None
+    assert data["new_state"] == "AWAITING_CODE_REVIEW"
+    events = read_change_events(events_path(root), "change")
+    assert events[-1].type == "review_round_closed"
+    assert events[-1].payload["frozen_governance_complete"] is False
+
+
 def test_failed_source_retry_reuses_original_round_prior_findings(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:

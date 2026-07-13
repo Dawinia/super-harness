@@ -1289,6 +1289,8 @@ def _close_round_if_terminal(
         outcome = "execution_failed"
     elif has_rejection:
         outcome = "rejected"
+    elif not round_state.frozen_governance_complete:
+        outcome = "execution_failed"
     elif missing:
         outcome = "execution_failed"
     else:
@@ -1348,6 +1350,7 @@ def _close_round_if_terminal(
             "missing_sources": missing,
             "current_head": current_head,
             "target_stale": target_stale,
+            "frozen_governance_complete": round_state.frozen_governance_complete,
         },
         subcommand="review result import",
     )

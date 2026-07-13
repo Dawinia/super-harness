@@ -43,6 +43,7 @@ class ReviewRoundState:
     required_sources: tuple[str, ...] = ()
     min_independent: int = 0
     require_distinct_model_families: bool = False
+    frozen_governance_complete: bool = False
     automatic: bool = True
     authorization_id: str | None = None
     status: Literal["open", "closed"] = "open"
@@ -287,6 +288,16 @@ def derive_review_execution(
                 if isinstance(raw_distinct_families, bool)
                 else False
             )
+            frozen_governance_complete = (
+                isinstance(raw_required, list)
+                and bool(raw_required)
+                and all(isinstance(item, str) and item for item in raw_required)
+                and len(set(raw_required)) == len(raw_required)
+                and isinstance(raw_min_independent, int)
+                and not isinstance(raw_min_independent, bool)
+                and raw_min_independent > 0
+                and isinstance(raw_distinct_families, bool)
+            )
             rounds.append(
                 ReviewRoundState(
                     round_id=round_id,
@@ -304,6 +315,7 @@ def derive_review_execution(
                     required_sources=required_sources,
                     min_independent=min_independent,
                     require_distinct_model_families=require_distinct_model_families,
+                    frozen_governance_complete=frozen_governance_complete,
                     automatic=automatic,
                     authorization_id=resolved_authorization_id,
                 )
