@@ -40,17 +40,18 @@ scope:
     - tests/unit/scripts/test_gen_cli_reference.py
 ---
 
-# Review Contract Compiler
+# Scoped Review-Target Contract Compiler
 
 ## Goal
 
-Make the normal code-agent review path cost-disciplined by compiling repository
-state into an exact review contract. A docs-only or code-review-fix follow-up
-must not naturally trigger a whole-PR review, inherit the main session's XHigh
-effort, or repeat plan review when the approved plan, scope, and requirements
+Compile repository state into an exact per-source review-target contract. A
+docs-only or code-review-fix follow-up must not naturally trigger a whole-PR
+inspection or repeat plan review when the approved plan, scope, and requirements
 did not change.
 
-This change is a Normal lifecycle slice. It does not execute reviewers.
+This change is a Normal lifecycle foundation for scoped review execution. It
+does not execute reviewers or control their model, bootstrap context, token
+budget, call count, or review-round budget.
 
 ## Problem
 
@@ -61,8 +62,9 @@ execution failures outside the gate itself:
    when plan, scope, and requirements were unchanged.
 2. Docs-only and follow-up changes were split into repeated broad reviews rather
    than one committed scoped delta.
-3. Reviewer sessions inherited the main session's XHigh reasoning instead of
-   using each source profile's Medium, agent-specific options.
+3. Reviewer sessions inherited the main session's expensive model and context
+   despite receiving Medium agent-specific options. This exposed a separate
+   execution-cost problem that target compilation alone cannot solve.
 4. `bundle-only` and `incremental` source profiles still received a bundle whose
    natural interpretation was the whole PR.
 
@@ -70,6 +72,25 @@ The current `review prepare` output is a deterministic manifest, but it only
 describes the full `base...HEAD` in-scope file set and embeds source profiles as
 passive hints. It does not compile an executable inspection range or a canonical
 review task for each source.
+
+### Foundation boundary
+
+This change controls what a reviewer is assigned to inspect. It does not prove
+how the reviewer session was launched or how much it cost. In particular, the
+following remain a separate follow-up change:
+
+- explicit per-source model policy and expensive-model escalation rules;
+- reviewer bootstrap isolation from the main session, global skills, and memory;
+- per-source token and call ceilings;
+- per-role maximum review rounds and human escalation after exhaustion;
+- execution receipts that disclose the actual runner, model, context mode, and
+  token usage.
+
+Within the non-executor boundary, a future harness change may compile and
+validate those declarations, require recorded execution evidence, and refuse a
+new review round after a configured ceiling. It still cannot prove that an
+external runner honored the declaration or terminate an already-running LLM
+call without becoming or integrating with an executor.
 
 ## Product Decisions
 
@@ -143,7 +164,8 @@ reviewers:
 
 The harness never discovers installed agents, chooses from an agent pool, maps
 one agent's option names to another's, or silently falls back to the main session
-configuration.
+configuration. The compiled options are dispatch requirements for the code
+agent, not proof of the effective runner configuration.
 
 ### Temporary current bundle
 
@@ -269,7 +291,8 @@ Out-of-scope drift remains visible but excluded from assignments. If the drift
 belongs to the change, the code agent must redeclare scope.
 
 An unsupported runner option is a dispatch failure outside the harness. The main
-agent reports it and must not silently inherit XHigh or switch sources.
+agent reports it and must not silently switch sources. This change does not
+verify the effective model or session bootstrap used by the runner.
 
 ## TDD Plan
 
@@ -349,8 +372,9 @@ agent reports it and must not silently inherit XHigh or switch sources.
    full-change for that source.
 4. A code-review follow-up reports plan review as not required unless the change
    was explicitly redeclared; undeclared plan/spec drift is rejected.
-5. Every participant assignment carries exact agent-specific options and never
-   inherits main-session effort through the bundle.
+5. Every participant assignment carries the configured opaque, agent-specific
+   options without translating them into a false cross-runner vocabulary; the
+   bundle does not claim that the runner applied them.
 6. `bundle-only`/`incremental` assignments contain exact range, files, and argv;
    their prompt forbids whole-PR expansion and unrelated pre-existing findings.
 7. All follow-up commits between baseline and current HEAD are batched into one
@@ -360,3 +384,7 @@ agent reports it and must not silently inherit XHigh or switch sources.
 9. super-harness does not spawn, discover, retry, or select reviewer agents.
 10. A plan-review assignment uses only resolved spec/plan artifacts and never
     absorbs existing implementation files after a late plan redeclaration.
+11. Documentation describes this change as scoped review-target infrastructure,
+    not as a complete review execution-cost controller; model selection,
+    bootstrap isolation, token/call ceilings, round limits, escalation, and
+    execution receipts remain explicitly deferred.
