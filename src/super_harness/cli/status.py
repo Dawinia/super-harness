@@ -37,6 +37,7 @@ from super_harness.core.paths import (
 )
 from super_harness.core.reducer import derive_state
 from super_harness.core.review_verdict import read_change_events
+from super_harness.core.scope_match import GitScopeError, resolve_commit
 from super_harness.engineering.review_governance import (
     ReviewGovernance,
     ReviewGovernanceError,
@@ -186,6 +187,15 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
         contract_digest = packet.get("contract_digest") if packet is not None else None
         target_head = packet.get("target_head") if packet is not None else None
         profile_digest = packet.get("profile_digest") if packet is not None else None
+        try:
+            current_head: str | None = resolve_commit(root)
+        except GitScopeError:
+            current_head = None
+        packet_stale = (
+            packet is not None
+            and current_head is not None
+            and target_head != current_head
+        )
         latest: dict[str, Any] = {}
         stale: set[str] = set()
         for round_state in execution.rounds:
@@ -203,6 +213,12 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             source for source, run in latest.items() if run.status == "imported"
         )
         stale.difference_update(imported)
+        retained = list(execution.retained_sources)
+        if packet_stale:
+            stale.update(imported)
+            stale.update(retained)
+            imported = []
+            retained = []
         current_round = execution.rounds[-1] if execution.rounds else None
         pending = sorted(
             source
@@ -214,6 +230,9 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             for source, run in (current_round.runs.items() if current_round else [])
             if run.status == "failed"
         )
+        if packet_stale:
+            pending = []
+            failed = []
         profiles = load_review_profiles(root)
         source_profiles: dict[str, dict[str, object]] = {}
         for source in role.participants:
@@ -248,7 +267,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
         remaining_rounds = max(
             role.max_automatic_rounds_per_epoch - execution.automatic_rounds_used, 0
         )
-        if packet is None:
+        if packet is None or packet_stale:
             next_command = (
                 f"super-harness review prepare {change_id} --reviewer {reviewer}"
             )
@@ -291,7 +310,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             "imported_sources": imported,
             "pending_sources": pending,
             "failed_sources": failed,
-            "retained_sources": list(execution.retained_sources),
+            "retained_sources": retained,
             "stale_sources": sorted(stale),
             "automatic_rounds_used": execution.automatic_rounds_used,
             "automatic_rounds_remaining": remaining_rounds,
@@ -301,6 +320,8 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                     "path": str(packet_path),
                     "contract_digest": contract_digest,
                     "target_head": target_head,
+                    "current_head": current_head,
+                    "stale": packet_stale,
                 }
                 if packet is not None
                 else None
@@ -354,6 +375,15 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                         f"{progress['automatic_rounds_used']} used, "
                         f"{progress['automatic_rounds_remaining']} remaining"
                     )
+                    packet = progress["packet"]
+                    if isinstance(packet, dict):
+                        packet_target = packet.get("target_head")
+                        current_head = packet.get("current_head")
+                        stale_suffix = "; stale" if packet.get("stale") else ""
+                        click.echo(
+                            f"    packet target: {packet_target} "
+                            f"(current: {current_head or 'unknown'}{stale_suffix})"
+                        )
                     if imported:
                         click.echo(f"    imported: {', '.join(imported)}")
                     remaining = [source for source in required if source not in imported]

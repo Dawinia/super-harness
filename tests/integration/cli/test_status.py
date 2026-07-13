@@ -16,6 +16,7 @@ Coverage map:
 - test_status_json_envelope_schema            — `--json` shape: envelope.data.changes[]
 """
 import json
+import subprocess
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -768,6 +769,87 @@ def test_status_current_imported_source_is_not_also_stale_and_exhaustion_is_acti
     ]
     assert "human-only" in progress["next_command"]
     assert "review human inspect" not in progress["next_command"]
+
+
+def test_status_invalidates_retained_receipts_when_packet_target_is_not_current_head(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "status-test@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Status Test"], cwd=tmp_path, check=True
+    )
+    (tmp_path / "tracked.txt").write_text("current\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "current head"], cwd=tmp_path, check=True)
+    current_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    _seed_awaiting_code_review(tmp_path, "demo")
+    _write_exhausted_review_governance(tmp_path)
+    _record_review_round(
+        tmp_path,
+        "demo",
+        round_id="old-round",
+        contract_digest="old-contract",
+        target_head="old-head",
+        profile_digest="old-profiles",
+        include_failed_claude=True,
+    )
+    packet_dir = tmp_path / ".harness" / "pending-reviews" / "demo" / "code-reviewer"
+    packet_dir.mkdir(parents=True, exist_ok=True)
+    (packet_dir / "draft.packet.json").write_text(
+        json.dumps(
+            {
+                "contract_digest": "old-contract",
+                "target_head": "old-head",
+                "profile_digest": "old-profiles",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "--json", "status", "demo"]
+    )
+
+    assert result.exit_code == 0, result.output
+    progress = json.loads(result.output)["data"]["changes"][0]["review_progress"]
+    assert progress["imported_sources"] == []
+    assert progress["pending_sources"] == []
+    assert progress["failed_sources"] == []
+    assert progress["retained_sources"] == []
+    assert progress["stale_sources"] == ["codex"]
+    assert progress["packet"]["target_head"] == "old-head"
+    assert progress["packet"]["current_head"] == current_head
+    assert progress["packet"]["stale"] is True
+    assert progress["next_command"] == (
+        "super-harness review prepare demo --reviewer code-reviewer"
+    )
+
+    rendered = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "status", "demo"]
+    )
+    assert rendered.exit_code == 0, rendered.output
+    assert f"packet target: old-head (current: {current_head}; stale)" in rendered.output
+    assert "retained: codex" not in rendered.output
+    assert "failed: claude" not in rendered.output
+    assert "stale: codex" in rendered.output
+    assert (
+        "review next: super-harness review prepare demo --reviewer code-reviewer"
+        in rendered.output
+    )
 
 
 def test_status_exhaustion_recommends_human_path_only_for_role_participant(
