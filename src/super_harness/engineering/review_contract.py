@@ -32,9 +32,16 @@ def _open_finding_records(
     open_ids = derive_open_findings(events, change_id)
     latest_by_id: dict[str, dict[str, Any]] = {}
     for event in events:
-        if event.change_id != change_id or event.type != "code_review_failed":
+        if event.change_id != change_id:
             continue
-        verdict = (event.payload or {}).get("verdict")
+        payload = event.payload or {}
+        is_code_result = event.type == "code_review_failed" or (
+            event.type in {"review_result_imported", "review_verdict_recorded"}
+            and payload.get("reviewer") == "code-reviewer"
+        )
+        if not is_code_result:
+            continue
+        verdict = payload.get("verdict")
         findings = verdict.get("findings") if isinstance(verdict, dict) else None
         if not isinstance(findings, list):
             continue

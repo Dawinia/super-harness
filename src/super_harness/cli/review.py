@@ -1273,6 +1273,11 @@ def _close_round_if_terminal(
         if source in latest and latest[source].status == "imported"
     }
     missing = [source for source in required if source not in imported]
+    try:
+        current_head: str | None = resolve_commit(root)
+    except GitScopeError:
+        current_head = None
+    target_stale = current_head != round_state.target_head
     aggregate = _aggregate_verdicts(imported)
     aggregate_checklist = aggregate["checklist"]
     has_failure = isinstance(aggregate_checklist, list) and any(
@@ -1280,7 +1285,9 @@ def _close_round_if_terminal(
         for item in aggregate_checklist
     )
     has_rejection = aggregate["scope_sufficient"] is not True or has_failure
-    if has_rejection:
+    if target_stale:
+        outcome = "execution_failed"
+    elif has_rejection:
         outcome = "rejected"
     elif missing:
         outcome = "execution_failed"
@@ -1339,6 +1346,8 @@ def _close_round_if_terminal(
             "profile_digest": round_state.profile_digest,
             "outcome": outcome,
             "missing_sources": missing,
+            "current_head": current_head,
+            "target_stale": target_stale,
         },
         subcommand="review result import",
     )

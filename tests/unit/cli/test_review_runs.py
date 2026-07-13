@@ -637,6 +637,88 @@ def test_rejecting_result_wins_over_peer_execution_failure(
     assert events[-1].payload["missing_sources"] == ["claude"]
 
 
+def test_stale_head_prevents_rejection_milestone_when_peer_execution_fails(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _enable_claude(root)
+    _fake_codex(root, monkeypatch)
+    _fake_claude(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    codex_run, codex_verdict = _result_for_source(begun, "codex")
+    checklist = cast(list[dict[str, object]], codex_verdict["checklist"])
+    checklist[0]["status"] = "fail"
+    codex_verdict["findings"] = [
+        {
+            "id": "B-1",
+            "severity": "blocker",
+            "file": "src/app.py",
+            "summary": "The reviewed implementation is unsafe.",
+        }
+    ]
+    codex_path = root / "codex-result.json"
+    codex_path.write_text(json.dumps(codex_verdict), encoding="utf-8")
+    imported = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(root),
+            "review",
+            "result",
+            "import",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, codex_run["run_id"]),
+            "--result-file",
+            str(codex_path),
+        ],
+    )
+    assert imported.exit_code == EXIT_OK, imported.output
+
+    (root / "src" / "app.py").write_text("value = 3\n", encoding="utf-8")
+    _git(root, "commit", "-aqm", "move review target")
+    current_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    claude_run, _ = _result_for_source(begun, "claude")
+
+    failed = CliRunner().invoke(
+        main,
+        [
+            "--json",
+            "--workspace",
+            str(root),
+            "review",
+            "run",
+            "fail",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, claude_run["run_id"]),
+            "--reason",
+            "producer unavailable",
+        ],
+    )
+
+    assert failed.exit_code == EXIT_OK, failed.output
+    data = json.loads(failed.output)["data"]
+    assert data["round_outcome"] == "execution_failed"
+    assert data["milestone"] is None
+    events = read_change_events(events_path(root), "change")
+    assert not any(event.type == "code_review_failed" for event in events)
+    assert events[-1].type == "review_round_closed"
+    assert events[-1].payload["current_head"] == current_head
+    assert events[-1].payload["target_stale"] is True
+
+
 def test_failed_source_retry_reuses_original_round_prior_findings(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:

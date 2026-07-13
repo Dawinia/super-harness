@@ -282,3 +282,96 @@ def test_unresolvable_source_baseline_falls_back_to_full_change(tmp_path: Path) 
     prompt = compiled["assignments"][0]["prompt"]
     assert '"id":"RC-001"' in prompt
     assert '"summary":"Historical baseline cannot be resolved."' in prompt
+
+
+def test_imported_finding_from_execution_failed_round_is_in_next_prompt(
+    tmp_path: Path,
+) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("v1\n")
+    _git(tmp_path, "add", "src/a.py")
+    _git(tmp_path, "commit", "-qm", "base")
+    _git(tmp_path, "checkout", "-qb", "feature")
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "change")
+    events = [
+        _event(
+            "review_result_imported",
+            {
+                "reviewer": "code-reviewer",
+                "source": "external",
+                "target_head": "f" * 40,
+                "verdict": {
+                    "scope_sufficient": True,
+                    "checklist": [{"item": "correctness", "status": "fail"}],
+                    "findings": [
+                        {
+                            "id": "external/run-1/RC-001",
+                            "severity": "major",
+                            "file": "src/a.py",
+                            "summary": "Imported finding survived a peer execution failure.",
+                        }
+                    ],
+                    "prior_findings": [],
+                },
+            },
+        ),
+        _event(
+            "review_round_closed",
+            {
+                "reviewer": "code-reviewer",
+                "round_id": "round-1",
+                "outcome": "execution_failed",
+            },
+        ),
+    ]
+    profile = ReviewProducerProfile(
+        source="external",
+        protocol="codex-cli",
+        model="review-model",
+        cost_class="standard",
+        agent_options={"reasoning_effort": "medium"},
+    )
+    governance = ReviewGovernance(
+        version=1,
+        base_branch="main",
+        sources={
+            "external": ReviewerSourceGovernance(
+                name="external", kind="automated"
+            )
+        },
+        roles={
+            "code-reviewer": ReviewerRoleGovernance(
+                reviewer="code-reviewer",
+                participants=("external",),
+                min_independent=1,
+                max_automatic_rounds_per_epoch=2,
+            )
+        },
+        require_distinct_model_families=False,
+    )
+    bundle = {
+        "base": "main",
+        "change": "change",
+        "reviewer": "code-reviewer",
+        "bundle_digest": "digest",
+        "checklist": ["correctness"],
+        "spec_path": "",
+        "plan_path": "",
+    }
+
+    compiled = compile_review_contract(
+        tmp_path,
+        bundle=bundle,
+        governance=governance,
+        profiles={"external": profile},
+        events=events,
+        declared=["src/"],
+    )
+
+    prompt = compiled["assignments"][0]["prompt"]
+    assert '"id":"external/run-1/RC-001"' in prompt
+    assert "Imported finding survived a peer execution failure." in prompt
