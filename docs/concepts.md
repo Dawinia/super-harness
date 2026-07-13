@@ -52,7 +52,12 @@ round and writes per-run invocation files; the caller runs those invocations
 outside super-harness, unchanged. Completed results enter through `review result
 import`; crashes enter through `review run fail`. Direct `review approve|reject`
 cannot create new evidence. A lifecycle milestone is emitted only after every
-required source in the round is terminal.
+required source in the round is terminal. Closure uses the governance frozen at
+`review begin`, never a subsequently edited policy. A valid rejecting result
+takes precedence over a peer producer failure so discovered findings enter the
+fix loop; `execution_failed` is reserved for rounds whose imported results pass
+but whose required source set is incomplete. Only those passing results may be
+retained for a failed-source retry of the identical frozen contract.
 
 A trustworthy result at an ancestor commit can become that source's incremental
 baseline; otherwise the source receives the full in-scope change. Findings are

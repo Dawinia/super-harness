@@ -126,7 +126,8 @@ def _enable_claude(root: Path) -> None:
         "      min_independent: 1\n"
         "    code-reviewer:\n"
         "      participants: [codex, claude]\n"
-        "      min_independent: 2\n",
+        "      min_independent: 2\n"
+        "      max_automatic_rounds_per_epoch: 3\n",
         encoding="utf-8",
     )
     (harness / "review-profiles.local.yaml").write_text(
@@ -448,6 +449,291 @@ def test_import_records_receipt_closes_round_and_emits_milestone(
             if event.type == "review_result_imported"
         ]
     ) == 1
+
+
+def test_import_rejects_result_when_head_changed_after_round_began(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    verdict = _result_for_run(begun)
+    result_path = root / "codex-result.json"
+    result_path.write_text(json.dumps(verdict), encoding="utf-8")
+    (root / "src" / "app.py").write_text("value = 3\n", encoding="utf-8")
+    _git(root, "commit", "-am", "change after review began")
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(root),
+            "review",
+            "result",
+            "import",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, verdict["run_id"]),
+            "--result-file",
+            str(result_path),
+        ],
+    )
+
+    assert result.exit_code == EXIT_VALIDATION
+    assert "current HEAD no longer matches the frozen review target" in result.output
+    assert not any(
+        event.type == "review_result_imported"
+        for event in read_change_events(events_path(root), "change")
+    )
+
+
+def test_round_closure_uses_frozen_governance_after_live_policy_changes(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _enable_claude(root)
+    _fake_codex(root, monkeypatch)
+    _fake_claude(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    codex_run, codex_verdict = _result_for_source(begun, "codex")
+    claude_run, _ = _result_for_source(begun, "claude")
+    codex_path = root / "codex-result.json"
+    codex_path.write_text(json.dumps(codex_verdict), encoding="utf-8")
+
+    (root / ".harness" / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  base_branch: main\n"
+        "  sources:\n"
+        "    codex:\n"
+        "      kind: automated\n"
+        "    human:\n"
+        "      kind: human\n"
+        "  roles:\n"
+        "    plan-reviewer:\n"
+        "      participants: [human]\n"
+        "      min_independent: 1\n"
+        "    code-reviewer:\n"
+        "      participants: [codex]\n"
+        "      min_independent: 1\n",
+        encoding="utf-8",
+    )
+    failed = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(root),
+            "review",
+            "run",
+            "fail",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, claude_run["run_id"]),
+            "--reason",
+            "producer unavailable",
+        ],
+    )
+    assert failed.exit_code == EXIT_OK, failed.output
+
+    imported = CliRunner().invoke(
+        main,
+        [
+            "--json",
+            "--workspace",
+            str(root),
+            "review",
+            "result",
+            "import",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, codex_run["run_id"]),
+            "--result-file",
+            str(codex_path),
+        ],
+    )
+
+    assert imported.exit_code == EXIT_OK, imported.output
+    data = json.loads(imported.output)["data"]
+    assert data["round_outcome"] == "execution_failed"
+    assert data["milestone"] is None
+    assert data["new_state"] == "AWAITING_CODE_REVIEW"
+
+
+def test_rejecting_result_wins_over_peer_execution_failure(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _enable_claude(root)
+    _fake_codex(root, monkeypatch)
+    _fake_claude(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    codex_run, codex_verdict = _result_for_source(begun, "codex")
+    checklist = cast(list[dict[str, object]], codex_verdict["checklist"])
+    checklist[0]["status"] = "fail"
+    codex_verdict["findings"] = [
+        {
+            "id": "B-1",
+            "severity": "blocker",
+            "file": "src/app.py",
+            "summary": "The reviewed implementation is unsafe.",
+        }
+    ]
+    codex_path = root / "codex-result.json"
+    codex_path.write_text(json.dumps(codex_verdict), encoding="utf-8")
+    imported = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(root),
+            "review",
+            "result",
+            "import",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, codex_run["run_id"]),
+            "--result-file",
+            str(codex_path),
+        ],
+    )
+    assert imported.exit_code == EXIT_OK, imported.output
+    claude_run, _ = _result_for_source(begun, "claude")
+
+    failed = CliRunner().invoke(
+        main,
+        [
+            "--json",
+            "--workspace",
+            str(root),
+            "review",
+            "run",
+            "fail",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, claude_run["run_id"]),
+            "--reason",
+            "producer unavailable",
+        ],
+    )
+
+    assert failed.exit_code == EXIT_OK, failed.output
+    data = json.loads(failed.output)["data"]
+    assert data["round_outcome"] == "rejected"
+    assert data["milestone"] == "code_review_failed"
+    events = read_change_events(events_path(root), "change")
+    assert events[-1].type == "code_review_failed"
+    assert events[-1].payload["missing_sources"] == ["claude"]
+
+
+def test_failed_source_retry_reuses_original_round_prior_findings(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _enable_claude(root)
+    _fake_codex(root, monkeypatch)
+    _fake_claude(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    codex_run, codex_verdict = _result_for_source(begun, "codex")
+    codex_verdict["findings"] = [
+        {
+            "id": "peer-note",
+            "severity": "minor",
+            "file": "src/app.py",
+            "summary": "A retained peer observation is not prior retry context.",
+        }
+    ]
+    codex_path = root / "codex-result.json"
+    codex_path.write_text(json.dumps(codex_verdict), encoding="utf-8")
+    imported = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(root),
+            "review",
+            "result",
+            "import",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, codex_run["run_id"]),
+            "--result-file",
+            str(codex_path),
+        ],
+    )
+    assert imported.exit_code == EXIT_OK, imported.output
+    claude_run, _ = _result_for_source(begun, "claude")
+    failed = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(root),
+            "review",
+            "run",
+            "fail",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, claude_run["run_id"]),
+            "--reason",
+            "producer unavailable",
+        ],
+    )
+    assert failed.exit_code == EXIT_OK, failed.output
+
+    retried = _begin(root)
+
+    assert [run["source"] for run in cast(list[dict[str, object]], retried["runs"])] == [
+        "claude"
+    ]
+    second_run = cast(list[dict[str, object]], retried["runs"])[0]
+    failed_again = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(root),
+            "review",
+            "run",
+            "fail",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, second_run["run_id"]),
+            "--reason",
+            "producer still unavailable",
+        ],
+    )
+    assert failed_again.exit_code == EXIT_OK, failed_again.output
+
+    retried_again = _begin(root)
+
+    assert [
+        run["source"]
+        for run in cast(list[dict[str, object]], retried_again["runs"])
+    ] == ["claude"]
+    starts = [
+        event
+        for event in read_change_events(events_path(root), "change")
+        if event.type == "review_round_started"
+    ]
+    assert starts[0].payload["open_finding_ids"] == []
+    assert starts[1].payload["open_finding_ids"] == []
+    assert starts[2].payload["open_finding_ids"] == []
 
 
 def test_run_failure_closes_execution_failed_and_retry_uses_new_ids(

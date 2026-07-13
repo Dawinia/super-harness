@@ -305,6 +305,89 @@ def test_failed_source_retry_keeps_identical_contract_peer_receipt() -> None:
     assert execution.retained_sources == ("codex",)
 
 
+def test_rejected_result_is_not_retained_as_a_successful_peer() -> None:
+    events = [
+        _event("epoch-code", "implementation_complete", {}),
+        _event(
+            "event-round-1",
+            "review_round_started",
+            {
+                "reviewer": "code-reviewer",
+                "epoch_id": "epoch-code",
+                "round_id": "round-1",
+                "contract_digest": "contract-1",
+                "target_head": "abc123",
+                "profile_digest": "profiles-1",
+                "runs": [
+                    {
+                        "run_id": "run-codex",
+                        "source": "codex",
+                        "protocol": "codex-cli",
+                        "requested_model": "gpt-review",
+                        "requested_options": {},
+                    },
+                    {
+                        "run_id": "run-claude",
+                        "source": "claude",
+                        "protocol": "claude-cli",
+                        "requested_model": "claude-review",
+                        "requested_options": {},
+                    },
+                ],
+            },
+        ),
+        _event(
+            "event-result-codex",
+            "review_result_imported",
+            {
+                "reviewer": "code-reviewer",
+                "epoch_id": "epoch-code",
+                "round_id": "round-1",
+                "run_id": "run-codex",
+                "source": "codex",
+                "contract_digest": "contract-1",
+                "target_head": "abc123",
+                "result_digest": "result-1",
+                "verdict": {
+                    "scope_sufficient": True,
+                    "checklist": [{"item": "code-quality", "status": "fail"}],
+                },
+                "receipt": {},
+            },
+        ),
+        _event(
+            "event-failed-claude",
+            "review_run_failed",
+            {
+                "reviewer": "code-reviewer",
+                "epoch_id": "epoch-code",
+                "round_id": "round-1",
+                "run_id": "run-claude",
+                "source": "claude",
+                "contract_digest": "contract-1",
+                "target_head": "abc123",
+                "reason": "producer unavailable",
+            },
+        ),
+        _event(
+            "event-close-1",
+            "review_round_closed",
+            {
+                "reviewer": "code-reviewer",
+                "epoch_id": "epoch-code",
+                "round_id": "round-1",
+                "contract_digest": "contract-1",
+                "target_head": "abc123",
+                "outcome": "execution_failed",
+            },
+        ),
+    ]
+
+    execution = derive_review_execution(events, "code-reviewer")
+
+    assert execution.retained_sources == ()
+
+
 def test_extra_round_authorization_is_bound_and_consumed_once() -> None:
     events = [_event("epoch-code", "implementation_complete", {})]
     for number in (1, 2):

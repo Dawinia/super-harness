@@ -40,6 +40,9 @@ class ReviewRoundState:
     bundle_digest: str | None = None
     checklist: tuple[str, ...] = ()
     open_finding_ids: tuple[str, ...] = ()
+    required_sources: tuple[str, ...] = ()
+    min_independent: int = 0
+    require_distinct_model_families: bool = False
     automatic: bool = True
     authorization_id: str | None = None
     status: Literal["open", "closed"] = "open"
@@ -73,6 +76,24 @@ class ReviewExecutionState:
 
         if not self.rounds:
             return ()
+
+        def succeeded(run: ReviewRunState) -> bool:
+            verdict = run.verdict
+            if run.status != "imported" or not isinstance(verdict, dict):
+                return False
+            if verdict.get("scope_sufficient", True) is not True:
+                return False
+            if verdict.get("outcome") in {"rejected", "failed"}:
+                return False
+            checklist = verdict.get("checklist", [])
+            return not (
+                isinstance(checklist, list)
+                and any(
+                    isinstance(item, dict) and item.get("status") == "fail"
+                    for item in checklist
+                )
+            )
+
         latest = self.rounds[-1]
         retained: set[str] = set()
         for round_state in self.rounds[:-1]:
@@ -80,17 +101,19 @@ class ReviewExecutionState:
                 round_state.contract_digest != latest.contract_digest
                 or round_state.target_head != latest.target_head
                 or round_state.profile_digest != latest.profile_digest
+                or round_state.outcome != "execution_failed"
             ):
                 continue
             retained.update(
                 source
                 for source, run in round_state.runs.items()
-                if run.status == "imported"
+                if succeeded(run)
             )
-        for source, run in latest.runs.items():
-            retained.discard(source)
-            if run.status == "imported":
-                retained.add(source)
+        if latest.status == "open" or latest.outcome == "execution_failed":
+            for source, run in latest.runs.items():
+                retained.discard(source)
+                if succeeded(run):
+                    retained.add(source)
         return tuple(sorted(retained))
 
     @property
@@ -235,6 +258,35 @@ def derive_review_execution(
                 and all(isinstance(item, str) for item in raw_open_findings)
                 else ()
             )
+            raw_retained = payload.get("retained_sources", [])
+            retained_sources = (
+                tuple(raw_retained)
+                if isinstance(raw_retained, list)
+                and all(isinstance(item, str) for item in raw_retained)
+                else ()
+            )
+            raw_required = payload.get("required_sources")
+            required_sources = (
+                tuple(raw_required)
+                if isinstance(raw_required, list)
+                and all(isinstance(item, str) and item for item in raw_required)
+                and len(set(raw_required)) == len(raw_required)
+                else tuple(dict.fromkeys((*retained_sources, *runs)))
+            )
+            raw_min_independent = payload.get("min_independent")
+            min_independent = (
+                raw_min_independent
+                if isinstance(raw_min_independent, int)
+                and not isinstance(raw_min_independent, bool)
+                and raw_min_independent > 0
+                else len(required_sources)
+            )
+            raw_distinct_families = payload.get("require_distinct_model_families")
+            require_distinct_model_families = (
+                raw_distinct_families
+                if isinstance(raw_distinct_families, bool)
+                else False
+            )
             rounds.append(
                 ReviewRoundState(
                     round_id=round_id,
@@ -249,6 +301,9 @@ def derive_review_execution(
                     ),
                     checklist=checklist,
                     open_finding_ids=open_finding_ids,
+                    required_sources=required_sources,
+                    min_independent=min_independent,
+                    require_distinct_model_families=require_distinct_model_families,
                     automatic=automatic,
                     authorization_id=resolved_authorization_id,
                 )

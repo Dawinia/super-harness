@@ -277,6 +277,7 @@ def _current_packet_or_exit(
     governance: ReviewGovernance,
     profiles: dict[str, ReviewProducerProfile],
     subcommand: str,
+    contract_events: list[Event] | None = None,
 ) -> dict[str, Any]:
     cs = derive_state(events_path(root)).get(change)
     declared = list(cs.scope.get("files", [])) if cs is not None else []
@@ -294,7 +295,11 @@ def _current_packet_or_exit(
             bundle=current,
             governance=governance,
             profiles=profiles,
-            events=_change_events(root, change),
+            events=(
+                contract_events
+                if contract_events is not None
+                else _change_events(root, change)
+            ),
             declared=declared,
         )
     except (BundleError, GitScopeError, ReviewContractError) as exc:
@@ -632,6 +637,41 @@ def begin(
         sys.exit(EXIT_VALIDATION)
     profiles = _resolve_profiles_or_exit(root, governance, reviewer, subcommand)
     packet = _read_packet_or_exit(root, change, reviewer, subcommand)
+    events = _change_events(root, change)
+    execution = derive_review_execution(events, reviewer)
+    prior_round = execution.rounds[-1] if execution.rounds else None
+    retrying_frozen_contract = bool(
+        prior_round is not None
+        and prior_round.status == "closed"
+        and prior_round.outcome == "execution_failed"
+        and prior_round.contract_digest == packet.get("contract_digest")
+        and prior_round.target_head == packet.get("target_head")
+        and prior_round.profile_digest == packet.get("profile_digest")
+    )
+    retry_anchor_round = prior_round
+    if retrying_frozen_contract:
+        retry_anchor_round = next(
+            (
+                round_state
+                for round_state in execution.rounds
+                if round_state.outcome == "execution_failed"
+                and round_state.contract_digest == packet.get("contract_digest")
+                and round_state.target_head == packet.get("target_head")
+                and round_state.profile_digest == packet.get("profile_digest")
+            ),
+            prior_round,
+        )
+    contract_events = events
+    if retrying_frozen_contract and retry_anchor_round is not None:
+        for index, event in enumerate(events):
+            payload = event.payload or {}
+            if (
+                event.type == "review_round_started"
+                and payload.get("reviewer") == reviewer
+                and payload.get("round_id") == retry_anchor_round.round_id
+            ):
+                contract_events = events[:index]
+                break
     packet = _current_packet_or_exit(
         root,
         change=change,
@@ -640,6 +680,7 @@ def begin(
         governance=governance,
         profiles=profiles,
         subcommand=subcommand,
+        contract_events=contract_events,
     )
     assignments = {
         assignment["source"]: assignment
@@ -665,8 +706,6 @@ def begin(
         )
         sys.exit(EXIT_VALIDATION)
 
-    events = _change_events(root, change)
-    execution = derive_review_execution(events, reviewer)
     if execution.epoch_id is None:
         click.echo(
             format_error(
@@ -891,8 +930,17 @@ def begin(
             "authorization_id": authorization_id,
             "automatic": True,
             "retained_sources": sorted(retained),
+            "required_sources": list(automated),
+            "min_independent": role.min_independent,
+            "require_distinct_model_families": (
+                governance.require_distinct_model_families
+            ),
             "checklist": list(packet["checklist"]),
-            "open_finding_ids": derive_open_findings(events, change),
+            "open_finding_ids": (
+                list(retry_anchor_round.open_finding_ids)
+                if retrying_frozen_contract and retry_anchor_round is not None
+                else derive_open_findings(events, change)
+            ),
             "runs": run_payloads,
             "contract_path": str(frozen_path),
         },
@@ -1208,13 +1256,7 @@ def _close_round_if_terminal(
     if any(run.status == "pending" for run in round_state.runs.values()):
         return None, None
 
-    governance = load_review_governance(root)
-    role = governance.roles[reviewer]
-    required = tuple(
-        source
-        for source in role.participants
-        if governance.sources[source].kind == "automated"
-    )
+    required = round_state.required_sources
     latest: dict[str, ReviewRunState] = {}
     for candidate in execution.rounds:
         if (
@@ -1231,20 +1273,20 @@ def _close_round_if_terminal(
         if source in latest and latest[source].status == "imported"
     }
     missing = [source for source in required if source not in imported]
-    outcome = "execution_failed" if missing else "approved"
-    if not missing:
-        aggregate = _aggregate_verdicts(imported)
-        aggregate_checklist = aggregate["checklist"]
-        has_failure = isinstance(aggregate_checklist, list) and any(
-            isinstance(item, dict) and item.get("status") == "fail"
-            for item in aggregate_checklist
-        )
-        if (
-            aggregate["scope_sufficient"] is not True
-            or has_failure
-        ):
-            outcome = "rejected"
-        if governance.require_distinct_model_families:
+    aggregate = _aggregate_verdicts(imported)
+    aggregate_checklist = aggregate["checklist"]
+    has_failure = isinstance(aggregate_checklist, list) and any(
+        isinstance(item, dict) and item.get("status") == "fail"
+        for item in aggregate_checklist
+    )
+    has_rejection = aggregate["scope_sufficient"] is not True or has_failure
+    if has_rejection:
+        outcome = "rejected"
+    elif missing:
+        outcome = "execution_failed"
+    else:
+        outcome = "approved"
+        if round_state.require_distinct_model_families:
             reported = []
             for run in imported.values():
                 receipt = run.receipt
@@ -1279,8 +1321,6 @@ def _close_round_if_terminal(
                         }
                         for index, finding in enumerate(dead_refs, start=1)
                     )
-    else:
-        aggregate = _aggregate_verdicts(imported)
 
     actor = Actor(type="agent", identifier="review-protocol")
     _emit_review_event(
@@ -1321,7 +1361,8 @@ def _close_round_if_terminal(
                 "contract_digest": round_state.contract_digest,
                 "profile_digest": round_state.profile_digest,
                 "independent_sources": sorted(imported),
-                "min_independent": role.min_independent,
+                "missing_sources": missing,
+                "min_independent": round_state.min_independent,
                 "receipt_ids": [
                     getattr(run, "receipt", {}).get("receipt_id")
                     for run in imported.values()
@@ -1414,6 +1455,27 @@ def import_result(
                 subcommand=subcommand,
                 message="cannot import a result after the run was recorded failed",
                 hint="Begin a new explicit retry round.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    try:
+        current_head = resolve_commit(root)
+    except GitScopeError as exc:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message=f"cannot resolve current HEAD: {exc}",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if current_head != round_state.target_head:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message="current HEAD no longer matches the frozen review target",
+                hint="Commit the intended target, prepare a new packet, and begin a new round.",
             ),
             err=True,
         )
