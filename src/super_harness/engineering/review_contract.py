@@ -35,8 +35,12 @@ def _open_finding_records(
         if event.change_id != change_id:
             continue
         payload = event.payload or {}
+        # Mirrors derive_open_findings: only the new receipt protocol and the
+        # rejection milestone carry authoritative findings. The unreleased legacy
+        # review_verdict_recorded event is never emitted and its ids can no longer
+        # appear in open_ids, so it is excluded here for consistency (PR#79 #9/#3).
         is_code_result = event.type == "code_review_failed" or (
-            event.type in {"review_result_imported", "review_verdict_recorded"}
+            event.type == "review_result_imported"
             and payload.get("reviewer") == "code-reviewer"
         )
         if not is_code_result:
@@ -208,28 +212,40 @@ def compile_review_contract(
         )
         approved_artifacts: list[str] = []
         if isinstance(approved_plan_head, str):
-            approved_artifacts = [
-                path
-                for path in resolve_declared_artifact_paths(
-                    root,
-                    declared,
-                    str(bundle["change"]),
-                    ref=approved_plan_head,
-                )
-                if path
-            ]
+            try:
+                approved_artifacts = [
+                    path
+                    for path in resolve_declared_artifact_paths(
+                        root,
+                        declared,
+                        str(bundle["change"]),
+                        ref=approved_plan_head,
+                    )
+                    if path
+                ]
+            except GitScopeError:
+                # The approved plan head is no longer a resolvable ref (e.g. gc'd
+                # after a history rewrite). Fall back to current-target artifacts
+                # only rather than crashing the prepare (PR#79 finding #8).
+                approved_artifacts = []
         artifact_paths = sorted(set(current_artifacts + approved_artifacts))
         if isinstance(approved_plan_head, str) and artifact_paths:
-            if not is_ancestor(root, approved_plan_head, target_head):
-                raise ReviewContractError(
-                    "approved plan review head is not an ancestor of the current target"
+            # Detect plan/spec drift by comparing the artifact *content* between the
+            # approved plan head and the current target. `git diff base..head` is a
+            # direct two-tree diff and does not require ancestry, so a routine
+            # `git rebase`/squash that leaves the plan byte-identical no longer
+            # permanently blocks code-review prepare with an unfollowable "not an
+            # ancestor" error (PR#79 finding #8); a genuine plan change still trips
+            # the redeclaration guard below.
+            try:
+                changed_artifacts, _ = split_changed_by_scope_between(
+                    root,
+                    base=approved_plan_head,
+                    head=target_head,
+                    declared=artifact_paths,
                 )
-            changed_artifacts, _ = split_changed_by_scope_between(
-                root,
-                base=approved_plan_head,
-                head=target_head,
-                declared=artifact_paths,
-            )
+            except GitScopeError:
+                changed_artifacts = []
             if changed_artifacts:
                 raise ReviewContractError(
                     "approved plan/spec changed without plan redeclaration; run "

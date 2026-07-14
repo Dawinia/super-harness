@@ -7,10 +7,55 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
 
 class ReviewGovernanceError(ValueError):
     """The tracked review governance file is missing or malformed."""
+
+
+class DuplicateYamlKeyError(ValueError):
+    """A YAML document declares the same mapping key twice.
+
+    ``yaml.safe_load`` silently keeps the last of two duplicate keys, so a
+    hand edit or merge-conflict resolution that leaves two ``roles:`` (or two
+    ``code-reviewer:``) blocks would silently weaken review requirements with no
+    error anywhere. Both the tracked governance loader and the user-local
+    profile loader reject duplicates up front instead.
+    """
+
+
+def reject_duplicate_yaml_keys(text: str, *, label: str) -> None:
+    """Raise ``DuplicateYamlKeyError`` if any mapping in ``text`` repeats a key.
+
+    A YAML syntax error is left for the caller's ``yaml.safe_load`` to surface
+    uniformly (this pass only guards against the silent last-wins hazard).
+    """
+
+    try:
+        root = yaml.compose(text)
+    except yaml.YAMLError:
+        return
+    if root is None:
+        return
+
+    def visit(node: object) -> None:
+        if isinstance(node, MappingNode):
+            seen: set[tuple[str, str]] = set()
+            for key_node, value_node in node.value:
+                if isinstance(key_node, ScalarNode):
+                    key = (key_node.tag, key_node.value)
+                    if key in seen:
+                        raise DuplicateYamlKeyError(
+                            f"duplicate YAML key in {label}: {key_node.value!r}"
+                        )
+                    seen.add(key)
+                visit(value_node)
+        elif isinstance(node, SequenceNode):
+            for item in node.value:
+                visit(item)
+
+    visit(root)
 
 
 @dataclass(frozen=True)
@@ -70,8 +115,16 @@ def load_review_governance(root: Path) -> ReviewGovernance:
             f"{path} not found; run `super-harness init` or add tracked review governance"
         )
     try:
-        raw: object = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ReviewGovernanceError(f"{path} is not readable: {exc}") from exc
+    try:
+        reject_duplicate_yaml_keys(text, label="review-governance.yaml")
+    except DuplicateYamlKeyError as exc:
+        raise ReviewGovernanceError(str(exc)) from exc
+    try:
+        raw: object = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
         raise ReviewGovernanceError(f"{path} is not valid YAML: {exc}") from exc
 
     top = _mapping(raw, "review-governance.yaml")

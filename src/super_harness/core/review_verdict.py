@@ -194,6 +194,13 @@ def derive_open_findings(events: list[Event], change_id: str) -> list[str]:
     (discard-then-add → a resolved finding re-listed by a later result reopens).
     Tolerant: entries with a missing/non-string `id` are skipped (the raw stream
     can carry pre-validation payloads). See design slice-2 §4.D.
+
+    Only the new receipt protocol (`review_result_imported`) and the
+    `code_review_failed` rejection milestone carry authoritative open findings.
+    The unreleased legacy `review_verdict_recorded` cumulative-approve flow
+    allowed non-blocking findings on APPROVALS; folding those here would
+    retroactively reopen already-accepted findings and wedge an in-flight change
+    behind phantom dispositions, so it is deliberately excluded.
     """
     open_ids: dict[str, None] = {}  # ordered set: insertion-order preserved
     for ev in events:
@@ -201,7 +208,7 @@ def derive_open_findings(events: list[Event], change_id: str) -> list[str]:
             continue
         payload = ev.payload or {}
         is_code_result = ev.type == "code_review_failed" or (
-            ev.type in {"review_result_imported", "review_verdict_recorded"}
+            ev.type == "review_result_imported"
             and payload.get("reviewer") == "code-reviewer"
         )
         if not is_code_result:

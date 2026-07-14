@@ -235,3 +235,78 @@ def test_expired_human_nonce_is_rejected(
     assert result.exit_code == EXIT_VALIDATION
     assert "nonce expired" in result.output
     assert derive_state(events_path(root))["change"].current_state == "AWAITING_CODE_REVIEW"
+
+
+def _confirm_args(root: Path, nonce: str) -> list[str]:
+    return [
+        "--workspace", str(root), "review", "human", "confirm", "change",
+        "--reviewer", "code-reviewer", "--nonce", nonce,
+    ]
+
+
+def test_human_code_review_blocks_on_dead_doc_reference(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Regression (PR#79 finding #5): the dead documentation-reference gate that
+    guards the automated close path must also guard human confirmation, or a
+    human-only code review (init's default governance) merges a high-confidence
+    dead doc reference."""
+    root = _repo(tmp_path)
+    (root / "docs").mkdir()
+    (root / "docs" / "guide.md").write_text(
+        "see `_ghost_symbol_xyz` for details\n", encoding="utf-8"
+    )
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "docs with dead ref")
+    # Re-prepare + re-draft at the new HEAD (the dead-ref commit).
+    reprepared = CliRunner().invoke(
+        main,
+        ["--json", "--workspace", str(root), "review", "prepare", "change",
+         "--reviewer", "code-reviewer"],
+    )
+    assert reprepared.exit_code == EXIT_OK, reprepared.output
+    draft = _draft(root)
+
+    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
+    confirmed = CliRunner().invoke(
+        main, _confirm_args(root, cast(str, draft["nonce"])), input="y\n"
+    )
+    assert confirmed.exit_code == EXIT_OK, confirmed.output
+    # The dead doc reference flips the human approval to a rejection.
+    types = [event.type for event in read_change_events(events_path(root), "change")]
+    assert "code_review_passed" not in types
+    assert "code_review_failed" in types
+    assert derive_state(events_path(root))["change"].current_state != "READY_TO_MERGE"
+
+
+def test_human_confirm_fails_closed_before_emitting_when_role_missing(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Regression (PR#79 finding #10): governance is loaded up front. A role that
+    disappears between draft and confirm must fail closed BEFORE any round event
+    is emitted — never leave three events plus a false 'already confirmed'."""
+    root = _repo(tmp_path)
+    draft = _draft(root)
+    # Remove the code-reviewer role after drafting (valid YAML, missing role).
+    (root / ".harness" / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  base_branch: main\n"
+        "  sources:\n"
+        "    human:\n"
+        "      kind: human\n"
+        "  roles:\n"
+        "    plan-reviewer:\n"
+        "      participants: [human]\n"
+        "      min_independent: 1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
+    result = CliRunner().invoke(
+        main, _confirm_args(root, cast(str, draft["nonce"])), input="y\n"
+    )
+    assert result.exit_code == EXIT_VALIDATION
+    types = [event.type for event in read_change_events(events_path(root), "change")]
+    assert "review_round_started" not in types
+    assert "review_result_imported" not in types
+    assert "code_review_passed" not in types

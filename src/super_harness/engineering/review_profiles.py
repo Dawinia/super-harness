@@ -13,7 +13,11 @@ from typing import Any, Literal
 
 import yaml
 
-from super_harness.engineering.review_governance import ReviewGovernance
+from super_harness.engineering.review_governance import (
+    DuplicateYamlKeyError,
+    ReviewGovernance,
+    reject_duplicate_yaml_keys,
+)
 
 
 class ReviewProfilesError(ValueError):
@@ -58,8 +62,16 @@ def load_review_profiles(root: Path) -> ReviewProfiles:
     if not path.is_file():
         return ReviewProfiles(version=1, sources={})
     try:
-        raw: object = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ReviewProfilesError(f"{path} is not readable: {exc}") from exc
+    try:
+        reject_duplicate_yaml_keys(text, label="review-profiles.local.yaml")
+    except DuplicateYamlKeyError as exc:
+        raise ReviewProfilesError(str(exc)) from exc
+    try:
+        raw: object = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
         raise ReviewProfilesError(f"{path} is not valid YAML: {exc}") from exc
 
     top = _mapping(raw, "review-profiles.local.yaml")

@@ -48,6 +48,7 @@ from super_harness.core.review_verdict import (
 from super_harness.core.scope_match import (
     GitScopeError,
     resolve_commit,
+    working_tree_dirty,
 )
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
@@ -266,6 +267,61 @@ def _read_packet_or_exit(
         )
         sys.exit(EXIT_VALIDATION)
     return parsed
+
+
+def _retry_contract_events(
+    events: list[Event],
+    execution: ReviewExecutionState,
+    packet: dict[str, Any],
+    reviewer: str,
+) -> tuple[list[Event], ReviewRoundState | None, bool]:
+    """Slice the event log so a retry recompiles the SAME frozen contract.
+
+    When the latest round for ``reviewer`` is a closed ``execution_failed`` round
+    for the packet's exact (contract_digest, target_head, profile_digest), a retry
+    of the failed subset must recompile against the events *before* that round
+    started — otherwise a partially-imported source shifts its incremental
+    baseline and the contract digest changes. ``begin`` and ``authorize`` must
+    slice identically or they disagree on whether the prepared packet is stale,
+    wedging the user between the two commands (PR#79 finding #7).
+
+    Returns ``(contract_events, retry_anchor_round, retrying)``.
+    """
+
+    prior_round = execution.rounds[-1] if execution.rounds else None
+    retrying = bool(
+        prior_round is not None
+        and prior_round.status == "closed"
+        and prior_round.outcome == "execution_failed"
+        and prior_round.contract_digest == packet.get("contract_digest")
+        and prior_round.target_head == packet.get("target_head")
+        and prior_round.profile_digest == packet.get("profile_digest")
+    )
+    anchor = prior_round
+    if retrying:
+        anchor = next(
+            (
+                round_state
+                for round_state in execution.rounds
+                if round_state.outcome == "execution_failed"
+                and round_state.contract_digest == packet.get("contract_digest")
+                and round_state.target_head == packet.get("target_head")
+                and round_state.profile_digest == packet.get("profile_digest")
+            ),
+            prior_round,
+        )
+    contract_events = events
+    if retrying and anchor is not None:
+        for index, event in enumerate(events):
+            payload = event.payload or {}
+            if (
+                event.type == "review_round_started"
+                and payload.get("reviewer") == reviewer
+                and payload.get("round_id") == anchor.round_id
+            ):
+                contract_events = events[:index]
+                break
+    return contract_events, anchor, retrying
 
 
 def _current_packet_or_exit(
@@ -639,39 +695,9 @@ def begin(
     packet = _read_packet_or_exit(root, change, reviewer, subcommand)
     events = _change_events(root, change)
     execution = derive_review_execution(events, reviewer)
-    prior_round = execution.rounds[-1] if execution.rounds else None
-    retrying_frozen_contract = bool(
-        prior_round is not None
-        and prior_round.status == "closed"
-        and prior_round.outcome == "execution_failed"
-        and prior_round.contract_digest == packet.get("contract_digest")
-        and prior_round.target_head == packet.get("target_head")
-        and prior_round.profile_digest == packet.get("profile_digest")
+    contract_events, retry_anchor_round, retrying_frozen_contract = (
+        _retry_contract_events(events, execution, packet, reviewer)
     )
-    retry_anchor_round = prior_round
-    if retrying_frozen_contract:
-        retry_anchor_round = next(
-            (
-                round_state
-                for round_state in execution.rounds
-                if round_state.outcome == "execution_failed"
-                and round_state.contract_digest == packet.get("contract_digest")
-                and round_state.target_head == packet.get("target_head")
-                and round_state.profile_digest == packet.get("profile_digest")
-            ),
-            prior_round,
-        )
-    contract_events = events
-    if retrying_frozen_contract and retry_anchor_round is not None:
-        for index, event in enumerate(events):
-            payload = event.payload or {}
-            if (
-                event.type == "review_round_started"
-                and payload.get("reviewer") == reviewer
-                and payload.get("round_id") == retry_anchor_round.round_id
-            ):
-                contract_events = events[:index]
-                break
     packet = _current_packet_or_exit(
         root,
         change=change,
@@ -946,10 +972,19 @@ def begin(
                 governance.require_distinct_model_families
             ),
             "checklist": list(packet["checklist"]),
+            # Only the code-reviewer prompt surfaces open prior findings
+            # (compile_review_contract gates that section to code-reviewer). A
+            # plan-reviewer round must not freeze code-review finding ids it will
+            # never be shown, or import can never dispose them and plan review
+            # wedges (PR#79 finding #3).
             "open_finding_ids": (
                 list(retry_anchor_round.open_finding_ids)
                 if retrying_frozen_contract and retry_anchor_round is not None
-                else derive_open_findings(events, change)
+                else (
+                    derive_open_findings(events, change)
+                    if reviewer == "code-reviewer"
+                    else []
+                )
             ),
             "runs": run_payloads,
             "contract_path": str(frozen_path),
@@ -1029,6 +1064,13 @@ def authorize_round(
     governance = _load_governance_or_exit(root, subcommand)
     profiles = _resolve_profiles_or_exit(root, governance, reviewer, subcommand)
     packet = _read_packet_or_exit(root, change, reviewer, subcommand)
+    events = _change_events(root, change)
+    execution = derive_review_execution(events, reviewer)
+    # Slice identically to `review begin` so a retry packet resolves to the same
+    # contract digest in both commands (PR#79 finding #7).
+    contract_events, _retry_anchor, _retrying = _retry_contract_events(
+        events, execution, packet, reviewer
+    )
     packet = _current_packet_or_exit(
         root,
         change=change,
@@ -1037,8 +1079,8 @@ def authorize_round(
         governance=governance,
         profiles=profiles,
         subcommand=subcommand,
+        contract_events=contract_events,
     )
-    execution = derive_review_execution(_change_events(root, change), reviewer)
     if execution.epoch_id is None:
         click.echo(
             format_error(subcommand=subcommand, message="no active review epoch"),
@@ -1178,6 +1220,25 @@ def _model_family(model: str) -> str:
     return normalized.split("-", 1)[0]
 
 
+def _model_contradicts(requested: str, actual: str) -> bool:
+    """True only when a producer-reported model genuinely conflicts with the request.
+
+    Producers report a canonical, fully-qualified id (e.g. a dated variant such
+    as ``claude-opus-4-1-20250805``) even when the profile requested a shorter
+    alias or undated id (``opus``, ``claude-opus-4-1``). Per the plan, only an
+    explicit *contradiction* invalidates a result; a more-specific reported id is
+    an honored request, not a contradiction. Treat the pair as consistent when
+    either identifier is a case-insensitive substring of the other, so only a
+    disjoint pair (e.g. ``opus`` requested but ``sonnet`` reported) is rejected
+    (PR#79 finding #6)."""
+
+    req = requested.strip().lower()
+    act = actual.strip().lower()
+    if not req or not act:
+        return False
+    return req not in act and act not in req
+
+
 def _aggregate_verdicts(runs: dict[str, ReviewRunState]) -> dict[str, object]:
     severity_order = {"blocker": 0, "major": 1, "minor": 2}
     checklist_status: dict[str, str] = {}
@@ -1302,6 +1363,13 @@ def _close_round_if_terminal(
     elif not round_state.frozen_governance_complete:
         outcome = "execution_failed"
     elif missing:
+        outcome = "execution_failed"
+    elif len(imported) < round_state.min_independent:
+        # Governance requires min_independent sources, but an automated round can
+        # only import its automated participants. A role that also lists a human
+        # participant (min_independent > automated count) therefore cannot be
+        # approved by automated imports alone — fail closed here so the human
+        # review is still required rather than silently skipped (PR#79 finding #1).
         outcome = "execution_failed"
     else:
         outcome = "approved"
@@ -1502,6 +1570,22 @@ def import_result(
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
+    # A matching HEAD is not enough for code review: uncommitted in-scope edits
+    # made while the reviewer ran are outside the committed diff the reviewer
+    # inspected. `review prepare` checks this once, but the tree can go dirty
+    # between prepare and import, so re-check here — otherwise unreviewed code
+    # rides in under a green code_review_passed (PR#79 finding #2).
+    declared = list(cs.scope.get("files", [])) if cs is not None else []
+    if reviewer == "code-reviewer" and working_tree_dirty(root, declared):
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message="in-scope files have uncommitted changes; cannot verify the reviewed diff",
+                hint="Commit or discard the in-scope edits, then prepare and begin a fresh round.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
     _validate_reviewer_state_or_exit(cs, reviewer=reviewer, subcommand=subcommand)
     try:
         adapter = get_reviewer_protocol(
@@ -1584,7 +1668,9 @@ def import_result(
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
-    if parsed.actual_model is not None and parsed.actual_model != run.requested_model:
+    if parsed.actual_model is not None and _model_contradicts(
+        run.requested_model, parsed.actual_model
+    ):
         click.echo(
             format_error(
                 subcommand=subcommand,
@@ -2120,6 +2206,23 @@ def human_confirm(
         sys.exit(EXIT_OK)
     cs = derive_state(events_path(root)).get(change)
     _validate_reviewer_state_or_exit(cs, reviewer=reviewer, subcommand=subcommand)
+    # Load governance up front, before any event is emitted. Loading it late (in
+    # the middle of the round_started/result_imported/round_closed sequence) let a
+    # malformed/removed governance file or missing role abort with a raw traceback
+    # after three events were written but before the milestone — and the nonce
+    # idempotency check above then reported a false "already confirmed" on retry
+    # while the change stayed stuck in AWAITING_*_REVIEW (PR#79 finding #10).
+    governance = _load_governance_or_exit(root, subcommand)
+    if reviewer not in governance.roles:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message=f"review role {reviewer!r} is not configured",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    role = governance.roles[reviewer]
     draft_path = _human_draft_dir(root, change, reviewer) / f"{nonce}.json"
     try:
         draft: object = json.loads(draft_path.read_text(encoding="utf-8"))
@@ -2169,6 +2272,20 @@ def human_confirm(
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
+    # Same reviewed-diff guard as automated import: refuse a human code-review
+    # confirmation while in-scope files carry uncommitted changes the human's
+    # verdict never covered (PR#79 finding #2).
+    declared = list(cs.scope.get("files", [])) if cs is not None else []
+    if reviewer == "code-reviewer" and working_tree_dirty(root, declared):
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message="in-scope files have uncommitted changes; cannot verify the reviewed diff",
+                hint="Commit or discard the in-scope edits, then re-inspect and re-draft.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
     if not click.confirm(
         f"Confirm human {reviewer} verdict for {change} at "
         f"{str(draft['target_head'])[:12]}?",
@@ -2212,6 +2329,36 @@ def human_confirm(
         if normalized.get("scope_sufficient") is False or failing_items(normalized)
         else "approved"
     )
+    # B-layer dead documentation-reference gate. The automated close path
+    # (`_close_round_if_terminal`) refuses a code-review approval when a doc still
+    # references a code symbol that no longer resolves; the human confirmation
+    # path must apply the same gate or a human-only code review (init's default
+    # governance) would merge a high-confidence dead doc reference (PR#79 finding
+    # #5).
+    if reviewer == "code-reviewer" and outcome == "approved":
+        dead_refs = [
+            finding
+            for finding in scan_doc_refs(root).findings
+            if finding.confidence == "high"
+        ]
+        if dead_refs:
+            outcome = "rejected"
+            normalized["findings"] = [
+                *normalized_findings,
+                *(
+                    {
+                        "id": f"harness/doc-ref/{index}",
+                        "severity": "major",
+                        "file": finding.doc_file,
+                        "line": finding.line,
+                        "summary": (
+                            f"Documented code symbol no longer resolves: {finding.symbol}"
+                        ),
+                        "source": "harness",
+                    }
+                    for index, finding in enumerate(dead_refs, start=1)
+                ),
+            ]
     framework = cs.framework if cs is not None else "plain"
     actor = Actor(type="human", identifier=resolve_identity(root, None))
     run_payload: dict[str, object] = {
@@ -2240,7 +2387,13 @@ def human_confirm(
             "profile_digest": draft["profile_digest"],
             "automatic": False,
             "checklist": list(packet["checklist"]),
-            "open_finding_ids": derive_open_findings(prior_events, change),
+            # Code-review open findings only; a human plan-reviewer is never shown
+            # them either (PR#79 finding #3).
+            "open_finding_ids": (
+                derive_open_findings(prior_events, change)
+                if reviewer == "code-reviewer"
+                else []
+            ),
             "runs": [run_payload],
         },
         subcommand=subcommand,
@@ -2301,8 +2454,36 @@ def human_confirm(
         },
         subcommand=subcommand,
     )
+    # Count every independent source that has imported for this exact contract:
+    # the automated receipts already on record plus this human receipt. A human
+    # approval alone must not satisfy a role that requires more independent
+    # sources; the human is the completer that closes the whole participant set
+    # (PR#79 finding #1). For human-only governance (min_independent == 1) this is
+    # satisfied by the single human source.
+    prior_imported = {
+        prior_source
+        for prior_round in execution.rounds
+        if prior_round.contract_digest == draft["contract_digest"]
+        and prior_round.target_head == draft["target_head"]
+        for prior_source, prior_run in prior_round.runs.items()
+        if prior_run.status == "imported"
+    }
+    independent_sources = sorted(prior_imported | {source})
+    if outcome == "approved" and len(independent_sources) < role.min_independent:
+        # The human receipt is durably recorded and the round is closed, but
+        # governance is not yet satisfied: hold the approval milestone so the
+        # change stays in its awaiting state (fail closed) until the remaining
+        # independent sources import and a human re-draft completes the set.
+        refresh_state_after_emit(root)
+        remaining = role.min_independent - len(independent_sources)
+        if not ctx.obj.get("quiet"):
+            click.echo(
+                f"super-harness: recorded human review; governance still needs "
+                f"{remaining} more independent source(s) before approval "
+                f"(have {len(independent_sources)}/{role.min_independent})"
+            )
+        sys.exit(EXIT_OK)
     milestone = _REVIEWER_PASS[reviewer] if outcome == "approved" else _REVIEWER_FAIL[reviewer]
-    role = load_review_governance(root).roles[reviewer]
     _emit_review_event(
         root,
         change=change,
@@ -2316,7 +2497,7 @@ def human_confirm(
             "reviewed_head": draft["target_head"],
             "contract_digest": draft["contract_digest"],
             "profile_digest": draft["profile_digest"],
-            "independent_sources": [source],
+            "independent_sources": independent_sources,
             "min_independent": role.min_independent,
             "receipt_ids": [receipt_id],
             "human_resolution": True,

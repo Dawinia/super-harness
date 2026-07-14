@@ -222,18 +222,14 @@ def test_open_findings_resolved_in_later_reject() -> None:
     assert derive_open_findings(evs, "c") == ["f2", "f3"]
 
 
-@pytest.mark.parametrize(
-    "event_type",
-    ["review_verdict_recorded", "review_result_imported"],
-)
-def test_open_findings_resolved_by_later_approved_result(event_type: str) -> None:
+def test_open_findings_resolved_by_later_approved_result() -> None:
     from super_harness.core.events import Actor, Event
     from super_harness.core.review_verdict import derive_open_findings
     from super_harness.core.ulid import new_event_id
 
     approved = Event(
         event_id=new_event_id(),
-        type=event_type,
+        type="review_result_imported",
         change_id="c",
         timestamp="2026-06-23T00:00:01Z",
         actor=Actor(type="human", identifier="t"),
@@ -251,6 +247,37 @@ def test_open_findings_resolved_by_later_approved_result(event_type: str) -> Non
     )
 
     assert derive_open_findings([_failed("c", ["f1"]), approved], "c") == []
+
+
+def test_open_findings_ignores_legacy_verdict_recorded() -> None:
+    """Regression (PR#79 finding #9): unreleased legacy `review_verdict_recorded`
+    approvals carried non-blocking findings; folding them retroactively reopened
+    already-accepted findings and wedged an in-flight change. The new protocol
+    derives open findings only from `review_result_imported` + `code_review_failed`."""
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.review_verdict import derive_open_findings
+    from super_harness.core.ulid import new_event_id
+
+    legacy_approval = Event(
+        event_id=new_event_id(),
+        type="review_verdict_recorded",
+        change_id="c",
+        timestamp="2026-06-23T00:00:01Z",
+        actor=Actor(type="human", identifier="t"),
+        framework="plain",
+        payload={
+            "reviewer": "code-reviewer",
+            "outcome": "approved",
+            "verdict": {
+                # legacy approvals were allowed to carry informational findings
+                "findings": [{"id": "legacy-1", "severity": "minor"}],
+                "prior_findings": [],
+            },
+        },
+    )
+
+    # The legacy approval's informational finding must NOT become an open id.
+    assert derive_open_findings([legacy_approval], "c") == []
 
 
 def test_open_findings_resolved_then_reopened() -> None:

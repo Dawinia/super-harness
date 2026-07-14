@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import cast
 
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 from pytest import MonkeyPatch
 
 from super_harness.cli import main
@@ -1079,3 +1079,130 @@ def test_blocker_waits_for_every_source_then_rejects_with_namespaced_finding(
     findings = rejection.payload["verdict"]["findings"]
     assert findings[0]["id"] == f"codex/{codex_run['run_id']}/B-1"
     assert rejection.payload["independent_sources"] == ["claude", "codex"]
+
+
+def _codex_telemetry(model: str) -> str:
+    started = json.dumps(
+        {"type": "thread.started", "thread_id": "thread-x", "model": model}
+    )
+    completed = json.dumps(
+        {
+            "type": "turn.completed",
+            "duration_ms": 10,
+            "usage": {
+                "input_tokens": 1,
+                "cached_input_tokens": 0,
+                "output_tokens": 1,
+            },
+        }
+    )
+    return f"{started}\n{completed}\n"
+
+
+def _import_run(
+    root: Path, begun: dict[str, object], *, model: str
+) -> Result:
+    run = cast(list[dict[str, object]], begun["runs"])[0]
+    telemetry_path = Path(cast(str, run["telemetry_path"]))
+    telemetry_path.write_text(_codex_telemetry(model), encoding="utf-8")
+    result_path = root / "codex-result.json"
+    result_path.write_text(json.dumps(_result_for_run(begun)), encoding="utf-8")
+    return CliRunner().invoke(
+        main,
+        [
+            "--json", "--workspace", str(root), "review", "result", "import",
+            "change", "--reviewer", "code-reviewer",
+            "--run-id", cast(str, run["run_id"]), "--result-file", str(result_path),
+        ],
+    )
+
+
+def test_import_accepts_dated_model_variant(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Regression (PR#79 finding #6): a producer reporting a more-specific dated
+    id for the requested model is honored, not a contradiction."""
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    imported = _import_run(root, begun, model="gpt-review-20260101")
+    assert imported.exit_code == EXIT_OK, imported.output
+
+
+def test_import_rejects_contradictory_model(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Regression (PR#79 finding #6): a genuinely disjoint reported model is still
+    rejected as a contradiction."""
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    imported = _import_run(root, begun, model="sonnet-other")
+    assert imported.exit_code == EXIT_VALIDATION
+    assert "contradicts" in imported.output
+
+
+def test_import_rejects_dirty_in_scope_tree(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Regression (PR#79 finding #2): uncommitted in-scope edits made after begin
+    must block code-review import — the reviewer only saw the committed diff."""
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    # Dirty an in-scope file without committing (HEAD still matches target).
+    (root / "src" / "app.py").write_text("value = 999\n", encoding="utf-8")
+    imported = _import_run(root, begun, model="gpt-review")
+    assert imported.exit_code == EXIT_VALIDATION
+    assert "uncommitted changes" in imported.output
+
+
+def _enable_codex_human_quorum(root: Path) -> None:
+    """code-reviewer requires codex (automated) + human, min_independent 2."""
+    (root / ".harness" / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  base_branch: main\n"
+        "  sources:\n"
+        "    codex:\n"
+        "      kind: automated\n"
+        "    human:\n"
+        "      kind: human\n"
+        "  roles:\n"
+        "    plan-reviewer:\n"
+        "      participants: [human]\n"
+        "      min_independent: 1\n"
+        "    code-reviewer:\n"
+        "      participants: [codex, human]\n"
+        "      min_independent: 2\n"
+        "      max_automatic_rounds_per_epoch: 2\n",
+        encoding="utf-8",
+    )
+
+
+def test_automated_round_alone_cannot_approve_when_human_required(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Regression (PR#79 finding #1): a role that also lists a human participant
+    (min_independent > automated count) must not reach code_review_passed on the
+    automated imports alone — the human review is still required."""
+    root = _repo(tmp_path)
+    _enable_codex_human_quorum(root)
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    imported = _import_run(root, begun, model="gpt-review")
+    assert imported.exit_code == EXIT_OK, imported.output
+
+    types = [event.type for event in read_change_events(events_path(root), "change")]
+    assert "code_review_passed" not in types
+    # The round closes, but not as an approval — governance is not yet satisfied.
+    closed = [
+        event
+        for event in read_change_events(events_path(root), "change")
+        if event.type == "review_round_closed"
+    ]
+    assert closed and closed[-1].payload["outcome"] == "execution_failed"

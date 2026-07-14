@@ -66,6 +66,37 @@ def test_loads_tracked_review_governance(tmp_path: Path) -> None:
     )
 
 
+def test_rejects_duplicate_yaml_key(tmp_path: Path) -> None:
+    """Regression (PR#79 finding #4): a hand edit / merge-conflict leaving two
+    `code-reviewer:` blocks must fail loudly, not silently last-wins to a weaker
+    rule via yaml.safe_load."""
+    harness = tmp_path / ".harness"
+    harness.mkdir()
+    (harness / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  base_branch: main\n"
+        "  sources:\n"
+        "    codex:\n"
+        "      kind: automated\n"
+        "    claude:\n"
+        "      kind: automated\n"
+        "  roles:\n"
+        "    code-reviewer:\n"
+        "      participants: [codex, claude]\n"
+        "      min_independent: 2\n"
+        "      max_automatic_rounds_per_epoch: 2\n"
+        "    code-reviewer:\n"
+        "      participants: [claude]\n"
+        "      min_independent: 1\n"
+        "      max_automatic_rounds_per_epoch: 2\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReviewGovernanceError, match="duplicate YAML key"):
+        load_review_governance(tmp_path)
+
+
 def test_rejects_unknown_participant(tmp_path: Path) -> None:
     harness = tmp_path / ".harness"
     harness.mkdir()
