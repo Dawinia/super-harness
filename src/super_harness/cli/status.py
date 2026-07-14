@@ -196,14 +196,19 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             and current_head is not None
             and target_head != current_head
         )
-        latest: dict[str, Any] = {}
-        stale: set[str] = set()
-        for round_state in execution.rounds:
-            matches = (
-                round_state.contract_digest == contract_digest
+
+        def matches_packet(round_state: Any) -> bool:
+            return bool(
+                packet is not None
+                and round_state.contract_digest == contract_digest
                 and round_state.target_head == target_head
                 and round_state.profile_digest == profile_digest
             )
+
+        latest: dict[str, Any] = {}
+        stale: set[str] = set()
+        for round_state in execution.rounds:
+            matches = matches_packet(round_state)
             for source, run in round_state.runs.items():
                 if matches:
                     latest[source] = run
@@ -213,23 +218,32 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             source for source, run in latest.items() if run.status == "imported"
         )
         stale.difference_update(imported)
-        retained = list(execution.retained_sources)
+        current_round = execution.rounds[-1] if execution.rounds else None
+        current_round_matches = bool(
+            current_round is not None and matches_packet(current_round)
+        )
+        retained = (
+            list(execution.retained_sources) if current_round_matches else []
+        )
         if packet_stale:
             stale.update(imported)
             stale.update(retained)
             imported = []
             retained = []
-        current_round = execution.rounds[-1] if execution.rounds else None
-        pending = sorted(
-            source
-            for source, run in (current_round.runs.items() if current_round else [])
-            if run.status == "pending"
-        )
-        failed = sorted(
-            source
-            for source, run in (current_round.runs.items() if current_round else [])
-            if run.status == "failed"
-        )
+        if current_round is not None and current_round_matches:
+            pending = sorted(
+                source
+                for source, run in current_round.runs.items()
+                if run.status == "pending"
+            )
+            failed = sorted(
+                source
+                for source, run in current_round.runs.items()
+                if run.status == "failed"
+            )
+        else:
+            pending = []
+            failed = []
         if packet_stale:
             pending = []
             failed = []
@@ -289,8 +303,13 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                 )
             else:
                 failed_retry = ", ".join(retry_sources) or "(none)"
+                recovery_action = (
+                    f"restore failed source(s): {failed_retry}"
+                    if retry_sources and set(retry_sources).issubset(failed)
+                    else f"collect required source(s): {failed_retry}"
+                )
                 next_command = (
-                    f"restore failed source(s): {failed_retry}; then in a human-owned "
+                    f"{recovery_action}; then in a human-owned "
                     "TTY run super-harness review authorize "
                     f"{change_id} --reviewer {reviewer}{retry_flags} --reason <why>; "
                     f"then super-harness review begin {change_id} --reviewer {reviewer}"

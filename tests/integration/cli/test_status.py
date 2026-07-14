@@ -771,6 +771,59 @@ def test_status_current_imported_source_is_not_also_stale_and_exhaustion_is_acti
     assert "review human inspect" not in progress["next_command"]
 
 
+def test_status_does_not_retain_run_state_from_a_different_packet_contract(
+    tmp_path: Path,
+) -> None:
+    _init(tmp_path)
+    _seed_awaiting_code_review(tmp_path, "demo")
+    _write_exhausted_review_governance(tmp_path)
+    _record_review_round(
+        tmp_path,
+        "demo",
+        round_id="old-round",
+        contract_digest="old-contract",
+        target_head="old-head",
+        profile_digest="old-profiles",
+        include_failed_claude=True,
+    )
+    _record_review_round(
+        tmp_path,
+        "demo",
+        round_id="old-round-2",
+        contract_digest="old-contract",
+        target_head="old-head",
+        profile_digest="old-profiles",
+        include_failed_claude=True,
+    )
+    packet_dir = tmp_path / ".harness" / "pending-reviews" / "demo" / "code-reviewer"
+    packet_dir.mkdir(parents=True, exist_ok=True)
+    (packet_dir / "draft.packet.json").write_text(
+        json.dumps(
+            {
+                "contract_digest": "new-contract",
+                "target_head": "new-head",
+                "profile_digest": "new-profiles",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "--json", "status", "demo"]
+    )
+
+    assert result.exit_code == 0, result.output
+    progress = json.loads(result.output)["data"]["changes"][0]["review_progress"]
+    assert progress["imported_sources"] == []
+    assert progress["pending_sources"] == []
+    assert progress["failed_sources"] == []
+    assert progress["retained_sources"] == []
+    assert progress["stale_sources"] == ["codex"]
+    assert "collect required source(s): codex, claude" in progress["next_command"]
+    assert "restore failed source(s)" not in progress["next_command"]
+
+
 def test_status_invalidates_retained_receipts_when_packet_target_is_not_current_head(
     tmp_path: Path,
 ) -> None:
