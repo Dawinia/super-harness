@@ -199,6 +199,11 @@ def compile_review_contract(
         if isinstance(path, str) and path
     ]
 
+    # Advisory warnings surfaced to the caller (prepare reports these). Kept
+    # visible rather than silently swallowed so a skipped plan-drift guard is
+    # never mistaken for "no drift" (PR#79 finding #8 follow-up).
+    drift_warnings: list[str] = []
+
     if reviewer == "code-reviewer":
         latest_plan_approval = next(
             (event for event in reversed(events) if event.type == "plan_approved"),
@@ -228,6 +233,12 @@ def compile_review_contract(
                 # after a history rewrite). Fall back to current-target artifacts
                 # only rather than crashing the prepare (PR#79 finding #8).
                 approved_artifacts = []
+                drift_warnings.append(
+                    "approved plan review head "
+                    f"{approved_plan_head[:12]} is unresolvable (history rewritten "
+                    "or gc'd); plan-drift detection is limited to current-target "
+                    "artifacts"
+                )
         artifact_paths = sorted(set(current_artifacts + approved_artifacts))
         if isinstance(approved_plan_head, str) and artifact_paths:
             # Detect plan/spec drift by comparing the artifact *content* between the
@@ -246,6 +257,12 @@ def compile_review_contract(
                 )
             except GitScopeError:
                 changed_artifacts = []
+                drift_warnings.append(
+                    "plan-drift guard skipped: cannot diff plan/spec artifacts "
+                    f"against approved plan head {approved_plan_head[:12]} "
+                    "(unresolvable ref); the guard could not confirm the plan is "
+                    "unchanged"
+                )
             if changed_artifacts:
                 raise ReviewContractError(
                     "approved plan/spec changed without plan redeclaration; run "
@@ -339,14 +356,20 @@ def compile_review_contract(
     bundle["assignments"] = assignments
     bundle["participant_digest"] = _digest(sorted(participants))
     bundle["profile_digest"] = _digest(profile_payload)
-    bundle["warnings"] = (
-        [
-            "large inspection target; review remains one complete assignment and "
-            "is not automatically sharded"
-        ]
-        if any(len(assignment["inspection"]["files"]) >= 50 for assignment in assignments)
-        else []
-    )
+    bundle["warnings"] = [
+        *drift_warnings,
+        *(
+            [
+                "large inspection target; review remains one complete assignment "
+                "and is not automatically sharded"
+            ]
+            if any(
+                len(assignment["inspection"]["files"]) >= 50
+                for assignment in assignments
+            )
+            else []
+        ),
+    ]
     contract_payload = dict(bundle)
     contract_payload.pop("contract_digest", None)
     bundle["contract_digest"] = _digest(contract_payload)

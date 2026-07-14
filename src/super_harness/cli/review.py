@@ -1365,11 +1365,12 @@ def _close_round_if_terminal(
     elif missing:
         outcome = "execution_failed"
     elif len(imported) < round_state.min_independent:
-        # Governance requires min_independent sources, but an automated round can
-        # only import its automated participants. A role that also lists a human
-        # participant (min_independent > automated count) therefore cannot be
-        # approved by automated imports alone — fail closed here so the human
-        # review is still required rather than silently skipped (PR#79 finding #1).
+        # An automated round can only import its automated participants. A role
+        # that also lists a human participant (min_independent > automated count)
+        # must not be approved by the automated imports alone — fail closed so the
+        # human review is still required. The human then completes the quorum via
+        # `review human confirm`, which counts the automated receipts already
+        # recorded for the same target head (PR#79 finding #1).
         outcome = "execution_failed"
     else:
         outcome = "approved"
@@ -2454,19 +2455,38 @@ def human_confirm(
         },
         subcommand=subcommand,
     )
-    # Count every independent source that has imported for this exact contract:
-    # the automated receipts already on record plus this human receipt. A human
+    # Count every independent source that has imported a non-rejecting review of
+    # the same target HEAD: the automated receipts already on record plus this
+    # human receipt. Matching is by target HEAD, not contract digest — once any
+    # source reviews, incremental baselines legitimately shift the compiled
+    # contract for later prepares, so the automated round and the human draft hold
+    # different contract digests even though they reviewed the same commit. The
+    # independence guarantee is "N distinct sources reviewed this HEAD". A human
     # approval alone must not satisfy a role that requires more independent
-    # sources; the human is the completer that closes the whole participant set
-    # (PR#79 finding #1). For human-only governance (min_independent == 1) this is
-    # satisfied by the single human source.
+    # sources; the human completes the quorum the automated rounds started (PR#79
+    # finding #1). For human-only governance (min_independent == 1) the single
+    # human source satisfies it.
+    def _run_approved(run: ReviewRunState) -> bool:
+        verdict = run.verdict
+        if run.status != "imported" or not isinstance(verdict, dict):
+            return False
+        if verdict.get("scope_sufficient", True) is not True:
+            return False
+        checklist = verdict.get("checklist", [])
+        return not (
+            isinstance(checklist, list)
+            and any(
+                isinstance(item, dict) and item.get("status") == "fail"
+                for item in checklist
+            )
+        )
+
     prior_imported = {
         prior_source
         for prior_round in execution.rounds
-        if prior_round.contract_digest == draft["contract_digest"]
-        and prior_round.target_head == draft["target_head"]
+        if prior_round.target_head == draft["target_head"]
         for prior_source, prior_run in prior_round.runs.items()
-        if prior_run.status == "imported"
+        if prior_source != source and _run_approved(prior_run)
     }
     independent_sources = sorted(prior_imported | {source})
     if outcome == "approved" and len(independent_sources) < role.min_independent:

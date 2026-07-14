@@ -13,8 +13,9 @@ from pytest import MonkeyPatch
 
 from super_harness.cli import main
 from super_harness.core.events import Actor, Event
-from super_harness.core.paths import events_path
+from super_harness.core.paths import events_path, pending_reviews_dir
 from super_harness.core.post_emit import refresh_state_after_emit
+from super_harness.core.reducer import derive_state
 from super_harness.core.review_verdict import read_change_events
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
@@ -1160,6 +1161,155 @@ def test_import_rejects_dirty_in_scope_tree(
     assert "uncommitted changes" in imported.output
 
 
+def test_retry_contract_events_slices_identically_for_begin_and_authorize() -> None:
+    """Regression (PR#79 finding #7): the shared retry-slicing helper both begin
+    and authorize call must slice the event log before a closed execution_failed
+    round so both resolve the SAME contract digest (no stale-packet disagreement)."""
+    from super_harness.cli.review import _retry_contract_events
+    from super_harness.engineering.review_runs import derive_review_execution
+
+    def ev(event_type: str, payload: dict[str, object], eid: str) -> Event:
+        return Event(
+            event_id=eid, type=event_type, change_id="change",
+            timestamp="2026-07-13T00:00:00Z",
+            actor=Actor(type="agent", identifier="t"), framework="plain",
+            payload=payload,
+        )
+
+    epoch = "impl-1"
+    common = {
+        "reviewer": "code-reviewer", "epoch_id": epoch,
+        "contract_digest": "cd", "target_head": "th", "profile_digest": "pd",
+    }
+    run = {
+        "run_id": "run-1", "source": "codex", "protocol": "codex-cli",
+        "requested_model": "m", "requested_options": {},
+    }
+    events = [
+        ev("implementation_complete", {}, epoch),
+        ev("review_round_started", {**common, "round_id": "r1", "automatic": True,
+            "required_sources": ["codex"], "min_independent": 1,
+            "require_distinct_model_families": False, "runs": [run]}, "s1"),
+        ev("review_run_failed", {**common, "round_id": "r1", "run_id": "run-1",
+            "source": "codex", "reason": "crash"}, "f1"),
+        ev("review_round_closed", {**common, "round_id": "r1",
+            "outcome": "execution_failed"}, "c1"),
+    ]
+    execution = derive_review_execution(events, "code-reviewer")
+    packet = {"contract_digest": "cd", "target_head": "th", "profile_digest": "pd"}
+
+    contract_events, anchor, retrying = _retry_contract_events(
+        events, execution, packet, "code-reviewer"
+    )
+    assert retrying is True
+    assert anchor is not None and anchor.round_id == "r1"
+    # Sliced to everything BEFORE the failed round's review_round_started.
+    assert [e.event_id for e in contract_events] == ["impl-1"]
+
+
+def test_plan_reviewer_round_freezes_no_code_finding_ids(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Regression (PR#79 finding #3): a plan-reviewer round must NOT freeze
+    open code-review finding ids (the plan prompt never surfaces them, so import
+    could never dispose them and plan review would wedge)."""
+    root = tmp_path
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "t@t")
+    _git(root, "config", "user.name", "t")
+    (root / "docs").mkdir()
+    (root / "src").mkdir()
+    (root / "docs" / "plan.md").write_text(
+        "---\nchange: change\nstage: plan\n---\n\nplan\n", encoding="utf-8"
+    )
+    (root / "src" / "app.py").write_text("value = 1\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-qm", "base")
+    _git(root, "checkout", "-qb", "feature")
+    (root / "src" / "app.py").write_text("value = 2\n", encoding="utf-8")
+    _git(root, "commit", "-aqm", "impl")
+
+    harness = root / ".harness"
+    harness.mkdir()
+    (harness / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  base_branch: main\n"
+        "  sources:\n"
+        "    codex:\n"
+        "      kind: automated\n"
+        "  roles:\n"
+        "    plan-reviewer:\n"
+        "      participants: [codex]\n"
+        "      min_independent: 1\n"
+        "      max_automatic_rounds_per_epoch: 2\n"
+        "    code-reviewer:\n"
+        "      participants: [codex]\n"
+        "      min_independent: 1\n"
+        "      max_automatic_rounds_per_epoch: 2\n",
+        encoding="utf-8",
+    )
+    (harness / "review-profiles.local.yaml").write_text(
+        "version: 1\n"
+        "sources:\n"
+        "  codex:\n"
+        "    protocol: codex-cli\n"
+        "    model: gpt-review\n"
+        "    agent_options:\n"
+        "      reasoning_effort: medium\n"
+        "      sandbox: read-only\n",
+        encoding="utf-8",
+    )
+    _fake_codex(root, monkeypatch)
+    scope = {"scope": {"files": ["docs/", "src/"]}}
+    seq: list[tuple[str, dict[str, object]]] = [
+        ("intent_declared", {}),
+        ("plan_ready", scope),
+        ("plan_approved", {}),
+        ("implementation_started", {}),
+        ("verification_passed", {}),
+        ("implementation_complete", {}),
+        ("code_review_failed", {
+            "reviewer": "code-reviewer",
+            "verdict": {"findings": [{"id": "codex/r0/F1", "severity": "major"}],
+                        "prior_findings": []},
+        }),
+        ("plan_redeclared", {"reason": "revise"}),
+        ("plan_ready", scope),
+    ]
+    for event_type, payload in seq:
+        EventWriter(events_path(root)).emit(
+            Event(
+                event_id=new_event_id(), type=event_type, change_id="change",
+                timestamp="2026-07-13T00:00:00Z",
+                actor=Actor(type="human", identifier="test"),
+                framework="plain", payload=payload,
+            )
+        )
+    refresh_state_after_emit(root)
+
+    # Sanity: the code finding is genuinely open (would be frozen without the fix).
+    from super_harness.core.review_verdict import derive_open_findings
+    assert derive_open_findings(
+        read_change_events(events_path(root), "change"), "change"
+    ) == ["codex/r0/F1"]
+
+    for verb in ("prepare", "begin"):
+        result = CliRunner().invoke(
+            main,
+            ["--json", "--workspace", str(root), "review", verb, "change",
+             "--reviewer", "plan-reviewer"],
+        )
+        assert result.exit_code == EXIT_OK, result.output
+
+    started = [
+        e for e in read_change_events(events_path(root), "change")
+        if e.type == "review_round_started" and e.payload.get("reviewer") == "plan-reviewer"
+    ]
+    assert started, "plan-reviewer round should have started"
+    assert started[-1].payload["open_finding_ids"] == []
+
+
 def _enable_codex_human_quorum(root: Path) -> None:
     """code-reviewer requires codex (automated) + human, min_independent 2."""
     (root / ".harness" / "review-governance.yaml").write_text(
@@ -1183,6 +1333,42 @@ def _enable_codex_human_quorum(root: Path) -> None:
     )
 
 
+def _human_confirm_code_review(root: Path, monkeypatch: MonkeyPatch) -> Result:
+    """Draft + TTY-confirm a human code-review approval; return the confirm run."""
+    CliRunner().invoke(
+        main,
+        ["--json", "--workspace", str(root), "review", "prepare", "change",
+         "--reviewer", "code-reviewer"],
+    )
+    packet = json.loads(
+        (pending_reviews_dir(root, "change") / "code-reviewer"
+         / "draft.packet.json").read_text()
+    )
+    verdict = {
+        "bundle_digest": packet["bundle_digest"],
+        "scope_sufficient": True,
+        "checklist": [{"item": item, "status": "pass"} for item in packet["checklist"]],
+        "findings": [],
+        "prior_findings": [],
+    }
+    verdict_path = root / "human-verdict.json"
+    verdict_path.write_text(json.dumps(verdict), encoding="utf-8")
+    drafted = CliRunner().invoke(
+        main,
+        ["--json", "--workspace", str(root), "review", "human", "draft", "change",
+         "--reviewer", "code-reviewer", "--verdict-file", str(verdict_path)],
+    )
+    assert drafted.exit_code == EXIT_OK, drafted.output
+    nonce = json.loads(drafted.output)["data"]["nonce"]
+    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
+    return CliRunner().invoke(
+        main,
+        ["--workspace", str(root), "review", "human", "confirm", "change",
+         "--reviewer", "code-reviewer", "--nonce", nonce],
+        input="y\n",
+    )
+
+
 def test_automated_round_alone_cannot_approve_when_human_required(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -1197,12 +1383,33 @@ def test_automated_round_alone_cannot_approve_when_human_required(
     imported = _import_run(root, begun, model="gpt-review")
     assert imported.exit_code == EXIT_OK, imported.output
 
-    types = [event.type for event in read_change_events(events_path(root), "change")]
+    events = read_change_events(events_path(root), "change")
+    types = [e.type for e in events]
     assert "code_review_passed" not in types
-    # The round closes, but not as an approval — governance is not yet satisfied.
-    closed = [
-        event
-        for event in read_change_events(events_path(root), "change")
-        if event.type == "review_round_closed"
-    ]
+    closed = [e for e in events if e.type == "review_round_closed"]
     assert closed and closed[-1].payload["outcome"] == "execution_failed"
+
+
+def test_mixed_quorum_completes_when_human_confirms_after_automated(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Regression (PR#79 finding #1): the intended mixed-role flow — automated
+    round runs (holds, fail-closed), then the human completes the quorum. The
+    human confirm counts the automated receipt for the same target HEAD (despite
+    the shifted contract digest) and emits code_review_passed."""
+    root = _repo(tmp_path)
+    _enable_codex_human_quorum(root)
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    assert _import_run(root, begun, model="gpt-review").exit_code == EXIT_OK
+    assert derive_state(events_path(root))["change"].current_state == "AWAITING_CODE_REVIEW"
+
+    confirmed = _human_confirm_code_review(root, monkeypatch)
+    assert confirmed.exit_code == EXIT_OK, confirmed.output
+
+    events = read_change_events(events_path(root), "change")
+    passed = [e for e in events if e.type == "code_review_passed"]
+    assert passed, "human confirm should complete the codex+human quorum"
+    assert set(passed[-1].payload["independent_sources"]) == {"codex", "human"}
+    assert derive_state(events_path(root))["change"].current_state == "READY_TO_MERGE"

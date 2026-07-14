@@ -475,3 +475,38 @@ def test_rebased_plan_head_with_changed_plan_still_requires_redeclare(
             tmp_path, bundle=bundle, governance=governance,
             profiles={"external": profile}, events=events, declared=["docs/", "src/"],
         )
+
+
+def test_unresolvable_plan_head_warns_instead_of_silent_skip(tmp_path: Path) -> None:
+    """Regression (PR#79 #8 follow-up): when the approved plan head is unresolvable
+    (gc'd/rewritten), prepare must not crash AND must surface a visible warning
+    that the plan-drift guard was skipped — never a silent fail-open."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "docs" / "plan.md").write_text(
+        "---\nchange: change\nstage: plan\n---\n\nplan\n"
+    )
+    (tmp_path / "src" / "a.py").write_text("v1\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    _git(tmp_path, "checkout", "-qb", "feature")
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "impl")
+
+    governance, bundle = _code_reviewer_inputs()
+    profile = ReviewProducerProfile(
+        source="external", protocol="codex-cli", model="m",
+        cost_class="standard", agent_options={},
+    )
+    # A reviewed_head that does not resolve in this repo → GitScopeError path.
+    events = [_event("plan_approved", {"reviewed_head": "f" * 40})]
+
+    compiled = compile_review_contract(
+        tmp_path, bundle=bundle, governance=governance,
+        profiles={"external": profile}, events=events, declared=["docs/", "src/"],
+    )
+    warnings = compiled["warnings"]
+    assert any("plan-drift guard skipped" in w or "unresolvable" in w for w in warnings), warnings
