@@ -22,13 +22,14 @@ deliberately deferred to a later version; one is blocked by an upstream bug
   non-builtin entry is rejected — it is not executed.
 
 **Process / orchestration:**
-- Unattended CI auto-review — a headless reviewer that produces the verdict with
-  no human or interactive agent present (e.g. shelling out to a headless Claude
-  run). v0.1 ships the verdict *recording* path (`review approve | reject | skip`),
-  configured reviewer sources, and the `min_independent` source-threshold gate,
-  plus source profiles for agent-specific review hints, but it does not itself
-  run an LLM review or translate `agent_options` into runner-specific command
-  flags. Tracked as a follow-up.
+- Reviewer execution and supervision. super-harness compiles frozen Codex CLI and
+  Claude CLI invocation contracts, parses completed outputs, and records receipts;
+  it never starts, monitors, retries, or kills those processes. The caller owns
+  execution. This boundary is intentional, not a pending headless-executor feature.
+- Host-native subagents are not a universal review primitive. The CLI does not
+  assume a Codex spawn-agent API, Claude Task, or another in-session subagent API
+  exists.
+  Evidence comes from configured external producer protocols or a human receipt.
 - Daemon-autonomous event-driven dispatch — v0.1 uses CLI one-shot dispatchers
   (e.g., `super-harness on-merge` dispatches the merged-event sensors).
 
@@ -50,9 +51,15 @@ deliberately deferred to a later version; one is blocked by an upstream bug
 ## FAQ
 
 **Does super-harness run the review or write the verdict?**
-No. It enforces that the configured number of independent reviewer-source
-verdicts exists before the lifecycle advances; the agent or human produces those
-verdicts. See [Concepts](concepts.md).
+No. It freezes scope, prompt, requested profile, and output schema; the caller
+runs an external producer or a human reviews the packet. super-harness then
+validates and imports the result receipt before deterministic round closure. See
+[Concepts](concepts.md).
+
+**Does cost control impose a token limit?**
+No. Review usefulness comes first. The protocol controls exact inspection scope,
+explicit models/options, silent retry, and automatic-round multiplication. Usage
+telemetry is optional and a missing estimate never makes review unavailable.
 
 **Does it spawn or manage my coding agent?**
 No. Your agent calls the harness; the harness gates the agent. See

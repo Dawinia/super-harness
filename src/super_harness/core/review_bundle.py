@@ -15,13 +15,17 @@ from typing import Any
 
 import yaml
 
+from super_harness.core.frontmatter import split_frontmatter
 from super_harness.core.paths import events_path
 from super_harness.core.reducer import derive_state
 from super_harness.core.review_checklist import resolve_checklist
 from super_harness.core.scope_match import (
     GitScopeError,
     committed_scope_digest,
+    covered_by_scope,
+    file_text_at_commit,
     split_changed_by_scope,
+    tracked_files_at_commit,
     working_tree_dirty,
 )
 
@@ -33,12 +37,12 @@ class BundleError(ValueError):
 
 
 def load_base_branch(root: Path) -> str:
-    """Base branch for the in-scope diff: `.harness/policy.yaml` review.base_branch, else `main`.
+    """Read tracked review governance's base branch, else ``main``.
 
     Tolerant: absent/corrupt yaml → default. This is the single config location
     for the base branch so the implementer never re-hardcodes `main`.
     """
-    f = root / ".harness" / "policy.yaml"
+    f = root / ".harness" / "review-governance.yaml"
     if not f.is_file():
         return _DEFAULT_BASE
     try:
@@ -71,6 +75,27 @@ def _no_spec_plan(framework: str | None, root: Path, change_id: str) -> tuple[st
     return "", ""
 
 
+def resolve_declared_artifact_paths(
+    root: Path, declared: list[str], change_id: str, *, ref: str = "HEAD"
+) -> tuple[str, str]:
+    spec_path = ""
+    plan_path = ""
+    for relative in tracked_files_at_commit(root, ref):
+        if not relative.endswith(".md") or not covered_by_scope(relative, declared):
+            continue
+        parsed = split_frontmatter(file_text_at_commit(root, ref, relative))
+        if parsed is None:
+            continue
+        frontmatter, _ = parsed
+        if frontmatter.get("change") != change_id:
+            continue
+        if frontmatter.get("stage") == "design":
+            spec_path = relative
+        elif frontmatter.get("stage") in {None, "plan"}:
+            plan_path = relative
+    return spec_path, plan_path
+
+
 def assemble_bundle(
     root: Path,
     *,
@@ -101,6 +126,14 @@ def assemble_bundle(
 
     resolve = spec_plan_resolver or _no_spec_plan
     spec_path, plan_path = resolve(framework, root, change_id)
+    try:
+        declared_spec, declared_plan = resolve_declared_artifact_paths(
+            root, declared, change_id
+        )
+    except GitScopeError as e:
+        raise BundleError(str(e)) from e
+    spec_path = spec_path or declared_spec
+    plan_path = plan_path or declared_plan
     return {
         "change": change_id,
         "reviewer": reviewer,

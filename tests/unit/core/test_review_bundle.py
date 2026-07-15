@@ -97,7 +97,9 @@ def test_assemble_bundle_empty_scope_inert_digest(tmp_path: Path) -> None:
 def test_load_base_branch_default_and_override(tmp_path: Path) -> None:
     (tmp_path / ".harness").mkdir(parents=True)
     assert load_base_branch(tmp_path) == "main"
-    (tmp_path / ".harness" / "policy.yaml").write_text("review:\n  base_branch: develop\n")
+    (tmp_path / ".harness" / "review-governance.yaml").write_text(
+        "review:\n  base_branch: develop\n"
+    )
     assert load_base_branch(tmp_path) == "develop"
 
 
@@ -127,3 +129,17 @@ def test_assemble_bundle_no_resolver_yields_empty_spec_plan(tmp_path: Path) -> N
     b = assemble_bundle(ws, change_id="c", reviewer="code-reviewer", base="main")
     assert b["spec_path"] == ""
     assert b["plan_path"] == ""
+
+
+def test_assemble_bundle_finds_declared_plain_plan_frontmatter(tmp_path: Path) -> None:
+    ws = _repo_with_change(tmp_path)
+    (ws / "docs").mkdir()
+    plan = ws / "docs" / "plan.md"
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# Plan\n")
+    _git(ws, "add", "docs/plan.md")
+    _git(ws, "commit", "-qm", "plan")
+    _change(ws, ["src/", "docs/plan.md"])
+
+    bundle = assemble_bundle(ws, change_id="c", reviewer="code-reviewer", base="main")
+
+    assert bundle["plan_path"] == "docs/plan.md"

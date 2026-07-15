@@ -21,6 +21,8 @@ _INFORMATIONAL: frozenset[str] = frozenset({
     "scope_drift_detected", "merged_reverted", "pr_opened",
     "sensor_timeout_exceeded", "sensor_crashed",
     "gate_bypassed", "gate_bypass_disclosed",
+    "review_round_started", "review_result_imported", "review_run_failed",
+    "review_round_closed", "review_round_authorized",
 })
 
 # Per spec §3.7 Reachability table — explicit (current_state, event_type) -> target.

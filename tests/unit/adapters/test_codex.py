@@ -147,6 +147,21 @@ def test_codex_agents_md_mentions_stop_authoring_check():
 
 def test_codex_agents_md_mentions_source_profiles():
     sub = CodexAdapter().agents_md_subsection()
-    assert "agent_options" in sub
-    assert "bundle-only" in sub
-    assert "incremental" in sub
+    assert ".harness/review-governance.yaml" in sub
+    assert ".harness/review-profiles.local.yaml" in sub
+    assert "explicit model" in sub
+    assert "supporting context" in sub
+
+
+def test_codex_agents_md_teaches_compiled_review_contract():
+    sub = " ".join(CodexAdapter().agents_md_subsection().split()).lower()
+    assert "does not start, spawn, or host reviewers" in sub
+    assert "review prepare" in sub
+    assert "review begin" in sub
+    assert "review result import" in sub
+    assert "outside super-harness" in sub
+    assert "do not edit while any issued run is pending" in sub
+    assert "does not trigger plan review" in sub
+    assert "plan, scope, or requirements changed" in sub
+    assert "never widen it to the whole pr" in sub
+    assert "must never confirm the human nonce" in sub

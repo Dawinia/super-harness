@@ -44,6 +44,45 @@ def _git(root: Path, *args: str) -> str:
     return proc.stdout
 
 
+def resolve_commit(root: Path, ref: str = "HEAD") -> str:
+    """Resolve ``ref`` to one full commit SHA, failing closed."""
+    return _git(root, "rev-parse", "--verify", f"{ref}^{{commit}}").strip()
+
+
+def is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    """Return whether ``ancestor`` reaches ``descendant``; fail closed on Git errors."""
+    args = ["merge-base", "--is-ancestor", ancestor, descendant]
+    try:
+        proc = subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError as e:
+        raise GitScopeError(f"`git {' '.join(args)}` failed: FileNotFoundError: {e}") from e
+    if proc.returncode == 0:
+        return True
+    if proc.returncode == 1:
+        return False
+    raise GitScopeError(
+        f"`git {' '.join(args)}` failed with exit {proc.returncode}: {proc.stderr.strip()}"
+    )
+
+
+def merge_base_commit(root: Path, base: str, head: str) -> str:
+    """Resolve the common ancestor used as the full-change inspection base."""
+    return _git(root, "merge-base", base, head).strip()
+
+
+def tracked_files_at_commit(root: Path, ref: str) -> list[str]:
+    """List tracked files at ``ref`` in deterministic order."""
+    out = _git(root, "ls-tree", "-r", "--name-only", ref)
+    return sorted(line for line in out.splitlines() if line.strip())
+
+
+def file_text_at_commit(root: Path, ref: str, path: str) -> str:
+    """Read one tracked text file from ``ref``, failing closed."""
+    return _git(root, "show", f"{ref}:{path}")
+
+
 def split_changed_by_scope(
     root: Path, *, base: str, declared: list[str]
 ) -> tuple[list[str], list[str]]:
@@ -56,6 +95,24 @@ def split_changed_by_scope(
     in_scope = sorted(f for f in changed if covered_by_scope(f, declared))
     out_scope = sorted(f for f in changed if not covered_by_scope(f, declared))
     return in_scope, out_scope
+
+
+def split_changed_by_scope_between(
+    root: Path, *, base: str, head: str, declared: list[str]
+) -> tuple[list[str], list[str]]:
+    """Return scoped changed files for the explicit committed ``base..head`` range."""
+    out = _git(root, "diff", "--name-only", f"{base}..{head}")
+    changed = [line for line in out.splitlines() if line.strip()]
+    in_scope = sorted(path for path in changed if covered_by_scope(path, declared))
+    out_scope = sorted(path for path in changed if not covered_by_scope(path, declared))
+    return in_scope, out_scope
+
+
+def scope_diff_argv(base: str, head: str, in_scope: list[str]) -> list[str]:
+    """Return the exact shell-free argv for inspecting one scoped commit range."""
+    if not in_scope:
+        return []
+    return ["git", "diff", f"{base}..{head}", "--", *sorted(in_scope)]
 
 
 def committed_scope_digest(root: Path, *, base: str, in_scope: list[str]) -> str:

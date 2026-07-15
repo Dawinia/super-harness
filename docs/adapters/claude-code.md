@@ -130,15 +130,19 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   `AWAITING_PLAN_REVIEW` / etc.). The gate only allows mutations at
   `PLAN_APPROVED`, `IMPLEMENTATION_IN_PROGRESS`, or `CODE_REVIEW_REJECTED`
   (see `src/super_harness/gates/decisions.py`). `AWAITING_PLAN_REVIEW →
-  PLAN_APPROVED` advances via `review approve --reviewer plan-reviewer`; when
-  `.harness/policy.yaml` requires multiple independent sources, repeat the
-  approval with distinct configured `--source` values until the threshold is
-  met. If those sources carry profiles, `status` and `review prepare` expose the
-  source's intended agent, context (`bundle-only`, `incremental`, or
-  `full-change`), and agent-specific `agent_options`; the adapter text tells the
-  agent to follow those hints instead of inventing a global effort/mode setting.
-  That source-threshold gate ships in v0.1; only automatic headless reviewer
-  execution is deferred (see [Limitations](../limitations.md)).
+  PLAN_APPROVED` advances through receipt-backed round closure. Tracked
+  `.harness/review-governance.yaml` fixes the participant set and round ceiling;
+  gitignored `.harness/review-profiles.local.yaml` holds each user's explicit
+  model and Claude/Codex-specific options. Run `review prepare`, then `review
+  begin`; execute every frozen invocation outside super-harness and import every
+  completed output with `review result import` (or record a crash with `review
+  run fail`). The adapter text forbids treating Claude `Task` as the universal
+  protocol and forbids editing until all issued runs finish. Follow-up fixes and
+  docs are batched into one prepare; code-only findings do not repeat plan review.
+  Findings stay on the exact frozen target, although reviewers may read unchanged
+  repository context for architecture. Human evidence uses `review human
+  draft` plus a human-owned TTY `review human confirm`; the agent must not confirm
+  that nonce.
   Framework adapters auto-emit `plan_ready` when
   their artifacts exist (OpenSpec watches `tasks.md`). If the gate is genuinely
   malfunctioning, a **human** (never an agent) can apply the emergency override

@@ -11,7 +11,12 @@ from super_harness.core.scope_match import (
     GitScopeError,
     committed_scope_digest,
     covered_by_scope,
+    is_ancestor,
+    merge_base_commit,
+    resolve_commit,
+    scope_diff_argv,
     split_changed_by_scope,
+    split_changed_by_scope_between,
     working_tree_dirty,
 )
 
@@ -49,6 +54,87 @@ def test_split_changed_by_scope(tmp_path: Path) -> None:
     in_scope, out_scope = split_changed_by_scope(tmp_path, base="main", declared=["src/"])
     assert in_scope == ["src/in.py"]
     assert out_scope == ["out.py"]
+
+
+def test_resolve_commit_returns_full_sha(tmp_path: Path) -> None:
+    _repo(tmp_path)
+    (tmp_path / "f.py").write_text("v1\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+
+    resolved = resolve_commit(tmp_path, "HEAD")
+
+    assert len(resolved) == 40
+    assert resolved == subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_is_ancestor_distinguishes_history_order(tmp_path: Path) -> None:
+    _repo(tmp_path)
+    (tmp_path / "f.py").write_text("v1\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    base = resolve_commit(tmp_path)
+    (tmp_path / "f.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "next")
+    head = resolve_commit(tmp_path)
+
+    assert is_ancestor(tmp_path, base, head) is True
+    assert is_ancestor(tmp_path, head, base) is False
+
+
+def test_explicit_range_returns_scoped_files_and_ordered_diff_argv(tmp_path: Path) -> None:
+    _repo(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("a1\n")
+    (tmp_path / "src" / "b.py").write_text("b1\n")
+    (tmp_path / "outside.py").write_text("o1\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    (tmp_path / "src" / "a.py").write_text("a2\n")
+    (tmp_path / "outside.py").write_text("o2\n")
+    _git(tmp_path, "commit", "-aqm", "middle")
+    middle = resolve_commit(tmp_path)
+    (tmp_path / "src" / "b.py").write_text("b2\n")
+    _git(tmp_path, "commit", "-aqm", "head")
+    head = resolve_commit(tmp_path)
+
+    in_scope, out_scope = split_changed_by_scope_between(
+        tmp_path, base=middle, head=head, declared=["src/"]
+    )
+
+    assert in_scope == ["src/b.py"]
+    assert out_scope == []
+    assert scope_diff_argv(middle, head, ["src/b.py", "src/a.py"]) == [
+        "git", "diff", f"{middle}..{head}", "--", "src/a.py", "src/b.py"
+    ]
+
+
+def test_empty_scope_has_no_diff_argv() -> None:
+    assert scope_diff_argv("base", "head", []) == []
+
+
+def test_merge_base_excludes_changes_added_only_to_base_branch(tmp_path: Path) -> None:
+    _repo(tmp_path)
+    (tmp_path / "f.py").write_text("base\n")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    shared = resolve_commit(tmp_path)
+    _git(tmp_path, "checkout", "-qb", "feature")
+    (tmp_path / "f.py").write_text("feature\n")
+    _git(tmp_path, "commit", "-aqm", "feature")
+    feature = resolve_commit(tmp_path)
+    _git(tmp_path, "checkout", "main")
+    (tmp_path / "main-only.py").write_text("main\n")
+    _git(tmp_path, "add", "main-only.py")
+    _git(tmp_path, "commit", "-qm", "main moves")
+
+    assert merge_base_commit(tmp_path, "main", feature) == shared
 
 
 def test_committed_scope_digest_stable_and_changes(tmp_path: Path) -> None:

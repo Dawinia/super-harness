@@ -30,6 +30,8 @@ EXTENSION_EVENT_TYPES: frozenset[str] = frozenset({
     "verification_passed", "verification_failed",
     "code_review_passed", "code_review_failed",
     "review_verdict_recorded",
+    "review_round_started", "review_result_imported", "review_run_failed",
+    "review_round_closed", "review_round_authorized",
     "scope_drift_detected",
     # user-initiated
     "intent_redeclared", "intent_abandoned",

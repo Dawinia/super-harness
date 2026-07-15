@@ -6,6 +6,7 @@ overwrites all skeleton files including user edits. Per `cli-command-surface` §
 """
 from __future__ import annotations
 
+import shutil
 import sys
 from importlib.resources import files
 from pathlib import Path
@@ -14,11 +15,7 @@ from typing import Literal
 import click
 import yaml
 
-from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
-
-# TODO(v0.2): extract shared adapters.yaml persistence so cli.init + cli.adapter
-# both import a public helper instead of this private cross-module reference.
-from super_harness.cli.adapter import _persist_install_entry
+from super_harness.cli.adapter import install_agent_integration
 from super_harness.cli.errors import format_error
 from super_harness.core.clock import utc_now_iso
 from super_harness.engineering.agents_md import AgentsMdInjectionError
@@ -43,6 +40,112 @@ from super_harness.exit_codes import (
 from super_harness.version import __version__
 
 _TEMPLATES = files("super_harness.templates")
+
+_REVIEW_PRODUCERS: dict[str, dict[str, object]] = {
+    "codex-cli": {
+        "source": "codex",
+        "executable": "codex",
+        "agent_options": {
+            "reasoning_effort": "medium",
+            "sandbox": "read-only",
+        },
+    },
+    "claude-cli": {
+        "source": "claude",
+        "executable": "claude",
+        "agent_options": {"effort": "medium"},
+    },
+}
+
+
+def _stdin_is_tty() -> bool:
+    return sys.stdin.isatty()
+
+
+def _prompt_multi_select(
+    title: str,
+    options: tuple[str, ...],
+) -> tuple[str, ...]:
+    if not options:
+        click.echo(f"{title}: no installed options detected")
+        return ()
+    click.echo(f"{title}:")
+    for index, option in enumerate(options, start=1):
+        click.echo(f"  {index}. {option} (recommended)")
+    default = ",".join(str(index) for index in range(1, len(options) + 1))
+    raw = click.prompt(
+        "Select comma-separated numbers, or 'none'",
+        default=default,
+        show_default=True,
+    ).strip()
+    if raw.lower() == "none":
+        return ()
+    selected: list[str] = []
+    for token in raw.split(","):
+        token = token.strip()
+        try:
+            index = int(token)
+        except ValueError as exc:
+            raise click.ClickException(
+                f"invalid selection {token!r}; enter comma-separated numbers"
+            ) from exc
+        if index < 1 or index > len(options):
+            raise click.ClickException(
+                f"selection {index} is out of range 1..{len(options)}"
+            )
+        option = options[index - 1]
+        if option not in selected:
+            selected.append(option)
+    return tuple(selected)
+
+
+def _resolve_init_selections(
+    integrations: tuple[str, ...],
+    review_producers: tuple[str, ...],
+    review_models: tuple[str, ...],
+    *,
+    no_agent: bool,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Resolve optional TTY selections; non-TTY values pass through unchanged."""
+
+    if not _stdin_is_tty():
+        return integrations, review_producers, review_models
+
+    resolved_integrations = integrations
+    if not resolved_integrations and not no_agent:
+        detected_integrations: list[str] = []
+        if shutil.which("codex"):
+            detected_integrations.append("codex")
+        if shutil.which("claude"):
+            detected_integrations.append("claude-code")
+        resolved_integrations = _prompt_multi_select(
+            "Coding-agent integrations", tuple(detected_integrations)
+        )
+
+    resolved_producers = review_producers
+    if not resolved_producers:
+        detected_producers: list[str] = []
+        if shutil.which("codex"):
+            detected_producers.append("codex-cli")
+        if shutil.which("claude"):
+            detected_producers.append("claude-cli")
+        resolved_producers = _prompt_multi_select(
+            "Review producers", tuple(detected_producers)
+        )
+
+    models = _parse_review_models(review_models)
+    for producer in resolved_producers:
+        source = str(_REVIEW_PRODUCERS[producer]["source"])
+        if source not in models:
+            models[source] = click.prompt(
+                f"Explicit model for {source}", type=str
+            ).strip()
+            if not models[source]:
+                raise click.ClickException(
+                    f"explicit model for {source!r} cannot be empty"
+                )
+    resolved_models = tuple(f"{source}={model}" for source, model in models.items())
+    return resolved_integrations, resolved_producers, resolved_models
 
 # S3 fix (OPEN-ITEMS #6): typed outcome literals returned by `_write_pr_template`
 # and `_write_workflow_file` so the advisory printed in `_setup_github` honestly
@@ -113,47 +216,26 @@ def _verification_default() -> str:
 
 def _skeleton_files() -> dict[str, str]:
     return {
-        "policy.yaml": (
-            "# super-harness policy (see sensor-gate-architecture §2.4)\n"
-            "\n"
-            "# Reviewer strategy (HG-02.C). super-harness never runs the review itself;\n"
-            "# the strategy tells the agent how to produce the verdict. Reviewer\n"
-            "# sources are configured labels; super-harness validates them but never\n"
-            "# executes a reviewer command on its own.\n"
-            "#   subagent (default) — dispatch a reviewer subagent (Task tool)\n"
-            "#   external           — run an external reviewer tool yourself\n"
-            "#   human              — a person reviews + records `review approve|reject`\n"
-            "#   hybrid             — subagent first, escalate to a human on fail/Large\n"
-            "# Source `agent_options` are intentionally agent-specific. Do not put\n"
-            "# `effort` / `mode` at the source root; Codex, subagent runners, and humans\n"
-            "# do not share one universal vocabulary.\n"
-            "# min_independent defaults to 1 to preserve the historical single-verdict flow.\n"
-            "reviewers:\n"
+        "review-governance.yaml": (
+            "# Shared review governance. Commit this file.\n"
+            "# Local producer/model choices live in the gitignored\n"
+            "# .harness/review-profiles.local.yaml file.\n"
+            "version: 1\n"
+            "review:\n"
+            "  base_branch: main\n"
             "  sources:\n"
-            "    subagent:\n"
-            "      agent: task-subagent\n"
-            "      context: incremental\n"
-            "      instructions: \"Dispatch an independent reviewer subagent against "
-            "the current plan/review bundle or latest delta.\"\n"
-            "      agent_options:\n"
-            "        effort: medium\n"
-            "    external:\n"
-            "      agent: codex\n"
-            "      context: bundle-only\n"
-            "      instructions: \"Run codex exec --sandbox read-only against the "
-            "prepared plan or review bundle.\"\n"
-            "      agent_options:\n"
-            "        reasoning_effort: medium\n"
-            "        sandbox: read-only\n"
             "    human:\n"
-            "      agent: human\n"
-            "      context: incremental\n"
-            "  plan-reviewer:\n"
-            "    strategy: subagent\n"
-            "    min_independent: 1\n"
-            "  code-reviewer:\n"
-            "    strategy: subagent\n"
-            "    min_independent: 1\n"
+            "      kind: human\n"
+            "  roles:\n"
+            "    plan-reviewer:\n"
+            "      participants: [human]\n"
+            "      min_independent: 1\n"
+            "      max_automatic_rounds_per_epoch: 2\n"
+            "    code-reviewer:\n"
+            "      participants: [human]\n"
+            "      min_independent: 1\n"
+            "      max_automatic_rounds_per_epoch: 2\n"
+            "  require_distinct_model_families: false\n"
         ),
         "sensors.yaml": "sensors: []\n",
         "gates.yaml": (
@@ -169,6 +251,105 @@ def _skeleton_files() -> dict[str, str]:
         "verification.yaml": _verification_default(),
         "conventions.md": "# Project conventions (referenced by reviewer sensors)\n",
     }
+
+
+def _parse_review_models(values: tuple[str, ...]) -> dict[str, str]:
+    models: dict[str, str] = {}
+    for value in values:
+        source, separator, model = value.partition("=")
+        if not separator or not source or not model:
+            raise ValueError(
+                "--review-model must use SOURCE=MODEL, for example "
+                "--review-model codex=gpt-review"
+            )
+        if source in models:
+            raise ValueError(f"duplicate --review-model source {source!r}")
+        models[source] = model
+    return models
+
+
+def _configure_review_producers(
+    root: Path,
+    producers: tuple[str, ...],
+    model_values: tuple[str, ...],
+) -> None:
+    """Write governance/profile selections without executing a producer."""
+
+    if len(set(producers)) != len(producers):
+        raise ValueError("duplicate --review-producer selection")
+    models = _parse_review_models(model_values)
+    unknown_models = set(models)
+    selected_sources: list[str] = []
+    profile_sources: dict[str, object] = {}
+    governance_sources: dict[str, object] = {}
+    for producer in producers:
+        definition = _REVIEW_PRODUCERS[producer]
+        source = str(definition["source"])
+        executable = str(definition["executable"])
+        unknown_models.discard(source)
+        model = models.get(source)
+        if model is None:
+            raise ValueError(
+                f"--review-producer {producer} requires "
+                f"--review-model {source}=<model>"
+            )
+        if shutil.which(executable) is None:
+            raise ValueError(
+                f"selected review producer {producer!r} is not installed "
+                f"({executable!r} not found on PATH); super-harness does not install it"
+            )
+        selected_sources.append(source)
+        governance_sources[source] = {"kind": "automated"}
+        raw_options = definition["agent_options"]
+        if not isinstance(raw_options, dict):
+            raise ValueError(
+                f"built-in review producer {producer!r} has invalid agent_options"
+            )
+        profile_sources[source] = {
+            "protocol": producer,
+            "model": model,
+            "cost_class": "standard",
+            "agent_options": dict(raw_options),
+        }
+    if unknown_models:
+        source = sorted(unknown_models)[0]
+        raise ValueError(
+            f"--review-model source {source!r} has no selected --review-producer"
+        )
+
+    governance_sources["human"] = {"kind": "human"}
+    participants = selected_sources or ["human"]
+    role = {
+        "participants": participants,
+        "min_independent": len(participants),
+        "max_automatic_rounds_per_epoch": 2,
+    }
+    governance = {
+        "version": 1,
+        "review": {
+            "base_branch": "main",
+            "sources": governance_sources,
+            "roles": {
+                "plan-reviewer": dict(role),
+                "code-reviewer": dict(role),
+            },
+            "require_distinct_model_families": False,
+        },
+    }
+    governance_path = root / ".harness" / "review-governance.yaml"
+    governance_path.write_text(
+        yaml.safe_dump(governance, sort_keys=False), encoding="utf-8"
+    )
+    profile_path = root / ".harness" / "review-profiles.local.yaml"
+    if profile_sources:
+        profile_path.write_text(
+            yaml.safe_dump(
+                {"version": 1, "sources": profile_sources}, sort_keys=False
+            ),
+            encoding="utf-8",
+        )
+    else:
+        profile_path.unlink(missing_ok=True)
 
 
 @click.command("init")
@@ -191,6 +372,27 @@ def _skeleton_files() -> dict[str, str]:
     is_flag=True,
     help="Skip auto-installing the detected agent's gate hook.",
 )
+@click.option(
+    "--integration",
+    "integrations",
+    multiple=True,
+    type=click.Choice(["codex", "claude-code"]),
+    help="Coding-agent integration to configure; repeat for multiple selections.",
+)
+@click.option(
+    "--review-producer",
+    "review_producers",
+    multiple=True,
+    type=click.Choice(sorted(_REVIEW_PRODUCERS)),
+    help="Local review producer protocol to configure; repeat for multiple selections.",
+)
+@click.option(
+    "--review-model",
+    "review_models",
+    multiple=True,
+    metavar="SOURCE=MODEL",
+    help="Explicit model for a selected review source; repeat per source.",
+)
 @click.pass_context
 def init_cmd(
     ctx: click.Context,
@@ -198,6 +400,9 @@ def init_cmd(
     framework: str | None,
     force: bool,
     no_agent: bool,
+    integrations: tuple[str, ...],
+    review_producers: tuple[str, ...],
+    review_models: tuple[str, ...],
 ) -> None:
     """Initialize a project for super-harness.
 
@@ -221,6 +426,20 @@ def init_cmd(
             err=True,
         )
         sys.exit(EXIT_NO_CONFIG)
+    interactive = _stdin_is_tty()
+    explicit_review_selection = bool(review_producers or review_models)
+    governance_path = harness / "review-governance.yaml"
+    configure_review = (
+        not governance_path.is_file()
+        or explicit_review_selection
+        or interactive
+    )
+    integrations, review_producers, review_models = _resolve_init_selections(
+        integrations,
+        review_producers,
+        review_models,
+        no_agent=no_agent,
+    )
     harness.mkdir(parents=True, exist_ok=True)
     # events.jsonl created empty (writer appends later)
     (harness / "events.jsonl").touch()
@@ -234,9 +453,47 @@ def init_cmd(
         (harness / subdir).mkdir(exist_ok=True)
     for name, content in _skeleton_files().items():
         path = harness / name
+        if name == "review-governance.yaml" and path.exists() and not configure_review:
+            continue
         if path.exists() and not force:
             continue
         path.write_text(content, encoding="utf-8")
+    if configure_review:
+        try:
+            _configure_review_producers(root, review_producers, review_models)
+        except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as e:
+            click.echo(
+                format_error(
+                    subcommand="init",
+                    message=f"could not configure review producers: {e}",
+                    hint=(
+                        "Select an installed producer and pass one explicit model "
+                        "per source."
+                    ),
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_GENERIC)
+    for integration in integrations:
+        try:
+            adapter = install_agent_integration(root, integration)
+        except (RuntimeError, ValueError, yaml.YAMLError, OSError) as e:
+            click.echo(
+                format_error(
+                    subcommand="init",
+                    message=f"could not configure {integration} integration: {e}",
+                    hint=(
+                        f"Install the agent and super-harness hook, then run "
+                        f"`super-harness adapter install {integration}`."
+                    ),
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_GENERIC)
+        if not (ctx.obj.get("quiet") or ctx.obj.get("json")):
+            click.echo(
+                f"configured {integration} integration: {adapter.installed_detail()}"
+            )
     # Wire the repo-root AGENTS.md "super-harness section" (§2.2 / §3.2): create
     # or append our section (preserving any user content outside the markers),
     # then replace the framework placeholder with the plain framework block.
@@ -259,59 +516,6 @@ def init_cmd(
     # shared renderer (init + sync SSOT) lets OSError / AgentsMdInjectionError
     # propagate into THIS try's AGENTS.md envelope (fail-loud); only its internal
     # adapters.yaml load is non-fatal (advisory + skip) — see the renderer module.
-    # Auto-install the detected agent adapter's gate hook (one-command onboarding).
-    # Runs BEFORE render_super_harness_section so the renderer injects the agent's
-    # AGENTS.md subsection from the freshly-persisted adapters.yaml entry. The gate
-    # is dormant until a change is active (no active change -> allow), so this never
-    # surprises a fresh init by blocking edits. Non-fatal: a missing hook binary
-    # warns and leaves the gate uninstalled rather than aborting init. We
-    # intentionally do NOT call _merge_verification_checks — claude-code contributes
-    # no verification checks, so it would be a no-op (YAGNI).
-    if not no_agent:
-        agent = ClaudeCodeAdapter()
-        if agent.detect(root):
-            agent_installed = False
-            try:
-                agent.install_hooks(root)
-                _persist_install_entry(
-                    root, name=agent.name, kind="agent", version=agent.version
-                )
-                agent_installed = True
-            except RuntimeError as e:
-                # RuntimeError = hook NOT installed (e.g. super-harness-hook off
-                # PATH). State: no gate wired, no adapters.yaml entry.
-                click.echo(
-                    format_error(
-                        subcommand="init",
-                        message=f"agent gate hook not installed: {e}",
-                        hint="reinstall super-harness so super-harness-hook is on "
-                             "PATH, then run `super-harness adapter install claude-code`.",
-                    ),
-                    err=True,
-                )
-                # Non-fatal: continue init without the gate.
-            except yaml.YAMLError as e:
-                # YAMLError = hook IS installed but registration failed (corrupt /
-                # unreadable .harness/adapters.yaml). State differs from the
-                # RuntimeError case, so it is a SEPARATE clause. Still non-fatal —
-                # consistent with init's fail-friendly contract elsewhere.
-                click.echo(
-                    format_error(
-                        subcommand="init",
-                        message=f"agent gate hook installed but could not be "
-                                f"registered in .harness/adapters.yaml: {e}",
-                        hint="Fix or remove .harness/adapters.yaml, then run "
-                             "`super-harness adapter install claude-code`.",
-                    ),
-                    err=True,
-                )
-                # Non-fatal: continue init; the hook is wired, only the registry
-                # entry is missing.
-            if agent_installed:
-                click.echo(
-                    "detected Claude Code; registered PreToolUse gate hook in "
-                    ".claude/settings.local.json (pass --no-agent to skip)"
-                )
     try:
         render_super_harness_section(root, agents_path, __version__)
     except (OSError, AgentsMdInjectionError) as e:

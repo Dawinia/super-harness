@@ -75,18 +75,49 @@ def test_skip_plan_reviewer_advances_to_plan_approved(tmp_path: Path) -> None:
     assert _state(tmp_path, "c") == "PLAN_APPROVED"
 
 
-def test_approve_plan_reviewer_advances_to_plan_approved(tmp_path: Path) -> None:
+def test_direct_plan_approve_requires_receipt_protocol(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
     args = ["--workspace", str(tmp_path), "review", "approve", "c", "--reviewer", "plan-reviewer"]
     r = CliRunner().invoke(main, args)
-    assert r.exit_code == EXIT_OK, r.output
-    assert "plan_approved" in _event_types(tmp_path)
-    assert _state(tmp_path, "c") == "PLAN_APPROVED"
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "direct review approve/reject is disabled" in r.output
+    assert "plan_approved" not in _event_types(tmp_path)
+    assert _state(tmp_path, "c") == "AWAITING_PLAN_REVIEW"
 
 
-def test_approve_plan_reviewer_rejects_fail_verdict(tmp_path: Path) -> None:
-    # F1 (review 2026-07-02): the OPTIONAL plan-reviewer verdict, when provided,
-    # must not carry a failing checklist item on an approve.
+def test_nonparticipant_source_cannot_satisfy_review_role(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    (tmp_path / ".harness" / "policy.yaml").write_text(
+        "reviewers:\n"
+        "  sources: [subagent, external, human]\n"
+        "  plan-reviewer:\n"
+        "    min_independent: 2\n"
+        "    participants: [subagent, external]\n"
+    )
+    first = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(tmp_path), "review", "approve", "c",
+            "--reviewer", "plan-reviewer", "--source", "subagent",
+        ],
+    )
+
+    second = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(tmp_path), "review", "approve", "c",
+            "--reviewer", "plan-reviewer", "--source", "human",
+        ],
+    )
+
+    assert first.exit_code == EXIT_VALIDATION, first.output
+    assert "legacy .harness/policy.yaml" in first.output
+    assert second.exit_code == EXIT_VALIDATION, second.output
+    assert "legacy .harness/policy.yaml" in second.output
+    assert "plan_approved" not in _event_types(tmp_path)
+
+
+def test_direct_approve_cannot_bypass_receipt_with_verdict_file(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
     v = tmp_path / "plan-verdict.yaml"
     v.write_text(
@@ -100,24 +131,25 @@ def test_approve_plan_reviewer_rejects_fail_verdict(tmp_path: Path) -> None:
          "--verdict-file", str(v)],
     )
     assert r.exit_code == EXIT_VALIDATION, r.output
-    assert "scope-sanity" in r.output
-    assert "review reject" in r.output
+    assert "direct review approve/reject is disabled" in r.output
+    assert "review result import" in r.output
     assert "plan_approved" not in _event_types(tmp_path)
 
 
-def test_reject_plan_reviewer_advances_to_plan_rejected(tmp_path: Path) -> None:
+def test_direct_plan_reject_requires_receipt_protocol(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
     r = CliRunner().invoke(
         main,
         ["--workspace", str(tmp_path), "review", "reject", "c", "--reviewer", "plan-reviewer",
          "--reason", "scope too broad"],
     )
-    assert r.exit_code == EXIT_OK, r.output
-    assert "plan_rejected" in _event_types(tmp_path)
-    assert _state(tmp_path, "c") == "PLAN_REJECTED"
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "direct review approve/reject is disabled" in r.output
+    assert "plan_rejected" not in _event_types(tmp_path)
+    assert _state(tmp_path, "c") == "AWAITING_PLAN_REVIEW"
 
 
-def test_reject_code_reviewer_advances_to_code_review_rejected(tmp_path: Path) -> None:
+def test_direct_code_reject_requires_receipt_protocol(tmp_path: Path) -> None:
     _seed(
         tmp_path, "c",
         "intent_declared", "plan_ready", "plan_approved", "implementation_started",
@@ -126,9 +158,10 @@ def test_reject_code_reviewer_advances_to_code_review_rejected(tmp_path: Path) -
     r = CliRunner().invoke(
         main, ["--workspace", str(tmp_path), "review", "reject", "c", "--reviewer", "code-reviewer"]
     )
-    assert r.exit_code == EXIT_OK, r.output
-    assert "code_review_failed" in _event_types(tmp_path)
-    assert _state(tmp_path, "c") == "CODE_REVIEW_REJECTED"
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "direct review approve/reject is disabled" in r.output
+    assert "code_review_failed" not in _event_types(tmp_path)
+    assert _state(tmp_path, "c") == "AWAITING_CODE_REVIEW"
 
 
 def test_reject_illegal_state_rejected(tmp_path: Path) -> None:
@@ -205,24 +238,24 @@ def _last(ws: Path, *, type: str, change_id: str) -> dict:
     return [e for e in evs if e["type"] == type and e["change_id"] == change_id][-1]
 
 
-def test_review_approve_records_as_identity(tmp_path: Path) -> None:
+def test_review_skip_records_as_identity(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
     r = CliRunner().invoke(main, [
-        "--workspace", str(tmp_path), "review", "approve", "c",
+        "--workspace", str(tmp_path), "review", "skip", "c",
         "--reviewer", "plan-reviewer", "--as", "bob@example.com"])
     assert r.exit_code == EXIT_OK, r.output
     ev = _last(tmp_path, type="plan_approved", change_id="c")
     assert ev["actor"]["identifier"] == "bob@example.com"
-    assert "skipped" not in ev["payload"]  # approve must NOT set the skip marker
+    assert ev["payload"]["skipped"] is True
 
 
-def test_review_reject_records_as_identity(tmp_path: Path) -> None:
+def test_code_review_skip_records_as_identity(tmp_path: Path) -> None:
     _seed(tmp_path, "c", *_PREFIX)
     r = CliRunner().invoke(main, [
-        "--workspace", str(tmp_path), "review", "reject", "c",
+        "--workspace", str(tmp_path), "review", "skip", "c",
         "--reviewer", "code-reviewer", "--as", "carol@example.com"])
     assert r.exit_code == EXIT_OK, r.output
-    ev = _last(tmp_path, type="code_review_failed", change_id="c")
+    ev = _last(tmp_path, type="code_review_passed", change_id="c")
     assert ev["actor"]["identifier"] == "carol@example.com"
 
 
@@ -237,13 +270,13 @@ def test_review_skip_sets_structured_marker(tmp_path: Path) -> None:
     assert ev["payload"]["reason"] == "on vacation"  # reason stays free text
 
 
-def test_review_approve_default_identity_via_resolver(tmp_path: Path, monkeypatch) -> None:
+def test_review_skip_default_identity_via_resolver(tmp_path: Path, monkeypatch) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
     monkeypatch.setattr(
         "super_harness.cli.review.resolve_identity", lambda ws, override=None: "git@x"
     )
     r = CliRunner().invoke(main, [
-        "--workspace", str(tmp_path), "review", "approve", "c", "--reviewer", "plan-reviewer"])
+        "--workspace", str(tmp_path), "review", "skip", "c", "--reviewer", "plan-reviewer"])
     assert r.exit_code == EXIT_OK, r.output
     ev = _last(tmp_path, type="plan_approved", change_id="c")
     assert ev["actor"]["identifier"] == "git@x"
@@ -286,7 +319,7 @@ def test_bare_skip_defaults_reason_no_override(tmp_path: Path) -> None:
 # --- Multi-independent reviewer-source gate --------------------------------- #
 
 
-def test_independent_plan_first_source_records_partial_only(tmp_path: Path) -> None:
+def test_legacy_independent_plan_source_cannot_record_new_evidence(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")
     _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
     r = CliRunner().invoke(
@@ -296,15 +329,12 @@ def test_independent_plan_first_source_records_partial_only(tmp_path: Path) -> N
             "--reviewer", "plan-reviewer", "--source", "subagent",
         ],
     )
-    assert r.exit_code == EXIT_OK, r.output
-    assert _event_types(tmp_path)[-1] == "review_verdict_recorded"
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "receipt workflow" in r.output
     assert _state(tmp_path, "c") == "AWAITING_PLAN_REVIEW"
-    last = _events(tmp_path)[-1]
-    assert last["payload"]["source"] == "subagent"
-    assert last["payload"]["outcome"] == "approved"
 
 
-def test_independent_plan_second_source_emits_milestone(tmp_path: Path) -> None:
+def test_legacy_independent_plan_sources_do_not_emit_milestone(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")
     _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
     first = CliRunner().invoke(
@@ -312,21 +342,18 @@ def test_independent_plan_second_source_emits_milestone(tmp_path: Path) -> None:
         ["--workspace", str(tmp_path), "review", "approve", "c",
          "--reviewer", "plan-reviewer", "--source", "subagent"],
     )
-    assert first.exit_code == EXIT_OK, first.output
+    assert first.exit_code == EXIT_VALIDATION, first.output
     second = CliRunner().invoke(
         main,
         ["--workspace", str(tmp_path), "review", "approve", "c",
          "--reviewer", "plan-reviewer", "--source", "external"],
     )
-    assert second.exit_code == EXIT_OK, second.output
-    assert _event_types(tmp_path)[-2:] == ["review_verdict_recorded", "plan_approved"]
-    assert _state(tmp_path, "c") == "PLAN_APPROVED"
-    milestone = _events(tmp_path)[-1]
-    assert milestone["payload"]["independent_sources"] == ["external", "subagent"]
-    assert milestone["payload"]["min_independent"] == 2
+    assert second.exit_code == EXIT_VALIDATION, second.output
+    assert "plan_approved" not in _event_types(tmp_path)
+    assert _state(tmp_path, "c") == "AWAITING_PLAN_REVIEW"
 
 
-def test_independent_duplicate_source_does_not_satisfy_threshold(tmp_path: Path) -> None:
+def test_legacy_duplicate_source_cannot_bypass_receipts(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")
     _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
     for _ in range(2):
@@ -335,8 +362,7 @@ def test_independent_duplicate_source_does_not_satisfy_threshold(tmp_path: Path)
             ["--workspace", str(tmp_path), "review", "approve", "c",
              "--reviewer", "plan-reviewer", "--source", "subagent"],
         )
-        assert r.exit_code == EXIT_OK, r.output
-    assert _event_types(tmp_path)[-2:] == ["review_verdict_recorded", "review_verdict_recorded"]
+        assert r.exit_code == EXIT_VALIDATION, r.output
     assert "plan_approved" not in _event_types(tmp_path)
     assert _state(tmp_path, "c") == "AWAITING_PLAN_REVIEW"
 
@@ -354,14 +380,15 @@ def test_independent_unknown_source_rejected_before_append(tmp_path: Path) -> No
     assert _event_types(tmp_path) == before
 
 
-def test_independent_min_one_without_source_preserves_milestone_only(tmp_path: Path) -> None:
+def test_direct_min_one_without_source_still_requires_receipt(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")
     r = CliRunner().invoke(
         main, ["--workspace", str(tmp_path), "review", "approve", "c",
                "--reviewer", "plan-reviewer"]
     )
-    assert r.exit_code == EXIT_OK, r.output
-    assert _event_types(tmp_path)[-1] == "plan_approved"
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "direct review approve/reject is disabled" in r.output
+    assert _event_types(tmp_path)[-1] == "plan_ready"
     assert "review_verdict_recorded" not in _event_types(tmp_path)
 
 
@@ -404,7 +431,7 @@ def test_independent_cross_role_code_reviewer_in_plan_review_state_rejected(tmp_
     assert _event_types(tmp_path) == before
 
 
-def test_independent_stale_plan_partial_does_not_count_after_rejection(tmp_path: Path) -> None:
+def test_legacy_partial_and_reject_commands_leave_plan_epoch_unchanged(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")
     _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
     first = CliRunner().invoke(
@@ -412,26 +439,18 @@ def test_independent_stale_plan_partial_does_not_count_after_rejection(tmp_path:
         ["--workspace", str(tmp_path), "review", "approve", "c",
          "--reviewer", "plan-reviewer", "--source", "subagent"],
     )
-    assert first.exit_code == EXIT_OK, first.output
+    assert first.exit_code == EXIT_VALIDATION, first.output
     reject = CliRunner().invoke(
         main,
         ["--workspace", str(tmp_path), "review", "reject", "c",
          "--reviewer", "plan-reviewer"],
     )
-    assert reject.exit_code == EXIT_OK, reject.output
-    _emit(tmp_path, "plan_ready", "c")
-    refresh_state_after_emit(tmp_path)
-    second = CliRunner().invoke(
-        main,
-        ["--workspace", str(tmp_path), "review", "approve", "c",
-         "--reviewer", "plan-reviewer", "--source", "external"],
-    )
-    assert second.exit_code == EXIT_OK, second.output
-    assert _event_types(tmp_path)[-1] == "review_verdict_recorded"
+    assert reject.exit_code == EXIT_VALIDATION, reject.output
+    assert "review_verdict_recorded" not in _event_types(tmp_path)
     assert _state(tmp_path, "c") == "AWAITING_PLAN_REVIEW"
 
 
-def test_independent_reject_remains_immediate_and_records_source(tmp_path: Path) -> None:
+def test_legacy_independent_reject_cannot_record_new_evidence(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready")
     _set_independent_policy(tmp_path, reviewer="plan-reviewer", min_independent=2)
     r = CliRunner().invoke(
@@ -439,6 +458,5 @@ def test_independent_reject_remains_immediate_and_records_source(tmp_path: Path)
         ["--workspace", str(tmp_path), "review", "reject", "c",
          "--reviewer", "plan-reviewer", "--source", "subagent"],
     )
-    assert r.exit_code == EXIT_OK, r.output
-    assert _event_types(tmp_path)[-1] == "plan_rejected"
-    assert _events(tmp_path)[-1]["payload"]["source"] == "subagent"
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "plan_rejected" not in _event_types(tmp_path)

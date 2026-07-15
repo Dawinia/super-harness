@@ -1,0 +1,22 @@
+# Shared review governance. Local producer/model choices live in the gitignored
+# .harness/review-profiles.local.yaml file.
+version: 1
+review:
+  base_branch: main
+  sources:
+    codex:
+      kind: automated
+    claude:
+      kind: automated
+    human:
+      kind: human
+  roles:
+    plan-reviewer:
+      participants: [codex, claude]
+      min_independent: 2
+      max_automatic_rounds_per_epoch: 2
+    code-reviewer:
+      participants: [codex, claude]
+      min_independent: 2
+      max_automatic_rounds_per_epoch: 2
+  require_distinct_model_families: false

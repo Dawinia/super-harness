@@ -43,10 +43,10 @@ a framework adapter, get the plan reviewed, implement, verify, review, merge —
 the 10-minute [Getting started](docs/getting-started.md) walkthrough. To inspect a
 pre-seeded non-trivial `.harness/` state without running anything, see the in-tree
 demo [`examples/demo-openspec-claude/`](examples/demo-openspec-claude/). The
-walkthrough also shows how to configure reviewer sources and `min_independent`
-when a change needs more than one independent review verdict, including
-agent-specific source profiles such as Codex `reasoning_effort` or a subagent
-runner's own `effort` knob.
+walkthrough also shows the agent-neutral review protocol: tracked reviewer
+governance, gitignored user-selected Codex/Claude models and options, frozen
+scope/invocation contracts, imported receipts, bounded automatic rounds, and a
+first-class human path. super-harness never spawns or executes the reviewer.
 
 ## Links
 

@@ -24,43 +24,66 @@ transition matrix.
 
 ## super-harness does not review your code for you
 
-The gate enforces that the configured number of independent review source
-verdicts is recorded before the lifecycle proceeds. It does **not** run the
-review. You, a human reviewer, or an agent-owned reviewer process produces the
-verdicts; the harness validates the policy and counts accepted sources. This is
-deliberate: the harness is a governor, not a reviewer.
+The gate enforces that the configured independent review sources produce valid
+receipts before the lifecycle proceeds. It does **not** run, spawn, or supervise
+the reviewer. A caller invokes an external producer, or a human reviews the
+packet; the harness freezes the contract, imports results, and closes the round
+deterministically. This is deliberate: the harness is a governor and protocol
+compiler, not a reviewer executor.
 
-There are three separate axes:
+The configuration separates shared governance from user-local execution:
 
 - **Reviewer roles** are lifecycle positions, for example `plan-reviewer` and
   `code-reviewer`.
-- **Reviewer strategy** tells the actor who should produce the verdict for that
-  role: `subagent`, `human`, or `hybrid`.
-- **Reviewer sources** are configured labels, for example `subagent`,
-  `external`, or `human`. They are not commands. If `.harness/policy.yaml` sets
-  `min_independent: 2`, approvals must arrive from two distinct configured
-  `--source` values before the lifecycle milestone is emitted.
-- **Reviewer source profiles** are optional execution hints attached to those
-  labels: the concrete agent family, the intended context window
-  (`bundle-only`, `incremental`, or `full-change`), and that agent's own
-  `agent_options`. The options intentionally stay under each source because
-  different agents use different names and categories for effort, model, and
-  mode. Root-level `effort` / `mode` on a source is rejected; put those knobs
-  under `agent_options` with an explicit `agent`.
+- **Reviewer sources** are evidence-provenance labels, for example `codex`,
+  `claude`, or `human`; they are not commands or installed agents.
+- **Tracked governance** in `.harness/review-governance.yaml` fixes each role's
+  participant set, independence requirement, automatic-round ceiling, and
+  optional distinct-model-family rule.
+- **User-local profiles** in the gitignored
+  `.harness/review-profiles.local.yaml` select an explicit producer protocol,
+  model, cost class, and producer-specific `agent_options` for automated sources.
+  No global `effort` vocabulary or implicit model exists.
 
-`super-harness status` surfaces the active role, strategy, accepted source
-count, remaining configured sources, and any remaining source profiles. `review
-prepare` also embeds the active reviewer's source policy in the prepared bundle
-so a docs-only or delta follow-up can stay scoped to the intended context.
+`super-harness status` is the resume/recovery surface. `review prepare` compiles
+a replaceable draft packet with the exact target commit, Git range/files/argv,
+checklist, canonical prompt, and profile digests. `review begin` freezes one
+round and writes per-run invocation files; the caller runs those invocations
+outside super-harness, unchanged. Completed results enter through `review result
+import`; crashes enter through `review run fail`. Direct `review approve|reject`
+cannot create new evidence. A lifecycle milestone is emitted only after every
+required source in the round is terminal. Closure uses the governance frozen at
+`review begin`, never a subsequently edited policy. A valid rejecting result
+takes precedence over a peer producer failure so discovered findings enter the
+fix loop; `execution_failed` is reserved for rounds whose imported results pass
+but whose required source set is incomplete. Only those passing results may be
+retained for a failed-source retry of the identical frozen contract.
+
+A trustworthy result at an ancestor commit can become that source's incremental
+baseline; otherwise the source receives the full in-scope change. Findings are
+strictly limited to the frozen target, but a reviewer may read any unchanged
+repository material needed as supporting architectural context. If the target
+is insufficient, it returns `scope_sufficient: false` with a finding instead of
+widening itself to the whole PR.
+
+All committed code fixes, refactors, tests, and docs after a source baseline are
+batched into one follow-up assignment. A code-review finding does not cause plan
+review by itself. If the fix changes the approved plan, scope, or requirements,
+declare that semantic change explicitly with `plan redeclare`; undeclared
+plan/spec drift is rejected. All required sources finish before edits resume,
+so findings are collected and fixed as one batch. Automatic rounds are bounded;
+an exhausted or explicitly expensive round requires one-shot human authorization,
+but no token estimate is a hard gate that can make review unavailable.
 
 ## super-harness does not spawn your agent
 
-The harness never launches a coding agent. The relationship is inverted: your
-agent calls the harness (via hooks and CLI), and the harness gates what the agent
-is allowed to do. Reviews happen because the gate *requires* enough configured
-source verdicts before advancing — the content of each review is produced by the
-agent or human, the *occurrence* and independence threshold are enforced
-mechanically.
+The harness never launches a coding agent or reviewer producer. The relationship
+is inverted: your agent or terminal calls the harness (via hooks and CLI), and
+the harness gates what the agent may do. For automated review it returns a frozen
+argv/stdin/output contract to its caller; for human review it provides compact
+inspection metadata plus a short-lived, TTY-confirmed nonce. The caller owns
+process execution, while occurrence, scope, receipts, independence, and round
+closure are enforced mechanically.
 
 ## Two gate paths
 

@@ -72,6 +72,11 @@ These events are legal but leave the state unchanged (informational sensor signa
 - `gate_bypassed`
 - `merged_reverted`
 - `pr_opened`
+- `review_result_imported`
+- `review_round_authorized`
+- `review_round_closed`
+- `review_round_started`
+- `review_run_failed`
 - `scope_drift_detected`
 - `sensor_crashed`
 - `sensor_timeout_exceeded`

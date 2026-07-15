@@ -9,13 +9,15 @@ on disk do it for you.
 > **v0.1 note — Plain is hand-driven.** Without framework artifacts on disk to
 > drive it, you advance the lifecycle with explicit CLI verbs: `super-harness
 > plan ready <slug>` emits `plan_ready` (`INTENT_DECLARED → AWAITING_PLAN_REVIEW`)
-> and `super-harness review approve --reviewer plan-reviewer` advances
-> `AWAITING_PLAN_REVIEW → PLAN_APPROVED` once the configured independent
-> reviewer-source threshold is met. If `.harness/policy.yaml` sets
-> `min_independent: 2`, record approvals with distinct `--source` values. Plain
-> still does not run reviewers automatically; you provide the verdicts. If source
-> profiles are configured, `status` / `review prepare` show the intended context
-> and agent-specific `agent_options`, but Plain does not execute them. The `plan
+> and the receipt protocol advances `AWAITING_PLAN_REVIEW → PLAN_APPROVED` after
+> every participant in tracked `.harness/review-governance.yaml` completes.
+> `review prepare` compiles exact per-source ranges, files, options, and prompts;
+> `review begin` freezes caller-owned Codex/Claude invocations but does not execute
+> them. Import outputs with `review result import`, or use the nonce-bound
+> `review human` path. User-specific models/options live in gitignored
+> `.harness/review-profiles.local.yaml`. Batch code-review fixes and docs into one
+> prepare; repeat plan review only after an explicit plan, scope, or requirements
+> change. The `plan
 > ready` references below mirror what Plain's `agents_md_subsection()` returns.
 
 Plain is a framework adapter (same ABC as OpenSpec), but it is deliberately

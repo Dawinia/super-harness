@@ -43,6 +43,12 @@ def parse_verdict_file(path: Path) -> dict[str, Any]:
         parsed: Any = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (yaml.YAMLError, OSError, UnicodeDecodeError) as e:
         raise VerdictError(f"verdict file is not valid YAML: {e}") from e
+    return validate_verdict_mapping(parsed)
+
+
+def validate_verdict_mapping(parsed: object) -> dict[str, Any]:
+    """Structurally validate an already parsed human or producer verdict."""
+
     if not isinstance(parsed, dict):
         raise VerdictError("verdict file must be a YAML mapping")
     if not isinstance(parsed.get("bundle_digest"), str) or not parsed["bundle_digest"]:
@@ -82,7 +88,79 @@ def parse_verdict_file(path: Path) -> dict[str, Any]:
             )
         if pf["disposition"] == "wontfix" and not (isinstance(pf.get("note"), str) and pf["note"]):
             raise VerdictError(f"prior_finding[{pf['id']!r}] disposition=wontfix requires a note")
+    scope_sufficient = parsed.get("scope_sufficient", True)
+    if not isinstance(scope_sufficient, bool):
+        raise VerdictError("verdict.scope_sufficient must be a boolean when present")
     return parsed
+
+
+def review_verdict_json_schema(checklist: list[str]) -> dict[str, Any]:
+    """JSON Schema for one frozen automated reviewer run result."""
+
+    checklist_entry = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["item", "status", "note"],
+        "properties": {
+            "item": {"type": "string", "enum": checklist},
+            "status": {"type": "string", "enum": sorted(_STATUSES)},
+            "note": {"type": ["string", "null"]},
+        },
+    }
+    finding = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["id", "severity", "file", "line", "summary"],
+        "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "severity": {"type": "string", "enum": sorted(_SEVERITIES)},
+            "file": {"type": "string"},
+            "line": {"type": ["integer", "null"], "minimum": 1},
+            "summary": {"type": "string"},
+        },
+    }
+    prior_finding = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["id", "disposition", "note"],
+        "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "disposition": {"type": "string", "enum": sorted(_DISPOSITIONS)},
+            "note": {"type": ["string", "null"]},
+        },
+    }
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "run_id",
+            "source",
+            "target_head",
+            "contract_digest",
+            "bundle_digest",
+            "scope_sufficient",
+            "checklist",
+            "findings",
+            "prior_findings",
+        ],
+        "properties": {
+            "run_id": {"type": "string", "minLength": 1},
+            "source": {"type": "string", "minLength": 1},
+            "target_head": {"type": "string", "minLength": 1},
+            "contract_digest": {"type": "string", "minLength": 1},
+            "bundle_digest": {"type": "string", "minLength": 1},
+            "scope_sufficient": {"type": "boolean"},
+            "checklist": {
+                "type": "array",
+                "minItems": len(checklist),
+                "maxItems": len(checklist),
+                "items": checklist_entry,
+            },
+            "findings": {"type": "array", "items": finding},
+            "prior_findings": {"type": "array", "items": prior_finding},
+        },
+    }
 
 
 def read_change_events(events_file: Path, change_id: str) -> list[Event]:
@@ -111,17 +189,31 @@ def read_change_events(events_file: Path, change_id: str) -> list[Event]:
 def derive_open_findings(events: list[Event], change_id: str) -> list[str]:
     """Open-finding ids the next approve must dispose, in append order.
 
-    Walk every `code_review_failed` verdict for the change in append order; per
+    Walk every structured code-review result for the change in append order; per
     verdict dispose its `prior_findings` ids FIRST, then add its `findings` ids
-    (discard-then-add → a resolved finding re-listed by a later reject reopens).
+    (discard-then-add → a resolved finding re-listed by a later result reopens).
     Tolerant: entries with a missing/non-string `id` are skipped (the raw stream
     can carry pre-validation payloads). See design slice-2 §4.D.
+
+    Only the new receipt protocol (`review_result_imported`) and the
+    `code_review_failed` rejection milestone carry authoritative open findings.
+    The unreleased legacy `review_verdict_recorded` cumulative-approve flow
+    allowed non-blocking findings on APPROVALS; folding those here would
+    retroactively reopen already-accepted findings and wedge an in-flight change
+    behind phantom dispositions, so it is deliberately excluded.
     """
     open_ids: dict[str, None] = {}  # ordered set: insertion-order preserved
     for ev in events:
-        if ev.change_id != change_id or ev.type != "code_review_failed":
+        if ev.change_id != change_id:
             continue
-        verdict = (ev.payload or {}).get("verdict") or {}
+        payload = ev.payload or {}
+        is_code_result = ev.type == "code_review_failed" or (
+            ev.type == "review_result_imported"
+            and payload.get("reviewer") == "code-reviewer"
+        )
+        if not is_code_result:
+            continue
+        verdict = payload.get("verdict") or {}
         for pf in verdict.get("prior_findings") or []:
             pid = pf.get("id") if isinstance(pf, dict) else None
             if isinstance(pid, str):
