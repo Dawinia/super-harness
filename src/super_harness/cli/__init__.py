@@ -27,10 +27,10 @@ from super_harness.cli.observe import observe_group
 from super_harness.cli.on_merge import on_merge_cli
 from super_harness.cli.plan import plan_group
 from super_harness.cli.pr import pr_group
+from super_harness.cli.report import report_cmd
 from super_harness.cli.review import review_group
 from super_harness.cli.sensor import sensor_group
 from super_harness.cli.state import state_group
-from super_harness.cli.report import report_cmd
 from super_harness.cli.status import status_cmd
 from super_harness.cli.sync import sync_cmd
 from super_harness.cli.verification import verification_group

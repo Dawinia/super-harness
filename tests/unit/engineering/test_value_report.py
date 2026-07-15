@@ -81,7 +81,9 @@ def test_changes_touched_counts_distinct_change_ids_in_window(tmp_path):
         '{"event_id":"e2","type":"intent_declared","change_id":"c2","timestamp":"2026-07-10T00:00:00Z","actor":{"type":"human","identifier":"u"},"framework":"plain","payload":{}}',
         '{"event_id":"e3","type":"intent_declared","change_id":"c3","timestamp":"2026-06-01T00:00:00Z","actor":{"type":"human","identifier":"u"},"framework":"plain","payload":{}}',
     ])
-    report = build_value_report(events_file, since="2026-07-01", until=None, workspace_root=tmp_path)
+    report = build_value_report(
+        events_file, since="2026-07-01", until=None, workspace_root=tmp_path
+    )
     assert report.changes_touched == 2  # c3 (June) excluded
 
 
@@ -91,7 +93,9 @@ def test_changes_touched_counts_distinct_change_ids_in_window(tmp_path):
 def test_findings_resolved_wontfix_open(tmp_path):
     events_file = _write_events(tmp_path, [
         _code_verdict_event("e1", "c1", "2026-07-02T00:00:00Z", findings=["F1", "F2", "F3"]),
-        _code_verdict_event("e2", "c1", "2026-07-03T00:00:00Z", prior=[("F1", "resolved"), ("F2", "wontfix")]),
+        _code_verdict_event(
+            "e2", "c1", "2026-07-03T00:00:00Z", prior=[("F1", "resolved"), ("F2", "wontfix")]
+        ),
     ])
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.findings_resolved == 1          # F1
@@ -104,7 +108,9 @@ def test_open_finding_not_counted_when_resolved_outside_window(tmp_path):
         _code_verdict_event("e1", "c1", "2026-07-02T00:00:00Z", findings=["F1"]),
         _code_verdict_event("e2", "c1", "2026-07-20T00:00:00Z", prior=[("F1", "resolved")]),
     ])
-    report = build_value_report(events_file, since="2026-07-01", until="2026-07-10", workspace_root=tmp_path)
+    report = build_value_report(
+        events_file, since="2026-07-01", until="2026-07-10", workspace_root=tmp_path
+    )
     assert report.findings_open_undisposed == 0   # disposition seen in full stream
     assert report.findings_resolved == 0          # disposition event is out of window
 
@@ -114,11 +120,11 @@ def test_open_finding_not_counted_when_resolved_outside_window(tmp_path):
 
 def test_undisclosed_bypass_is_order_aware(tmp_path):
     events_file = _write_events(tmp_path, [
-        _bypass("e1", "c1", "2026-07-02T00:00:00Z"),                          # c1: undisclosed
-        _bypass("e2", "c2", "2026-07-02T00:00:00Z"),                          # c2: bypass...
-        _bypass("e3", "c2", "2026-07-02T01:00:00Z", "gate_bypass_disclosed"), # ...disclosed after -> covered
-        _bypass("e4", "c3", "2026-07-02T00:00:00Z", "gate_bypass_disclosed"), # c3: disclosure first...
-        _bypass("e5", "c3", "2026-07-02T02:00:00Z"),                          # ...then a LATER bypass -> undisclosed
+        _bypass("e1", "c1", "2026-07-02T00:00:00Z"),  # c1: undisclosed
+        _bypass("e2", "c2", "2026-07-02T00:00:00Z"),  # c2: bypass...
+        _bypass("e3", "c2", "2026-07-02T01:00:00Z", "gate_bypass_disclosed"),  # ...disclosed after
+        _bypass("e4", "c3", "2026-07-02T00:00:00Z", "gate_bypass_disclosed"),  # c3: disclosed 1st
+        _bypass("e5", "c3", "2026-07-02T02:00:00Z"),  # ...then a LATER bypass -> undisclosed
     ])
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.undisclosed_bypasses == 2  # c1 + c3's post-disclosure bypass
@@ -129,12 +135,14 @@ def test_undisclosed_bypass_is_order_aware(tmp_path):
 
 def test_review_tokens_usage_and_rejected_rounds(tmp_path):
     events_file = _write_events(tmp_path, [
-        _import_with_usage("e1", "c1", "2026-07-02T00:00:00Z", {"input_tokens": 100, "output_tokens": 20}),
+        _import_with_usage(
+            "e1", "c1", "2026-07-02T00:00:00Z", {"input_tokens": 100, "output_tokens": 20}
+        ),
         _import_with_usage("e2", "c1", "2026-07-02T01:00:00Z", {"total_tokens": 300}),
         _import_with_usage("e3", "c1", "2026-07-02T02:00:00Z", None),   # no usage reported
         _round_closed("e4", "c1", "2026-07-02T03:00:00Z", "rejected"),  # counts
         _round_closed("e5", "c1", "2026-07-02T04:00:00Z", "approved"),  # does NOT
-        _round_closed("e6", "c1", "2026-07-02T05:00:00Z", "execution_failed"),  # does NOT count (ambiguous, CODX-006)
+        _round_closed("e6", "c1", "2026-07-02T05:00:00Z", "execution_failed"),  # NOT counted
     ])
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.review_tokens == 420          # 120 + 300

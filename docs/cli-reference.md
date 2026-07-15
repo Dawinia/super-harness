@@ -776,6 +776,25 @@ super-harness pr validate [OPTIONS] PR_NUMBER
 - `3` no `.harness/`
 - `4` `gh` CLI failure
 
+## super-harness report
+
+Show what the harness measurably did for you over a repo/time-window.
+
+```
+super-harness report [OPTIONS]
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `--since` | text | — | Only count events on/after this ISO date (e.g. 2026-07-01). Unparseable = no lower bound (never errors). |
+| `--until` | text | — | Only count events on/before this ISO date. Unparseable = no upper bound. |
+| `--brief` | flag | `False` | One-line summary only. |
+
+**Exit codes:**
+
+- `0` success
+- `3` no `.harness/`
+
 ## super-harness review
 
 Compile contracts, import receipts, or disclose a review skip.

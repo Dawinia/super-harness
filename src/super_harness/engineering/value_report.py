@@ -171,7 +171,8 @@ def _review_cost(events: list[Event]) -> tuple[int, int, int]:
             continue
         runs_total += 1
         payload = ev.payload if isinstance(ev.payload, dict) else {}
-        receipt = payload.get("receipt") if isinstance(payload.get("receipt"), dict) else {}
+        raw_receipt = payload.get("receipt")
+        receipt = raw_receipt if isinstance(raw_receipt, dict) else {}
         t = _usage_tokens(receipt.get("usage"))
         if t is not None:
             runs_with_usage += 1

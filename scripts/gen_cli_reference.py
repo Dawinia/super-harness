@@ -112,6 +112,10 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`3` no `.harness/` or missing verification config",
         "`4` `--pr` resolution failure",
     ],
+    "report": [
+        "`0` success",
+        "`3` no `.harness/`",
+    ],
     "status": [
         "`0` success",
         "`1` generic error",
