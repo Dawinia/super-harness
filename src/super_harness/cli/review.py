@@ -971,6 +971,7 @@ def begin(
             "require_distinct_model_families": (
                 governance.require_distinct_model_families
             ),
+            "blocking_severity": role.blocking_severity,
             "checklist": list(packet["checklist"]),
             # Only the code-reviewer prompt surfaces open prior findings
             # (compile_review_contract gates that section to code-reviewer). A

@@ -527,3 +527,49 @@ def test_changed_contract_does_not_retain_prior_source_result() -> None:
     execution = derive_review_execution(events, "code-reviewer")
 
     assert execution.retained_sources == ()
+
+
+def _round_started(payload_extra: dict[str, object]) -> list[Event]:
+    return [
+        _event("epoch-code", "implementation_complete", {}),
+        _event(
+            "event-round-1",
+            "review_round_started",
+            {
+                "reviewer": "code-reviewer",
+                "epoch_id": "epoch-code",
+                "round_id": "round-1",
+                "contract_digest": "contract-1",
+                "target_head": "abc123",
+                "profile_digest": "profiles-1",
+                "runs": [
+                    {
+                        "run_id": "run-codex",
+                        "source": "codex",
+                        "protocol": "codex-cli",
+                        "requested_model": "gpt-review",
+                        "requested_options": {},
+                    }
+                ],
+                **payload_extra,
+            },
+        ),
+    ]
+
+
+def test_round_state_reads_frozen_blocking_severity() -> None:
+    events = _round_started({"blocking_severity": "blocker"})
+
+    state = derive_review_execution(events, "code-reviewer").rounds[0]
+
+    assert state.blocking_severity == "blocker"
+
+
+def test_round_state_missing_blocking_severity_defaults_to_minor() -> None:
+    # Pre-feature review_round_started events lack the field; reproduce the
+    # strict "everything blocks" behavior those rounds were opened under.
+    events = _round_started({})
+
+    state = derive_review_execution(events, "code-reviewer").rounds[0]
+
+    assert state.blocking_severity == "minor"

@@ -43,6 +43,7 @@ class ReviewRoundState:
     required_sources: tuple[str, ...] = ()
     min_independent: int = 0
     require_distinct_model_families: bool = False
+    blocking_severity: str = "minor"
     frozen_governance_complete: bool = False
     automatic: bool = True
     authorization_id: str | None = None
@@ -288,6 +289,12 @@ def derive_review_execution(
                 if isinstance(raw_distinct_families, bool)
                 else False
             )
+            raw_blocking_severity = payload.get("blocking_severity")
+            blocking_severity = (
+                raw_blocking_severity
+                if raw_blocking_severity in {"blocker", "major", "minor"}
+                else "minor"
+            )
             frozen_governance_complete = (
                 isinstance(raw_required, list)
                 and bool(raw_required)
@@ -315,6 +322,7 @@ def derive_review_execution(
                     required_sources=required_sources,
                     min_independent=min_independent,
                     require_distinct_model_families=require_distinct_model_families,
+                    blocking_severity=blocking_severity,
                     frozen_governance_complete=frozen_governance_complete,
                     automatic=automatic,
                     authorization_id=resolved_authorization_id,
