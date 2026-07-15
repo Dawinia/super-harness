@@ -9,9 +9,9 @@ import pytest
 from super_harness.core.review_verdict import (
     VerdictError,
     check_coverage,
-    verdict_blocks,
     failing_items,
     parse_verdict_file,
+    verdict_blocks,
 )
 
 _OK = """
