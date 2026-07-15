@@ -1413,3 +1413,136 @@ def test_mixed_quorum_completes_when_human_confirms_after_automated(
     assert passed, "human confirm should complete the codex+human quorum"
     assert set(passed[-1].payload["independent_sources"]) == {"codex", "human"}
     assert derive_state(events_path(root))["change"].current_state == "READY_TO_MERGE"
+
+
+def _single_source_governance(root: Path, *, blocking_severity: str | None) -> None:
+    """Rewrite `_repo`'s single-source (codex) code-reviewer governance,
+    optionally pinning `blocking_severity`. Call BEFORE `_prepare` so the value
+    is frozen into the round."""
+    extra = (
+        f"      blocking_severity: {blocking_severity}\n"
+        if blocking_severity is not None
+        else ""
+    )
+    (root / ".harness" / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  base_branch: main\n"
+        "  sources:\n"
+        "    codex:\n"
+        "      kind: automated\n"
+        "    human:\n"
+        "      kind: human\n"
+        "  roles:\n"
+        "    plan-reviewer:\n"
+        "      participants: [human]\n"
+        "      min_independent: 1\n"
+        "    code-reviewer:\n"
+        "      participants: [codex]\n"
+        "      min_independent: 1\n"
+        "      max_automatic_rounds_per_epoch: 2\n" + extra,
+        encoding="utf-8",
+    )
+
+
+def _import_verdict_with_finding(
+    root: Path,
+    monkeypatch: MonkeyPatch,
+    *,
+    severity: str,
+    finding_id: str = "F-1",
+    scope_sufficient: bool = True,
+) -> dict[str, object]:
+    """Drive prepare→begin→import for the single codex source with a verdict
+    that fails checklist[0] and raises one finding of `severity`. Returns the
+    import command's JSON `data`."""
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    verdict = _result_for_run(begun)
+    verdict["scope_sufficient"] = scope_sufficient
+    checklist = cast(list[dict[str, object]], verdict["checklist"])
+    checklist[0]["status"] = "fail"
+    verdict["findings"] = [
+        {
+            "id": finding_id,
+            "severity": severity,
+            "file": "src/app.py",
+            "summary": "A graded observation about the change.",
+        }
+    ]
+    result_path = root / "codex-result.json"
+    result_path.write_text(json.dumps(verdict), encoding="utf-8")
+    imported = CliRunner().invoke(
+        main,
+        [
+            "--json",
+            "--workspace",
+            str(root),
+            "review",
+            "result",
+            "import",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, verdict["run_id"]),
+            "--result-file",
+            str(result_path),
+        ],
+    )
+    assert imported.exit_code == EXIT_OK, imported.output
+    return cast(dict[str, object], json.loads(imported.output)["data"])
+
+
+def test_minor_only_round_approves_at_default_threshold(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)  # default governance → blocking_severity major
+    data = _import_verdict_with_finding(root, monkeypatch, severity="minor")
+    assert data["round_outcome"] == "approved"
+    assert data["milestone"] == "code_review_passed"
+
+
+def test_minor_finding_still_surfaces_in_open_undisposed(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    from super_harness.core.review_verdict import derive_open_findings
+
+    root = _repo(tmp_path)
+    _import_verdict_with_finding(
+        root, monkeypatch, severity="minor", finding_id="MIN-1"
+    )
+    # Honesty law: an APPROVED minor finding is still recorded + surfaced
+    # (findings are namespaced by source/run, e.g. `codex/run_.../MIN-1`).
+    open_ids = derive_open_findings(
+        read_change_events(events_path(root), "change"), "change"
+    )
+    assert any(fid.endswith("/MIN-1") for fid in open_ids), open_ids
+
+
+def test_major_finding_still_rejects_at_default_threshold(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    data = _import_verdict_with_finding(root, monkeypatch, severity="major")
+    assert data["round_outcome"] == "rejected"
+
+
+def test_blocking_severity_minor_restores_reject_on_minor(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _single_source_governance(root, blocking_severity="minor")
+    data = _import_verdict_with_finding(root, monkeypatch, severity="minor")
+    assert data["round_outcome"] == "rejected"
+
+
+def test_scope_insufficient_rejects_regardless_of_severity(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    data = _import_verdict_with_finding(
+        root, monkeypatch, severity="minor", scope_sufficient=False
+    )
+    assert data["round_outcome"] == "rejected"

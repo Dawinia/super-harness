@@ -1351,12 +1351,24 @@ def _close_round_if_terminal(
         current_head = None
     target_stale = current_head != round_state.target_head
     aggregate = _aggregate_verdicts(imported)
-    aggregate_checklist = aggregate["checklist"]
-    has_failure = isinstance(aggregate_checklist, list) and any(
-        isinstance(item, dict) and item.get("status") == "fail"
-        for item in aggregate_checklist
+    # A round rejects on the highest FINDING severity vs the round's frozen
+    # blocking threshold — not on the raw checklist `fail` flag. The verdict
+    # contract (core/review_verdict.py) makes a checklist `fail` impossible
+    # without at least one finding, and the reviewer grades each finding, so the
+    # worst finding's severity faithfully encodes the reviewer's own judgment of
+    # how bad the worst issue is. A `fail` carrying only findings below the
+    # threshold (default `major` → `minor` findings) passes-with-open-finding:
+    # the finding is still recorded and surfaced by `super-harness report`, it
+    # just no longer forces a full re-review round.
+    severity_order = {"blocker": 0, "major": 1, "minor": 2}
+    threshold_rank = severity_order.get(round_state.blocking_severity, 2)
+    aggregate_findings = aggregate["findings"]
+    blocks = isinstance(aggregate_findings, list) and any(
+        isinstance(finding, dict)
+        and severity_order.get(str(finding.get("severity")), 99) <= threshold_rank
+        for finding in aggregate_findings
     )
-    has_rejection = aggregate["scope_sufficient"] is not True or has_failure
+    has_rejection = aggregate["scope_sufficient"] is not True or blocks
     if target_stale:
         outcome = "execution_failed"
     elif has_rejection:
