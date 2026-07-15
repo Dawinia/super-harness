@@ -235,6 +235,12 @@ def _skeleton_files() -> dict[str, str]:
             "      participants: [human]\n"
             "      min_independent: 1\n"
             "      max_automatic_rounds_per_epoch: 2\n"
+            "      # blocking_severity: major   # optional; one of blocker|major|minor\n"
+            "      #   (default major). A code-review round rejects only when a finding\n"
+            "      #   is at or above this severity; findings below it pass with the\n"
+            "      #   finding left open (recorded + surfaced by `super-harness report`),\n"
+            "      #   not forcing a re-review round. Plan review always rejects on any\n"
+            "      #   checklist fail (its findings are not tracked in the report).\n"
             "  require_distinct_model_families: false\n"
         ),
         "sensors.yaml": "sensors: []\n",

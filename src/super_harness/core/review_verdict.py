@@ -234,17 +234,41 @@ def check_disposed(verdict: dict[str, Any], open_ids: list[str]) -> list[str]:
     return [i for i in open_ids if i not in disposed]
 
 
-def failing_items(verdict: dict[str, Any]) -> list[str]:
-    """Checklist `item` names whose status is `fail`, in checklist order.
+_SEVERITY_ORDER = {"blocker": 0, "major": 1, "minor": 2}
 
-    Pure accessor over an already-parsed verdict (shape guaranteed by
-    `parse_verdict_file`). Non-empty on an APPROVE means the verdict contradicts
-    itself — the reviewer's own record says the change is not approvable — and
-    the CLI rejects the approve (both reviewer branches); the same verdict stays
-    valid for `review reject`, which is why this check does NOT live in
-    `parse_verdict_file`.
+
+def verdict_blocks(
+    verdict: dict[str, Any], *, reviewer: str, blocking_severity: str
+) -> bool:
+    """Whether a review verdict rejects its round (single-source or aggregate).
+
+    Insufficient scope always blocks. A **code-review** verdict then blocks on
+    its highest FINDING severity vs ``blocking_severity`` (default caller passes
+    ``major``): a finding at or above the threshold blocks, below it passes with
+    the finding left open. A **plan-review** verdict keeps the original
+    checklist-``fail`` reject — plan findings are not harvested by
+    ``derive_open_findings`` / the report, so a "passed with it open" plan
+    finding would silently vanish; plan review must not relax. Shared by
+    round-close (aggregate verdict) and ``retained_sources`` (per-source verdict)
+    so the two never diverge. Never raises: unknown/non-scalar severities and
+    non-list checklist/findings degrade to non-blocking members, never a crash.
     """
-    return [e["item"] for e in verdict["checklist"] if e.get("status") == "fail"]
+
+    if verdict.get("scope_sufficient", True) is not True:
+        return True
+    if reviewer == "code-reviewer":
+        threshold_rank = _SEVERITY_ORDER.get(blocking_severity, 2)
+        findings = verdict.get("findings", [])
+        return isinstance(findings, list) and any(
+            isinstance(finding, dict)
+            and _SEVERITY_ORDER.get(str(finding.get("severity")), 99) <= threshold_rank
+            for finding in findings
+        )
+    checklist = verdict.get("checklist", [])
+    return isinstance(checklist, list) and any(
+        isinstance(item, dict) and item.get("status") == "fail"
+        for item in checklist
+    )
 
 
 def check_coverage(verdict: dict[str, Any], required_items: list[str]) -> list[str]:

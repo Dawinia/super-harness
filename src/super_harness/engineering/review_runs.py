@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 from super_harness.core.events import Event
+from super_harness.core.review_verdict import verdict_blocks
 
 _EPOCH_BOUNDARIES: dict[str, frozenset[str]] = {
     "plan-reviewer": frozenset({"plan_ready"}),
@@ -43,6 +44,7 @@ class ReviewRoundState:
     required_sources: tuple[str, ...] = ()
     min_independent: int = 0
     require_distinct_model_families: bool = False
+    blocking_severity: str = "minor"
     frozen_governance_complete: bool = False
     automatic: bool = True
     authorization_id: str | None = None
@@ -78,21 +80,20 @@ class ReviewExecutionState:
         if not self.rounds:
             return ()
 
-        def succeeded(run: ReviewRunState) -> bool:
+        def succeeded(run: ReviewRunState, blocking_severity: str) -> bool:
             verdict = run.verdict
             if run.status != "imported" or not isinstance(verdict, dict):
                 return False
-            if verdict.get("scope_sufficient", True) is not True:
-                return False
             if verdict.get("outcome") in {"rejected", "failed"}:
                 return False
-            checklist = verdict.get("checklist", [])
-            return not (
-                isinstance(checklist, list)
-                and any(
-                    isinstance(item, dict) and item.get("status") == "fail"
-                    for item in checklist
-                )
+            # Mirror the round-close reject predicate: a source is reusable iff
+            # its verdict is non-blocking under the round's frozen threshold
+            # (code review grades by finding severity; plan review by checklist
+            # fail). Shared `verdict_blocks` keeps retention and close aligned —
+            # a minor-only code source that the round would approve must be
+            # retained across a peer failure, not forced to re-run.
+            return not verdict_blocks(
+                verdict, reviewer=self.reviewer, blocking_severity=blocking_severity
             )
 
         latest = self.rounds[-1]
@@ -108,12 +109,12 @@ class ReviewExecutionState:
             retained.update(
                 source
                 for source, run in round_state.runs.items()
-                if succeeded(run)
+                if succeeded(run, round_state.blocking_severity)
             )
         if latest.status == "open" or latest.outcome == "execution_failed":
             for source, run in latest.runs.items():
                 retained.discard(source)
-                if succeeded(run):
+                if succeeded(run, latest.blocking_severity):
                     retained.add(source)
         return tuple(sorted(retained))
 
@@ -288,6 +289,13 @@ def derive_review_execution(
                 if isinstance(raw_distinct_families, bool)
                 else False
             )
+            raw_blocking_severity = payload.get("blocking_severity")
+            blocking_severity = (
+                raw_blocking_severity
+                if isinstance(raw_blocking_severity, str)
+                and raw_blocking_severity in {"blocker", "major", "minor"}
+                else "minor"
+            )
             frozen_governance_complete = (
                 isinstance(raw_required, list)
                 and bool(raw_required)
@@ -315,6 +323,7 @@ def derive_review_execution(
                     required_sources=required_sources,
                     min_independent=min_independent,
                     require_distinct_model_families=require_distinct_model_families,
+                    blocking_severity=blocking_severity,
                     frozen_governance_complete=frozen_governance_complete,
                     automatic=automatic,
                     authorization_id=resolved_authorization_id,

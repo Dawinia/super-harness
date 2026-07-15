@@ -39,11 +39,11 @@ from super_harness.core.review_verdict import (
     VerdictError,
     check_disposed,
     derive_open_findings,
-    failing_items,
     parse_verdict_file,
     read_change_events,
     review_verdict_json_schema,
     validate_verdict_mapping,
+    verdict_blocks,
 )
 from super_harness.core.scope_match import (
     GitScopeError,
@@ -234,6 +234,7 @@ def _governance_payload(
         "min_independent": role.min_independent,
         "max_automatic_rounds_per_epoch": role.max_automatic_rounds_per_epoch,
         "require_distinct_model_families": governance.require_distinct_model_families,
+        "blocking_severity": role.blocking_severity,
         "sources": {
             source: {"kind": governance.sources[source].kind}
             for source in role.participants
@@ -971,6 +972,7 @@ def begin(
             "require_distinct_model_families": (
                 governance.require_distinct_model_families
             ),
+            "blocking_severity": role.blocking_severity,
             "checklist": list(packet["checklist"]),
             # Only the code-reviewer prompt surfaces open prior findings
             # (compile_review_contract gates that section to code-reviewer). A
@@ -1350,12 +1352,17 @@ def _close_round_if_terminal(
         current_head = None
     target_stale = current_head != round_state.target_head
     aggregate = _aggregate_verdicts(imported)
-    aggregate_checklist = aggregate["checklist"]
-    has_failure = isinstance(aggregate_checklist, list) and any(
-        isinstance(item, dict) and item.get("status") == "fail"
-        for item in aggregate_checklist
+    # A code-review round rejects on the highest FINDING severity vs the round's
+    # frozen blocking threshold (default `major`) — findings below it
+    # pass-with-open-finding (still surfaced by `super-harness report`), not
+    # forcing a re-review round. Plan review keeps checklist-`fail` reject
+    # (its findings are not tracked). `verdict_blocks` is shared with
+    # `retained_sources` so the two predicates never diverge.
+    has_rejection = verdict_blocks(
+        aggregate,
+        reviewer=reviewer,
+        blocking_severity=round_state.blocking_severity,
     )
-    has_rejection = aggregate["scope_sufficient"] is not True or has_failure
     if target_stale:
         outcome = "execution_failed"
     elif has_rejection:
@@ -2325,9 +2332,16 @@ def human_confirm(
         finding["run_id"] = run_id
         normalized_findings.append(finding)
     normalized["findings"] = normalized_findings
+    # Mirror the automated close path (`_close_round_if_terminal`): a human
+    # code-review verdict rejects on its worst finding vs the role's
+    # blocking_severity (a minor-only finding passes-with-open), a plan-review
+    # verdict on any checklist fail. Without this a human-only code review (init's
+    # default governance) would ignore the severity policy the automated path honors.
     outcome = (
         "rejected"
-        if normalized.get("scope_sufficient") is False or failing_items(normalized)
+        if verdict_blocks(
+            normalized, reviewer=reviewer, blocking_severity=role.blocking_severity
+        )
         else "approved"
     )
     # B-layer dead documentation-reference gate. The automated close path
@@ -2387,6 +2401,7 @@ def human_confirm(
             "target_head": draft["target_head"],
             "profile_digest": draft["profile_digest"],
             "automatic": False,
+            "blocking_severity": role.blocking_severity,
             "checklist": list(packet["checklist"]),
             # Code-review open findings only; a human plan-reviewer is never shown
             # them either (PR#79 finding #3).
@@ -2466,19 +2481,19 @@ def human_confirm(
     # sources; the human completes the quorum the automated rounds started (PR#79
     # finding #1). For human-only governance (min_independent == 1) the single
     # human source satisfies it.
-    def _run_approved(run: ReviewRunState) -> bool:
+    def _run_approved(run: ReviewRunState, blocking_severity: str) -> bool:
         verdict = run.verdict
         if run.status != "imported" or not isinstance(verdict, dict):
             return False
-        if verdict.get("scope_sufficient", True) is not True:
-            return False
-        checklist = verdict.get("checklist", [])
-        return not (
-            isinstance(checklist, list)
-            and any(
-                isinstance(item, dict) and item.get("status") == "fail"
-                for item in checklist
-            )
+        # Same non-blocking predicate the round-close and retention paths use, so
+        # a minor-only peer that its round would approve is counted toward the
+        # human-completed quorum (not dropped as if it had rejected). Re-grade
+        # each prior receipt under the threshold FROZEN on its own round, never
+        # the current governance value — a mid-flight governance relaxation must
+        # not retroactively re-approve a receipt that blocked under its frozen
+        # threshold (frozen-governance discipline, matching retained_sources).
+        return not verdict_blocks(
+            verdict, reviewer=reviewer, blocking_severity=blocking_severity
         )
 
     prior_imported = {
@@ -2486,7 +2501,8 @@ def human_confirm(
         for prior_round in execution.rounds
         if prior_round.target_head == draft["target_head"]
         for prior_source, prior_run in prior_round.runs.items()
-        if prior_source != source and _run_approved(prior_run)
+        if prior_source != source
+        and _run_approved(prior_run, prior_round.blocking_severity)
     }
     independent_sources = sorted(prior_imported | {source})
     if outcome == "approved" and len(independent_sources) < role.min_independent:

@@ -1413,3 +1413,242 @@ def test_mixed_quorum_completes_when_human_confirms_after_automated(
     assert passed, "human confirm should complete the codex+human quorum"
     assert set(passed[-1].payload["independent_sources"]) == {"codex", "human"}
     assert derive_state(events_path(root))["change"].current_state == "READY_TO_MERGE"
+
+
+def _single_source_governance(root: Path, *, blocking_severity: str | None) -> None:
+    """Rewrite `_repo`'s single-source (codex) code-reviewer governance,
+    optionally pinning `blocking_severity`. Call BEFORE `_prepare` so the value
+    is frozen into the round."""
+    extra = (
+        f"      blocking_severity: {blocking_severity}\n"
+        if blocking_severity is not None
+        else ""
+    )
+    (root / ".harness" / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  base_branch: main\n"
+        "  sources:\n"
+        "    codex:\n"
+        "      kind: automated\n"
+        "    human:\n"
+        "      kind: human\n"
+        "  roles:\n"
+        "    plan-reviewer:\n"
+        "      participants: [human]\n"
+        "      min_independent: 1\n"
+        "    code-reviewer:\n"
+        "      participants: [codex]\n"
+        "      min_independent: 1\n"
+        "      max_automatic_rounds_per_epoch: 2\n" + extra,
+        encoding="utf-8",
+    )
+
+
+def _import_verdict_with_finding(
+    root: Path,
+    monkeypatch: MonkeyPatch,
+    *,
+    severity: str,
+    finding_id: str = "F-1",
+    scope_sufficient: bool = True,
+) -> dict[str, object]:
+    """Drive prepare→begin→import for the single codex source with a verdict
+    that fails checklist[0] and raises one finding of `severity`. Returns the
+    import command's JSON `data`."""
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    verdict = _result_for_run(begun)
+    verdict["scope_sufficient"] = scope_sufficient
+    checklist = cast(list[dict[str, object]], verdict["checklist"])
+    checklist[0]["status"] = "fail"
+    verdict["findings"] = [
+        {
+            "id": finding_id,
+            "severity": severity,
+            "file": "src/app.py",
+            "summary": "A graded observation about the change.",
+        }
+    ]
+    result_path = root / "codex-result.json"
+    result_path.write_text(json.dumps(verdict), encoding="utf-8")
+    imported = CliRunner().invoke(
+        main,
+        [
+            "--json",
+            "--workspace",
+            str(root),
+            "review",
+            "result",
+            "import",
+            "change",
+            "--reviewer",
+            "code-reviewer",
+            "--run-id",
+            cast(str, verdict["run_id"]),
+            "--result-file",
+            str(result_path),
+        ],
+    )
+    assert imported.exit_code == EXIT_OK, imported.output
+    return cast(dict[str, object], json.loads(imported.output)["data"])
+
+
+def test_minor_only_round_approves_at_default_threshold(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)  # default governance → blocking_severity major
+    data = _import_verdict_with_finding(root, monkeypatch, severity="minor")
+    assert data["round_outcome"] == "approved"
+    assert data["milestone"] == "code_review_passed"
+
+
+def test_minor_finding_still_surfaces_in_open_undisposed(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    from super_harness.core.review_verdict import derive_open_findings
+
+    root = _repo(tmp_path)
+    _import_verdict_with_finding(
+        root, monkeypatch, severity="minor", finding_id="MIN-1"
+    )
+    # Honesty law: an APPROVED minor finding is still recorded + surfaced
+    # (findings are namespaced by source/run, e.g. `codex/run_.../MIN-1`).
+    open_ids = derive_open_findings(
+        read_change_events(events_path(root), "change"), "change"
+    )
+    assert any(fid.endswith("/MIN-1") for fid in open_ids), open_ids
+
+
+def test_major_finding_still_rejects_at_default_threshold(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    data = _import_verdict_with_finding(root, monkeypatch, severity="major")
+    assert data["round_outcome"] == "rejected"
+
+
+def test_blocking_severity_minor_restores_reject_on_minor(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _single_source_governance(root, blocking_severity="minor")
+    data = _import_verdict_with_finding(root, monkeypatch, severity="minor")
+    assert data["round_outcome"] == "rejected"
+
+
+def test_scope_insufficient_rejects_regardless_of_severity(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    data = _import_verdict_with_finding(
+        root, monkeypatch, severity="minor", scope_sufficient=False
+    )
+    assert data["round_outcome"] == "rejected"
+
+
+def _repo_plan(tmp_path: Path) -> Path:
+    """Like `_repo` but seeded to AWAITING_PLAN_REVIEW with an automated
+    single-source plan-reviewer (codex), for exercising plan-review round close."""
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "review@example.test")
+    _git(tmp_path, "config", "user.name", "Reviewer")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("value = 1\n", encoding="utf-8")
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    _git(tmp_path, "checkout", "-qb", "feature")
+    (tmp_path / "src" / "app.py").write_text("value = 2\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-aqm", "implementation")
+    harness = tmp_path / ".harness"
+    harness.mkdir()
+    (harness / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  base_branch: main\n"
+        "  sources:\n"
+        "    codex:\n"
+        "      kind: automated\n"
+        "  roles:\n"
+        "    plan-reviewer:\n"
+        "      participants: [codex]\n"
+        "      min_independent: 1\n"
+        "      max_automatic_rounds_per_epoch: 2\n"
+        "    code-reviewer:\n"
+        "      participants: [codex]\n"
+        "      min_independent: 1\n"
+        "      max_automatic_rounds_per_epoch: 2\n",
+        encoding="utf-8",
+    )
+    (harness / "review-profiles.local.yaml").write_text(
+        "version: 1\n"
+        "sources:\n"
+        "  codex:\n"
+        "    protocol: codex-cli\n"
+        "    model: gpt-review\n"
+        "    cost_class: standard\n"
+        "    agent_options:\n"
+        "      reasoning_effort: medium\n"
+        "      sandbox: read-only\n",
+        encoding="utf-8",
+    )
+    for event_type, payload in [
+        ("intent_declared", {}),
+        ("plan_ready", {"scope": {"files": ["src/"]}}),
+    ]:
+        EventWriter(events_path(tmp_path)).emit(
+            Event(
+                event_id=new_event_id(),
+                type=event_type,
+                change_id="change",
+                timestamp="2026-07-13T00:00:00Z",
+                actor=Actor(type="human", identifier="test"),
+                framework="plain",
+                payload=payload,
+            )
+        )
+    refresh_state_after_emit(tmp_path)
+    return tmp_path
+
+
+def test_plan_reviewer_minor_only_round_still_rejects(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    # plan-reviewer findings are NOT harvested by derive_open_findings / report
+    # (open-finding tracking is code-reviewer only). A minor plan finding must
+    # therefore NOT pass-with-open — it would silently vanish. Plan review keeps
+    # its checklist-fail reject regardless of the blocking_severity threshold.
+    root = _repo_plan(tmp_path)
+    _fake_codex(root, monkeypatch)
+
+    def _plan(cmd: str) -> Result:
+        return CliRunner().invoke(
+            main,
+            ["--json", "--workspace", str(root), "review", cmd, "change",
+             "--reviewer", "plan-reviewer"],
+        )
+
+    assert _plan("prepare").exit_code == EXIT_OK
+    begun = json.loads(_plan("begin").output)["data"]
+    verdict = _result_for_run(begun)
+    checklist = cast(list[dict[str, object]], verdict["checklist"])
+    checklist[0]["status"] = "fail"
+    verdict["findings"] = [
+        {
+            "id": "PLN-1",
+            "severity": "minor",
+            "file": "src/app.py",
+            "summary": "A minor plan-review observation.",
+        }
+    ]
+    result_path = root / "plan-result.json"
+    result_path.write_text(json.dumps(verdict), encoding="utf-8")
+    imported = CliRunner().invoke(
+        main,
+        ["--json", "--workspace", str(root), "review", "result", "import",
+         "change", "--reviewer", "plan-reviewer",
+         "--run-id", cast(str, verdict["run_id"]), "--result-file", str(result_path)],
+    )
+    assert imported.exit_code == EXIT_OK, imported.output
+    assert json.loads(imported.output)["data"]["round_outcome"] == "rejected"

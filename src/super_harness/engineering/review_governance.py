@@ -74,6 +74,7 @@ class ReviewerRoleGovernance:
     participants: tuple[str, ...]
     min_independent: int
     max_automatic_rounds_per_epoch: int
+    blocking_severity: str = "major"
 
 
 @dataclass(frozen=True)
@@ -186,11 +187,21 @@ def load_review_governance(root: Path) -> ReviewGovernance:
             role.get("max_automatic_rounds_per_epoch", 2),
             f"review.roles.{reviewer}.max_automatic_rounds_per_epoch",
         )
+        blocking_severity = role.get("blocking_severity", "major")
+        if (
+            not isinstance(blocking_severity, str)
+            or blocking_severity not in {"blocker", "major", "minor"}
+        ):
+            raise ReviewGovernanceError(
+                f"review.roles.{reviewer}.blocking_severity must be one of "
+                "'blocker', 'major', 'minor'"
+            )
         roles[reviewer] = ReviewerRoleGovernance(
             reviewer=reviewer,
             participants=participants,
             min_independent=min_independent,
             max_automatic_rounds_per_epoch=max_rounds,
+            blocking_severity=blocking_severity,
         )
 
     require_distinct = review.get("require_distinct_model_families", False)

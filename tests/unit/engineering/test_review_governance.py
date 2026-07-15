@@ -183,3 +183,71 @@ def test_defaults_automatic_round_budget_to_two(tmp_path: Path) -> None:
     governance = load_review_governance(tmp_path)
 
     assert governance.roles["plan-reviewer"].max_automatic_rounds_per_epoch == 2
+
+
+def _write_single_role_governance(tmp_path: Path, *, role_body: str) -> Path:
+    harness = tmp_path / ".harness"
+    harness.mkdir()
+    (harness / "review-governance.yaml").write_text(
+        "version: 1\n"
+        "review:\n"
+        "  sources:\n"
+        "    codex: {kind: automated}\n"
+        "    claude: {kind: automated}\n"
+        "  roles:\n"
+        "    code-reviewer:\n" + role_body,
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_role_blocking_severity_defaults_to_major(tmp_path: Path) -> None:
+    root = _write_single_role_governance(
+        tmp_path, role_body="      participants: [codex, claude]\n"
+    )
+
+    governance = load_review_governance(root)
+
+    assert governance.roles["code-reviewer"].blocking_severity == "major"
+
+
+def test_role_blocking_severity_explicit_value_loads(tmp_path: Path) -> None:
+    root = _write_single_role_governance(
+        tmp_path,
+        role_body=(
+            "      participants: [codex, claude]\n"
+            "      blocking_severity: blocker\n"
+        ),
+    )
+
+    governance = load_review_governance(root)
+
+    assert governance.roles["code-reviewer"].blocking_severity == "blocker"
+
+
+def test_role_blocking_severity_rejects_unknown_value(tmp_path: Path) -> None:
+    root = _write_single_role_governance(
+        tmp_path,
+        role_body=(
+            "      participants: [codex, claude]\n"
+            "      blocking_severity: nit\n"
+        ),
+    )
+
+    with pytest.raises(ReviewGovernanceError, match="blocking_severity"):
+        load_review_governance(root)
+
+
+def test_role_blocking_severity_non_scalar_raises_governance_error(tmp_path: Path) -> None:
+    # A non-scalar YAML value must raise ReviewGovernanceError, not an unhashable
+    # TypeError from the set-membership test.
+    root = _write_single_role_governance(
+        tmp_path,
+        role_body=(
+            "      participants: [codex, claude]\n"
+            "      blocking_severity: [major]\n"
+        ),
+    )
+
+    with pytest.raises(ReviewGovernanceError, match="blocking_severity"):
+        load_review_governance(root)

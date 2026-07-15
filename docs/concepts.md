@@ -38,8 +38,11 @@ The configuration separates shared governance from user-local execution:
 - **Reviewer sources** are evidence-provenance labels, for example `codex`,
   `claude`, or `human`; they are not commands or installed agents.
 - **Tracked governance** in `.harness/review-governance.yaml` fixes each role's
-  participant set, independence requirement, automatic-round ceiling, and
-  optional distinct-model-family rule.
+  participant set, independence requirement, automatic-round ceiling, optional
+  distinct-model-family rule, and optional per-role `blocking_severity` (default
+  `major`) — the finding severity at or above which a **code-review** round
+  rejects; findings below it pass with the finding left open (still surfaced by
+  `super-harness report`). Plan review always rejects on any checklist fail.
 - **User-local profiles** in the gitignored
   `.harness/review-profiles.local.yaml` select an explicit producer protocol,
   model, cost class, and producer-specific `agent_options` for automated sources.
