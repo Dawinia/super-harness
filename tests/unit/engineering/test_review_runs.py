@@ -351,6 +351,10 @@ def test_rejected_result_is_not_retained_as_a_successful_peer() -> None:
                 "verdict": {
                     "scope_sufficient": True,
                     "checklist": [{"item": "code-quality", "status": "fail"}],
+                    "findings": [
+                        {"id": "codex/r1/B1", "severity": "major",
+                         "file": "src/a.py", "summary": "blocking defect"}
+                    ],
                 },
                 "receipt": {},
             },
@@ -573,3 +577,157 @@ def test_round_state_missing_blocking_severity_defaults_to_minor() -> None:
     state = derive_review_execution(events, "code-reviewer").rounds[0]
 
     assert state.blocking_severity == "minor"
+
+
+def test_round_state_non_scalar_blocking_severity_defaults_to_minor() -> None:
+    # A malformed payload (non-scalar value) must not crash the tolerant derive
+    # path — it degrades to the strict default, never an unhashable TypeError.
+    events = _round_started({"blocking_severity": ["major"]})
+
+    state = derive_review_execution(events, "code-reviewer").rounds[0]
+
+    assert state.blocking_severity == "minor"
+
+
+def test_minor_only_code_source_is_retained_across_peer_failure() -> None:
+    # A code-review source whose worst finding is below the blocking threshold
+    # is non-blocking (the round would approve on it), so when a PEER fails and a
+    # retry round begins it must be RETAINED — not forced to re-run. Mirrors the
+    # round-close severity predicate (was previously keyed on raw checklist fail).
+    events = [
+        _event("epoch-code", "implementation_complete", {}),
+        _event(
+            "event-round-1",
+            "review_round_started",
+            {
+                "reviewer": "code-reviewer",
+                "epoch_id": "epoch-code",
+                "round_id": "round-1",
+                "contract_digest": "contract-1",
+                "target_head": "abc123",
+                "profile_digest": "profiles-1",
+                "blocking_severity": "major",
+                "runs": [
+                    {"run_id": "run-codex", "source": "codex",
+                     "protocol": "codex-cli", "requested_model": "gpt-review",
+                     "requested_options": {}},
+                    {"run_id": "run-claude", "source": "claude",
+                     "protocol": "claude-cli", "requested_model": "claude-review",
+                     "requested_options": {}},
+                ],
+            },
+        ),
+        _event(
+            "event-result-codex",
+            "review_result_imported",
+            {
+                "reviewer": "code-reviewer", "epoch_id": "epoch-code",
+                "round_id": "round-1", "run_id": "run-codex", "source": "codex",
+                "contract_digest": "contract-1", "target_head": "abc123",
+                "result_digest": "result-1",
+                "verdict": {
+                    "scope_sufficient": True,
+                    "checklist": [{"item": "correctness", "status": "fail"}],
+                    "findings": [{"id": "codex/r1/N1", "severity": "minor",
+                                  "file": "src/a.py", "summary": "nit"}],
+                    "prior_findings": [],
+                },
+                "receipt": {},
+            },
+        ),
+        _event(
+            "event-failed-claude",
+            "review_run_failed",
+            {
+                "reviewer": "code-reviewer", "epoch_id": "epoch-code",
+                "round_id": "round-1", "run_id": "run-claude", "source": "claude",
+                "contract_digest": "contract-1", "target_head": "abc123",
+                "reason": "producer exited 1",
+            },
+        ),
+        _event(
+            "event-close-1",
+            "review_round_closed",
+            {
+                "reviewer": "code-reviewer", "epoch_id": "epoch-code",
+                "round_id": "round-1", "contract_digest": "contract-1",
+                "target_head": "abc123", "profile_digest": "profiles-1",
+                "outcome": "execution_failed",
+            },
+        ),
+    ]
+
+    execution = derive_review_execution(events, "code-reviewer")
+
+    assert execution.retained_sources == ("codex",)
+
+
+def test_minor_only_plan_source_is_not_retained_across_peer_failure() -> None:
+    # Plan review keeps checklist-fail reject semantics, so a plan source with a
+    # failing checklist is NOT retained (it would have rejected the round).
+    events = [
+        _event("epoch-plan", "plan_ready", {}),
+        _event(
+            "event-round-1",
+            "review_round_started",
+            {
+                "reviewer": "plan-reviewer",
+                "epoch_id": "epoch-plan",
+                "round_id": "round-1",
+                "contract_digest": "contract-1",
+                "target_head": "abc123",
+                "profile_digest": "profiles-1",
+                "blocking_severity": "major",
+                "runs": [
+                    {"run_id": "run-codex", "source": "codex",
+                     "protocol": "codex-cli", "requested_model": "gpt-review",
+                     "requested_options": {}},
+                    {"run_id": "run-claude", "source": "claude",
+                     "protocol": "claude-cli", "requested_model": "claude-review",
+                     "requested_options": {}},
+                ],
+            },
+        ),
+        _event(
+            "event-result-codex",
+            "review_result_imported",
+            {
+                "reviewer": "plan-reviewer", "epoch_id": "epoch-plan",
+                "round_id": "round-1", "run_id": "run-codex", "source": "codex",
+                "contract_digest": "contract-1", "target_head": "abc123",
+                "result_digest": "result-1",
+                "verdict": {
+                    "scope_sufficient": True,
+                    "checklist": [{"item": "correctness", "status": "fail"}],
+                    "findings": [{"id": "codex/r1/N1", "severity": "minor",
+                                  "file": "docs/plan.md", "summary": "nit"}],
+                    "prior_findings": [],
+                },
+                "receipt": {},
+            },
+        ),
+        _event(
+            "event-failed-claude",
+            "review_run_failed",
+            {
+                "reviewer": "plan-reviewer", "epoch_id": "epoch-plan",
+                "round_id": "round-1", "run_id": "run-claude", "source": "claude",
+                "contract_digest": "contract-1", "target_head": "abc123",
+                "reason": "producer exited 1",
+            },
+        ),
+        _event(
+            "event-close-1",
+            "review_round_closed",
+            {
+                "reviewer": "plan-reviewer", "epoch_id": "epoch-plan",
+                "round_id": "round-1", "contract_digest": "contract-1",
+                "target_head": "abc123", "profile_digest": "profiles-1",
+                "outcome": "execution_failed",
+            },
+        ),
+    ]
+
+    execution = derive_review_execution(events, "plan-reviewer")
+
+    assert execution.retained_sources == ()

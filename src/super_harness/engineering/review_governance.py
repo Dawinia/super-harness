@@ -188,7 +188,10 @@ def load_review_governance(root: Path) -> ReviewGovernance:
             f"review.roles.{reviewer}.max_automatic_rounds_per_epoch",
         )
         blocking_severity = role.get("blocking_severity", "major")
-        if blocking_severity not in {"blocker", "major", "minor"}:
+        if (
+            not isinstance(blocking_severity, str)
+            or blocking_severity not in {"blocker", "major", "minor"}
+        ):
             raise ReviewGovernanceError(
                 f"review.roles.{reviewer}.blocking_severity must be one of "
                 "'blocker', 'major', 'minor'"

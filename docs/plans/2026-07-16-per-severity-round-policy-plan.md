@@ -246,5 +246,18 @@ This change touches review **governance** (higher blast radius than #81's pure-r
 - **plan review:** design has low ambiguity (forks all resolved in brainstorm) — a single-source plan review or a disclosed skip is defensible; do NOT reflexively run 2-source multi-round.
 - **code review:** governance-touching → run the governance-required **2 independent sources**, but do not pad rounds. Let a `minor`-only finding on THIS change pass-with-open per the very policy it ships (dogfood).
 
-Scope files for `plan ready --scope`:
-`src/super_harness/engineering/review_governance.py`, `src/super_harness/engineering/review_runs.py`, `src/super_harness/cli/review.py`, `src/super_harness/engineering/review_contract.py`, `tests/unit/engineering/test_review_governance.py`, `tests/unit/engineering/test_review_runs.py`, `tests/unit/cli/test_review_runs.py`, `tests/unit/engineering/test_review_contract.py`, `docs/plans/2026-07-16-per-severity-round-policy-plan.md` (+ any derived artifact a gate requires, e.g. `AGENTS.md` via `sync`).
+Scope files for `plan ready --scope` (final, after code-review-driven expansion —
+`verdict_blocks` shared helper landed in `core/review_verdict.py`; adopter docs
+for `blocking_severity` added to `cli/init.py` + `docs/getting-started.md` +
+`docs/concepts.md`):
+`src/super_harness/core/review_verdict.py`,
+`src/super_harness/engineering/review_governance.py`,
+`src/super_harness/engineering/review_runs.py`, `src/super_harness/cli/review.py`,
+`src/super_harness/engineering/review_contract.py`, `src/super_harness/cli/init.py`,
+`docs/getting-started.md`, `docs/concepts.md`,
+`tests/unit/engineering/test_review_governance.py`,
+`tests/unit/engineering/test_review_runs.py`, `tests/unit/cli/test_review_runs.py`,
+`tests/unit/cli/test_review_prepare.py`, `tests/unit/core/test_review_verdict.py`,
+`tests/unit/engineering/test_review_contract.py`,
+`docs/plans/2026-07-16-per-severity-round-policy-plan.md` (+ any derived artifact a
+gate requires, e.g. `AGENTS.md` via `sync`).

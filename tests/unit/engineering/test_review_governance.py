@@ -236,3 +236,18 @@ def test_role_blocking_severity_rejects_unknown_value(tmp_path: Path) -> None:
 
     with pytest.raises(ReviewGovernanceError, match="blocking_severity"):
         load_review_governance(root)
+
+
+def test_role_blocking_severity_non_scalar_raises_governance_error(tmp_path: Path) -> None:
+    # A non-scalar YAML value must raise ReviewGovernanceError, not an unhashable
+    # TypeError from the set-membership test.
+    root = _write_single_role_governance(
+        tmp_path,
+        role_body=(
+            "      participants: [codex, claude]\n"
+            "      blocking_severity: [major]\n"
+        ),
+    )
+
+    with pytest.raises(ReviewGovernanceError, match="blocking_severity"):
+        load_review_governance(root)

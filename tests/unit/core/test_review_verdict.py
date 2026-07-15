@@ -9,6 +9,7 @@ import pytest
 from super_harness.core.review_verdict import (
     VerdictError,
     check_coverage,
+    verdict_blocks,
     failing_items,
     parse_verdict_file,
 )
@@ -305,3 +306,65 @@ def test_check_disposed() -> None:
     assert check_disposed(verdict, ["f1"]) == []
     assert check_disposed(verdict, ["f1", "f2"]) == ["f2"]  # order preserved
     assert check_disposed({}, ["f1"]) == ["f1"]  # no prior_findings → all undisposed
+
+
+def test_verdict_blocks_code_review_grades_by_severity() -> None:
+    # A code-review verdict blocks only when a finding is at or above the
+    # threshold; below it passes-with-open-finding.
+    minor = {
+        "scope_sufficient": True,
+        "checklist": [{"item": "x", "status": "fail"}],
+        "findings": [{"id": "n1", "severity": "minor"}],
+    }
+    major = {
+        "scope_sufficient": True,
+        "checklist": [{"item": "x", "status": "fail"}],
+        "findings": [{"id": "b1", "severity": "major"}],
+    }
+    assert not verdict_blocks(minor, reviewer="code-reviewer", blocking_severity="major")
+    assert verdict_blocks(major, reviewer="code-reviewer", blocking_severity="major")
+    # A stricter threshold blocks the minor too.
+    assert verdict_blocks(minor, reviewer="code-reviewer", blocking_severity="minor")
+    # A looser threshold lets the major pass-with-open.
+    assert not verdict_blocks(major, reviewer="code-reviewer", blocking_severity="blocker")
+
+
+def test_verdict_blocks_plan_review_uses_checklist_fail() -> None:
+    # Plan review ignores finding severity and blocks on any checklist fail
+    # (its findings are not tracked, so it must not relax).
+    minor_fail = {
+        "scope_sufficient": True,
+        "checklist": [{"item": "x", "status": "fail"}],
+        "findings": [{"id": "n1", "severity": "minor"}],
+    }
+    clean = {
+        "scope_sufficient": True,
+        "checklist": [{"item": "x", "status": "pass"}],
+        "findings": [],
+    }
+    assert verdict_blocks(minor_fail, reviewer="plan-reviewer", blocking_severity="major")
+    assert not verdict_blocks(clean, reviewer="plan-reviewer", blocking_severity="major")
+
+
+def test_verdict_blocks_scope_insufficient_always_blocks() -> None:
+    for reviewer in ("code-reviewer", "plan-reviewer"):
+        assert verdict_blocks(
+            {"scope_sufficient": False, "checklist": [], "findings": []},
+            reviewer=reviewer,
+            blocking_severity="major",
+        )
+
+
+def test_verdict_blocks_never_raises_on_malformed_shapes() -> None:
+    # Non-list findings/checklist and unknown/non-scalar severities degrade to
+    # non-blocking, never a crash (tolerant derive discipline).
+    assert not verdict_blocks(
+        {"findings": "oops", "checklist": "oops"},
+        reviewer="code-reviewer",
+        blocking_severity="major",
+    )
+    assert not verdict_blocks(
+        {"findings": [{"id": "x", "severity": ["major"]}]},
+        reviewer="code-reviewer",
+        blocking_severity="major",
+    )
