@@ -30,6 +30,7 @@ from super_harness.cli.pr import pr_group
 from super_harness.cli.review import review_group
 from super_harness.cli.sensor import sensor_group
 from super_harness.cli.state import state_group
+from super_harness.cli.report import report_cmd
 from super_harness.cli.status import status_cmd
 from super_harness.cli.sync import sync_cmd
 from super_harness.cli.verification import verification_group
@@ -84,6 +85,7 @@ main.add_command(event_group)
 main.add_command(init_cmd)
 main.add_command(change_group)
 main.add_command(status_cmd)
+main.add_command(report_cmd)
 main.add_command(sensor_group)
 main.add_command(gate_group)
 main.add_command(observe_group)
