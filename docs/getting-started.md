@@ -212,6 +212,7 @@ starts editing. The hot-path gate enforces lifecycle rules:
         participants: [codex, claude]
         min_independent: 2
         max_automatic_rounds_per_epoch: 2
+        blocking_severity: major   # optional; blocker|major|minor (default major)
     require_distinct_model_families: false
   ```
 
@@ -239,6 +240,15 @@ starts editing. The hot-path gate enforces lifecycle rules:
   Model and option names are producer-specific and explicit. A profile marked
   `cost_class: expensive` requires one-shot human authorization before begin;
   unavailable token telemetry never blocks review.
+
+  `blocking_severity` (per role, default `major`) tunes how strict a
+  **code-review** round is: it rejects only when a finding is at or above that
+  severity, and findings below it pass with the finding left open — still
+  recorded and surfaced by `super-harness report`, but no longer forcing a full
+  re-review round. Set it to `minor` to reject on any finding, or `blocker` to
+  let `major` findings pass-with-open too. Plan review always rejects on any
+  checklist fail regardless (its findings are not tracked in the report), so
+  `blocking_severity` on `plan-reviewer` has no effect.
 
   The automated plan-review protocol is prepare → begin → caller execution →
   import/fail:
