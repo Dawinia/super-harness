@@ -35,8 +35,11 @@ def _fmt_tokens_cell(n: int | None) -> str:
 
 
 def _breakdown_lines(r: ValueReport) -> list[str]:
-    """Aggregate the per-run breakdown to <=4 role/source rows for the human
-    view (per-round detail stays in --json). Unknown tokens render '—', never 0."""
+    """Aggregate the per-run breakdown to one row per (role, source) for the
+    human view — typically <=4 (2 roles x 2 sources), but legacy/malformed runs
+    (``unknown`` bucket) or custom governance sources add rows; every group is
+    shown, never capped (per-round detail stays in --json). Unknown tokens
+    render '—', never 0."""
     if not r.cost_breakdown:
         return []
     groups: dict[tuple[str, str], list[CostBreakdownRow]] = {}

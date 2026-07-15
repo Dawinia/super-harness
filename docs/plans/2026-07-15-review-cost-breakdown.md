@@ -4,7 +4,7 @@
 
 **Goal:** Add a role×source×round breakdown of review-side token cost (with per-round findings-raised density) to `super-harness report`, so the flat "~3.58M review tokens" total becomes attributable — the instrument Step 2 (risk-tiered review intensity) will tune against.
 
-**Architecture:** Pure-read, additive. A new `_cost_breakdown()` reducer in `engineering/value_report.py` folds the SAME event stream (`review_result_imported` for tokens+findings, `review_round_closed` for outcome) into a list of `CostBreakdownRow`. No new event types, no gate/hot-path/governance change. JSON output carries the full per-round list; the human view aggregates to role×source (≤4 rows) so it never floods a 66-change repo. `--brief` is untouched. Every number can show a negative; `tokens=None` (usage not captured) is rendered `—`, never `0`.
+**Architecture:** Pure-read, additive. A new `_cost_breakdown()` reducer in `engineering/value_report.py` folds the SAME event stream (`review_result_imported` for tokens+findings, `review_round_closed` for outcome) into a list of `CostBreakdownRow`. No new event types, no gate/hot-path/governance change. JSON output carries the full per-round list; the human view aggregates to one row per role×source (typically ≤4 = 2 roles × 2 sources; legacy/`unknown` or custom-governance labels add rows — every group is shown, never capped) so it stays compact on a 66-change repo. `--brief` is untouched. Every number can show a negative; `tokens=None` (usage not captured) is rendered `—`, never `0`.
 
 **Tech Stack:** Python 3.10+, Click, dataclasses (`asdict` recurses nested frozen dataclasses → JSON for free), pytest. Mirrors the existing `_review_cost` / `_finding_counts` reducer style and `tests/unit/engineering/test_value_report.py` fixtures.
 
@@ -355,7 +355,7 @@ git commit -m "test(report): lock breakdown round-outcome + JSON envelope shape"
 
 **Step 1: Write the failing test**
 
-Human view aggregates rows to ≤4 role×source lines, sums known tokens (unknown excluded, never shown as 0), sums findings, counts distinct rounds, and flags a group that has any 0-finding round. Assert substrings, not whitespace:
+Human view aggregates rows to one line per role×source (typically ≤4, but never capped — legacy/`unknown` groups render too), sums known tokens (unknown excluded, never shown as 0), sums findings, counts distinct rounds, and flags a group that has any 0-finding round. Assert substrings, not whitespace:
 
 ```python
 def test_report_human_shows_role_source_breakdown_with_flags(...):

@@ -105,6 +105,29 @@ def test_report_human_shows_role_source_breakdown_with_flags(tmp_path):
     assert "rejected round" in out                             # rejected flag fired
 
 
+def test_report_human_breakdown_renders_all_groups_never_capped(tmp_path):
+    # CODX-001: the "typically <=4 rows" note is a common-case estimate, NOT a
+    # hard cap — legacy/unknown or custom-source runs must all still render.
+    _seed(tmp_path, [
+        _imp("e1", "c1", "2026-07-02T00:00:00Z", reviewer="plan-reviewer",
+             source="codex", round_id="r1", total=10),
+        _imp("e2", "c1", "2026-07-02T00:01:00Z", reviewer="plan-reviewer",
+             source="claude", round_id="r2", total=10),
+        _imp("e3", "c1", "2026-07-02T00:02:00Z", reviewer="code-reviewer",
+             source="codex", round_id="r3", total=10),
+        _imp("e4", "c1", "2026-07-02T00:03:00Z", reviewer="code-reviewer",
+             source="claude", round_id="r4", total=10),
+        _imp("e5", "c1", "2026-07-02T00:04:00Z", reviewer="plan-reviewer",
+             source="gemini", round_id="r5", total=10),   # 5th group (custom source)
+    ])
+    result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"])
+    assert result.exit_code == 0
+    assert "plan-reviewer/gemini" in result.output          # 5th group not dropped
+    # all 5 distinct role/source group lines render (3 plan + 2 code), no cap
+    assert result.output.count("plan-reviewer/") == 3
+    assert result.output.count("code-reviewer/") == 2
+
+
 def test_report_human_omits_breakdown_when_no_review_runs(tmp_path):
     _seed(tmp_path, [])
     result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"])
