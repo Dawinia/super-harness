@@ -22,7 +22,7 @@ The report has exactly two measurable bands plus one honest footnote. **Design l
 **Band ② — Cost**
 - `review_tokens` / `review_runs_total` / `review_runs_with_usage` — review-side tokens summed from `review_result_imported` receipts; honestly labeled "review side only, self-reported, data for X/Y runs, main coding-agent cost not captured."
 - `findings_wontfix` — finding ids disposed `wontfix` (review false alarms / rework).
-- `rejected_rounds` — `review_round_closed` events whose `payload.outcome ∈ {rejected, failed}`. The imported verdict schema has NO `outcome` field; rejection is recorded on the round-closed milestone, not the verdict (CODX-001).
+- `nonpassing_rounds` — `review_round_closed` events whose `payload.outcome ∈ {rejected, execution_failed}`. The ONLY closed-round outcomes are `approved`/`rejected`/`execution_failed` (there is NO `failed`); an `execution_failed` round is wasted review effort, so it counts as rework. The imported verdict schema has NO `outcome` field — rejection lives on the round-closed milestone, not the verdict (CODX-001, CODX-005).
 
 **Footnote (context, NOT a value claim)**
 - `armed_decisions` — ratified decisions carrying an executable `check` (bite-test). One honest line: the lifecycle gate / N locked rules / verification / doc-sync also stand guard, their successful catches leave no trace yet → Stage 2.
@@ -126,7 +126,7 @@ class ValueReport:
     review_runs_total: int
     review_runs_with_usage: int
     findings_wontfix: int
-    rejected_rounds: int
+    nonpassing_rounds: int
     # footnote context
     armed_decisions: int
 
@@ -186,7 +186,7 @@ def build_value_report(
         review_runs_total=0,
         review_runs_with_usage=0,
         findings_wontfix=0,
-        rejected_rounds=0,
+        nonpassing_rounds=0,
         armed_decisions=0,
     )
 ```
@@ -385,7 +385,7 @@ Wire `undisclosed_bypasses=_undisclosed_bypasses(windowed, all_events)` into the
 
 **Files:** Modify `value_report.py`; Test in same file.
 
-Tokens live in each `review_result_imported` receipt: `payload.receipt.usage` (often `None`). **Rejected rounds live on `review_round_closed.payload.outcome ∈ {rejected, failed}`** — the imported verdict has no `outcome` field (CODX-001).
+Tokens live in each `review_result_imported` receipt: `payload.receipt.usage` (often `None`). **Non-passing rounds live on `review_round_closed.payload.outcome`** — outcomes are `approved`/`rejected`/`execution_failed` (no `failed`); count `rejected` + `execution_failed` since a crashed/stale round is wasted review effort (the imported verdict has no `outcome` field — CODX-001, CODX-005).
 
 **Step 1: Write the failing test**
 
@@ -409,19 +409,20 @@ def _round_closed(eid, change, ts, outcome):
     })
 
 
-def test_review_tokens_usage_and_rejected_rounds(tmp_path):
+def test_review_tokens_usage_and_nonpassing_rounds(tmp_path):
     events_file = _write_events(tmp_path, [
         _import_with_usage("e1", "c1", "2026-07-02T00:00:00Z", {"input_tokens": 100, "output_tokens": 20}),
         _import_with_usage("e2", "c1", "2026-07-02T01:00:00Z", {"total_tokens": 300}),
         _import_with_usage("e3", "c1", "2026-07-02T02:00:00Z", None),   # no usage reported
         _round_closed("e4", "c1", "2026-07-02T03:00:00Z", "rejected"),  # counts
-        _round_closed("e5", "c1", "2026-07-02T04:00:00Z", "approved"),  # does not
+        _round_closed("e5", "c1", "2026-07-02T04:00:00Z", "approved"),  # does NOT
+        _round_closed("e6", "c1", "2026-07-02T05:00:00Z", "execution_failed"),  # counts (wasted effort)
     ])
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.review_tokens == 420          # 120 + 300
     assert report.review_runs_total == 3
     assert report.review_runs_with_usage == 2
-    assert report.rejected_rounds == 1
+    assert report.nonpassing_rounds == 2
 ```
 
 **Step 2: Run** → FAIL.
@@ -462,11 +463,11 @@ def _review_cost(events: list[Event]) -> tuple[int, int, int]:
     return tokens, runs_total, runs_with_usage
 
 
-def _rejected_rounds(events: list[Event]) -> int:
+def _nonpassing_rounds(events: list[Event]) -> int:
     return sum(
         1 for ev in events
         if ev.type == "review_round_closed"
-        and (ev.payload or {}).get("outcome") in {"rejected", "failed"}
+        and (ev.payload or {}).get("outcome") in {"rejected", "execution_failed"}
     )
 ```
 
@@ -474,7 +475,7 @@ Wire into the report (all over `windowed`):
 
 ```python
     review_tokens, review_runs_total, review_runs_with_usage = _review_cost(windowed)
-    rejected_rounds = _rejected_rounds(windowed)
+    nonpassing_rounds = _nonpassing_rounds(windowed)
 ```
 
 **Step 4: Run** → PASS.
@@ -621,7 +622,7 @@ def _render_human(r: ValueReport) -> str:
         f"  - review tokens: {_fmt_tokens(r.review_tokens)} "
         f"(review side only, self-reported; data for {r.review_runs_with_usage}/{r.review_runs_total} runs; "
         f"main coding-agent cost not captured)",
-        f"  - review rework: {r.findings_wontfix} false alarm(s) (wontfix), {r.rejected_rounds} rejected round(s)",
+        f"  - review rework: {r.findings_wontfix} false alarm(s) (wontfix), {r.nonpassing_rounds} non-passing round(s) (rejected or failed to execute)",
         "",
         f"  Note: the lifecycle gate, {r.armed_decisions} locked rule(s), verification and doc-sync also",
         "  stand guard in the prevention layer - their successful catches leave no trace yet (see Stage 2).",
@@ -784,7 +785,7 @@ Per auto-memory `feedback-codex-cross-review` + `feedback-best-change-not-minima
 
 - **No fabricated metrics** — every number traces to a real event field; `_usage_tokens` returns `None` (not a guess) on unknown shapes; no "acknowledged" user-action claim on open findings (CODX-003).
 - **Honesty law holds** — the empty/near-zero window produces a negative bottom line, not silence or spin.
-- **No phantom signals** — `scope_drift_detected` is never referenced; `rejected_rounds` reads `review_round_closed`, not the verdict (CODX-001).
+- **No phantom signals** — `scope_drift_detected` is never referenced; `nonpassing_rounds` reads `review_round_closed.payload.outcome` (values `rejected`/`execution_failed`, never a nonexistent `failed`), not the verdict (CODX-001, CODX-005).
 - **Order-aware bypass** — a disclosure before a later bypass does NOT clear that bypass (CODX-002).
 - **Windowing is honest** — disposition/causality use the full stream; only counting selects on window; unparseable-ts handling matches docs.
 - **Architecture** — `value_report.py` imports only `core` (no `cli`/`gates`); `super-harness decision check` green.
