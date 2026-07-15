@@ -11,12 +11,17 @@ leave a realized-effect trace today; every other guardrail's success is invisibl
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from super_harness.core.events import Event, EventSchemaError, parse_event_line
 from super_harness.core.parse_ts import parse_ts
+
+# A bare `YYYY-MM-DD` upper bound means "through the end of that day" — parse_ts
+# gives midnight, which would silently drop the rest of the day (CODX-008).
+_DATE_ONLY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 @dataclass(frozen=True)
@@ -77,14 +82,23 @@ def _is_code_verdict(ev: Event) -> bool:
     )
 
 
-def _dispositions(events: list[Event]) -> tuple[set[str], set[str]]:
-    """(resolved_ids, wontfix_ids) disposed by the given events."""
-    resolved: set[str] = set()
-    wontfix: set[str] = set()
+def _dispositions(events: list[Event]) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+    """((change_id, id) resolved, (change_id, id) wontfix) disposed by these events.
+
+    Finding identity is (change_id, id), NOT the bare id: the same short id (e.g.
+    legacy ``code_review_failed`` ids) recurs across changes, so a global id set
+    would let one change's disposition clear another change's finding (CODX-007).
+    ``verdict`` is guarded as a dict so a malformed event can never crash the
+    report (mirrors ``_review_cost``'s receipt guard; the module never raises).
+    """
+    resolved: set[tuple[str, str]] = set()
+    wontfix: set[tuple[str, str]] = set()
     for ev in events:
         if not _is_code_verdict(ev):
             continue
-        verdict = (ev.payload or {}).get("verdict") or {}
+        verdict = (ev.payload or {}).get("verdict")
+        if not isinstance(verdict, dict):
+            continue
         for pf in verdict.get("prior_findings") or []:
             if not isinstance(pf, dict):
                 continue
@@ -92,21 +106,25 @@ def _dispositions(events: list[Event]) -> tuple[set[str], set[str]]:
             if not isinstance(pid, str):
                 continue
             if disp == "resolved":
-                resolved.add(pid)
+                resolved.add((ev.change_id, pid))
             elif disp == "wontfix":
-                wontfix.add(pid)
+                wontfix.add((ev.change_id, pid))
     return resolved, wontfix
 
 
-def _raised_ids(events: list[Event]) -> set[str]:
-    ids: set[str] = set()
+def _raised_ids(events: list[Event]) -> set[tuple[str, str]]:
+    """(change_id, id) pairs raised by these events (per-change identity)."""
+    ids: set[tuple[str, str]] = set()
     for ev in events:
         if not _is_code_verdict(ev):
             continue
-        for f in ((ev.payload or {}).get("verdict") or {}).get("findings") or []:
+        verdict = (ev.payload or {}).get("verdict")
+        if not isinstance(verdict, dict):
+            continue
+        for f in verdict.get("findings") or []:
             fid = f.get("id") if isinstance(f, dict) else None
             if isinstance(fid, str):
-                ids.add(fid)
+                ids.add((ev.change_id, fid))
     return ids
 
 
@@ -212,6 +230,10 @@ def build_value_report(
 ) -> ValueReport:
     lo = parse_ts(since) if since else None
     hi = parse_ts(until) if until else None
+    if hi is not None and until is not None and _DATE_ONLY_RE.fullmatch(until.strip()):
+        # Date-only upper bound is inclusive of the whole day (the CLI/docs promise
+        # events "on/before this ISO date"); extend midnight to end-of-day (CODX-008).
+        hi = hi.replace(hour=23, minute=59, second=59, microsecond=999999)
     all_events = _read_all_events(events_file)          # full stream (causality)
     windowed = [e for e in all_events if _in_window(e, lo, hi)]
     findings_resolved, findings_wontfix, findings_open_undisposed = _finding_counts(

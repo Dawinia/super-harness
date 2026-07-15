@@ -164,3 +164,47 @@ def test_armed_decisions_counts_ratified_with_check(tmp_path):
     events_file = tmp_path / "events.jsonl"
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.armed_decisions == 1
+
+
+# --- Code-review regressions ---
+
+
+def test_finding_ids_are_scoped_per_change(tmp_path):
+    # CODX-007: the same short id "F1" on two changes must not collide — disposing
+    # c1's F1 must NOT clear c2's F1 (legacy code_review_failed ids are short).
+    events_file = _write_events(tmp_path, [
+        _code_verdict_event("e1", "c1", "2026-07-02T00:00:00Z", findings=["F1"]),
+        _code_verdict_event("e2", "c2", "2026-07-02T00:00:00Z", findings=["F1"]),
+        _code_verdict_event("e3", "c1", "2026-07-03T00:00:00Z", prior=[("F1", "resolved")]),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.findings_resolved == 1          # c1's F1
+    assert report.findings_open_undisposed == 1   # c2's F1 still open (not cleared by c1)
+
+
+def test_date_only_until_includes_the_whole_day(tmp_path):
+    # CODX-008: a same-day event later than midnight must be included by a
+    # date-only --until (parse_ts gives midnight; the bound extends to end-of-day).
+    events_file = _write_events(tmp_path, [
+        _code_verdict_event("e1", "c1", "2026-07-10T15:00:00Z", findings=["F1"]),
+    ])
+    report = build_value_report(
+        events_file, since=None, until="2026-07-10", workspace_root=tmp_path
+    )
+    assert report.changes_touched == 1            # not dropped by the midnight boundary
+    assert report.findings_open_undisposed == 1
+
+
+def test_non_dict_verdict_does_not_crash(tmp_path):
+    # CLDX-001: a parseable event with a non-dict verdict must not crash the report.
+    events_file = _write_events(tmp_path, [
+        json.dumps({
+            "event_id": "e1", "type": "review_result_imported", "change_id": "c1",
+            "timestamp": "2026-07-02T00:00:00Z",
+            "actor": {"type": "agent", "identifier": "x"}, "framework": "plain",
+            "payload": {"reviewer": "code-reviewer", "verdict": "oops-not-a-dict"},
+        }),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.findings_resolved == 0
+    assert report.findings_open_undisposed == 0

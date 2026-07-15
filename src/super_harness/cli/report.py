@@ -93,7 +93,8 @@ def _render_brief(r: ValueReport) -> str:
 @click.option(
     "--until",
     default=None,
-    help="Only count events on/before this ISO date. Unparseable = no upper bound.",
+    help="Only count events on/before this ISO date (a bare date counts through "
+    "the end of that day). Unparseable = no upper bound.",
 )
 @click.option("--brief", is_flag=True, help="One-line summary only.")
 @click.pass_context
