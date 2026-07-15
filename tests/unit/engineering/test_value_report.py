@@ -54,11 +54,26 @@ def _import_with_usage(eid, change, ts, usage):
     })
 
 
-def _round_closed(eid, change, ts, outcome):
+def _import_full(eid, change, ts, *, reviewer, source, round_id, usage=None, findings=()):
+    payload = {
+        "reviewer": reviewer,
+        "source": source,
+        "round_id": round_id,
+        "receipt": {"usage": usage} if usage is not None else {},
+        "verdict": {"findings": [{"id": f} for f in findings]},
+    }
+    return json.dumps({
+        "event_id": eid, "type": "review_result_imported", "change_id": change,
+        "timestamp": ts, "actor": {"type": "agent", "identifier": source},
+        "framework": "plain", "payload": payload,
+    })
+
+
+def _round_closed(eid, change, ts, outcome, round_id="r1"):
     return json.dumps({
         "event_id": eid, "type": "review_round_closed", "change_id": change,
         "timestamp": ts, "actor": {"type": "sensor", "identifier": "review"},
-        "framework": "plain", "payload": {"outcome": outcome},
+        "framework": "plain", "payload": {"round_id": round_id, "outcome": outcome},
     })
 
 
@@ -149,6 +164,101 @@ def test_review_tokens_usage_and_rejected_rounds(tmp_path):
     assert report.review_runs_total == 3
     assert report.review_runs_with_usage == 2
     assert report.rejected_rounds == 1          # only e4 (rejected); e6 execution_failed excluded
+
+
+# --- Cost breakdown (role x source x round) ---
+
+
+def test_cost_breakdown_one_row_per_run(tmp_path):
+    events_file = _write_events(tmp_path, [
+        _import_full("e1", "c1", "2026-07-02T00:00:00Z", reviewer="plan-reviewer",
+                     source="codex", round_id="r1", usage={"total_tokens": 620000},
+                     findings=["F1", "F2"]),
+        _import_full("e2", "c1", "2026-07-02T00:01:00Z", reviewer="plan-reviewer",
+                     source="claude", round_id="r1", usage={"total_tokens": 580000},
+                     findings=["F3"]),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    rows = report.cost_breakdown
+    assert len(rows) == 2
+    codex = next(r for r in rows if r.source == "codex")
+    assert codex.role == "plan-reviewer"
+    assert codex.change_id == "c1"
+    assert codex.round_id == "r1"
+    assert codex.tokens == 620000
+    assert codex.findings_raised == 2
+    assert codex.outcome == "open"          # no review_round_closed seeded
+
+
+def test_cost_breakdown_missing_usage_is_none_not_zero(tmp_path):
+    events_file = _write_events(tmp_path, [
+        _import_full("e1", "c1", "2026-07-02T00:00:00Z", reviewer="code-reviewer",
+                     source="claude", round_id="r1", usage=None, findings=[]),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.cost_breakdown[0].tokens is None      # NOT 0 — usage not captured
+    assert report.cost_breakdown[0].findings_raised == 0
+
+
+def test_cost_breakdown_tolerates_missing_source_and_round(tmp_path):
+    # legacy/minimal import event (mirrors _import_with_usage: no source/round_id)
+    events_file = _write_events(tmp_path, [
+        _import_with_usage("e1", "c1", "2026-07-02T00:00:00Z", {"total_tokens": 100}),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    row = report.cost_breakdown[0]
+    assert row.source == "unknown"
+    assert row.round_id == ""
+    assert row.round == 0
+    assert row.tokens == 100
+
+
+def test_cost_breakdown_assigns_round_ordinals_per_change_and_role(tmp_path):
+    events_file = _write_events(tmp_path, [
+        _import_full("e1", "c1", "2026-07-02T00:00:00Z", reviewer="plan-reviewer",
+                     source="codex", round_id="rA", usage={"total_tokens": 1}),
+        _import_full("e2", "c1", "2026-07-02T01:00:00Z", reviewer="plan-reviewer",
+                     source="codex", round_id="rB", usage={"total_tokens": 1}),
+        # different role, first round -> ordinal restarts at 1
+        _import_full("e3", "c1", "2026-07-02T02:00:00Z", reviewer="code-reviewer",
+                     source="codex", round_id="rC", usage={"total_tokens": 1}),
+        # different change, same round_id-space -> ordinal restarts at 1
+        _import_full("e4", "c2", "2026-07-02T03:00:00Z", reviewer="plan-reviewer",
+                     source="codex", round_id="rD", usage={"total_tokens": 1}),
+    ])
+    rows = build_value_report(
+        events_file, since=None, until=None, workspace_root=tmp_path
+    ).cost_breakdown
+    by_rid = {r.round_id: r.round for r in rows}
+    assert by_rid["rA"] == 1
+    assert by_rid["rB"] == 2          # 2nd plan round in c1
+    assert by_rid["rC"] == 1          # code-reviewer restarts
+    assert by_rid["rD"] == 1          # c2 restarts
+
+
+def test_cost_breakdown_row_carries_round_outcome(tmp_path):
+    events_file = _write_events(tmp_path, [
+        _import_full("e1", "c1", "2026-07-02T00:00:00Z", reviewer="plan-reviewer",
+                     source="codex", round_id="r1", usage={"total_tokens": 1}, findings=[]),
+        _round_closed("e2", "c1", "2026-07-02T00:05:00Z", "rejected", round_id="r1"),
+    ])
+    rows = build_value_report(
+        events_file, since=None, until=None, workspace_root=tmp_path
+    ).cost_breakdown
+    assert rows[0].outcome == "rejected"
+
+
+def test_cost_breakdown_respects_window(tmp_path):
+    events_file = _write_events(tmp_path, [
+        _import_full("e1", "c1", "2026-06-01T00:00:00Z", reviewer="plan-reviewer",
+                     source="codex", round_id="r1", usage={"total_tokens": 1}),
+        _import_full("e2", "c1", "2026-07-05T00:00:00Z", reviewer="plan-reviewer",
+                     source="codex", round_id="r2", usage={"total_tokens": 1}),
+    ])
+    rows = build_value_report(
+        events_file, since="2026-07-01", until=None, workspace_root=tmp_path
+    ).cost_breakdown
+    assert [r.round_id for r in rows] == ["r2"]   # June run excluded from breakdown too
 
 
 # --- Task 5: armed decisions (footnote) ---

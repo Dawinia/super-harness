@@ -41,6 +41,23 @@ class ValueReport:
     rejected_rounds: int
     # footnote context
     armed_decisions: int
+    # attribution — where the review tokens went (Step 1 of risk-tiered review)
+    cost_breakdown: tuple[CostBreakdownRow, ...] = ()
+
+
+@dataclass(frozen=True)
+class CostBreakdownRow:
+    """One imported review run: where its tokens went + how many findings it
+    RAISED. ``tokens=None`` means usage was not captured (distinct from 0)."""
+
+    role: str
+    source: str
+    change_id: str
+    round: int
+    round_id: str
+    tokens: int | None
+    findings_raised: int
+    outcome: str
 
 
 def _read_all_events(events_file: Path) -> list[Event]:
@@ -198,6 +215,61 @@ def _review_cost(events: list[Event]) -> tuple[int, int, int]:
     return tokens, runs_total, runs_with_usage
 
 
+def _round_outcomes(events: list[Event]) -> dict[str, str]:
+    """round_id -> last-seen ``review_round_closed`` outcome (append order)."""
+    out: dict[str, str] = {}
+    for ev in events:
+        if ev.type != "review_round_closed":
+            continue
+        payload = ev.payload if isinstance(ev.payload, dict) else {}
+        rid, outcome = payload.get("round_id"), payload.get("outcome")
+        if isinstance(rid, str) and rid and isinstance(outcome, str):
+            out[rid] = outcome
+    return out
+
+
+def _cost_breakdown(events: list[Event]) -> tuple[CostBreakdownRow, ...]:
+    """One row per imported review run: where review tokens went + how many
+    findings that run RAISED (density). Never raises; missing dims -> 'unknown'.
+
+    ``findings_raised`` counts findings the run raised (``verdict.findings``), a
+    different oracle from the headline ``findings_resolved`` (dispositions) — do
+    not cross-wire them. Round ordinals restart per ``(change_id, role)``.
+    """
+    outcomes = _round_outcomes(events)
+    ordinals: dict[tuple[str, str], dict[str, int]] = {}     # (change, role) -> {rid: n}
+    rows: list[CostBreakdownRow] = []
+    for ev in events:
+        if ev.type != "review_result_imported":
+            continue
+        payload = ev.payload if isinstance(ev.payload, dict) else {}
+        role_raw = payload.get("reviewer")
+        source_raw = payload.get("source")
+        round_raw = payload.get("round_id")
+        role = role_raw if isinstance(role_raw, str) and role_raw else "unknown"
+        source = source_raw if isinstance(source_raw, str) and source_raw else "unknown"
+        rid = round_raw if isinstance(round_raw, str) and round_raw else ""
+        ordinal = 0
+        if rid:
+            seen = ordinals.setdefault((ev.change_id, role), {})
+            ordinal = seen.setdefault(rid, len(seen) + 1)
+        raw_receipt = payload.get("receipt")
+        receipt = raw_receipt if isinstance(raw_receipt, dict) else {}
+        verdict = payload.get("verdict")
+        findings = verdict.get("findings") if isinstance(verdict, dict) else None
+        rows.append(CostBreakdownRow(
+            role=role,
+            source=source,
+            change_id=ev.change_id,
+            round=ordinal,
+            round_id=rid,
+            tokens=_usage_tokens(receipt.get("usage")),
+            findings_raised=len(findings) if isinstance(findings, list) else 0,
+            outcome=outcomes.get(rid, "open"),
+        ))
+    return tuple(rows)
+
+
 def _rejected_rounds(events: list[Event]) -> int:
     """Count ONLY `review_round_closed` closures the reviewer rejected. Excludes
     `execution_failed` — that outcome conflates infra-stale / incomplete-governance
@@ -253,4 +325,5 @@ def build_value_report(
         findings_wontfix=findings_wontfix,
         rejected_rounds=_rejected_rounds(windowed),
         armed_decisions=_armed_decisions(workspace_root),
+        cost_breakdown=_cost_breakdown(windowed),
     )
