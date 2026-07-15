@@ -310,3 +310,80 @@ def test_human_confirm_fails_closed_before_emitting_when_role_missing(
     assert "review_round_started" not in types
     assert "review_result_imported" not in types
     assert "code_review_passed" not in types
+
+
+def _draft_custom(root: Path, verdict: dict[str, object]) -> dict[str, object]:
+    path = root / "custom-verdict.json"
+    path.write_text(json.dumps(verdict), encoding="utf-8")
+    result = CliRunner().invoke(
+        main,
+        ["--json", "--workspace", str(root), "review", "human", "draft", "change",
+         "--reviewer", "code-reviewer", "--verdict-file", str(path)],
+    )
+    assert result.exit_code == EXIT_OK, result.output
+    return cast(dict[str, object], json.loads(result.output)["data"])
+
+
+def test_human_code_review_minor_finding_passes_with_open(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    # A human CODE reviewer whose worst finding is below the threshold (default
+    # major) confirms an approval, mirroring the automated close path — the minor
+    # finding passes-with-open, it does not force a rejection.
+    root = _repo(tmp_path)
+    packet = json.loads(
+        (pending_reviews_dir(root, "change") / "code-reviewer" / "draft.packet.json").read_text()
+    )
+    checklist = [{"item": item, "status": "pass"} for item in packet["checklist"]]
+    checklist[0]["status"] = "fail"
+    verdict = {
+        "bundle_digest": packet["bundle_digest"],
+        "scope_sufficient": True,
+        "checklist": checklist,
+        "findings": [{"id": "H-1", "severity": "minor", "file": "src/app.py",
+                      "summary": "a nit"}],
+        "prior_findings": [],
+    }
+    draft = _draft_custom(root, verdict)
+    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
+
+    confirmed = CliRunner().invoke(
+        main,
+        ["--workspace", str(root), "review", "human", "confirm", "change",
+         "--reviewer", "code-reviewer", "--nonce", cast(str, draft["nonce"])],
+        input="y\n",
+    )
+
+    assert confirmed.exit_code == EXIT_OK, confirmed.output
+    assert derive_state(events_path(root))["change"].current_state == "READY_TO_MERGE"
+
+
+def test_human_code_review_major_finding_still_rejects(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    packet = json.loads(
+        (pending_reviews_dir(root, "change") / "code-reviewer" / "draft.packet.json").read_text()
+    )
+    checklist = [{"item": item, "status": "pass"} for item in packet["checklist"]]
+    checklist[0]["status"] = "fail"
+    verdict = {
+        "bundle_digest": packet["bundle_digest"],
+        "scope_sufficient": True,
+        "checklist": checklist,
+        "findings": [{"id": "H-1", "severity": "major", "file": "src/app.py",
+                      "summary": "a real defect"}],
+        "prior_findings": [],
+    }
+    draft = _draft_custom(root, verdict)
+    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
+
+    confirmed = CliRunner().invoke(
+        main,
+        ["--workspace", str(root), "review", "human", "confirm", "change",
+         "--reviewer", "code-reviewer", "--nonce", cast(str, draft["nonce"])],
+        input="y\n",
+    )
+
+    assert confirmed.exit_code == EXIT_OK, confirmed.output
+    assert derive_state(events_path(root))["change"].current_state == "CODE_REVIEW_REJECTED"

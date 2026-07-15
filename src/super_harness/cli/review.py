@@ -39,7 +39,6 @@ from super_harness.core.review_verdict import (
     VerdictError,
     check_disposed,
     derive_open_findings,
-    failing_items,
     parse_verdict_file,
     read_change_events,
     review_verdict_json_schema,
@@ -2333,9 +2332,16 @@ def human_confirm(
         finding["run_id"] = run_id
         normalized_findings.append(finding)
     normalized["findings"] = normalized_findings
+    # Mirror the automated close path (`_close_round_if_terminal`): a human
+    # code-review verdict rejects on its worst finding vs the role's
+    # blocking_severity (a minor-only finding passes-with-open), a plan-review
+    # verdict on any checklist fail. Without this a human-only code review (init's
+    # default governance) would ignore the severity policy the automated path honors.
     outcome = (
         "rejected"
-        if normalized.get("scope_sufficient") is False or failing_items(normalized)
+        if verdict_blocks(
+            normalized, reviewer=reviewer, blocking_severity=role.blocking_severity
+        )
         else "approved"
     )
     # B-layer dead documentation-reference gate. The automated close path
@@ -2478,15 +2484,11 @@ def human_confirm(
         verdict = run.verdict
         if run.status != "imported" or not isinstance(verdict, dict):
             return False
-        if verdict.get("scope_sufficient", True) is not True:
-            return False
-        checklist = verdict.get("checklist", [])
-        return not (
-            isinstance(checklist, list)
-            and any(
-                isinstance(item, dict) and item.get("status") == "fail"
-                for item in checklist
-            )
+        # Same non-blocking predicate the round-close and retention paths use, so
+        # a minor-only peer that the round would approve is counted toward the
+        # human-completed quorum (not dropped as if it had rejected).
+        return not verdict_blocks(
+            verdict, reviewer=reviewer, blocking_severity=role.blocking_severity
         )
 
     prior_imported = {

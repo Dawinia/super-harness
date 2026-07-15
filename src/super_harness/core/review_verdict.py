@@ -271,19 +271,6 @@ def verdict_blocks(
     )
 
 
-def failing_items(verdict: dict[str, Any]) -> list[str]:
-    """Checklist `item` names whose status is `fail`, in checklist order.
-
-    Pure accessor over an already-parsed verdict (shape guaranteed by
-    `parse_verdict_file`). Non-empty on an APPROVE means the verdict contradicts
-    itself — the reviewer's own record says the change is not approvable — and
-    the CLI rejects the approve (both reviewer branches); the same verdict stays
-    valid for `review reject`, which is why this check does NOT live in
-    `parse_verdict_file`.
-    """
-    return [e["item"] for e in verdict["checklist"] if e.get("status") == "fail"]
-
-
 def check_coverage(verdict: dict[str, Any], required_items: list[str]) -> list[str]:
     """Return the required checklist item ids NOT covered by the verdict (in order)."""
     covered = {e["item"] for e in verdict["checklist"]}
