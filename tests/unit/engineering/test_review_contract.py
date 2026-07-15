@@ -510,3 +510,61 @@ def test_unresolvable_plan_head_warns_instead_of_silent_skip(tmp_path: Path) -> 
     )
     warnings = compiled["warnings"]
     assert any("plan-drift guard skipped" in w or "unresolvable" in w for w in warnings), warnings
+
+
+def test_prompt_documents_pass_with_open_finding_threshold(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("v1\n")
+    _git(tmp_path, "add", "src/a.py")
+    _git(tmp_path, "commit", "-qm", "base")
+    _git(tmp_path, "checkout", "-qb", "feature")
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "change")
+    profile = ReviewProducerProfile(
+        source="external",
+        protocol="codex-cli",
+        model="review-model",
+        cost_class="standard",
+        agent_options={"reasoning_effort": "medium"},
+    )
+    governance = ReviewGovernance(
+        version=1,
+        base_branch="main",
+        sources={
+            "external": ReviewerSourceGovernance(name="external", kind="automated")
+        },
+        roles={
+            "code-reviewer": ReviewerRoleGovernance(
+                reviewer="code-reviewer",
+                participants=("external",),
+                min_independent=1,
+                max_automatic_rounds_per_epoch=2,
+            )  # blocking_severity defaults to "major"
+        },
+        require_distinct_model_families=False,
+    )
+    bundle = {
+        "base": "main",
+        "change": "change",
+        "reviewer": "code-reviewer",
+        "bundle_digest": "digest",
+        "checklist": ["correctness"],
+        "spec_path": "",
+        "plan_path": "",
+    }
+
+    compiled = compile_review_contract(
+        tmp_path,
+        bundle=bundle,
+        governance=governance,
+        profiles={"external": profile},
+        events=[],
+        declared=["src/"],
+    )
+
+    prompt = compiled["assignments"][0]["prompt"]
+    assert "at or above `major`" in prompt
+    assert "passes with the finding left open" in prompt

@@ -118,6 +118,7 @@ def _review_prompt(
     checklist: list[str],
     bundle_digest: str,
     open_findings: list[dict[str, Any]],
+    blocking_severity: str,
 ) -> str:
     argv = json.dumps(inspection["diff_argv"], separators=(",", ":"))
     empty_target_guidance = (
@@ -156,6 +157,12 @@ def _review_prompt(
         "findings: []  # required non-empty when any checklist item fails\n"
         "# finding fields: id, severity (blocker | major | minor), file, summary\n"
         "prior_findings: []  # dispose open ids with resolved or wontfix + note\n"
+        f"This round rejects the change only when a finding's severity is at or "
+        f"above `{blocking_severity}` (or scope is insufficient). A checklist item "
+        "marked `fail` whose findings are all below that threshold passes with the "
+        "finding left open — it stays recorded and surfaced by `super-harness "
+        "report`, it does not force a re-review round. To block the change, raise a "
+        f"finding at or above `{blocking_severity}`.\n"
         "Do not edit files or invoke super-harness verdict commands."
     )
 
@@ -335,6 +342,7 @@ def compile_review_contract(
             checklist=checklist,
             bundle_digest=str(bundle["bundle_digest"]),
             open_findings=open_findings,
+            blocking_severity=role.blocking_severity,
         )
         assignments.append(
             {
