@@ -175,6 +175,7 @@ def test_prepare_embeds_tracked_reviewer_governance(tmp_path: Path) -> None:
         "participants": ["subagent", "external"],
         "max_automatic_rounds_per_epoch": 2,
         "require_distinct_model_families": False,
+        "blocking_severity": "major",
         "sources": {
             "subagent": {"kind": "automated"},
             "external": {"kind": "automated"},
