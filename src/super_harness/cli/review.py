@@ -2401,6 +2401,7 @@ def human_confirm(
             "target_head": draft["target_head"],
             "profile_digest": draft["profile_digest"],
             "automatic": False,
+            "blocking_severity": role.blocking_severity,
             "checklist": list(packet["checklist"]),
             # Code-review open findings only; a human plan-reviewer is never shown
             # them either (PR#79 finding #3).
@@ -2480,15 +2481,19 @@ def human_confirm(
     # sources; the human completes the quorum the automated rounds started (PR#79
     # finding #1). For human-only governance (min_independent == 1) the single
     # human source satisfies it.
-    def _run_approved(run: ReviewRunState) -> bool:
+    def _run_approved(run: ReviewRunState, blocking_severity: str) -> bool:
         verdict = run.verdict
         if run.status != "imported" or not isinstance(verdict, dict):
             return False
         # Same non-blocking predicate the round-close and retention paths use, so
-        # a minor-only peer that the round would approve is counted toward the
-        # human-completed quorum (not dropped as if it had rejected).
+        # a minor-only peer that its round would approve is counted toward the
+        # human-completed quorum (not dropped as if it had rejected). Re-grade
+        # each prior receipt under the threshold FROZEN on its own round, never
+        # the current governance value — a mid-flight governance relaxation must
+        # not retroactively re-approve a receipt that blocked under its frozen
+        # threshold (frozen-governance discipline, matching retained_sources).
         return not verdict_blocks(
-            verdict, reviewer=reviewer, blocking_severity=role.blocking_severity
+            verdict, reviewer=reviewer, blocking_severity=blocking_severity
         )
 
     prior_imported = {
@@ -2496,7 +2501,8 @@ def human_confirm(
         for prior_round in execution.rounds
         if prior_round.target_head == draft["target_head"]
         for prior_source, prior_run in prior_round.runs.items()
-        if prior_source != source and _run_approved(prior_run)
+        if prior_source != source
+        and _run_approved(prior_run, prior_round.blocking_severity)
     }
     independent_sources = sorted(prior_imported | {source})
     if outcome == "approved" and len(independent_sources) < role.min_independent:

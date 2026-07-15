@@ -387,3 +387,24 @@ def test_human_code_review_major_finding_still_rejects(
 
     assert confirmed.exit_code == EXIT_OK, confirmed.output
     assert derive_state(events_path(root))["change"].current_state == "CODE_REVIEW_REJECTED"
+
+
+def test_human_confirm_freezes_blocking_severity(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    # The human round must freeze blocking_severity (like the automated round) so
+    # a later re-grade (retained_sources / quorum) uses the same threshold the
+    # human's own outcome used, not the strict absent-default.
+    root = _repo(tmp_path)
+    draft = _draft(root)
+    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
+    CliRunner().invoke(
+        main,
+        ["--workspace", str(root), "review", "human", "confirm", "change",
+         "--reviewer", "code-reviewer", "--nonce", cast(str, draft["nonce"])],
+        input="y\n",
+    )
+    events = read_change_events(events_path(root), "change")
+    started = [e for e in events if e.type == "review_round_started"]
+    assert started[-1].payload["automatic"] is False
+    assert started[-1].payload["blocking_severity"] == "major"
