@@ -18,12 +18,50 @@ from super_harness.core.paths import (
     events_path,
     find_harness_root,
 )
-from super_harness.engineering.value_report import ValueReport, build_value_report
+from super_harness.engineering.value_report import (
+    CostBreakdownRow,
+    ValueReport,
+    build_value_report,
+)
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK
 
 
 def _fmt_tokens(n: int) -> str:
     return f"~{n:,}" if n else "0"
+
+
+def _fmt_tokens_cell(n: int | None) -> str:
+    return "—" if n is None else f"{n:,}"
+
+
+def _breakdown_lines(r: ValueReport) -> list[str]:
+    """Aggregate the per-run breakdown to <=4 role/source rows for the human
+    view (per-round detail stays in --json). Unknown tokens render '—', never 0."""
+    if not r.cost_breakdown:
+        return []
+    groups: dict[tuple[str, str], list[CostBreakdownRow]] = {}
+    for row in r.cost_breakdown:
+        groups.setdefault((row.role, row.source), []).append(row)
+    lines = [
+        "",
+        "Review cost breakdown (review-side only, self-reported, partial)",
+        "  role/source                tokens  findings  rounds",
+    ]
+    for (role, source), rows in sorted(groups.items()):
+        known = [row.tokens for row in rows if row.tokens is not None]
+        tokens_cell = _fmt_tokens_cell(sum(known) if known else None)
+        findings = sum(row.findings_raised for row in rows)
+        rounds = len({row.round_id for row in rows if row.round_id})
+        flags = []
+        if any(row.findings_raised == 0 for row in rows):
+            flags.append("has 0-finding round")
+        if any(row.outcome == "rejected" for row in rows):
+            flags.append("has rejected round")
+        flag = f"  ! {', '.join(flags)}" if flags else ""
+        label = f"{role}/{source}"
+        lines.append(f"  {label:<22} {tokens_cell:>10}  {findings:>8}  {rounds:>6}{flag}")
+    lines.append("  per-round detail: super-harness --json report -> .cost_breakdown")
+    return lines
 
 
 def _bottom_line(r: ValueReport) -> str:
@@ -69,6 +107,9 @@ def _render_human(r: ValueReport) -> str:
         "and doc-sync also",
         "  stand guard in the prevention layer - their successful catches leave no "
         "trace yet (see Stage 2).",
+    ]
+    lines += _breakdown_lines(r)
+    lines += [
         "",
         _bottom_line(r),
     ]
