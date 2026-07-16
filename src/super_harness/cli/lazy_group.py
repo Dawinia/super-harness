@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import importlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import click
 from click.utils import make_default_short_help
@@ -26,23 +26,36 @@ class CommandSpec:
     help: str
 
 
-class _LazyCommandMapping(Mapping[str, click.Command]):
-    """Expose lazy commands to existing command-tree introspection code."""
+class _LazyCommandMapping(MutableMapping[str, click.Command]):
+    """Preserve Click's mutable registry while loading specifications on demand."""
 
     def __init__(self, group: LazyGroup) -> None:
         self._group = group
+        self._dynamic_commands: dict[str, click.Command] = {}
 
     def __getitem__(self, name: str) -> click.Command:
-        command = self._group.get_command(click.Context(self._group), name)
-        if command is None:
+        dynamic = self._dynamic_commands.get(name)
+        if dynamic is not None:
+            return dynamic
+        return self._group._load_spec(name)
+
+    def __setitem__(self, name: str, command: click.Command) -> None:
+        self._group._command_order.setdefault(name, None)
+        self._group._command_specs.pop(name, None)
+        self._dynamic_commands[name] = command
+
+    def __delitem__(self, name: str) -> None:
+        if name not in self._group._command_order:
             raise KeyError(name)
-        return command
+        del self._group._command_order[name]
+        self._group._command_specs.pop(name, None)
+        self._dynamic_commands.pop(name, None)
 
     def __iter__(self) -> Iterator[str]:
-        return iter(self._group._command_specs)
+        return iter(self._group._command_order)
 
     def __len__(self) -> int:
-        return len(self._group._command_specs)
+        return len(self._group._command_order)
 
 
 class LazyGroup(GroupAwareGroup):
@@ -50,23 +63,35 @@ class LazyGroup(GroupAwareGroup):
 
     def __init__(
         self,
-        *args: object,
+        *args: Any,
         command_specs: Mapping[str, CommandSpec],
-        **kwargs: object,
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
+        registered_commands = self.commands
         self._command_specs = dict(command_specs)
-        self.commands = _LazyCommandMapping(self)  # type: ignore[assignment]
+        self._command_order = dict.fromkeys(self._command_specs)
+        self.commands = _LazyCommandMapping(self)
+        for name, command in registered_commands.items():
+            self.commands[name] = command
 
     def list_commands(self, ctx: click.Context) -> list[str]:
-        return list(self._command_specs)
+        return list(self._command_order)
 
     def get_command(self, ctx: click.Context, name: str) -> click.Command | None:
+        try:
+            return self.commands[name]
+        except KeyError:
+            return None
+
+    def _load_spec(self, name: str) -> click.Command:
         spec = self._command_specs.get(name)
         if spec is None:
-            return None
+            raise KeyError(name)
         module_name, attribute = spec.target.split(":", 1)
         command = getattr(importlib.import_module(module_name), attribute)
+        if not isinstance(command, click.Command):
+            raise TypeError(f"{spec.target!r} did not resolve to a click.Command")
         if isinstance(command, click.Group):
             command.__class__ = GroupAwareGroup
             rewrap_subtree(command)
@@ -75,12 +100,18 @@ class LazyGroup(GroupAwareGroup):
         return command
 
     def format_commands(self, ctx: click.Context, formatter: HelpFormatter) -> None:
-        if not self._command_specs:
+        names = self.list_commands(ctx)
+        if not names:
             return
-        limit = formatter.width - 6 - max(len(name) for name in self._command_specs)
-        rows = [
-            (name, make_default_short_help(spec.help, limit))
-            for name, spec in self._command_specs.items()
-        ]
+        limit = formatter.width - 6 - max(len(name) for name in names)
+        rows: list[tuple[str, str]] = []
+        for name in names:
+            spec = self._command_specs.get(name)
+            if spec is not None:
+                rows.append((name, make_default_short_help(spec.help, limit)))
+                continue
+            command = self.commands[name]
+            if not command.hidden:
+                rows.append((name, command.get_short_help_str(limit)))
         with formatter.section("Commands"):
             formatter.write_dl(rows)
