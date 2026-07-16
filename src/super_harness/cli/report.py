@@ -1,7 +1,9 @@
 """`report` — roll up the event stream into an honest value summary (Stage 1).
 
-Per docs/plans/2026-07-15-value-report-stage1.md. Reads only existing events;
-emits nothing. Mirrors cli/status.py's find-root + json-envelope patterns.
+Per docs/plans/2026-07-15-value-report-stage1.md (+ Stage 2, PR #83). Reads the
+existing event stream plus the gate-block telemetry log
+(`.harness/gate-blocks.jsonl`); emits nothing. Mirrors cli/status.py's find-root
++ json-envelope patterns.
 """
 from __future__ import annotations
 
@@ -141,14 +143,14 @@ def _render_brief(r: ValueReport) -> str:
 @click.option(
     "--since",
     default=None,
-    help="Only count events on/after this ISO date (e.g. 2026-07-01). "
-    "Unparseable = no lower bound (never errors).",
+    help="Only count events and gate-block records on/after this ISO date "
+    "(e.g. 2026-07-01). Unparseable = no lower bound (never errors).",
 )
 @click.option(
     "--until",
     default=None,
-    help="Only count events on/before this ISO date (a bare date counts through "
-    "the end of that day). Unparseable = no upper bound.",
+    help="Only count events and gate-block records on/before this ISO date (a bare "
+    "date counts through the end of that day). Unparseable = no upper bound.",
 )
 @click.option("--brief", is_flag=True, help="One-line summary only.")
 @click.pass_context

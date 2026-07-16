@@ -786,8 +786,8 @@ super-harness report [OPTIONS]
 
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
-| `--since` | text | — | Only count events on/after this ISO date (e.g. 2026-07-01). Unparseable = no lower bound (never errors). |
-| `--until` | text | — | Only count events on/before this ISO date (a bare date counts through the end of that day). Unparseable = no upper bound. |
+| `--since` | text | — | Only count events and gate-block records on/after this ISO date (e.g. 2026-07-01). Unparseable = no lower bound (never errors). |
+| `--until` | text | — | Only count events and gate-block records on/before this ISO date (a bare date counts through the end of that day). Unparseable = no upper bound. |
 | `--brief` | flag | `False` | One-line summary only. |
 
 **Exit codes:**

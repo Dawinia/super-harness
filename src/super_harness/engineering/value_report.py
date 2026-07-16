@@ -1,8 +1,10 @@
 """Roll up the existing event stream into an honest value summary (Stage 1).
 
-Zero new event types: this module only READS events.jsonl and reuses core
-primitives. Placed in ``engineering/`` (not ``core/``) because it composes review
-+ decision loaders; ``engineering`` may import ``core``, preserving d-core-is-base.
+Zero new event types: this module READS events.jsonl (plus the Stage-2 gate-block
+telemetry log, `.harness/gate-blocks.jsonl`, for the ``edits_blocked`` floor) and
+reuses core primitives. Placed in ``engineering/`` (not ``core/``) because it
+composes review + decision loaders; ``engineering`` may import ``core``, preserving
+d-core-is-base.
 
 Metric taxonomy is the locked contract in
 docs/plans/2026-07-15-value-report-stage1.md. Only ``review`` and ``bypass audit``
