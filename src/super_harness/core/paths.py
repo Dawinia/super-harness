@@ -70,6 +70,13 @@ def events_path(root: Path) -> Path:
     return root / ".harness" / "events.jsonl"
 
 
+def gate_blocks_path(root: Path) -> Path:
+    """`.harness/gate-blocks.jsonl` — append-only, best-effort local telemetry of
+    pre-tool-use gate BLOCK decisions (Stage 2). Observability only: NOT part of
+    the event stream, never drives state (see core/gate_blocks.py)."""
+    return root / ".harness" / "gate-blocks.jsonl"
+
+
 def state_path(root: Path) -> Path:
     """`.harness/state.yaml` — derived cache (lifecycle §3.8 reducer output)."""
     return root / ".harness" / "state.yaml"
