@@ -17,7 +17,9 @@ from datetime import datetime
 from pathlib import Path
 
 from super_harness.core.events import Event, EventSchemaError, parse_event_line
+from super_harness.core.gate_blocks import GateBlockRecord, read_blocks
 from super_harness.core.parse_ts import parse_ts
+from super_harness.core.paths import gate_blocks_path
 
 # A bare `YYYY-MM-DD` upper bound means "through the end of that day" — parse_ts
 # gives midnight, which would silently drop the rest of the day (CODX-008).
@@ -33,6 +35,7 @@ class ValueReport:
     findings_resolved: int
     findings_open_undisposed: int
     undisclosed_bypasses: int
+    edits_blocked: int
     # Band 2 - cost
     review_tokens: int
     review_runs_total: int
@@ -181,6 +184,29 @@ def _undisclosed_bypasses(windowed: list[Event], all_events: list[Event]) -> int
     return count
 
 
+def _edits_blocked(
+    records: list[GateBlockRecord], lo: datetime | None, hi: datetime | None
+) -> int:
+    """Distinct out-of-lifecycle edit targets the gate held in the window, deduped
+    by ``(change_id, file, state)``.
+
+    Raw block records are append-only and duplicate on agent retries; the honest
+    count is DISTINCT edit targets, not raw block events — a deliberate
+    conservative floor that UNDER-counts (retries collapse), never inflates (we
+    record no edit content, so a retry cannot be told from a genuinely separate
+    edit to the same file in the same state). A record whose ts can't be placed is
+    excluded when a window bound is set (mirrors ``_in_window``).
+    """
+    seen: set[tuple[str, str | None, str]] = set()
+    for r in records:
+        if lo is not None or hi is not None:
+            ts = parse_ts(r.ts)
+            if ts is None or (lo is not None and ts < lo) or (hi is not None and ts > hi):
+                continue
+        seen.add((r.change_id, r.file, r.state))
+    return len(seen)
+
+
 def _usage_tokens(usage: object) -> int | None:
     """Best-effort token total from a producer-reported usage dict. None if absent.
 
@@ -308,6 +334,7 @@ def build_value_report(
         hi = hi.replace(hour=23, minute=59, second=59, microsecond=999999)
     all_events = _read_all_events(events_file)          # full stream (causality)
     windowed = [e for e in all_events if _in_window(e, lo, hi)]
+    block_records = read_blocks(gate_blocks_path(workspace_root))
     findings_resolved, findings_wontfix, findings_open_undisposed = _finding_counts(
         windowed, all_events
     )
@@ -319,6 +346,7 @@ def build_value_report(
         findings_resolved=findings_resolved,
         findings_open_undisposed=findings_open_undisposed,
         undisclosed_bypasses=_undisclosed_bypasses(windowed, all_events),
+        edits_blocked=_edits_blocked(block_records, lo, hi),
         review_tokens=review_tokens,
         review_runs_total=review_runs_total,
         review_runs_with_usage=review_runs_with_usage,
