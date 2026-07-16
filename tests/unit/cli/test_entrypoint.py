@@ -1,3 +1,4 @@
+import subprocess
 import sys
 
 import click
@@ -32,6 +33,14 @@ COMMAND_NAMES = [
 
 COMMAND_MODULES = {f"super_harness.cli.{name.replace('-', '_')}" for name in COMMAND_NAMES}
 
+FORBIDDEN_INIT_IMPORTS = {
+    "fcntl",
+    "super_harness.core.writer",
+    "super_harness.core.post_emit",
+    "super_harness.daemon.server",
+    "super_harness.daemon.supervisor",
+}
+
 
 def test_version_flag():
     result = CliRunner().invoke(main, ["--version"])
@@ -61,6 +70,29 @@ def test_root_help_lists_commands_without_importing_command_modules() -> None:
     positions = [result.output.index(f"  {name}") for name in COMMAND_NAMES]
     assert positions == sorted(positions)
     assert COMMAND_MODULES.isdisjoint(sys.modules)
+
+
+def test_resolving_init_does_not_import_posix_lifecycle_modules() -> None:
+    blocked = repr(FORBIDDEN_INIT_IMPORTS)
+    code = f"""
+import importlib.abc
+import sys
+import click
+
+blocked = {blocked}
+
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in blocked:
+            raise AssertionError(f"forbidden import: {{fullname}}")
+        return None
+
+sys.meta_path.insert(0, Blocker())
+from super_harness.cli import main
+assert main.get_command(click.Context(main), "init") is not None
+"""
+
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_help_short_flag():

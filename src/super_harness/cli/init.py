@@ -4,23 +4,22 @@ Creates the canonical directory layout (4 subdirs + 6 skeleton files) per
 `engineering-integration` §2.1. Idempotent without `--force`; `--force`
 overwrites all skeleton files including user edits. Per `cli-command-surface` §2.3.
 """
+
 from __future__ import annotations
 
 import shutil
 import sys
 from importlib.resources import files
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import click
 import yaml
 
-from super_harness.cli.adapter import install_agent_integration
+from super_harness.adapters.install import install_agent_integration
 from super_harness.cli.errors import format_error
 from super_harness.core.clock import utc_now_iso
 from super_harness.engineering.agents_md import AgentsMdInjectionError
-from super_harness.engineering.agents_md_render import render_super_harness_section
-from super_harness.engineering.gh import GhError, check_gh, enable_repo_merge_settings
 from super_harness.engineering.gitignore_injector import (
     GitignoreInjectionError,
     inject_gitignore_block,
@@ -38,6 +37,9 @@ from super_harness.exit_codes import (
     EXIT_OK,
 )
 from super_harness.version import __version__
+
+if TYPE_CHECKING:
+    from super_harness.engineering.gh import GhError
 
 _TEMPLATES = files("super_harness.templates")
 
@@ -90,9 +92,7 @@ def _prompt_multi_select(
                 f"invalid selection {token!r}; enter comma-separated numbers"
             ) from exc
         if index < 1 or index > len(options):
-            raise click.ClickException(
-                f"selection {index} is out of range 1..{len(options)}"
-            )
+            raise click.ClickException(f"selection {index} is out of range 1..{len(options)}")
         option = options[index - 1]
         if option not in selected:
             selected.append(option)
@@ -129,23 +129,18 @@ def _resolve_init_selections(
             detected_producers.append("codex-cli")
         if shutil.which("claude"):
             detected_producers.append("claude-cli")
-        resolved_producers = _prompt_multi_select(
-            "Review producers", tuple(detected_producers)
-        )
+        resolved_producers = _prompt_multi_select("Review producers", tuple(detected_producers))
 
     models = _parse_review_models(review_models)
     for producer in resolved_producers:
         source = str(_REVIEW_PRODUCERS[producer]["source"])
         if source not in models:
-            models[source] = click.prompt(
-                f"Explicit model for {source}", type=str
-            ).strip()
+            models[source] = click.prompt(f"Explicit model for {source}", type=str).strip()
             if not models[source]:
-                raise click.ClickException(
-                    f"explicit model for {source!r} cannot be empty"
-                )
+                raise click.ClickException(f"explicit model for {source!r} cannot be empty")
     resolved_models = tuple(f"{source}={model}" for source, model in models.items())
     return resolved_integrations, resolved_producers, resolved_models
+
 
 # S3 fix (OPEN-ITEMS #6): typed outcome literals returned by `_write_pr_template`
 # and `_write_workflow_file` so the advisory printed in `_setup_github` honestly
@@ -245,12 +240,7 @@ def _skeleton_files() -> dict[str, str]:
         ),
         "sensors.yaml": "sensors: []\n",
         "gates.yaml": (
-            "gates:\n"
-            "  - pre-tool-use\n"
-            "  - pre-commit\n"
-            "  - pre-push\n"
-            "  - pr-open\n"
-            "  - pr-merge\n"
+            "gates:\n  - pre-tool-use\n  - pre-commit\n  - pre-push\n  - pr-open\n  - pr-merge\n"
         ),
         "source-paths.yaml": _source_paths_default(),
         "derived-docs.yaml": _derived_docs_default(),
@@ -265,8 +255,7 @@ def _parse_review_models(values: tuple[str, ...]) -> dict[str, str]:
         source, separator, model = value.partition("=")
         if not separator or not source or not model:
             raise ValueError(
-                "--review-model must use SOURCE=MODEL, for example "
-                "--review-model codex=gpt-review"
+                "--review-model must use SOURCE=MODEL, for example --review-model codex=gpt-review"
             )
         if source in models:
             raise ValueError(f"duplicate --review-model source {source!r}")
@@ -296,8 +285,7 @@ def _configure_review_producers(
         model = models.get(source)
         if model is None:
             raise ValueError(
-                f"--review-producer {producer} requires "
-                f"--review-model {source}=<model>"
+                f"--review-producer {producer} requires --review-model {source}=<model>"
             )
         if shutil.which(executable) is None:
             raise ValueError(
@@ -308,9 +296,7 @@ def _configure_review_producers(
         governance_sources[source] = {"kind": "automated"}
         raw_options = definition["agent_options"]
         if not isinstance(raw_options, dict):
-            raise ValueError(
-                f"built-in review producer {producer!r} has invalid agent_options"
-            )
+            raise ValueError(f"built-in review producer {producer!r} has invalid agent_options")
         profile_sources[source] = {
             "protocol": producer,
             "model": model,
@@ -319,9 +305,7 @@ def _configure_review_producers(
         }
     if unknown_models:
         source = sorted(unknown_models)[0]
-        raise ValueError(
-            f"--review-model source {source!r} has no selected --review-producer"
-        )
+        raise ValueError(f"--review-model source {source!r} has no selected --review-producer")
 
     governance_sources["human"] = {"kind": "human"}
     participants = selected_sources or ["human"]
@@ -343,15 +327,11 @@ def _configure_review_producers(
         },
     }
     governance_path = root / ".harness" / "review-governance.yaml"
-    governance_path.write_text(
-        yaml.safe_dump(governance, sort_keys=False), encoding="utf-8"
-    )
+    governance_path.write_text(yaml.safe_dump(governance, sort_keys=False), encoding="utf-8")
     profile_path = root / ".harness" / "review-profiles.local.yaml"
     if profile_sources:
         profile_path.write_text(
-            yaml.safe_dump(
-                {"version": 1, "sources": profile_sources}, sort_keys=False
-            ),
+            yaml.safe_dump({"version": 1, "sources": profile_sources}, sort_keys=False),
             encoding="utf-8",
         )
     else:
@@ -435,11 +415,7 @@ def init_cmd(
     interactive = _stdin_is_tty()
     explicit_review_selection = bool(review_producers or review_models)
     governance_path = harness / "review-governance.yaml"
-    configure_review = (
-        not governance_path.is_file()
-        or explicit_review_selection
-        or interactive
-    )
+    configure_review = not governance_path.is_file() or explicit_review_selection or interactive
     integrations, review_producers, review_models = _resolve_init_selections(
         integrations,
         review_producers,
@@ -472,10 +448,7 @@ def init_cmd(
                 format_error(
                     subcommand="init",
                     message=f"could not configure review producers: {e}",
-                    hint=(
-                        "Select an installed producer and pass one explicit model "
-                        "per source."
-                    ),
+                    hint=("Select an installed producer and pass one explicit model per source."),
                 ),
                 err=True,
             )
@@ -497,9 +470,7 @@ def init_cmd(
             )
             sys.exit(EXIT_GENERIC)
         if not (ctx.obj.get("quiet") or ctx.obj.get("json")):
-            click.echo(
-                f"configured {integration} integration: {adapter.installed_detail()}"
-            )
+            click.echo(f"configured {integration} integration: {adapter.installed_detail()}")
     # Wire the repo-root AGENTS.md "super-harness section" (§2.2 / §3.2): create
     # or append our section (preserving any user content outside the markers),
     # then replace the framework placeholder with the plain framework block.
@@ -523,6 +494,10 @@ def init_cmd(
     # propagate into THIS try's AGENTS.md envelope (fail-loud); only its internal
     # adapters.yaml load is non-fatal (advisory + skip) — see the renderer module.
     try:
+        from super_harness.engineering.agents_md_render import (
+            render_super_harness_section,
+        )
+
         render_super_harness_section(root, agents_path, __version__)
     except (OSError, AgentsMdInjectionError) as e:
         click.echo(
@@ -582,6 +557,12 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
     what actually happened (typed outcome from `_write_pr_template` /
     `_write_workflow_file`). Suppressed under ``--quiet`` or ``--json``.
     """
+    from super_harness.engineering.gh import (
+        GhError,
+        check_gh,
+        enable_repo_merge_settings,
+    )
+
     # S3: advisory prints honor --quiet AND --json (init emits no JSON envelope,
     # but prose advisories would pollute JSON-consumer pipelines all the same).
     advise = not (bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
@@ -826,9 +807,7 @@ def _write_workflow_file(ctx: click.Context, root: Path) -> WorkflowOutcome:
             click.echo(
                 format_error(
                     subcommand="init",
-                    message=(
-                        f"skipped overwriting existing {workflow_path} (non-interactive)"
-                    ),
+                    message=(f"skipped overwriting existing {workflow_path} (non-interactive)"),
                     hint="Re-run with --quiet to overwrite, or update the file manually.",
                 ),
                 err=True,

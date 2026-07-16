@@ -19,9 +19,7 @@ def test_init_creates_harness_dir(tmp_path: Path):
     assert (tmp_path / ".harness").is_dir()
     assert (tmp_path / ".harness" / "events.jsonl").exists()
     assert not (tmp_path / ".harness" / "policy.yaml").exists()
-    governance = yaml.safe_load(
-        (tmp_path / ".harness" / "review-governance.yaml").read_text()
-    )
+    governance = yaml.safe_load((tmp_path / ".harness" / "review-governance.yaml").read_text())
     review = governance["review"]
     assert review["sources"] == {"human": {"kind": "human"}}
     assert review["roles"]["plan-reviewer"] == {
@@ -59,18 +57,16 @@ def test_init_non_tty_configures_explicit_codex_review_producer(
     )
 
     assert result.exit_code == 0, result.output
-    governance = yaml.safe_load(
-        (tmp_path / ".harness" / "review-governance.yaml").read_text()
-    )["review"]
+    governance = yaml.safe_load((tmp_path / ".harness" / "review-governance.yaml").read_text())[
+        "review"
+    ]
     assert governance["sources"] == {
         "codex": {"kind": "automated"},
         "human": {"kind": "human"},
     }
     assert governance["roles"]["plan-reviewer"]["participants"] == ["codex"]
     assert governance["roles"]["code-reviewer"]["participants"] == ["codex"]
-    profiles = yaml.safe_load(
-        (tmp_path / ".harness" / "review-profiles.local.yaml").read_text()
-    )
+    profiles = yaml.safe_load((tmp_path / ".harness" / "review-profiles.local.yaml").read_text())
     assert profiles["sources"]["codex"] == {
         "protocol": "codex-cli",
         "model": "gpt-review",
@@ -108,9 +104,7 @@ def test_init_non_tty_configures_multiple_agent_integrations(
     )
 
     assert result.exit_code == 0, result.output
-    adapters = yaml.safe_load(
-        (tmp_path / ".harness" / "adapters.yaml").read_text()
-    )["adapters"]
+    adapters = yaml.safe_load((tmp_path / ".harness" / "adapters.yaml").read_text())["adapters"]
     assert [entry["name"] for entry in adapters] == ["codex", "claude-code"]
     assert (tmp_path / ".codex" / "hooks.json").exists()
     assert (tmp_path / ".claude" / "settings.local.json").exists()
@@ -142,13 +136,11 @@ def test_init_tty_wizard_multi_selects_integrations_and_review_producers(
     assert "1. codex-cli" in result.output
     assert "2. claude-cli" in result.output
     assert "both" not in result.output.lower()
-    adapters = yaml.safe_load(
-        (tmp_path / ".harness" / "adapters.yaml").read_text()
-    )["adapters"]
+    adapters = yaml.safe_load((tmp_path / ".harness" / "adapters.yaml").read_text())["adapters"]
     assert [entry["name"] for entry in adapters] == ["codex", "claude-code"]
-    profiles = yaml.safe_load(
-        (tmp_path / ".harness" / "review-profiles.local.yaml").read_text()
-    )["sources"]
+    profiles = yaml.safe_load((tmp_path / ".harness" / "review-profiles.local.yaml").read_text())[
+        "sources"
+    ]
     assert profiles["codex"]["model"] == "gpt-review"
     assert profiles["claude"]["model"] == "claude-review"
 
@@ -209,9 +201,7 @@ def test_init_force_preserves_review_selection_without_new_flags(
     profiles = tmp_path / ".harness" / "review-profiles.local.yaml"
     before = (governance.read_bytes(), profiles.read_bytes())
 
-    forced = runner.invoke(
-        main, ["--workspace", str(tmp_path), "init", "--force"]
-    )
+    forced = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
 
     assert forced.exit_code == 0, forced.output
     assert (governance.read_bytes(), profiles.read_bytes()) == before
@@ -306,9 +296,7 @@ def test_init_selected_integration_registry_error_fails_actionably(
     def _raise(*args: object, **kwargs: object) -> None:
         raise yaml.YAMLError("boom")
 
-    monkeypatch.setattr(
-        "super_harness.cli.adapter._persist_install_entry", _raise
-    )
+    monkeypatch.setattr("super_harness.adapters.install._persist_install_entry", _raise)
     runner = CliRunner()
     result = runner.invoke(
         main,
@@ -339,9 +327,7 @@ def test_init_selected_integration_missing_hook_fails_actionably(
     assert "not found on PATH" in result.output
 
 
-def test_init_no_agent_flag_skips_hook(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_init_no_agent_flag_skips_hook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     (tmp_path / ".claude").mkdir()
     runner = CliRunner()
     result = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--no-agent"])
@@ -371,10 +357,7 @@ def test_init_writes_agents_md_fresh_repo(tmp_path: Path):
     assert agents.exists()
     text = agents.read_text()
     # version-stamped begin marker
-    assert (
-        f"<!-- super-harness section begin · v{__version__} · DO NOT EDIT MANUALLY -->"
-        in text
-    )
+    assert f"<!-- super-harness section begin · v{__version__} · DO NOT EDIT MANUALLY -->" in text
     assert "<!-- super-harness section end -->" in text
     # plain framework block injected in place of the framework placeholder
     assert PlainAdapter().agents_md_subsection().rstrip("\n") in text
@@ -395,10 +378,7 @@ def test_init_preserves_existing_agents_md_user_content(tmp_path: Path):
     assert r.exit_code == 0
     text = agents.read_text()
     assert user_content.rstrip() in text
-    assert (
-        f"<!-- super-harness section begin · v{__version__} · DO NOT EDIT MANUALLY -->"
-        in text
-    )
+    assert f"<!-- super-harness section begin · v{__version__} · DO NOT EDIT MANUALLY -->" in text
     assert PlainAdapter().agents_md_subsection().rstrip("\n") in text
 
 
@@ -447,9 +427,7 @@ def test_init_agents_md_write_failure_exits_generic_with_format_error(tmp_path: 
     assert (tmp_path / ".harness").is_dir()
 
 
-def test_init_force_reinjects_installed_adapters(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_init_force_reinjects_installed_adapters(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """`init` → `adapter install claude-code` → `init --force` re-renders the
     AGENTS.md super-harness section AND re-injects every installed adapter's
     subsection, so a re-render never loses adapter guidance (full --force loop
@@ -501,15 +479,11 @@ def test_init_force_reinjects_installed_adapters(
     # 2b) settings.local.json STILL has our PreToolUse + SessionStart hooks (unchanged).
     settings = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
     pre_commands = [
-        h["command"]
-        for entry in settings["hooks"]["PreToolUse"]
-        for h in entry["hooks"]
+        h["command"] for entry in settings["hooks"]["PreToolUse"] for h in entry["hooks"]
     ]
     assert pre_commands == [f"{_FAKE_HOOK} --agent claude-code"]
     session_commands = [
-        h["command"]
-        for entry in settings["hooks"]["SessionStart"]
-        for h in entry["hooks"]
+        h["command"] for entry in settings["hooks"]["SessionStart"] for h in entry["hooks"]
     ]
     assert session_commands == [f"{_FAKE_HOOK} change resume"]
 
@@ -527,7 +501,11 @@ def test_init_force_reinjects_installed_adapters(
         "{ this is: not: valid: yaml\n",
         ":\n  - [unclosed\n",
     ],
-    ids=["wrong-shape-valueerror", "broken-flow-mapping-yamlerror", "unclosed-seq-yamlerror"],
+    ids=[
+        "wrong-shape-valueerror",
+        "broken-flow-mapping-yamlerror",
+        "unclosed-seq-yamlerror",
+    ],
 )
 def test_init_force_corrupt_adapters_yaml_emits_advisory_and_exits_ok(
     tmp_path: Path,
