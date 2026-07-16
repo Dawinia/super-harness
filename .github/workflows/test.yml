@@ -53,3 +53,57 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Run pytest (e2e ship-gate only)
         run: pytest -v -m "e2e"
+
+  windows-init:
+    # Native Windows support in this job is intentionally scoped to `init`.
+    # Other lifecycle commands may still depend on POSIX-only primitives.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build wheel
+        run: |
+          python -m pip install build
+          python -m build --wheel
+      - name: Install wheel and test dependency
+        shell: pwsh
+        run: |
+          $wheel = Get-ChildItem -Path "dist\*.whl" | Select-Object -First 1
+          if ($null -eq $wheel) { throw "No wheel was built under dist" }
+          python -m pip install "$($wheel.FullName)" pytest
+      - name: Prove the wheel import and exercise the installed init entrypoint
+        shell: pwsh
+        run: |
+          $modulePath = python -c "from pathlib import Path; import super_harness; print(Path(super_harness.__file__).resolve())"
+          Write-Host "Installed super_harness: $modulePath"
+          $checkoutSrc = [IO.Path]::GetFullPath((Join-Path $env:GITHUB_WORKSPACE "src"))
+          if ($modulePath.StartsWith($checkoutSrc, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "super_harness resolved from checkout src instead of the installed wheel: $modulePath"
+          }
+          if (-not $modulePath.ToLowerInvariant().Contains("site-packages")) {
+            throw "super_harness did not resolve from site-packages: $modulePath"
+          }
+
+          super-harness init --help
+          if ($LASTEXITCODE -ne 0) { throw "installed super-harness init --help failed" }
+          $workspace = Join-Path $env:RUNNER_TEMP "super harness init smoke"
+          New-Item -ItemType Directory -Force -Path $workspace | Out-Null
+          "" | super-harness --workspace $workspace init --no-agent
+          if ($LASTEXITCODE -ne 0) { throw "installed super-harness init smoke failed" }
+          if (-not (Test-Path -Path (Join-Path $workspace ".harness") -PathType Container)) {
+            throw "installed super-harness init did not create .harness"
+          }
+      - name: Run the focused portable and Windows init tests against the wheel
+        shell: pwsh
+        env:
+          PYTHONPATH: ""
+          PYTHONSAFEPATH: "1"
+          SUPER_HARNESS_EXPECT_INSTALLED_WHEEL: "1"
+        run: |
+          python -P -m pytest --import-mode=importlib -q `
+            tests/integration/cli/test_init_windows_entrypoint.py `
+            tests/unit/cli/test_init_plan.py `
+            tests/unit/cli/test_init_ui.py `
+            tests/unit/cli/test_init_executor.py
