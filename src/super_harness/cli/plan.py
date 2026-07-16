@@ -55,6 +55,7 @@ from super_harness.core.emit_validation import EmitPreconditionError
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import (
     HarnessNotInitialized,
+    canonical_relpath,
     events_path,
     find_harness_root,
 )
@@ -105,6 +106,34 @@ def _resolve_scope_files(raw: str) -> list[str]:
     return [str(item) for item in parsed]
 
 
+def _detect_plan_artifacts(root: Path, slug: str, scope_files: list[str]) -> list[str]:
+    """Plan artifacts = declared-scope files that are `.md` BEFORE and AFTER
+    canonicalization (case-insensitive) and whose frontmatter `change:` equals `slug`.
+
+    Source (`.py`) can never match (not `.md`). A `docs/plans/c.md` symlink to a
+    `src/x.py` is rejected by the post-canonicalization `.md` check — this is what
+    keeps the recorded list source-free, so the gate can trust it. Records the
+    canonical repo-relative path. Unreadable files are skipped; never raises.
+    """
+    from super_harness.core.frontmatter import split_frontmatter
+
+    out: list[str] = []
+    for f in scope_files:
+        if not f.lower().endswith(".md"):
+            continue
+        rel = canonical_relpath(root, f)
+        if rel is None or not rel.lower().endswith(".md"):
+            continue
+        try:
+            text = (root / rel).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        fm = split_frontmatter(text)
+        if fm is not None and fm[0].get("change") == slug:
+            out.append(rel)
+    return out
+
+
 @plan_group.command("ready")
 @click.argument("slug")
 @click.option(
@@ -139,7 +168,7 @@ def ready(
     payload: dict[str, object] = {}
     if scope_raw is not None:
         try:
-            payload["scope"] = {"files": _resolve_scope_files(scope_raw)}
+            files = _resolve_scope_files(scope_raw)
         except _ScopeError as e:
             click.echo(
                 format_error(
@@ -150,6 +179,12 @@ def ready(
                 err=True,
             )
             sys.exit(EXIT_VALIDATION)
+        payload["scope"] = {"files": files}
+        # Record the change's plan artifacts (marked `.md` in the declared scope) so
+        # the PLAN_REJECTED gate carve-out can authorize revising them (HG-PLAN-AUTHORING).
+        artifacts = _detect_plan_artifacts(root, slug, files)
+        if artifacts:
+            payload["plan_artifacts"] = artifacts
     if tier_hint is not None:
         payload["tier_hint"] = tier_hint
 

@@ -112,3 +112,55 @@ def test_block_still_blocks_when_recording_fails(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr("super_harness.core.gate_blocks.record_block", boom)
     decision, _reason, _suggested = hook_entry._decide("Write", "src/x.py")
     assert decision == "block"
+
+
+def _init_with_artifacts(root: Path, change_id: str, state: str, artifacts: list[str]) -> None:
+    harness = root / ".harness"
+    harness.mkdir(parents=True, exist_ok=True)
+    lines = "".join(f"      - {a}\n" for a in artifacts)
+    (harness / "state.yaml").write_text(
+        "changes:\n"
+        f"  {change_id}:\n    change_id: {change_id}\n"
+        f"    current_state: {state}\n    last_event_at: '2026-07-02T00:00:00Z'\n"
+        f"    plan_artifacts:\n{lines}",
+        encoding="utf-8",
+    )
+
+
+def test_decide_allows_recorded_plan_artifact_in_rejected(tmp_path: Path, monkeypatch) -> None:
+    """HG-PLAN-AUTHORING: in PLAN_REJECTED, an edit to the change's recorded plan
+    artifact is ALLOWED (reject-loop revision needs no shell bypass); a source edit
+    is still BLOCKED."""
+    from super_harness.daemon import hook_entry
+
+    _init_with_artifacts(tmp_path, "c1", "PLAN_REJECTED", ["docs/plans/c.md"])
+    (tmp_path / "docs/plans").mkdir(parents=True)
+    (tmp_path / "docs/plans/c.md").write_text("---\nchange: c1\n---\n")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/x.py").write_text("x = 1\n")
+    monkeypatch.chdir(tmp_path)
+
+    allow, _r, _s = hook_entry._decide("Write", str(tmp_path / "docs/plans/c.md"))
+    block, _r2, _s2 = hook_entry._decide("Write", str(tmp_path / "src/x.py"))
+    assert allow == "allow"
+    assert block == "block"
+
+
+def test_decide_blocks_forged_non_list_plan_artifacts(tmp_path: Path, monkeypatch) -> None:
+    """A hand-forged state.yaml with a non-list plan_artifacts must not crash the
+    gate into fail-open; the edit is BLOCKED."""
+    from super_harness.daemon import hook_entry
+
+    harness = tmp_path / ".harness"
+    harness.mkdir(parents=True)
+    (harness / "state.yaml").write_text(
+        "changes:\n  c1:\n    change_id: c1\n    current_state: PLAN_REJECTED\n"
+        "    last_event_at: '2026-07-02T00:00:00Z'\n    plan_artifacts: null\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "docs/plans").mkdir(parents=True)
+    (tmp_path / "docs/plans/c.md").write_text("x")
+    monkeypatch.chdir(tmp_path)
+
+    decision, _r, _s = hook_entry._decide("Write", str(tmp_path / "docs/plans/c.md"))
+    assert decision == "block"

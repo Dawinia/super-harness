@@ -188,3 +188,30 @@ def test_gate_check_missing_state_yaml_allows(
     )
     assert r.exit_code == EXIT_OK
     assert "allow:" in r.output
+
+
+def test_gate_check_allows_recorded_plan_artifact(tmp_path: Path) -> None:
+    """HG-PLAN-AUTHORING: gate_check wires resolved_path, so PLAN_REJECTED + a
+    recorded marked-.md artifact ALLOWs; a source file BLOCKs."""
+    _write_state(
+        tmp_path,
+        {
+            "c1": ChangeState(
+                change_id="c1",
+                current_state="PLAN_REJECTED",
+                plan_artifacts=["docs/plans/c.md"],
+            )
+        },
+    )
+    allow = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "gate", "check", "pre-tool-use",
+         "--tool", "Edit", "--file", "docs/plans/c.md"],
+    )
+    block = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "gate", "check", "pre-tool-use",
+         "--tool", "Edit", "--file", "src/x.py"],
+    )
+    assert allow.exit_code == EXIT_OK and "allow:" in allow.output
+    assert block.exit_code != EXIT_OK and "block:" in block.output

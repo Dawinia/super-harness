@@ -78,6 +78,11 @@ When a tool call is blocked by the gate:
 - Run `super-harness status` to see the current change, its state, and why the
   edit was rejected, plus the next valid step.
 - Resume context for a change with `super-harness change resume <change_id>`.
+- **Revising a rejected plan is authorized in-gate:** in `PLAN_REJECTED`, editing
+  the change's own recorded plan document (a marked `.md` in the declared scope) is
+  ALLOWED through the normal `Edit`/`Write` tools — that is the intended reject-loop
+  path, not a bypass. Source files stay blocked. Do not write plan revisions through
+  the shell to dodge the gate.
 - **If a tool call is blocked by the gate:** stop, and surface the block plus the
   next valid step (`super-harness status`) to the human. Do **not** try to disable
   or work around the gate yourself — overriding it is a **human-only** decision, and

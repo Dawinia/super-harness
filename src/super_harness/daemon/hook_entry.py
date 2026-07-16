@@ -53,7 +53,11 @@ if TYPE_CHECKING:
     from super_harness.adapters import AgentAdapter
 
 from super_harness.core.active_change import read_active_change_id
-from super_harness.core.paths import HarnessNotInitialized, find_harness_root
+from super_harness.core.paths import (
+    HarnessNotInitialized,
+    canonical_relpath,
+    find_harness_root,
+)
 
 _HALT_HINT = (
     "Stop and tell the human — run `super-harness status` for the next valid step. "
@@ -246,7 +250,11 @@ def _decide(
     override = os.environ.get("SUPER_HARNESS_CHANGE_ID")
     snapshot = load_state_snapshot(root, change_id_override=override)
     result = PreToolUseGate().decide(
-        ProposedAction(kind="edit", file=file), snapshot.state, []
+        ProposedAction(
+            kind="edit", file=file, resolved_path=canonical_relpath(root, file)
+        ),
+        snapshot.state,
+        [],
     )
     if result.decision is GateDecision.BLOCK:
         _record_block(

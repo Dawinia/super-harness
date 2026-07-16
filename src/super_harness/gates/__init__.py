@@ -62,6 +62,11 @@ class ProposedAction:
     file: str | None = None
     pr_number: int | None = None
     commit_sha: str | None = None
+    resolved_path: str | None = None
+    """`file` resolved to a canonical repo-relative POSIX path when the caller could
+    compute it (None otherwise). The pre-tool-use plan-artifact carve-out matches
+    against this; other gates ignore it. Kept separate from `file` so the raw path
+    stays available for messages/telemetry."""
 
 
 @dataclass(frozen=True)

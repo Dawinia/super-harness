@@ -35,6 +35,7 @@ from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
 from super_harness.core.paths import (
     HarnessNotInitialized,
+    canonical_relpath,
     find_harness_root,
     gates_yaml_path,
 )
@@ -157,7 +158,11 @@ def gate_check(
 
     snapshot = load_state_snapshot(root, change_id_override=change_id)
     result = PreToolUseGate().decide(
-        ProposedAction(kind="edit", file=file), snapshot.state, []
+        ProposedAction(
+            kind="edit", file=file, resolved_path=canonical_relpath(root, file)
+        ),
+        snapshot.state,
+        [],
     )
     allow = result.decision is GateDecision.ALLOW
     current_state = snapshot.state.current_state if snapshot.state is not None else None

@@ -45,6 +45,36 @@ def test_recency_picks_most_recent_non_terminal(tmp_path: Path) -> None:
     assert snap.state.current_state == "AWAITING_CODE_REVIEW"
 
 
+def test_forged_non_list_plan_artifacts_coerced_to_empty(tmp_path: Path) -> None:
+    # A hand-forged state.yaml with a non-list plan_artifacts must NOT keep a value
+    # the gate would do `x in <non-list>` against (TypeError → hook fail-open). The
+    # loader coerces it to [] while PRESERVING the real state (degrading to state=None
+    # here would ALLOW edits in a PLAN_REJECTED change = fail-open to source).
+    _write_state(
+        tmp_path,
+        "changes:\n"
+        "  a:\n    change_id: a\n    current_state: PLAN_REJECTED\n"
+        "    last_event_at: '2026-07-02T00:00:00Z'\n"
+        "    plan_artifacts: null\n",
+    )
+    snap = load_state_snapshot(tmp_path, change_id_override="a")
+    assert snap.state is not None
+    assert snap.state.current_state == "PLAN_REJECTED"
+    assert snap.state.plan_artifacts == []
+
+
+def test_string_plan_artifacts_coerced_to_empty(tmp_path: Path) -> None:
+    _write_state(
+        tmp_path,
+        "changes:\n"
+        "  a:\n    change_id: a\n    current_state: PLAN_REJECTED\n"
+        "    last_event_at: '2026-07-02T00:00:00Z'\n"
+        "    plan_artifacts: docs/plans/c.md\n",  # a bare str, not a list
+    )
+    snap = load_state_snapshot(tmp_path, change_id_override="a")
+    assert snap.state is not None and snap.state.plan_artifacts == []
+
+
 def test_override_selects_named_change(tmp_path: Path) -> None:
     _write_state(
         tmp_path,

@@ -106,6 +106,13 @@ def load_state_snapshot(
         # (ALLOW), never a downstream raise.
         if not isinstance(record.get("current_state"), str):
             return StateSnapshot(change_id=cid, state=None)
+        # `plan_artifacts` feeds the gate's `x in state.plan_artifacts` carve-out. A
+        # hand-forged non-list value (null/str/int) would make that a TypeError /
+        # substring test. Coerce it to [] WITHOUT degrading the real state to None —
+        # degrading would ALLOW edits in e.g. PLAN_REJECTED (fail-open to source);
+        # [] just means "no artifacts recorded" → the carve-out doesn't fire → BLOCK.
+        if not isinstance(record.get("plan_artifacts", []), list):
+            record = {**record, "plan_artifacts": []}
         return StateSnapshot(change_id=cid, state=ChangeState(**record))
     except Exception:
         return StateSnapshot(change_id=cid, state=None)

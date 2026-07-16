@@ -311,6 +311,16 @@ starts editing. The hot-path gate enforces lifecycle rules:
 > `INTENT_DECLARED` with the manual verb `super-harness plan ready`; framework
 > adapters emit `plan_ready` automatically from their artifacts.
 
+> **Revising a rejected plan without leaving the gate.** `plan ready --scope`
+> records any scope file that is a marked `.md` (its frontmatter carries
+> `change: <slug>`) as the change's *plan artifact*. In `PLAN_REJECTED` the gate
+> then allows editing that plan document through the normal `Edit`/`Write` tools —
+> so the reject → revise → re-submit loop needs no shell workaround. Source files
+> remain blocked. Recording currently happens only for the manual `plan ready`
+> verb; framework-adapter auto-recording is deferred. (Codex has no per-file hook
+> input, so Codex-driven plan revision still uses the draft-before-`change start`
+> path.)
+
 You don't have to do anything — the hooks installed by
 `adapter install claude-code` handle this transparently. The gate enforces
 in-process (no background daemon required). If you want to

@@ -33,6 +33,22 @@ deliberately deferred to a later version; one is blocked by an upstream bug
 - Daemon-autonomous event-driven dispatch — v0.1 uses CLI one-shot dispatchers
   (e.g., `super-harness on-merge` dispatches the merged-event sensors).
 
+**Plan-authoring gate carve-out (reject-loop revision):**
+- Recording a change's plan artifacts (so PLAN_REJECTED allows editing them) happens
+  only for the **manual `super-harness plan ready`** verb; framework-adapter
+  auto-recording is deferred (openspec identifies changes by directory, not a
+  `change:` marker, and needs its own sound design).
+- A plan document is only recorded if it is a **marked `.md`** (frontmatter
+  `change: <slug>`) in the declared scope. Unmarked plans record nothing.
+- **Codex** provides no per-file hook input (`file_path` is absent), so the path-based
+  carve-out cannot fire for Codex — Codex-driven plan revision uses the
+  draft-before-`change start` path. This is fail-safe (Codex is more restricted).
+- **Hardlink residual:** a hardlink from a marked `.md` name to a source file shares an
+  inode that path resolution cannot detect. This requires the shell to create (the same
+  unhooked primitive already conceded), most edit tools break it via write-temp-rename,
+  and the content still passes plan + code review + attestation — it is not a new
+  capability beyond the conceded shell primitive.
+
 **Gates not yet wired:**
 - Cold-path pre-commit / pre-push gates — need git-hook install infrastructure.
 - `gate check pr-open` / `gate check pr-merge` — the underlying machinery ships
