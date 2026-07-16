@@ -1,0 +1,493 @@
+from __future__ import annotations
+
+import ast
+from pathlib import Path
+
+import pytest
+
+from super_harness.cli.init_plan import (
+    ExistingFileDecision,
+    FileAction,
+    GitHubDecision,
+    HarnessState,
+    InitChoices,
+    InitPlanValidationError,
+    InitRequest,
+    InteractionMode,
+    ReviewWrite,
+    build_init_plan,
+    inspect_workspace,
+)
+
+
+def _lookup(*available: str):
+    installed = frozenset(available)
+    return lambda executable: f"/bin/{executable}" if executable in installed else None
+
+
+def _request(
+    workspace: Path,
+    *,
+    mode: InteractionMode = InteractionMode.NON_INTERACTIVE,
+    force: bool = False,
+    integrations: tuple[str, ...] = (),
+    producers: tuple[str, ...] = (),
+    models: dict[str, str] | None = None,
+    review_flags_explicit: bool = False,
+    setup_github: bool = False,
+) -> InitRequest:
+    return InitRequest(
+        workspace=workspace,
+        interaction_mode=mode,
+        force=force,
+        integrations=integrations,
+        review_producers=producers,
+        review_models={} if models is None else models,
+        review_flags_explicit=review_flags_explicit,
+        setup_github=setup_github,
+    )
+
+
+def _write_review_config(
+    workspace: Path,
+    *,
+    producer: str = "codex-cli",
+    source: str = "codex",
+    model: str = "gpt-review",
+) -> tuple[bytes, bytes]:
+    harness = workspace / ".harness"
+    harness.mkdir(exist_ok=True)
+    (harness / "events.jsonl").write_text("")
+    governance = (
+        "version: 1\n"
+        "review:\n"
+        "  base_branch: main\n"
+        "  sources:\n"
+        f"    {source}:\n"
+        "      kind: automated\n"
+        "  roles:\n"
+        "    plan-reviewer:\n"
+        f"      participants: [{source}]\n"
+        "      min_independent: 1\n"
+        "      max_automatic_rounds_per_epoch: 2\n"
+        "    code-reviewer:\n"
+        f"      participants: [{source}]\n"
+        "      min_independent: 1\n"
+        "      max_automatic_rounds_per_epoch: 2\n"
+        "  require_distinct_model_families: false\n"
+    ).encode()
+    profile = (
+        "version: 1\n"
+        "sources:\n"
+        f"  {source}:\n"
+        f"    protocol: {producer}\n"
+        f"    model: {model}\n"
+        "    cost_class: standard\n"
+        "    agent_options: {}\n"
+    ).encode()
+    (harness / "review-governance.yaml").write_bytes(governance)
+    (harness / "review-profiles.local.yaml").write_bytes(profile)
+    return governance, profile
+
+
+def _review_actions(plan):
+    return {
+        action.path.name: action
+        for action in plan.file_actions
+        if action.path.name in {"review-governance.yaml", "review-profiles.local.yaml"}
+    }
+
+
+def test_noninteractive_fresh_explicit_configuration_builds_plan(tmp_path: Path) -> None:
+    request = _request(
+        tmp_path,
+        integrations=("codex",),
+        producers=("codex-cli",),
+        models={"codex": "gpt-review"},
+        review_flags_explicit=True,
+        setup_github=True,
+    )
+
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex", "gh"))
+    plan = build_init_plan(request, preflight, InitChoices())
+
+    assert preflight.harness_state is HarnessState.ABSENT
+    assert plan.review_write is ReviewWrite.UPDATE
+    assert plan.integrations == ("codex",)
+    assert plan.review_producers == ("codex-cli",)
+    assert dict(plan.review_models) == {"codex": "gpt-review"}
+    assert plan.github_decision is GitHubDecision.CREATE
+    assert all(action.action is not FileAction.PRESERVE for action in plan.file_actions)
+
+
+@pytest.mark.parametrize(
+    ("governance", "profile"),
+    [
+        (b"not: [yaml", b"also: [broken"),
+        (b"version: 999\nunknown: true\n", b"version: 999\nunknown: true\n"),
+    ],
+)
+def test_noninteractive_force_without_review_flags_preserves_opaque_review_bytes(
+    tmp_path: Path, governance: bytes, profile: bytes
+) -> None:
+    harness = tmp_path / ".harness"
+    harness.mkdir()
+    (harness / "events.jsonl").write_text("")
+    (harness / "review-governance.yaml").write_bytes(governance)
+    (harness / "review-profiles.local.yaml").write_bytes(profile)
+    request = _request(tmp_path, force=True)
+
+    preflight = inspect_workspace(request, executable_lookup=_lookup())
+    plan = build_init_plan(request, preflight, InitChoices())
+
+    assert preflight.review_config_error is None
+    assert preflight.persisted_review_producers == ()
+    actions = _review_actions(plan)
+    assert plan.review_write is ReviewWrite.PRESERVE
+    assert actions["review-governance.yaml"].action is FileAction.PRESERVE
+    assert actions["review-governance.yaml"].content == governance
+    assert actions["review-profiles.local.yaml"].action is FileAction.PRESERVE
+    assert actions["review-profiles.local.yaml"].content == profile
+
+
+@pytest.mark.parametrize(
+    ("producers", "models", "message"),
+    [
+        (("codex-cli",), {}, "requires an explicit model"),
+        ((), {"codex": "gpt-review"}, "has no selected producer"),
+        (("codex-cli",), {"claude": "claude-review"}, "does not match"),
+        (("codex-cli", "claude-cli"), {"codex": "gpt-review"}, "requires an explicit model"),
+        (("codex-cli",), {"codex": ""}, "non-empty"),
+    ],
+)
+def test_noninteractive_explicit_review_flags_never_fill_gaps_from_persisted_config(
+    tmp_path: Path,
+    producers: tuple[str, ...],
+    models: dict[str, str],
+    message: str,
+) -> None:
+    _write_review_config(tmp_path)
+    request = _request(
+        tmp_path,
+        force=True,
+        producers=producers,
+        models=models,
+        review_flags_explicit=True,
+    )
+
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex", "claude"))
+
+    with pytest.raises(InitPlanValidationError, match=message):
+        build_init_plan(request, preflight, InitChoices())
+
+
+def test_noninteractive_complete_explicit_pair_updates_and_ignores_persisted_values(
+    tmp_path: Path,
+) -> None:
+    old_governance, old_profile = _write_review_config(tmp_path, model="old-model")
+    request = _request(
+        tmp_path,
+        force=True,
+        producers=("codex-cli",),
+        models={"codex": "new-model"},
+        review_flags_explicit=True,
+    )
+
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
+    plan = build_init_plan(request, preflight, InitChoices())
+
+    actions = _review_actions(plan)
+    assert plan.review_write is ReviewWrite.UPDATE
+    assert dict(plan.review_models) == {"codex": "new-model"}
+    assert actions["review-governance.yaml"].content != old_governance
+    assert actions["review-profiles.local.yaml"].content != old_profile
+    assert b"new-model" in actions["review-profiles.local.yaml"].content
+    assert b"old-model" not in actions["review-profiles.local.yaml"].content
+
+
+def test_interactive_force_edit_uses_persisted_pairs_as_defaults_and_choices_override(
+    tmp_path: Path,
+) -> None:
+    _write_review_config(tmp_path, model="persisted-model")
+    request = _request(tmp_path, mode=InteractionMode.GUIDED, force=True)
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
+
+    default_plan = build_init_plan(
+        request,
+        preflight,
+        InitChoices(review_write=ReviewWrite.UPDATE),
+    )
+    override_plan = build_init_plan(
+        request,
+        preflight,
+        InitChoices(
+            review_write=ReviewWrite.UPDATE,
+            review_models={"codex": "choice-model"},
+        ),
+    )
+
+    assert preflight.persisted_review_producers == ("codex-cli",)
+    assert dict(default_plan.review_models) == {"codex": "persisted-model"}
+    assert dict(override_plan.review_models) == {"codex": "choice-model"}
+
+
+def test_interactive_explicit_pair_replaces_a_different_persisted_pair(
+    tmp_path: Path,
+) -> None:
+    _write_review_config(tmp_path, model="persisted-codex")
+    request = _request(
+        tmp_path,
+        mode=InteractionMode.GUIDED,
+        force=True,
+        producers=("claude-cli",),
+        models={"claude": "explicit-claude"},
+        review_flags_explicit=True,
+    )
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex", "claude"))
+
+    plan = build_init_plan(
+        request,
+        preflight,
+        InitChoices(review_write=ReviewWrite.UPDATE),
+    )
+
+    assert plan.review_producers == ("claude-cli",)
+    assert dict(plan.review_models) == {"claude": "explicit-claude"}
+
+
+@pytest.mark.parametrize(
+    ("governance", "profile"),
+    [
+        (b"not: [yaml", b"version: 1\nsources: {}\n"),
+        (b"version: 999\nreview: {}\n", b"version: 1\nsources: {}\n"),
+        (
+            b"version: 1\nreview: {sources: {}, roles: {}}\n",
+            b"version: 1\nsources:\n  alien:\n    protocol: alien-cli\n    model: x\n",
+        ),
+    ],
+)
+def test_invalid_interactive_persisted_review_requires_explicit_reset(
+    tmp_path: Path, governance: bytes, profile: bytes
+) -> None:
+    harness = tmp_path / ".harness"
+    harness.mkdir()
+    (harness / "events.jsonl").write_text("")
+    (harness / "review-governance.yaml").write_bytes(governance)
+    (harness / "review-profiles.local.yaml").write_bytes(profile)
+    request = _request(tmp_path, mode=InteractionMode.GUIDED, force=True)
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
+
+    assert preflight.review_config_error is not None
+    with pytest.raises(InitPlanValidationError, match="RESET"):
+        build_init_plan(request, preflight, InitChoices(review_write=ReviewWrite.UPDATE))
+
+    reset = build_init_plan(
+        request,
+        preflight,
+        InitChoices(review_write=ReviewWrite.RESET, review_producers=(), review_models={}),
+    )
+    assert reset.review_write is ReviewWrite.RESET
+    assert reset.review_producers == ()
+
+
+def test_fresh_interactive_defaults_to_detected_integration_and_producer(tmp_path: Path) -> None:
+    request = _request(tmp_path, mode=InteractionMode.LINE)
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
+
+    plan = build_init_plan(
+        request,
+        preflight,
+        InitChoices(review_models={"codex": "chosen-model"}),
+    )
+
+    assert preflight.detected_integrations == ("codex",)
+    assert preflight.detected_review_producers == ("codex-cli",)
+    assert plan.integrations == ("codex",)
+    assert plan.review_producers == ("codex-cli",)
+    assert dict(plan.review_models) == {"codex": "chosen-model"}
+
+
+def test_interactive_reset_uses_detected_defaults_not_persisted_defaults(tmp_path: Path) -> None:
+    _write_review_config(
+        tmp_path,
+        producer="claude-cli",
+        source="claude",
+        model="persisted-claude",
+    )
+    request = _request(tmp_path, mode=InteractionMode.GUIDED, force=True)
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex", "claude"))
+
+    plan = build_init_plan(
+        request,
+        preflight,
+        InitChoices(
+            review_write=ReviewWrite.RESET,
+            review_models={
+                "codex": "fresh-codex",
+                "claude": "fresh-claude",
+            },
+        ),
+    )
+
+    assert plan.review_producers == ("codex-cli", "claude-cli")
+    assert dict(plan.review_models) == {
+        "codex": "fresh-codex",
+        "claude": "fresh-claude",
+    }
+
+
+def test_unavailable_integration_can_be_explicit_but_is_not_preselected(tmp_path: Path) -> None:
+    interactive = _request(tmp_path, mode=InteractionMode.GUIDED)
+    preflight = inspect_workspace(interactive, executable_lookup=_lookup())
+    default_plan = build_init_plan(interactive, preflight, InitChoices())
+
+    explicit = _request(tmp_path, mode=InteractionMode.GUIDED, integrations=("codex",))
+    explicit_preflight = inspect_workspace(explicit, executable_lookup=_lookup())
+    explicit_plan = build_init_plan(explicit, explicit_preflight, InitChoices())
+
+    assert default_plan.integrations == ()
+    assert explicit_plan.integrations == ("codex",)
+
+
+def test_unavailable_producer_is_not_defaulted_and_explicit_use_raises(tmp_path: Path) -> None:
+    interactive = _request(tmp_path, mode=InteractionMode.GUIDED)
+    preflight = inspect_workspace(interactive, executable_lookup=_lookup())
+    plan = build_init_plan(interactive, preflight, InitChoices())
+    assert plan.review_producers == ()
+
+    explicit = _request(
+        tmp_path,
+        mode=InteractionMode.GUIDED,
+        producers=("codex-cli",),
+        models={"codex": "gpt-review"},
+        review_flags_explicit=True,
+    )
+    explicit_preflight = inspect_workspace(explicit, executable_lookup=_lookup())
+    with pytest.raises(InitPlanValidationError, match="not available"):
+        build_init_plan(explicit, explicit_preflight, InitChoices())
+
+
+def test_file_actions_are_ordered_before_any_apply_boundary(tmp_path: Path) -> None:
+    (tmp_path / "AGENTS.md").write_text("user agents\n")
+    (tmp_path / ".gitignore").write_text("user ignore\n")
+    request = _request(
+        tmp_path,
+        mode=InteractionMode.GUIDED,
+        integrations=("codex",),
+        producers=("codex-cli",),
+        models={"codex": "gpt-review"},
+        review_flags_explicit=True,
+        setup_github=True,
+    )
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex", "gh"))
+
+    plan = build_init_plan(
+        request,
+        preflight,
+        InitChoices(
+            existing_files={
+                "AGENTS.md": ExistingFileDecision.PRESERVE,
+                ".gitignore": ExistingFileDecision.UPDATE,
+            }
+        ),
+    )
+
+    paths = [action.path.as_posix() for action in plan.file_actions]
+    assert paths == [
+        ".harness/events.jsonl",
+        ".harness/state.yaml",
+        ".harness/adapters.yaml",
+        ".harness/review-governance.yaml",
+        ".harness/review-profiles.local.yaml",
+        ".codex/config.toml",
+        ".claude/settings.json",
+        "AGENTS.md",
+        ".gitignore",
+        ".github/workflows/super-harness.yml",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+    ]
+    by_path = {action.path.as_posix(): action for action in plan.file_actions}
+    assert by_path[".harness/events.jsonl"].action is FileAction.CREATE
+    assert by_path[".harness/review-governance.yaml"].review_write is ReviewWrite.UPDATE
+    assert by_path[".codex/config.toml"].action is FileAction.CREATE
+    assert by_path[".claude/settings.json"].action is FileAction.SKIP
+    assert by_path["AGENTS.md"].action is FileAction.PRESERVE
+    assert by_path[".gitignore"].action is FileAction.UPDATE
+    assert by_path[".github/workflows/super-harness.yml"].action is FileAction.CREATE
+
+
+def test_no_model_default_is_invented(tmp_path: Path) -> None:
+    request = _request(tmp_path, mode=InteractionMode.GUIDED)
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
+
+    with pytest.raises(InitPlanValidationError, match="requires an explicit model"):
+        build_init_plan(request, preflight, InitChoices())
+
+
+def test_request_choices_preflight_and_plan_are_deeply_immutable(tmp_path: Path) -> None:
+    request_models = {"codex": "gpt-review"}
+    request = _request(
+        tmp_path,
+        producers=("codex-cli",),
+        models=request_models,
+        review_flags_explicit=True,
+    )
+    choices_files = {"AGENTS.md": ExistingFileDecision.UPDATE}
+    choices = InitChoices(existing_files=choices_files)
+    preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
+    plan = build_init_plan(request, preflight, choices)
+
+    request_models["codex"] = "mutated"
+    choices_files["AGENTS.md"] = ExistingFileDecision.PRESERVE
+    assert request.review_models["codex"] == "gpt-review"
+    assert choices.existing_files["AGENTS.md"] is ExistingFileDecision.UPDATE
+
+    with pytest.raises(TypeError):
+        request.review_models["codex"] = "mutated"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        choices.existing_files["AGENTS.md"] = ExistingFileDecision.PRESERVE  # type: ignore[index]
+    with pytest.raises(TypeError):
+        preflight.existing_file_bytes["AGENTS.md"] = b"mutated"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        plan.review_models["codex"] = "mutated"  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        plan.file_actions.append(plan.file_actions[0])  # type: ignore[attr-defined]
+
+
+def test_closed_state_enums_and_forbidden_ui_lifecycle_imports() -> None:
+    assert set(InteractionMode) == {
+        InteractionMode.NON_INTERACTIVE,
+        InteractionMode.LINE,
+        InteractionMode.GUIDED,
+    }
+    assert set(ReviewWrite) == {ReviewWrite.PRESERVE, ReviewWrite.UPDATE, ReviewWrite.RESET}
+    assert set(FileAction) == {
+        FileAction.CREATE,
+        FileAction.UPDATE,
+        FileAction.PRESERVE,
+        FileAction.SKIP,
+    }
+    assert set(HarnessState) == {
+        HarnessState.ABSENT,
+        HarnessState.INITIALIZED,
+        HarnessState.PARTIAL,
+    }
+    assert set(ExistingFileDecision) == {
+        ExistingFileDecision.PRESERVE,
+        ExistingFileDecision.UPDATE,
+    }
+    assert set(GitHubDecision) == {GitHubDecision.SKIP, GitHubDecision.CREATE}
+
+    module_path = Path(__file__).parents[3] / "src/super_harness/cli/init_plan.py"
+    imports = {
+        alias.name.split(".", 1)[0]
+        for node in ast.walk(ast.parse(module_path.read_text()))
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    imports.update(
+        node.module.split(".", 1)[0]
+        for node in ast.walk(ast.parse(module_path.read_text()))
+        if isinstance(node, ast.ImportFrom) and node.module
+    )
+    assert imports.isdisjoint({"click", "rich", "questionary", "posix"})
