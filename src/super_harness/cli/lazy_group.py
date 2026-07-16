@@ -76,7 +76,7 @@ class LazyGroup(GroupAwareGroup):
             self.commands[name] = command
 
     def list_commands(self, ctx: click.Context) -> list[str]:
-        return list(self._command_order)
+        return sorted(self._command_order)
 
     def get_command(self, ctx: click.Context, name: str) -> click.Command | None:
         try:
@@ -113,5 +113,6 @@ class LazyGroup(GroupAwareGroup):
             command = self.commands[name]
             if not command.hidden:
                 rows.append((name, command.get_short_help_str(limit)))
-        with formatter.section("Commands"):
-            formatter.write_dl(rows)
+        if rows:
+            with formatter.section("Commands"):
+                formatter.write_dl(rows)

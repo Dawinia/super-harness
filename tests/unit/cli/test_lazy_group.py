@@ -54,8 +54,8 @@ def test_list_commands_does_not_import_registered_modules(
     group = LazyGroup(
         name="root",
         command_specs={
-            "alpha": CommandSpec(f"{package}.alpha:alpha_cmd", "Alpha command."),
             "beta": CommandSpec(f"{package}.beta:beta_cmd", "Beta command."),
+            "alpha": CommandSpec(f"{package}.alpha:alpha_cmd", "Alpha command."),
         },
     )
 
@@ -146,6 +146,49 @@ def test_dynamic_command_is_listed_invoked_and_does_not_import_lazy_specs(
     assert invoke_result.output == "dynamic result\n"
     assert f"{package}.alpha" not in sys.modules
     assert f"{package}.beta" not in sys.modules
+
+
+def test_dynamic_commands_follow_click_alphabetical_listing_without_lazy_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = _write_command_package(tmp_path, monkeypatch)
+    group = LazyGroup(
+        name="root",
+        command_specs={
+            "beta": CommandSpec(f"{package}.beta:beta_cmd", "Beta command."),
+        },
+    )
+
+    @group.command("zulu", help="Zulu command.")
+    def zulu_cmd() -> None:
+        pass
+
+    @group.command("alpha", help="Alpha command.")
+    def alpha_cmd() -> None:
+        pass
+
+    assert group.list_commands(click.Context(group)) == ["alpha", "beta", "zulu"]
+
+    result = CliRunner().invoke(group, ["--help"])
+
+    assert result.exit_code == 0
+    positions = [result.output.index(f"  {name}") for name in ("alpha", "beta", "zulu")]
+    assert positions == sorted(positions)
+    assert f"{package}.beta" not in sys.modules
+
+
+def test_help_omits_commands_section_when_every_dynamic_command_is_hidden() -> None:
+    group = LazyGroup(name="root", command_specs={})
+
+    @group.command("secret", hidden=True)
+    def secret_cmd() -> None:
+        pass
+
+    result = CliRunner().invoke(group, ["--help"])
+
+    assert result.exit_code == 0
+    assert "Commands:" not in result.output
+    assert "secret" not in result.output
 
 
 def test_dynamic_command_replacement_and_deletion_match_click_mapping_semantics(
