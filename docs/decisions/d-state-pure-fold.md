@@ -5,14 +5,13 @@ ratified_by: dawinialo@163.com
 ratified_at: '2026-06-22T19:25:38.517675Z'
 ratified_text_hash: sha256:8a106295b2f00df8c9f657c22e02af8cf6b37cee29ee005e772647d62be48ed0
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-07-03T07:50:18.082504Z'
+last_reconciled_at: '2026-07-16T10:49:37.146170Z'
 last_reconcile_kind: self
-last_reconcile_justification: "F11b: drift-detection timestamp parse extracted to\
-  \ the shared core.parse_ts primitive; derive_state remains a pure left-fold \u2014\
-  \ constructs and returns a fresh dict, no in-place mutation of inputs/globals, same\
-  \ events -> same state (referentially transparent)."
+last_reconcile_justification: "reducer plan_ready branch now also records plan_artifacts\
+  \ (shape-validated list) + plan_redeclared clears it; still a pure left-fold over\
+  \ events with no I/O \u2014 the pure-fold invariant holds."
 reconciled_anchors:
-  src/super_harness/core/reducer.py: sha256:5c63f7f1ff8e28b0f3262d9e67665676895ca7df0a28bc5fb12cb7357c713d67
+  src/super_harness/core/reducer.py: sha256:c2f8b1152f71d36ad5273fad52f0a1f3f2af1783614c3770611e4f3fc7c58802
 ---
 State is a pure left-fold over the event log; never mutated in place.
 

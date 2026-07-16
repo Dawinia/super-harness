@@ -45,6 +45,9 @@ class ChangeState:
     - pr_url: from implementation_complete or merged
     - merge_commit_sha: from merged
     - redeclaration_history: append-only audit of intent/plan_redeclared events
+    - plan_artifacts: marked-`.md` plan-doc paths from the latest plan_ready
+      (replaced each plan_ready, cleared on plan_redeclared); consulted by the
+      PLAN_REJECTED plan-artifact gate carve-out (HG-PLAN-AUTHORING)
     """
     change_id: str
     current_state: str = "INTENT_DECLARED"
@@ -59,3 +62,4 @@ class ChangeState:
     pr_url: str | None = None
     merge_commit_sha: str | None = None
     redeclaration_history: list[dict[str, Any]] = field(default_factory=list)
+    plan_artifacts: list[str] = field(default_factory=list)

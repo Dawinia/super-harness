@@ -142,3 +142,25 @@ def pending_reviews_dir(root: Path, change_id: str) -> Path:
     """Per-change directory for transient review bundles (gitignored — input aid,
     NOT the record of review; the record is the inlined verdict in the event)."""
     return root / ".harness" / "pending-reviews" / change_id
+
+
+def canonical_relpath(root: Path, file: str | None) -> str | None:
+    """Resolve `file` to a POSIX repo-relative path under `root`, or None.
+
+    `file` may be absolute or relative-to-root. Symlinks and `..` are resolved
+    (via `Path.resolve()`), so callers that require a `.md` suffix MUST re-check it
+    AFTER this call — a `docs/plans/c.md` symlink to `src/x.py` returns `"src/x.py"`.
+    Anything that does not resolve to a path *inside* `root` (a true traversal
+    escape, an absolute path outside, an unresolvable path) returns None. Never
+    raises — soundness comes from the caller's `.md` + recorded-artifact checks, not
+    from this function guessing intent.
+    """
+    if not file:
+        return None
+    try:
+        base = root.resolve()
+        p = Path(file)
+        target = (p if p.is_absolute() else base / p).resolve()
+        return target.relative_to(base).as_posix()
+    except (ValueError, OSError, RuntimeError):
+        return None

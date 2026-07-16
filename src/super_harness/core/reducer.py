@@ -143,6 +143,10 @@ def derive_state(events_file: Path) -> dict[str, ChangeState]:
                 cs.scope = p["scope"]
             if "tier_hint" in p:
                 cs.tier = p["tier_hint"]
+            # ALWAYS replace (never merge): an empty re-submit revokes prior
+            # authorization. Trusted only as a list of str — a mapping / non-str
+            # must not smuggle a path into the gate carve-out.
+            cs.plan_artifacts = _valid_artifacts(p.get("plan_artifacts"))
         elif ev.type == "implementation_complete":
             if "pr_url" in p:
                 cs.pr_url = p["pr_url"]
@@ -156,5 +160,20 @@ def derive_state(events_file: Path) -> dict[str, ChangeState]:
                 "reason": p.get("reason"),
                 "at": ev.timestamp,
             })
+            # A redeclare rewinds to INTENT_DECLARED; the prior plan submission (and
+            # its recorded artifacts) no longer authorizes anything until re-submitted.
+            if ev.type == "plan_redeclared":
+                cs.plan_artifacts = []
 
     return state
+
+
+def _valid_artifacts(value: object) -> list[str]:
+    """`plan_artifacts` is trusted only as a list of ``str``; anything else → ``[]``.
+
+    Defends the gate carve-out: a mapping like ``{"src/evil.py": True}`` (whose keys
+    ``list()`` would expose) or a scalar cannot smuggle a path into the allow-list.
+    """
+    if isinstance(value, list):
+        return [x for x in value if isinstance(x, str)]
+    return []

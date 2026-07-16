@@ -22,6 +22,12 @@ change can also be ABANDONED. The state machine is fixed, not configurable — s
 the generated [state-machine diagram](state-machine.md) for the authoritative
 transition matrix.
 
+In PLAN_REJECTED the gate blocks source edits as usual, but **revising the change's
+own plan document is authorized**: if `plan ready` recorded the plan doc as a plan
+artifact (a marked `.md` in the declared scope), editing that file through the normal
+`Edit`/`Write` tools is allowed — the reject-loop revise path needs no shell bypass.
+Source files stay blocked; only the recorded marked-`.md` plan doc is editable there.
+
 ## super-harness does not review your code for you
 
 The gate enforces that the configured independent review sources produce valid
