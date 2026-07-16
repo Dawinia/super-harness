@@ -6,6 +6,7 @@ from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
     find_harness_root,
+    gate_blocks_path,
     gates_yaml_path,
     lock_path,
     sensors_yaml_path,
@@ -13,6 +14,10 @@ from super_harness.core.paths import (
     verification_results_dir,
     verification_yaml_path,
 )
+
+
+def test_gate_blocks_path_is_under_harness(tmp_path: Path):
+    assert gate_blocks_path(tmp_path) == tmp_path / ".harness" / "gate-blocks.jsonl"
 
 
 def test_find_harness_root_walks_up(tmp_path: Path):

@@ -57,8 +57,10 @@ GITIGNORE_END_MARKER = "# <<< super-harness gitignore"
 #     gates.yaml, source-paths.yaml, verification.yaml, conventions.md,
 #     adapters.yaml ARE user-config and stay version-controlled —
 #     they are deliberately absent.) The daemon runtime files `daemon.pid` and
-#     `daemon.log` are here because they are REGULAR files under `.harness/`
-#     that `git add -A` will sweep into a commit (the #64 pothole). The UDS
+#     `daemon.log`, and the best-effort BLOCK telemetry log `gate-blocks.jsonl`
+#     (Stage 2, sibling of `events.jsonl`), are here because they are REGULAR
+#     files under `.harness/` that `git add -A` will sweep into a commit (the
+#     #64 pothole). The UDS
 #     socket `daemon.sock` is deliberately absent: it is a unix-domain socket
 #     special file that git never tracks, so it cannot be committed. The
 #     transient flock sentinels (`.harness/.state.lock`, `.harness/.events.lock`,
@@ -81,6 +83,7 @@ GITIGNORE_END_MARKER = "# <<< super-harness gitignore"
 _CANONICAL_PATHS: tuple[str, ...] = (
     ".harness/state.yaml",
     ".harness/events.jsonl",
+    ".harness/gate-blocks.jsonl",
     ".harness/sensor-results/",
     ".harness/verification-results/",
     ".harness/operation-logs/",

@@ -77,6 +77,20 @@ def _round_closed(eid, change, ts, outcome, round_id="r1"):
     })
 
 
+def _write_blocks(tmp_path: Path, records: list[dict]) -> None:
+    """Seed the Stage-2 gate-blocks telemetry log under the workspace root."""
+    d = tmp_path / ".harness"
+    d.mkdir(exist_ok=True)
+    (d / "gate-blocks.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in records) + "\n", encoding="utf-8",
+    )
+
+
+def _block(change, file, state, ts):
+    return {"ts": ts, "change_id": change, "state": state, "tool": "Write",
+            "file": file, "reason": "r", "gate": "pre-tool-use"}
+
+
 # --- Task 1: skeleton + windowing ---
 
 
@@ -318,3 +332,37 @@ def test_non_dict_verdict_does_not_crash(tmp_path):
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.findings_resolved == 0
     assert report.findings_open_undisposed == 0
+
+
+# --- Stage 2: gate-blocked edit targets (distinct floor) ---
+
+
+def test_edits_blocked_counts_distinct_target_tuples(tmp_path):
+    events_file = tmp_path / "events.jsonl"
+    _write_blocks(tmp_path, [
+        _block("c1", "a.py", "INTENT_DECLARED", "2026-07-16T00:00:00Z"),
+        _block("c1", "a.py", "INTENT_DECLARED", "2026-07-16T00:00:01Z"),  # retry dup
+        _block("c1", "b.py", "INTENT_DECLARED", "2026-07-16T00:00:02Z"),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.edits_blocked == 2  # (c1,a.py,S) collapses; (c1,b.py,S) distinct
+
+
+def test_edits_blocked_respects_window(tmp_path):
+    events_file = tmp_path / "events.jsonl"
+    _write_blocks(tmp_path, [
+        _block("c1", "a.py", "S", "2026-07-01T00:00:00Z"),
+        _block("c1", "b.py", "S", "2026-07-20T00:00:00Z"),
+        {"ts": "not-a-date", "change_id": "c1", "state": "S", "tool": "Write",
+         "file": "c.py", "reason": "r", "gate": "g"},  # unparseable → excluded with a bound
+    ])
+    report = build_value_report(
+        events_file, since="2026-07-15", until=None, workspace_root=tmp_path
+    )
+    assert report.edits_blocked == 1  # only the 2026-07-20 target; unparseable excluded
+
+
+def test_edits_blocked_zero_when_no_log(tmp_path):
+    events_file = tmp_path / "events.jsonl"
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.edits_blocked == 0

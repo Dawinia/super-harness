@@ -159,3 +159,43 @@ def test_report_bad_since_is_ignored_not_crash(tmp_path):
         main, ["--workspace", str(tmp_path), "report", "--since", "not-a-date"]
     )
     assert result.exit_code == 0
+
+
+# --- Stage 2: gate-held targets rendered honestly across all modes ---
+
+from super_harness.cli.report import _bottom_line, _render_brief, _render_human  # noqa: E402
+from super_harness.engineering.value_report import ValueReport  # noqa: E402
+
+
+def _vr(**over):
+    base = dict(
+        since=None, until=None, changes_touched=1, findings_resolved=0,
+        findings_open_undisposed=0, undisclosed_bypasses=0, edits_blocked=0,
+        review_tokens=0, review_runs_total=0, review_runs_with_usage=0,
+        findings_wontfix=0, rejected_rounds=0, armed_decisions=0,
+    )
+    base.update(over)
+    return ValueReport(**base)
+
+
+def test_human_render_shows_distinct_blocked_targets():
+    out = _render_human(_vr(edits_blocked=3))
+    assert "3 distinct out-of-lifecycle edit target" in out
+
+
+def test_brief_render_shows_blocked_targets():
+    # CODX-004/CODX-006: --brief must reflect the signal AND carry the unit.
+    out = _render_brief(_vr(edits_blocked=2, findings_resolved=0))
+    assert "2 distinct target(s) held" in out
+
+
+def test_bottom_line_counts_blocks_as_a_catch():
+    out = _bottom_line(_vr(findings_resolved=0, undisclosed_bypasses=0, edits_blocked=2))
+    assert "no measurable catches" not in out
+    assert "2" in out
+
+
+def test_footnote_no_longer_claims_gate_leaves_no_trace():
+    out = _render_human(_vr(edits_blocked=0))
+    note = out.split("Note:")[1]
+    assert "lifecycle gate" not in note

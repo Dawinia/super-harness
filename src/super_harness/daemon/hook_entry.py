@@ -249,8 +249,37 @@ def _decide(
         ProposedAction(kind="edit", file=file), snapshot.state, []
     )
     if result.decision is GateDecision.BLOCK:
+        _record_block(
+            root,
+            change_id=snapshot.change_id,
+            state=snapshot.state.current_state if snapshot.state else "",
+            tool=tool,
+            file=file,
+            reason=result.reason,
+        )
         return "block", result.reason, result.suggested_action
     return "allow", result.reason, result.suggested_action
+
+
+def _record_block(
+    root: Path, *, change_id: str | None, state: str, tool: str,
+    file: str | None, reason: str,
+) -> None:
+    """Best-effort Stage-2 telemetry of a BLOCK (out-of-band, as the gate contract
+    prescribes). NEVER raises — a failed write must not flip a real BLOCK into a
+    fail-open ALLOW (an uncaught hook exception is exit 1 = non-blocking for the
+    Claude shim). Skips when no active change (a block with no change has nothing
+    to attribute)."""
+    try:
+        if not change_id:
+            return
+        from super_harness.core.gate_blocks import record_block
+
+        record_block(
+            root, change_id=change_id, state=state, tool=tool, file=file, reason=reason
+        )
+    except Exception:
+        pass
 
 
 def _record_bypass(root: Path, *, tool: str, file: str | None) -> None:

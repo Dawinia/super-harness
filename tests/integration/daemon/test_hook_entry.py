@@ -67,3 +67,48 @@ def test_kill_switch_allows(tmp_path: Path) -> None:
     _init(tmp_path, "c1", "INTENT_DECLARED")
     (tmp_path / ".harness" / "gate-disabled").touch()
     assert _run(tmp_path, "Edit", "f.py").returncode == 0
+
+
+def test_block_records_a_gate_block_line(tmp_path: Path) -> None:
+    """Stage 2: a real BLOCK writes one telemetry record with the tool + file +
+    lifecycle state that triggered it."""
+    from super_harness.core.gate_blocks import read_blocks
+    from super_harness.core.paths import gate_blocks_path
+
+    _init(tmp_path, "c1", "INTENT_DECLARED")
+    payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "src/x.py"}})
+    res = _run(tmp_path, "--agent", "claude-code", stdin=payload)
+    assert res.returncode == 2  # blocked
+    recs = read_blocks(gate_blocks_path(tmp_path))
+    assert len(recs) == 1
+    r = recs[0]
+    assert (r.change_id, r.state, r.tool, r.file) == (
+        "c1", "INTENT_DECLARED", "Write", "src/x.py",
+    )
+
+
+def test_allow_records_nothing(tmp_path: Path) -> None:
+    """An ALLOW (edit-permitted state) writes no telemetry — only BLOCKs count."""
+    from super_harness.core.paths import gate_blocks_path
+
+    _init(tmp_path, "c1", "IMPLEMENTATION_IN_PROGRESS")
+    assert _run(tmp_path, "Edit", "f.py").returncode == 0
+    assert not gate_blocks_path(tmp_path).exists()
+
+
+def test_block_still_blocks_when_recording_fails(tmp_path: Path, monkeypatch) -> None:
+    """HEADLINE SAFETY PROPERTY: a failing telemetry write must NOT flip a real
+    BLOCK into a fail-open ALLOW (an uncaught hook exception is exit 1 =
+    non-blocking for the Claude shim). Recording raises → verdict stays 'block',
+    no exception escapes `_decide`."""
+    from super_harness.daemon import hook_entry
+
+    _init(tmp_path, "c1", "INTENT_DECLARED")
+    monkeypatch.chdir(tmp_path)
+
+    def boom(*_a, **_k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("super_harness.core.gate_blocks.record_block", boom)
+    decision, _reason, _suggested = hook_entry._decide("Write", "src/x.py")
+    assert decision == "block"

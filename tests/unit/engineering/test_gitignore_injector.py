@@ -30,6 +30,7 @@ from super_harness.engineering.gitignore_injector import (
 _CANONICAL_PATHS = (
     ".harness/state.yaml",
     ".harness/events.jsonl",
+    ".harness/gate-blocks.jsonl",
     ".harness/sensor-results/",
     ".harness/verification-results/",
     ".harness/operation-logs/",
@@ -297,6 +298,18 @@ def test_block_covers_daemon_runtime_files(tmp_path: Path) -> None:
     assert ".harness/daemon.pid" in text, text
     assert ".harness/daemon.log" in text, text
     assert ".harness/daemon.sock" not in text, "socket is not a git-trackable file"
+
+
+def test_block_covers_gate_blocks_log(tmp_path: Path) -> None:
+    """Stage 2: the best-effort BLOCK telemetry log `.harness/gate-blocks.jsonl`
+    is a regular append-only runtime file (like events.jsonl) that a `git add -A`
+    during a lifecycle would otherwise sweep into a commit. It must be ignored."""
+    from super_harness.engineering.gitignore_injector import _CANONICAL_PATHS
+
+    assert ".harness/gate-blocks.jsonl" in _CANONICAL_PATHS
+    path = tmp_path / ".gitignore"
+    inject_gitignore_block(path)
+    assert ".harness/gate-blocks.jsonl" in path.read_text()
 
 
 def test_block_covers_flock_lock_sentinels(tmp_path: Path) -> None:
