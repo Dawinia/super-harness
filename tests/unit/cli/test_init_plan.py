@@ -491,3 +491,27 @@ def test_closed_state_enums_and_forbidden_ui_lifecycle_imports() -> None:
         if isinstance(node, ast.ImportFrom) and node.module
     )
     assert imports.isdisjoint({"click", "rich", "questionary", "posix"})
+
+
+def test_github_file_decisions_are_closed_and_choices_are_immutable() -> None:
+    from super_harness.cli.init_plan import GithubFileDecision
+
+    mutable = {
+        ".github/pull_request_template.md": GithubFileDecision.APPEND,
+        ".github/workflows/super-harness.yml": GithubFileDecision.OVERWRITE,
+    }
+    choices = InitChoices(github_file_decisions=mutable)
+    mutable[".github/pull_request_template.md"] = GithubFileDecision.KEEP
+
+    assert set(GithubFileDecision) == {
+        GithubFileDecision.CREATE,
+        GithubFileDecision.KEEP,
+        GithubFileDecision.APPEND,
+        GithubFileDecision.OVERWRITE,
+    }
+    assert (
+        choices.github_file_decisions[".github/pull_request_template.md"]
+        is GithubFileDecision.APPEND
+    )
+    with pytest.raises(TypeError):
+        choices.github_file_decisions[".github/pull_request_template.md"] = GithubFileDecision.KEEP  # type: ignore[index]

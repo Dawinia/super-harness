@@ -18,6 +18,17 @@ import yaml
 
 from super_harness.adapters.install import install_agent_integration
 from super_harness.cli.errors import format_error
+from super_harness.cli.init_github import (
+    GithubFileError,
+    GithubFileKind,
+    GithubFilePlan,
+    GithubKeepReason,
+    GithubPlan,
+    apply_github_file,
+    inspect_github_files,
+    resolve_github_plan,
+)
+from super_harness.cli.init_plan import GithubFileDecision
 from super_harness.core.clock import utc_now_iso
 from super_harness.engineering.agents_md import AgentsMdInjectionError
 from super_harness.engineering.gitignore_injector import (
@@ -25,11 +36,6 @@ from super_harness.engineering.gitignore_injector import (
     inject_gitignore_block,
 )
 from super_harness.engineering.operation_log import write_operation_log
-from super_harness.engineering.pr_metadata import (
-    METADATA_BEGIN,
-    METADATA_END,
-    parse_metadata_block,
-)
 from super_harness.exit_codes import (
     EXIT_EXTERNAL_TOOL,
     EXIT_GENERIC,
@@ -445,6 +451,7 @@ def init_cmd(
         review_models,
         no_agent=no_agent,
     )
+    github_plan = _plan_github_setup(ctx, root) if setup_github else None
     harness.mkdir(parents=True, exist_ok=True)
     # events.jsonl created empty (writer appends later)
     (harness / "events.jsonl").touch()
@@ -558,33 +565,16 @@ def init_cmd(
             err=True,
         )
         sys.exit(EXIT_GENERIC)
-    if setup_github:
-        _setup_github(ctx, root, harness)
+    if github_plan is not None:
+        _setup_github(ctx, root, harness, github_plan)
     click.echo(f"super-harness initialized at {harness}")
     sys.exit(EXIT_OK)
 
 
-def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
-    """Phase 12 `--setup-github` flow (engineering-integration §2.6 / §3.1).
+def _plan_github_setup(ctx: click.Context, root: Path) -> GithubPlan:
+    """Resolve every GitHub file conflict before the first init write."""
 
-    Sequence (runs AFTER `.harness/` is scaffolded, BEFORE the final echo):
-
-    1. ``check_gh()`` first — any ``GhError`` aborts with EXIT_EXTERNAL_TOOL (4),
-       BEFORE any ``.github/`` write (AC-1: no silent fallback). The partial
-       `.harness/` left behind is acceptable (init is re-runnable).
-    2. Write / marker-merge ``<root>/.github/pull_request_template.md`` (§2.6).
-    3. Best-effort repo settings — a ``GhError`` is non-fatal: write an
-       operation-log + advisory to stderr + continue (exit stays 0; AC-7).
-
-    S3 fix (OPEN-ITEMS #6): each substep prints a stdout advisory describing
-    what actually happened (typed outcome from `_write_pr_template` /
-    `_write_workflow_file`). Suppressed under ``--quiet`` or ``--json``.
-    """
-    # S3: advisory prints honor --quiet AND --json (init emits no JSON envelope,
-    # but prose advisories would pollute JSON-consumer pipelines all the same).
     advise = not (bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
-
-    # --- Step 1: gh checks first (before any .github/ write) ---
     try:
         check_gh()
     except _gh_error_type() as e:
@@ -603,13 +593,97 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
     if advise:
         click.echo("gh CLI: ok")
 
+    try:
+        inspection = inspect_github_files(
+            root,
+            _pull_request_template().encode("utf-8"),
+            _workflow_template().encode("utf-8"),
+        )
+    except GithubFileError as e:
+        click.echo(
+            format_error(subcommand="init", message=str(e), hint=e.hint),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    decisions: dict[str, GithubFileDecision] = {}
+    keep_reasons: dict[str, GithubKeepReason] = {}
+    quiet = bool(ctx.obj.get("quiet"))
+    for file in (inspection.pr_template, inspection.workflow):
+        if file.decision is not None:
+            continue
+        relative = file.path.relative_to(root).as_posix()
+        write_decision = (
+            GithubFileDecision.APPEND
+            if file.kind is GithubFileKind.PR_TEMPLATE
+            else GithubFileDecision.OVERWRITE
+        )
+        if quiet:
+            decisions[relative] = write_decision
+            continue
+        prompt = (
+            f"Append super-harness metadata placeholder to existing {file.path}?"
+            if file.kind is GithubFileKind.PR_TEMPLATE
+            else f"Overwrite existing {file.path}?"
+        )
+        try:
+            proceed = click.confirm(prompt, default=True)
+        except click.Abort:
+            if sys.stdin.isatty():
+                raise
+            decisions[relative] = GithubFileDecision.KEEP
+            keep_reasons[relative] = GithubKeepReason.NON_INTERACTIVE
+            if file.kind is GithubFileKind.PR_TEMPLATE:
+                message = (
+                    "skipped appending the metadata placeholder to existing "
+                    f"{file.path} (non-interactive)"
+                )
+                hint = "Re-run with --quiet to append it, or add the block manually."
+            else:
+                message = f"skipped overwriting existing {file.path} (non-interactive)"
+                hint = "Re-run with --quiet to overwrite, or update the file manually."
+            click.echo(
+                format_error(subcommand="init", message=message, hint=hint),
+                err=True,
+            )
+            continue
+        decisions[relative] = write_decision if proceed else GithubFileDecision.KEEP
+        if not proceed:
+            keep_reasons[relative] = GithubKeepReason.DECLINED
+    return resolve_github_plan(inspection, decisions, keep_reasons)
+
+
+def _setup_github(
+    ctx: click.Context,
+    root: Path,
+    harness: Path,
+    plan: GithubPlan,
+) -> None:
+    """Phase 12 `--setup-github` flow (engineering-integration §2.6 / §3.1).
+
+    The read-only inspection, ``gh`` preflight, and every conflict prompt have
+    already completed in ``_plan_github_setup`` before this apply phase starts.
+    This function runs AFTER `.harness/` is scaffolded, BEFORE the final echo:
+
+    1. Apply the resolved PR-template and workflow decisions without prompting.
+    2. Best-effort repo settings — a ``GhError`` is non-fatal: write an
+       operation-log + advisory to stderr + continue (exit stays 0; AC-7).
+
+    S3 fix (OPEN-ITEMS #6): each substep prints a stdout advisory describing
+    what actually happened (typed outcome from `_write_pr_template` /
+    `_write_workflow_file`). Suppressed under ``--quiet`` or ``--json``.
+    """
+    # S3: advisory prints honor --quiet AND --json (init emits no JSON envelope,
+    # but prose advisories would pollute JSON-consumer pipelines all the same).
+    advise = not (bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
+
     # --- Step 2: write / marker-merge .github/pull_request_template.md ---
-    pr_outcome = _write_pr_template(ctx, root)
+    pr_outcome = _write_pr_template(ctx, root, plan.pr_template)
     if advise:
         _echo_outcome(".github/pull_request_template.md", pr_outcome)
 
     # --- Step 2.5: write .github/workflows/super-harness.yml (Task 14.2) ---
-    wf_outcome = _write_workflow_file(ctx, root)
+    wf_outcome = _write_workflow_file(ctx, root, plan.workflow)
     if advise:
         _echo_outcome(".github/workflows/super-harness.yml", wf_outcome)
 
@@ -655,186 +729,26 @@ def _echo_outcome(label: str, outcome: PRTemplateOutcome | WorkflowOutcome) -> N
         click.echo(f"kept existing {label} (skipped, non-interactive)")
 
 
-def _write_pr_template(ctx: click.Context, root: Path) -> PRTemplateOutcome:
-    """Write or marker-merge ``.github/pull_request_template.md`` (§2.6).
+def _write_pr_template(
+    ctx: click.Context,
+    root: Path,
+    plan: GithubFilePlan,
+) -> PRTemplateOutcome:
+    """Apply a pre-resolved PR-template decision without prompting."""
 
-    Returns a typed outcome literal so callers can print an HONEST advisory
-    matching what actually happened (S3 fix — OPEN-ITEMS #6):
-
-    - "wrote"         : fresh write OR append-placeholder to existing.
-    - "kept-existing" : existing template already has exactly one block (no-op).
-    - "declined"      : user said 'n' at the append-confirm prompt.
-    - "skipped"       : non-interactive EOF without --quiet (advisory on stderr).
-
-    Branches:
-    - File absent → write the bundled template verbatim (no prompt). → "wrote"
-    - File present → marker-aware merge: ensure exactly one metadata placeholder
-      block exists. ``block_count >= 2`` → FAIL LOUD (never splice — the AGENTS.md
-      greedy-regex data-loss lesson). Already exactly one → no-op (idempotent).
-      Modifying an EXISTING file prompts (unless global ``--quiet``); decline →
-      leave untouched (non-fatal, continue).
-    """
-    gh_dir = root / ".github"
-    template_path = gh_dir / "pull_request_template.md"
-
-    if not template_path.exists():
-        gh_dir.mkdir(parents=True, exist_ok=True)
-        template_path.write_text(_pull_request_template(), encoding="utf-8")
-        return "wrote"
-
-    try:
-        existing = template_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        # error-family: UnicodeDecodeError is a ValueError (not OSError), so both
-        # must be caught — a non-UTF-8 / unreadable existing template must surface
-        # a friendly error, never a raw traceback.
-        click.echo(
-            format_error(
-                subcommand="init",
-                message=f"could not read existing {template_path}: {e}",
-                hint="Ensure the file is UTF-8 and readable, then re-run.",
-            ),
-            err=True,
-        )
-        sys.exit(EXIT_GENERIC)
-    block = parse_metadata_block(existing)
-
-    if block.block_count >= 2:
-        click.echo(
-            format_error(
-                subcommand="init",
-                message=(
-                    f"{template_path} has {block.block_count} super-harness "
-                    f"metadata blocks; refusing to splice (manual cleanup required)."
-                ),
-                hint=(
-                    "Remove the duplicate "
-                    "`<!-- super-harness:metadata -->` … "
-                    "`<!-- /super-harness:metadata -->` block(s); "
-                    "exactly one is expected."
-                ),
-            ),
-            err=True,
-        )
-        sys.exit(EXIT_GENERIC)
-
-    if block.block_count == 1:
-        # Already has exactly one placeholder block — idempotent no-op.
-        return "kept-existing"
-
-    # Exactly zero blocks: append one placeholder, preserving the user's content.
-    # Modifying an existing file → overwrite-confirm unless --quiet.
-    quiet = bool(ctx.obj.get("quiet"))
-    if not quiet:
-        try:
-            proceed = click.confirm(
-                f"Append super-harness metadata placeholder to existing {template_path}?",
-                default=True,
-            )
-        except click.Abort:
-            # click.Abort fires on BOTH an interactive Ctrl-C and a
-            # non-interactive EOF. A real Ctrl-C (TTY) means "stop" → re-raise →
-            # exit 1, consistent with sync.py / `adapter uninstall`'s confirm. A
-            # non-interactive EOF (CI without --quiet) cannot prompt → leave the
-            # user's file UNTOUCHED (never modify it silently), non-fatal, advise.
-            if sys.stdin.isatty():
-                raise
-            click.echo(
-                format_error(
-                    subcommand="init",
-                    message=(
-                        f"skipped appending the metadata placeholder to existing "
-                        f"{template_path} (non-interactive)"
-                    ),
-                    hint="Re-run with --quiet to append it, or add the block manually.",
-                ),
-                err=True,
-            )
-            return "skipped"
-        if not proceed:
-            return "declined"  # declined ('n') → leave untouched, non-fatal
-    placeholder = f"{METADATA_BEGIN}\n{METADATA_END}\n"
-    new = existing.rstrip("\n") + "\n\n" + placeholder
-    template_path.write_text(new, encoding="utf-8")
-    return "wrote"
+    _ = (ctx, root)
+    return apply_github_file(plan)
 
 
-def _write_workflow_file(ctx: click.Context, root: Path) -> WorkflowOutcome:
-    """Write or overwrite-with-confirm ``.github/workflows/super-harness.yml`` (§2.8).
+def _write_workflow_file(
+    ctx: click.Context,
+    root: Path,
+    plan: GithubFilePlan,
+) -> WorkflowOutcome:
+    """Apply a pre-resolved workflow decision without prompting."""
 
-    Returns a typed outcome literal (S3 fix — OPEN-ITEMS #6):
-    - "wrote"         : fresh write OR overwrite of differing existing file.
-    - "kept-existing" : byte-identical to bundled (idempotent no-op).
-    - "declined"      : user said 'n' at the overwrite-confirm prompt.
-    - "skipped"       : non-interactive EOF without --quiet.
-
-    Branches:
-    - File absent → write bundled template verbatim (no prompt; ``mkdir -p`` first).
-    - File present + byte-identical to bundled → idempotent no-op.
-    - File present + differs → confirm overwrite (unless global ``--quiet``);
-      non-TTY EOF leaves untouched + advisory (non-fatal);
-      TTY Ctrl-C re-raises (exit 1).
-    - Read of existing file: catch ``(OSError, UnicodeDecodeError)`` → friendly
-      error, EXIT_GENERIC (UnicodeDecodeError is a ValueError, not OSError —
-      the project's recurring error-family bug class).
-    """
-    workflows_dir = root / ".github" / "workflows"
-    workflow_path = workflows_dir / "super-harness.yml"
-    bundled = _workflow_template()
-
-    if not workflow_path.exists():
-        workflows_dir.mkdir(parents=True, exist_ok=True)
-        workflow_path.write_text(bundled, encoding="utf-8")
-        return "wrote"
-
-    try:
-        existing = workflow_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        # error-family: UnicodeDecodeError is a ValueError (not OSError), so both
-        # must be caught — a non-UTF-8 / unreadable existing workflow file must
-        # surface a friendly error, never a raw traceback.
-        click.echo(
-            format_error(
-                subcommand="init",
-                message=f"could not read existing {workflow_path}: {e}",
-                hint="Ensure the file is UTF-8 and readable, then re-run.",
-            ),
-            err=True,
-        )
-        sys.exit(EXIT_GENERIC)
-
-    if existing == bundled:
-        return "kept-existing"  # byte-identical → idempotent no-op
-
-    quiet = bool(ctx.obj.get("quiet"))
-    if not quiet:
-        try:
-            proceed = click.confirm(
-                f"Overwrite existing {workflow_path}?",
-                default=True,
-            )
-        except click.Abort:
-            # click.Abort fires on BOTH an interactive Ctrl-C and a
-            # non-interactive EOF. A real Ctrl-C (TTY) means "stop" → re-raise →
-            # exit 1, consistent with _write_pr_template. A non-interactive EOF
-            # (CI without --quiet) cannot prompt → leave the file UNTOUCHED
-            # (never modify it silently), non-fatal, advise.
-            if sys.stdin.isatty():
-                raise
-            click.echo(
-                format_error(
-                    subcommand="init",
-                    message=(f"skipped overwriting existing {workflow_path} (non-interactive)"),
-                    hint="Re-run with --quiet to overwrite, or update the file manually.",
-                ),
-                err=True,
-            )
-            return "skipped"
-        if not proceed:
-            return "declined"  # declined ('n') → leave untouched, non-fatal
-
-    workflow_path.write_text(bundled, encoding="utf-8")
-    return "wrote"
+    _ = (ctx, root)
+    return apply_github_file(plan)
 
 
 def _log_setup_github_failure(harness: Path, error: GhError) -> None:

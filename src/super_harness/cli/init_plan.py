@@ -74,6 +74,15 @@ class GitHubDecision(str, Enum):
     CREATE = "create"
 
 
+class GithubFileDecision(str, Enum):
+    """Resolved disposition for one existing GitHub-owned setup file."""
+
+    CREATE = "create"
+    KEEP = "keep"
+    APPEND = "append"
+    OVERWRITE = "overwrite"
+
+
 class InitPlanValidationError(ValueError):
     """A request, preflight, and choice set cannot produce a safe init plan."""
 
@@ -160,6 +169,7 @@ class InitChoices:
     review_models: Mapping[str, str] = field(default_factory=dict)
     existing_files: Mapping[str, ExistingFileDecision] = field(default_factory=dict)
     github_decision: GitHubDecision | None = None
+    github_file_decisions: Mapping[str, GithubFileDecision] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.integrations is not None:
@@ -168,6 +178,11 @@ class InitChoices:
             object.__setattr__(self, "review_producers", tuple(self.review_producers))
         object.__setattr__(self, "review_models", _frozen_mapping(self.review_models))
         object.__setattr__(self, "existing_files", _frozen_mapping(self.existing_files))
+        object.__setattr__(
+            self,
+            "github_file_decisions",
+            _frozen_mapping(self.github_file_decisions),
+        )
 
 
 @dataclass(frozen=True)
@@ -194,12 +209,18 @@ class InitPlan:
     review_models: Mapping[str, str]
     github_decision: GitHubDecision
     file_actions: tuple[PlannedFileAction, ...]
+    github_file_decisions: Mapping[str, GithubFileDecision] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "integrations", tuple(self.integrations))
         object.__setattr__(self, "review_producers", tuple(self.review_producers))
         object.__setattr__(self, "review_models", _frozen_mapping(self.review_models))
         object.__setattr__(self, "file_actions", tuple(self.file_actions))
+        object.__setattr__(
+            self,
+            "github_file_decisions",
+            _frozen_mapping(self.github_file_decisions),
+        )
 
 
 @dataclass(frozen=True)
@@ -657,4 +678,5 @@ def build_init_plan(
         review_models=models,
         github_decision=github_decision,
         file_actions=tuple(actions),
+        github_file_decisions=choices.github_file_decisions,
     )
