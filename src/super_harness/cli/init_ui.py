@@ -13,6 +13,7 @@ from rich.console import Console
 from rich.text import Text
 
 from super_harness.cli.init_plan import (
+    FileAction,
     InitChoices,
     InitPlan,
     InitPreflight,
@@ -278,6 +279,13 @@ _RAIL_GLYPHS = {
     True: dict(zip(RailState, ("◇", "◆", "●", "✗"), strict=True)),
     False: dict(zip(RailState, ("|", "+", "*", "x"), strict=True)),
 }
+
+_FILE_ACTION_HINTS = {
+    FileAction.CREATE: "will be written during apply",
+    FileAction.UPDATE: "will be written during apply",
+    FileAction.PRESERVE: "will be left unchanged",
+    FileAction.SKIP: "not part of this run",
+}
 _RAIL_STYLES = dict(zip(RailState, ("dim", "cyan", "green", "red"), strict=True))
 _EVENT_GLYPHS = {
     True: dict(zip(StepRenderState, ("…", "✓", "!", "✗", "!"), strict=True)),
@@ -338,7 +346,7 @@ class RichGuidedRenderer:
         for action in plan.file_actions:
             self._print(f"|  File {action.action.value}: {action.path}")
             if self._width >= _NARROW_WIDTH:
-                self._print("|    hint: will be written during apply", style="dim")
+                self._print(f"|    hint: {_FILE_ACTION_HINTS[action.action]}", style="dim")
 
     def render_validation(self, message: str) -> None:
         self._print(f"{'!' if self._unicode else 'x'}  {message}", style="yellow")
@@ -712,7 +720,7 @@ class _PlainInitUI:
         for action in plan.file_actions:
             self._output(f"- File {action.action.value}: {action.path}")
             if self._width >= _NARROW_WIDTH:
-                self._output("  hint: will be written during apply")
+                self._output(f"  hint: {_FILE_ACTION_HINTS[action.action]}")
 
     def _render_values(self, label: str, values: tuple[str, ...]) -> None:
         rendered = ", ".join(values) if values else "(none)"

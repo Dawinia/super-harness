@@ -246,8 +246,8 @@ class _ReviewProducerDefinition:
 
 _INTEGRATIONS: Mapping[str, _IntegrationDefinition] = MappingProxyType(
     {
-        "codex": _IntegrationDefinition("codex", Path(".codex/config.toml")),
-        "claude-code": _IntegrationDefinition("claude", Path(".claude/settings.json")),
+        "codex": _IntegrationDefinition("codex", Path(".codex/hooks.json")),
+        "claude-code": _IntegrationDefinition("claude", Path(".claude/settings.local.json")),
     }
 )
 _REVIEW_PRODUCERS: Mapping[str, _ReviewProducerDefinition] = MappingProxyType(
@@ -269,6 +269,14 @@ _SCAFFOLD_FILES: tuple[tuple[Path, bytes], ...] = (
     (Path(".harness/state.yaml"), b"version: 1\n"),
     (Path(".harness/adapters.yaml"), b"version: 1\nadapters: []\n"),
 )
+_SKELETON_PATHS = (
+    Path(".harness/sensors.yaml"),
+    Path(".harness/gates.yaml"),
+    Path(".harness/source-paths.yaml"),
+    Path(".harness/derived-docs.yaml"),
+    Path(".harness/verification.yaml"),
+    Path(".harness/conventions.md"),
+)
 _REVIEW_PATHS = (
     Path(".harness/review-governance.yaml"),
     Path(".harness/review-profiles.local.yaml"),
@@ -280,12 +288,13 @@ _GITHUB_FILES: tuple[tuple[Path, bytes], ...] = (
         b"name: super-harness\non: [pull_request]\n",
     ),
     (
-        Path(".github/PULL_REQUEST_TEMPLATE.md"),
+        Path(".github/pull_request_template.md"),
         b"<!-- super-harness metadata is managed automatically -->\n",
     ),
 )
 _ALL_OBSERVED_PATHS = (
     tuple(path for path, _ in _SCAFFOLD_FILES)
+    + _SKELETON_PATHS
     + _REVIEW_PATHS
     + tuple(definition.path for definition in _INTEGRATIONS.values())
     + _USER_FILES
@@ -552,11 +561,9 @@ def _ordinary_action(
     relative: Path,
     content: bytes,
     preflight: InitPreflight,
-    *,
-    force: bool,
 ) -> PlannedFileAction:
     exists = relative.as_posix() in preflight.existing_file_bytes
-    action = FileAction.UPDATE if exists and force else FileAction.CREATE
+    action = FileAction.UPDATE if exists else FileAction.CREATE
     return PlannedFileAction(relative, action, content)
 
 
@@ -630,27 +637,40 @@ def build_init_plan(
     else:
         github_decision = GitHubDecision.SKIP
 
+    events_path, state_path, adapters_path = (path for path, _ in _SCAFFOLD_FILES)
+    events_content = preflight.existing_file_bytes.get(events_path.as_posix())
+    state_content = preflight.existing_file_bytes.get(state_path.as_posix())
+    adapters_content = preflight.existing_file_bytes.get(adapters_path.as_posix())
     actions: list[PlannedFileAction] = [
-        _ordinary_action(path, content, preflight, force=request.force)
-        for path, content in _SCAFFOLD_FILES
+        PlannedFileAction(
+            events_path,
+            FileAction.PRESERVE if events_content is not None else FileAction.CREATE,
+            events_content if events_content is not None else b"",
+        ),
+        PlannedFileAction(
+            state_path,
+            FileAction.PRESERVE if state_content is not None else FileAction.SKIP,
+            state_content,
+        ),
+        PlannedFileAction(
+            adapters_path,
+            (
+                FileAction.UPDATE
+                if integrations and adapters_content is not None
+                else FileAction.CREATE
+                if integrations
+                else FileAction.PRESERVE
+                if adapters_content is not None
+                else FileAction.SKIP
+            ),
+            adapters_content,
+        ),
     ]
+    actions.extend(_ordinary_action(path, b"", preflight) for path in _SKELETON_PATHS)
     actions.extend(_review_file_actions(preflight, review_write, governance, profile))
-
-    adapters_content = yaml.safe_dump(
-        {"version": 1, "adapters": list(integrations)}, sort_keys=False
-    ).encode()
-    actions[2] = _ordinary_action(
-        Path(".harness/adapters.yaml"),
-        adapters_content,
-        preflight,
-        force=request.force,
-    )
     for name, definition in _INTEGRATIONS.items():
         if name in integrations:
-            content = f"# managed super-harness integration: {name}\n".encode()
-            actions.append(
-                _ordinary_action(definition.path, content, preflight, force=request.force)
-            )
+            actions.append(_ordinary_action(definition.path, b"", preflight))
         else:
             actions.append(PlannedFileAction(definition.path, FileAction.SKIP))
 
@@ -671,7 +691,7 @@ def build_init_plan(
 
     for path, content in _GITHUB_FILES:
         if github_decision is GitHubDecision.CREATE:
-            actions.append(_ordinary_action(path, content, preflight, force=request.force))
+            actions.append(_ordinary_action(path, content, preflight))
         else:
             actions.append(PlannedFileAction(path, FileAction.SKIP))
 

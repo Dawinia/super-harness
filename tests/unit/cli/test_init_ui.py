@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from io import StringIO
 from pathlib import Path
 from typing import Any
@@ -414,6 +414,31 @@ def test_plain_plan_and_event_output_contains_no_ansi_sequences(tmp_path: Path) 
     )
 
     assert "\x1b[" not in "\n".join(output)
+
+
+def test_plan_hints_distinguish_writes_from_preserve_and_skip(tmp_path: Path) -> None:
+    output: list[str] = []
+    plan = replace(
+        _plan(tmp_path),
+        file_actions=(
+            PlannedFileAction(Path("create.txt"), FileAction.CREATE),
+            PlannedFileAction(Path("preserve.txt"), FileAction.PRESERVE),
+            PlannedFileAction(Path("skip.txt"), FileAction.SKIP),
+        ),
+    )
+    ui = NonInteractiveInitUI(
+        output_fn=output.append,
+        input_fn=lambda _: pytest.fail("input called"),
+        unicode=False,
+        width=80,
+    )
+
+    ui.render_plan(plan)
+
+    text = "\n".join(output)
+    assert "File create: create.txt\n  hint: will be written during apply" in text
+    assert "File preserve: preserve.txt\n  hint: will be left unchanged" in text
+    assert "File skip: skip.txt\n  hint: not part of this run" in text
 
 
 def test_unicode_and_ascii_glyph_selection_is_independent_from_color() -> None:

@@ -397,23 +397,60 @@ def test_file_actions_are_ordered_before_any_apply_boundary(tmp_path: Path) -> N
         ".harness/events.jsonl",
         ".harness/state.yaml",
         ".harness/adapters.yaml",
+        ".harness/sensors.yaml",
+        ".harness/gates.yaml",
+        ".harness/source-paths.yaml",
+        ".harness/derived-docs.yaml",
+        ".harness/verification.yaml",
+        ".harness/conventions.md",
         ".harness/review-governance.yaml",
         ".harness/review-profiles.local.yaml",
-        ".codex/config.toml",
-        ".claude/settings.json",
+        ".codex/hooks.json",
+        ".claude/settings.local.json",
         "AGENTS.md",
         ".gitignore",
         ".github/workflows/super-harness.yml",
-        ".github/PULL_REQUEST_TEMPLATE.md",
+        ".github/pull_request_template.md",
     ]
     by_path = {action.path.as_posix(): action for action in plan.file_actions}
     assert by_path[".harness/events.jsonl"].action is FileAction.CREATE
+    assert by_path[".harness/state.yaml"].action is FileAction.SKIP
+    assert by_path[".harness/adapters.yaml"].action is FileAction.CREATE
+    assert by_path[".harness/verification.yaml"].action is FileAction.CREATE
     assert by_path[".harness/review-governance.yaml"].review_write is ReviewWrite.UPDATE
-    assert by_path[".codex/config.toml"].action is FileAction.CREATE
-    assert by_path[".claude/settings.json"].action is FileAction.SKIP
+    assert by_path[".codex/hooks.json"].action is FileAction.CREATE
+    assert by_path[".claude/settings.local.json"].action is FileAction.SKIP
     assert by_path["AGENTS.md"].action is FileAction.PRESERVE
     assert by_path[".gitignore"].action is FileAction.UPDATE
     assert by_path[".github/workflows/super-harness.yml"].action is FileAction.CREATE
+
+
+def test_plan_marks_derived_and_optional_runtime_files_truthfully(tmp_path: Path) -> None:
+    state = tmp_path / ".harness" / "state.yaml"
+    state.parent.mkdir()
+    state.write_text("derived: existing\n")
+    request = _request(tmp_path, force=True)
+    preflight = inspect_workspace(request, executable_lookup=_lookup())
+
+    plan = build_init_plan(request, preflight, InitChoices())
+
+    by_path = {action.path.as_posix(): action for action in plan.file_actions}
+    assert by_path[".harness/events.jsonl"].action is FileAction.CREATE
+    assert by_path[".harness/state.yaml"].action is FileAction.PRESERVE
+    assert by_path[".harness/adapters.yaml"].action is FileAction.SKIP
+
+
+def test_plan_marks_an_existing_selected_integration_hook_for_update(tmp_path: Path) -> None:
+    hook = tmp_path / ".codex" / "hooks.json"
+    hook.parent.mkdir()
+    hook.write_text('{"hooks": {}}\n')
+    request = _request(tmp_path, integrations=("codex",))
+    preflight = inspect_workspace(request, executable_lookup=_lookup())
+
+    plan = build_init_plan(request, preflight, InitChoices())
+
+    by_path = {action.path.as_posix(): action for action in plan.file_actions}
+    assert by_path[".codex/hooks.json"].action is FileAction.UPDATE
 
 
 def test_no_model_default_is_invented(tmp_path: Path) -> None:
