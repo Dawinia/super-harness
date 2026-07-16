@@ -47,6 +47,7 @@ __pycache__/
 # >>> super-harness gitignore (do not edit between markers)
 .harness/state.yaml
 .harness/events.jsonl
+.harness/gate-blocks.jsonl
 .harness/sensor-results/
 .harness/verification-results/
 .harness/operation-logs/
