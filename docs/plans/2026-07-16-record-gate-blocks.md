@@ -129,13 +129,13 @@ Only now do Tasks 1–6 run, each TDD (failing test → red → implement → gr
 
 **Tests (red):**
 - `test_human_render_shows_distinct_blocked_targets` — edits_blocked=3 → output contains "3 distinct out-of-lifecycle edit target" (NOT "3 edits").
-- `test_brief_render_shows_blocked_targets` — brief mode with edits_blocked=2, findings_resolved=0 → the one-liner includes the held-target count (must NOT silently drop the new prevention signal in `--brief`).
+- `test_brief_render_shows_blocked_targets` — brief mode with edits_blocked=2, findings_resolved=0 → the one-liner contains the explicit unit phrase `2 distinct target(s) held` (carries the distinct-target unit; must NOT read as a raw "2 blocked" edit/attempt count, and must NOT silently drop the signal in `--brief`).
 - `test_bottom_line_counts_blocks_as_a_catch` — findings_resolved=0, undisclosed_bypasses=0, edits_blocked=2 → NOT "no measurable catches"; mentions 2 as held targets.
 - `test_footnote_no_longer_claims_gate_leaves_no_trace` — after "Note:" the text must NOT list "lifecycle gate" among the still-invisible guardrails.
 
 **Implement:**
 - `_render_human` "Caught for you": add `- {r.edits_blocked} distinct out-of-lifecycle edit target(s) the gate held (file x state; a conservative floor — retries collapse)`.
-- `_render_brief`: append a `{r.edits_blocked} blocked` bit when `edits_blocked > 0` (mirrors how it appends `undisclosed bypass(es)`), so `--brief` reflects the new signal.
+- `_render_brief`: append a `{r.edits_blocked} distinct target(s) held` bit when `edits_blocked > 0` (mirrors how it appends `undisclosed bypass(es)`; the phrase carries the distinct-`(change_id, file, state)` unit so `--brief` never reads as a raw blocked-edit count), so `--brief` reflects the new signal.
 - Footnote: drop the lifecycle gate from the still-invisible list; keep locked rules + verification + doc-sync as "a further Stage 2 cut".
 - `_bottom_line`: the no-catch guard also requires `edits_blocked == 0`; add clause `the gate held {N} out-of-lifecycle edit target(s)` when >0. Honest — a held target, never "prevented N disasters".
 - `--json` unchanged (`asdict` includes the field).
