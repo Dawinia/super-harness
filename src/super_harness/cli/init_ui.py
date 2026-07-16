@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, cast
+from typing import IO, Protocol, cast
 
 import questionary
 from rich.console import Console
@@ -17,6 +18,7 @@ from super_harness.cli.init_plan import (
     InitPreflight,
     InitRequest,
     InteractionMode,
+    ReviewWrite,
     build_init_plan,
 )
 
@@ -73,6 +75,25 @@ def detect_terminal_capabilities(
     )
 
 
+def detect_runtime_terminal_capabilities(
+    stdin: IO[str],
+    stdout: IO[str],
+    environ: Mapping[str, str],
+    *,
+    width: int | None = None,
+) -> TerminalCapabilities:
+    """Capture real streams/environment once while remaining directly injectable."""
+
+    return detect_terminal_capabilities(
+        stdin_tty=stdin.isatty(),
+        stdout_tty=stdout.isatty(),
+        term=environ.get("TERM"),
+        no_color="NO_COLOR" in environ,
+        encoding=getattr(stdout, "encoding", None),
+        width=width if width is not None else shutil.get_terminal_size((80, 24)).columns,
+    )
+
+
 class ChoiceCollectionDecision(str, Enum):
     """Closed outcomes from collecting configuration values."""
 
@@ -126,6 +147,20 @@ class StepEventLike(Protocol):
 
     @property
     def detail(self) -> str: ...
+
+
+class ExecutionResultLike(Protocol):
+    @property
+    def success(self) -> bool: ...
+
+    @property
+    def message(self) -> str | None: ...
+
+    @property
+    def next_command(self) -> str | None: ...
+
+    @property
+    def recovery_command(self) -> str | None: ...
 
 
 @dataclass(frozen=True)
@@ -336,6 +371,33 @@ class WizardResult:
 _CANCEL = object()
 
 
+def _interactive_initial_choices(
+    request: InitRequest,
+    preflight: InitPreflight,
+    choices: InitChoices | None,
+) -> InitChoices:
+    initial = choices or InitChoices()
+    if not request.force or initial.review_write is not None:
+        return initial
+    if preflight.review_config_error is not None:
+        return initial
+    models = dict(preflight.persisted_review_models)
+    models.update(initial.review_models)
+    return InitChoices(
+        integrations=initial.integrations,
+        review_write=ReviewWrite.UPDATE,
+        review_producers=(
+            initial.review_producers
+            if initial.review_producers is not None
+            else preflight.persisted_review_producers
+        ),
+        review_models=models,
+        existing_files=initial.existing_files,
+        github_decision=initial.github_decision,
+        github_file_decisions=initial.github_file_decisions,
+    )
+
+
 class InteractiveInitUI:
     """Questionary input and Rich rail orchestration for capable terminals."""
 
@@ -394,6 +456,8 @@ class InteractiveInitUI:
     ) -> tuple[str, ...] | None | object:
         if request.integrations:
             return initial.integrations
+        if request.no_agent:
+            return ()
         defaults = (
             frozenset(initial.integrations)
             if initial.integrations is not None
@@ -455,10 +519,30 @@ class InteractiveInitUI:
         *,
         initial_choices: InitChoices | None = None,
     ) -> ChoiceCollectionResult:
-        initial = initial_choices or InitChoices()
+        initial = _interactive_initial_choices(request, preflight, initial_choices)
         self._renderer.render_stage(
             RailStage.CONFIGURATION, RailState.CURRENT, "Choose integrations and reviews"
         )
+        if preflight.review_config_error is not None and initial.review_write is None:
+            reset = self._prompts.select(
+                "Existing review configuration is invalid. Reset it?",
+                (
+                    GuidedPromptOption("reset", "Reset review configuration", True),
+                    GuidedPromptOption("cancel", "Cancel setup"),
+                ),
+                default="reset",
+            )
+            if reset != "reset":
+                return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
+            initial = InitChoices(
+                integrations=initial.integrations,
+                review_write=ReviewWrite.RESET,
+                review_producers=(),
+                review_models={},
+                existing_files=initial.existing_files,
+                github_decision=initial.github_decision,
+                github_file_decisions=initial.github_file_decisions,
+            )
         integrations = self._collect_integrations(request, preflight, initial)
         if integrations is _CANCEL:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
@@ -477,6 +561,7 @@ class InteractiveInitUI:
             review_models=models,
             existing_files=initial.existing_files,
             github_decision=initial.github_decision,
+            github_file_decisions=initial.github_file_decisions,
         )
         self._renderer.render_stage(
             RailStage.CONFIGURATION, RailState.COMPLETED, "Configuration collected"
@@ -502,12 +587,12 @@ class InteractiveInitUI:
             except ValueError:
                 self._renderer.render_validation("Choose confirm, back, or cancel.")
 
-    def run(
+    def prepare_plan(
         self,
         request: InitRequest,
         preflight: InitPreflight,
         *,
-        assume_yes: bool = False,
+        assume_yes: bool | None = None,
         initial_choices: InitChoices | None = None,
     ) -> WizardResult:
         self._renderer.render_stage(
@@ -517,18 +602,17 @@ class InteractiveInitUI:
             secondary="Detection is read-only",
         )
         choices = initial_choices
+        effective_assume_yes = request.assume_yes if assume_yes is None else assume_yes
         while True:
             collection = self.collect(request, preflight, initial_choices=choices)
             if collection.decision is ChoiceCollectionDecision.CANCEL:
-                self._render_cancelled()
                 return WizardResult.cancelled()
             choices = collection.choices
             plan = build_init_plan(request, preflight, choices)
-            decision = self.review(plan, assume_yes=assume_yes)
+            decision = self.review(plan, assume_yes=effective_assume_yes)
             if decision is ReviewDecision.BACK:
                 continue
             if decision is ReviewDecision.CANCEL:
-                self._render_cancelled()
                 return WizardResult.cancelled()
             self._renderer.render_stage(RailStage.REVIEW, RailState.COMPLETED, "Plan confirmed")
             self._renderer.render_stage(RailStage.APPLY, RailState.PENDING, "Ready for executor")
@@ -537,15 +621,44 @@ class InteractiveInitUI:
             )
             return WizardResult.confirmed(plan)
 
+    def run(
+        self,
+        request: InitRequest,
+        preflight: InitPreflight,
+        *,
+        assume_yes: bool = False,
+        initial_choices: InitChoices | None = None,
+    ) -> WizardResult:
+        result = self.prepare_plan(
+            request,
+            preflight,
+            assume_yes=assume_yes,
+            initial_choices=initial_choices,
+        )
+        if result.decision is WizardDecision.CANCEL:
+            self._render_cancelled()
+        return result
+
     def _render_cancelled(self) -> None:
         self._renderer.render_stage(RailStage.APPLY, RailState.PENDING, "No writes started")
         self._renderer.render_stage(RailStage.OUTCOME, RailState.COMPLETED, "Setup cancelled")
+
+    def render_cancelled(self) -> None:
+        self._render_cancelled()
 
     def render_plan(self, plan: InitPlan) -> None:
         self._renderer.render_plan(plan)
 
     def render_event(self, event: StepEventLike) -> None:
         self._renderer.render_event(event)
+
+    def on_step(self, event: StepEventLike) -> None:
+        self.render_event(event)
+
+    def render_outcome(self, result: ExecutionResultLike) -> None:
+        state = RailState.COMPLETED if result.success else RailState.FAILED
+        detail = "Setup complete" if result.success else (result.message or "Setup failed")
+        self._renderer.render_stage(RailStage.OUTCOME, state, detail)
 
 
 class _PlainInitUI:
@@ -566,6 +679,18 @@ class _PlainInitUI:
         self._width = max(1, width)
         # Kept as an explicit capability for API symmetry. Plain rendering never emits ANSI.
         self._color = color
+
+    def collect(
+        self,
+        request: InitRequest,
+        preflight: InitPreflight,
+        *,
+        initial_choices: InitChoices | None = None,
+    ) -> ChoiceCollectionResult:
+        raise NotImplementedError
+
+    def review(self, plan: InitPlan, *, assume_yes: bool = False) -> ReviewDecision:
+        raise NotImplementedError
 
     def render_plan(self, plan: InitPlan) -> None:
         """Render all primary plan values without truncating paths or model names."""
@@ -613,6 +738,39 @@ class _PlainInitUI:
         glyph = glyphs.get(state, "-")
         self._output(f"{glyph} {event.step_id}: {event.detail}")
 
+    def on_step(self, event: StepEventLike) -> None:
+        self.render_event(event)
+
+    def render_cancelled(self) -> None:
+        self._output("Setup cancelled")
+
+    def render_outcome(self, result: ExecutionResultLike) -> None:
+        command = result.next_command if result.success else result.recovery_command
+        if command:
+            label = "Next" if result.success else "Recovery"
+            self._output(f"{label}: {command}")
+
+    def prepare_plan(
+        self,
+        request: InitRequest,
+        preflight: InitPreflight,
+        *,
+        initial_choices: InitChoices | None = None,
+    ) -> WizardResult:
+        choices = initial_choices
+        while True:
+            collection = self.collect(request, preflight, initial_choices=choices)
+            if collection.decision is ChoiceCollectionDecision.CANCEL:
+                return WizardResult.cancelled()
+            choices = collection.choices
+            plan = build_init_plan(request, preflight, choices)
+            decision = self.review(plan, assume_yes=request.assume_yes)
+            if decision is ReviewDecision.BACK:
+                continue
+            if decision is ReviewDecision.CANCEL:
+                return WizardResult.cancelled()
+            return WizardResult.confirmed(plan)
+
 
 class LineInitUI(_PlainInitUI):
     """Deterministic one-question-per-option interaction for limited terminals."""
@@ -626,8 +784,23 @@ class LineInitUI(_PlainInitUI):
     ) -> ChoiceCollectionResult:
         """Collect unresolved values without accepting combined multi-select input."""
 
-        initial = initial_choices or InitChoices()
+        initial = _interactive_initial_choices(request, preflight, initial_choices)
         try:
+            if preflight.review_config_error is not None and initial.review_write is None:
+                if not self._ask_yes_no(
+                    "Existing review configuration is invalid. Reset it?",
+                    default=False,
+                ):
+                    return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
+                initial = InitChoices(
+                    integrations=initial.integrations,
+                    review_write=ReviewWrite.RESET,
+                    review_producers=(),
+                    review_models={},
+                    existing_files=initial.existing_files,
+                    github_decision=initial.github_decision,
+                    github_file_decisions=initial.github_file_decisions,
+                )
             integrations = self._collect_integrations(request, preflight, initial)
             producers = self._collect_producers(request, preflight, initial)
             models = self._collect_models(request, producers, initial)
@@ -643,6 +816,7 @@ class LineInitUI(_PlainInitUI):
                 review_models=models,
                 existing_files=initial.existing_files,
                 github_decision=initial.github_decision,
+                github_file_decisions=initial.github_file_decisions,
             ),
         )
 
@@ -654,6 +828,8 @@ class LineInitUI(_PlainInitUI):
     ) -> tuple[str, ...] | None:
         if request.integrations:
             return initial.integrations
+        if request.no_agent:
+            return ()
         defaults = (
             frozenset(initial.integrations)
             if initial.integrations is not None
@@ -782,3 +958,29 @@ class NonInteractiveInitUI(_PlainInitUI):
         del assume_yes
         self.render_plan(plan)
         return ReviewDecision.CONFIRM
+
+
+def create_init_ui(
+    capabilities: TerminalCapabilities,
+    *,
+    input_fn: TextInput,
+    output_fn: TextOutput,
+    quiet: bool = False,
+) -> InteractiveInitUI | LineInitUI | NonInteractiveInitUI:
+    """Select one UI once; callers may inject both streams for deterministic tests."""
+
+    rendered_output = (lambda _message: None) if quiet else output_fn
+    if capabilities.mode is InteractionMode.GUIDED:
+        return InteractiveInitUI(
+            unicode=capabilities.unicode,
+            color=capabilities.color,
+            width=capabilities.width,
+        )
+    ui_type = LineInitUI if capabilities.mode is InteractionMode.LINE else NonInteractiveInitUI
+    return ui_type(
+        input_fn=input_fn,
+        output_fn=rendered_output,
+        unicode=capabilities.unicode,
+        color=capabilities.color,
+        width=capabilities.width,
+    )

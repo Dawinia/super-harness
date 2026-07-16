@@ -109,7 +109,12 @@ class InitRequest:
     review_producers: tuple[str, ...] = ()
     review_models: Mapping[str, str] = field(default_factory=dict)
     review_flags_explicit: bool = False
+    framework: str | None = None
+    no_agent: bool = False
     setup_github: bool = False
+    assume_yes: bool = False
+    quiet: bool = False
+    json_output: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "workspace", Path(self.workspace))

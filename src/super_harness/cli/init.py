@@ -7,17 +7,25 @@ overwrites all skeleton files including user edits. Per `cli-command-surface` §
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
+from collections.abc import Mapping
 from importlib.resources import files
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import click
 import yaml
 
 from super_harness.adapters.install import install_agent_integration
 from super_harness.cli.errors import format_error
+from super_harness.cli.init_executor import (
+    InitExecutor,
+    InitOperationError,
+    InitOperationResult,
+    InitOperations,
+)
 from super_harness.cli.init_github import (
     GithubFileError,
     GithubFileKind,
@@ -28,7 +36,17 @@ from super_harness.cli.init_github import (
     inspect_github_files,
     resolve_github_plan,
 )
-from super_harness.cli.init_plan import GithubFileDecision
+from super_harness.cli.init_plan import (
+    GitHubDecision,
+    GithubFileDecision,
+    HarnessState,
+    InitChoices,
+    InitPlan,
+    InitPlanValidationError,
+    InitRequest,
+    ReviewWrite,
+    inspect_workspace,
+)
 from super_harness.core.clock import utc_now_iso
 from super_harness.engineering.agents_md import AgentsMdInjectionError
 from super_harness.engineering.gitignore_injector import (
@@ -66,8 +84,24 @@ _REVIEW_PRODUCERS: dict[str, dict[str, object]] = {
 }
 
 
-def _stdin_is_tty() -> bool:
-    return sys.stdin.isatty()
+def detect_runtime_terminal_capabilities(
+    stdin: Any,
+    stdout: Any,
+    environ: Mapping[str, str],
+) -> Any:
+    """Lazily load the Questionary/Rich boundary only when init executes."""
+
+    from super_harness.cli.init_ui import detect_runtime_terminal_capabilities as detect
+
+    return detect(stdin, stdout, environ)
+
+
+def create_init_ui(capabilities: Any, **kwargs: Any) -> Any:
+    """Preserve an injectable command seam without eagerly importing Questionary."""
+
+    from super_harness.cli.init_ui import create_init_ui as create
+
+    return create(capabilities, **kwargs)
 
 
 def check_gh() -> None:
@@ -91,84 +125,6 @@ def _gh_error_type() -> type[GhError]:
     from super_harness.engineering.gh import GhError
 
     return GhError
-
-
-def _prompt_multi_select(
-    title: str,
-    options: tuple[str, ...],
-) -> tuple[str, ...]:
-    if not options:
-        click.echo(f"{title}: no installed options detected")
-        return ()
-    click.echo(f"{title}:")
-    for index, option in enumerate(options, start=1):
-        click.echo(f"  {index}. {option} (recommended)")
-    default = ",".join(str(index) for index in range(1, len(options) + 1))
-    raw = click.prompt(
-        "Select comma-separated numbers, or 'none'",
-        default=default,
-        show_default=True,
-    ).strip()
-    if raw.lower() == "none":
-        return ()
-    selected: list[str] = []
-    for token in raw.split(","):
-        token = token.strip()
-        try:
-            index = int(token)
-        except ValueError as exc:
-            raise click.ClickException(
-                f"invalid selection {token!r}; enter comma-separated numbers"
-            ) from exc
-        if index < 1 or index > len(options):
-            raise click.ClickException(f"selection {index} is out of range 1..{len(options)}")
-        option = options[index - 1]
-        if option not in selected:
-            selected.append(option)
-    return tuple(selected)
-
-
-def _resolve_init_selections(
-    integrations: tuple[str, ...],
-    review_producers: tuple[str, ...],
-    review_models: tuple[str, ...],
-    *,
-    no_agent: bool,
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    """Resolve optional TTY selections; non-TTY values pass through unchanged."""
-
-    if not _stdin_is_tty():
-        return integrations, review_producers, review_models
-
-    resolved_integrations = integrations
-    if not resolved_integrations and not no_agent:
-        detected_integrations: list[str] = []
-        if shutil.which("codex"):
-            detected_integrations.append("codex")
-        if shutil.which("claude"):
-            detected_integrations.append("claude-code")
-        resolved_integrations = _prompt_multi_select(
-            "Coding-agent integrations", tuple(detected_integrations)
-        )
-
-    resolved_producers = review_producers
-    if not resolved_producers:
-        detected_producers: list[str] = []
-        if shutil.which("codex"):
-            detected_producers.append("codex-cli")
-        if shutil.which("claude"):
-            detected_producers.append("claude-cli")
-        resolved_producers = _prompt_multi_select("Review producers", tuple(detected_producers))
-
-    models = _parse_review_models(review_models)
-    for producer in resolved_producers:
-        source = str(_REVIEW_PRODUCERS[producer]["source"])
-        if source not in models:
-            models[source] = click.prompt(f"Explicit model for {source}", type=str).strip()
-            if not models[source]:
-                raise click.ClickException(f"explicit model for {source!r} cannot be empty")
-    resolved_models = tuple(f"{source}={model}" for source, model in models.items())
-    return resolved_integrations, resolved_producers, resolved_models
 
 
 # S3 fix (OPEN-ITEMS #6): typed outcome literals returned by `_write_pr_template`
@@ -367,6 +323,143 @@ def _configure_review_producers(
         profile_path.unlink(missing_ok=True)
 
 
+def build_init_operations(
+    *,
+    ctx: click.Context,
+    request: InitRequest,
+    github_plan: GithubPlan | None,
+) -> InitOperations:
+    """Adapt the established init helpers into prompt-free executor operations."""
+
+    root = request.workspace
+    harness = root / ".harness"
+
+    def scaffold(_plan: InitPlan) -> InitOperationResult:
+        harness.mkdir(parents=True, exist_ok=True)
+        (harness / "events.jsonl").touch()
+        for subdir in (
+            "sensor-results",
+            "verification-results",
+            "operation-logs",
+            "pending-reviews",
+        ):
+            (harness / subdir).mkdir(exist_ok=True)
+        return InitOperationResult("Scaffolded .harness and runtime directories.")
+
+    def skeleton_config(_plan: InitPlan) -> InitOperationResult:
+        try:
+            skeletons = _skeleton_files()
+            for name, content in skeletons.items():
+                if name == "review-governance.yaml":
+                    continue
+                path = harness / name
+                if path.exists() and not request.force:
+                    continue
+                path.write_text(content, encoding="utf-8")
+        except (OSError, click.ClickException) as error:
+            raise InitOperationError(
+                str(error),
+                exit_code=EXIT_GENERIC,
+                recovery_command="super-harness init --force",
+            ) from error
+        return InitOperationResult("Wrote skeleton configuration.")
+
+    def review_config(plan: InitPlan) -> InitOperationResult:
+        if plan.review_write is ReviewWrite.PRESERVE:
+            return InitOperationResult("Preserved existing review configuration.")
+        models = tuple(f"{source}={model}" for source, model in plan.review_models.items())
+        try:
+            _configure_review_producers(root, plan.review_producers, models)
+        except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as error:
+            raise InitOperationError(
+                f"could not configure review producers: {error}",
+                exit_code=EXIT_GENERIC,
+                hint="Select an installed producer and pass one explicit model per source.",
+            ) from error
+        verb = "Reset" if plan.review_write is ReviewWrite.RESET else "Configured"
+        return InitOperationResult(f"{verb} review configuration.")
+
+    def agent_integrations(plan: InitPlan) -> InitOperationResult:
+        configured: list[str] = []
+        for integration in plan.integrations:
+            try:
+                adapter = install_agent_integration(root, integration)
+            except (RuntimeError, ValueError, yaml.YAMLError, OSError) as error:
+                raise InitOperationError(
+                    f"could not configure {integration} integration: {error}",
+                    exit_code=EXIT_GENERIC,
+                    hint=(
+                        f"Install the agent and super-harness hook, then run "
+                        f"`super-harness adapter install {integration}`."
+                    ),
+                ) from error
+            configured.append(integration)
+            if not (request.quiet or request.json_output):
+                click.echo(f"configured {integration} integration: {adapter.installed_detail()}")
+        detail = (
+            f"Configured integrations: {', '.join(configured)}."
+            if configured
+            else "No agent integrations selected."
+        )
+        return InitOperationResult(detail)
+
+    def agents_md(_plan: InitPlan) -> InitOperationResult:
+        agents_path = root / "AGENTS.md"
+        try:
+            from super_harness.engineering.agents_md_render import (
+                render_super_harness_section,
+            )
+
+            render_super_harness_section(root, agents_path, __version__)
+        except (OSError, AgentsMdInjectionError) as error:
+            raise InitOperationError(
+                f"scaffolded .harness/ but failed to write AGENTS.md: {error}",
+                exit_code=EXIT_GENERIC,
+                hint=(
+                    "Fix AGENTS.md (permissions / duplicate super-harness markers) "
+                    "and re-run `init --force`."
+                ),
+            ) from error
+        return InitOperationResult("Updated AGENTS.md.")
+
+    def gitignore(_plan: InitPlan) -> InitOperationResult:
+        try:
+            inject_gitignore_block(root / ".gitignore")
+        except (OSError, GitignoreInjectionError) as error:
+            raise InitOperationError(
+                f"scaffolded .harness/ but failed to write .gitignore: {error}",
+                exit_code=EXIT_GENERIC,
+                hint=(
+                    "Fix .gitignore (permissions / duplicate super-harness markers) "
+                    "and re-run `init --force`."
+                ),
+            ) from error
+        return InitOperationResult("Updated .gitignore.")
+
+    def github(_plan: InitPlan) -> InitOperationResult:
+        if github_plan is None:
+            return InitOperationResult("GitHub setup skipped.")
+        try:
+            _setup_github(ctx, root, harness, github_plan)
+        except GithubFileError as error:
+            raise InitOperationError(
+                str(error),
+                exit_code=EXIT_GENERIC,
+                hint=error.hint,
+            ) from error
+        return InitOperationResult("Applied GitHub setup.")
+
+    return InitOperations(
+        scaffold=scaffold,
+        skeleton_config=skeleton_config,
+        review_config=review_config,
+        agent_integrations=agent_integrations,
+        agents_md=agents_md,
+        gitignore=gitignore,
+        github=github,
+    )
+
+
 @click.command("init")
 @click.option(
     "--setup-github",
@@ -408,6 +501,12 @@ def _configure_review_producers(
     metavar="SOURCE=MODEL",
     help="Explicit model for a selected review source; repeat per source.",
 )
+@click.option(
+    "--yes",
+    "assume_yes",
+    is_flag=True,
+    help="Skip the final confirmation in interactive mode.",
+)
 @click.pass_context
 def init_cmd(
     ctx: click.Context,
@@ -418,20 +517,48 @@ def init_cmd(
     integrations: tuple[str, ...],
     review_producers: tuple[str, ...],
     review_models: tuple[str, ...],
+    assume_yes: bool,
 ) -> None:
     """Initialize a project for super-harness.
 
     v0.1: --json is not honored by init (bootstrap command produces no
     machine-parseable state).
     """
-    # --framework remains a CLI-surface placeholder in v0.1 (Phase 1 convention:
-    # accept the flag, mark it unread, advertise the no-op via the --help caveat —
-    # NO runtime stderr notice). Phase 4 wires --framework detection.
-    # --setup-github is wired in Phase 12 (gh checks + PR template + repo settings).
-    _ = framework
     root = Path(ctx.obj.get("workspace") or ".").resolve()
+    quiet = bool(ctx.obj.get("quiet"))
+    json_output = bool(ctx.obj.get("json"))
+    capabilities = detect_runtime_terminal_capabilities(sys.stdin, sys.stdout, os.environ)
+    try:
+        parsed_models = _parse_review_models(review_models)
+    except ValueError as error:
+        click.echo(
+            format_error(
+                subcommand="init",
+                message=f"could not configure review producers: {error}",
+                hint="Select an installed producer and pass one explicit model per source.",
+            ),
+            err=True,
+        )
+        ctx.exit(EXIT_GENERIC)
+
+    request = InitRequest(
+        workspace=root,
+        interaction_mode=capabilities.mode,
+        force=force,
+        integrations=integrations,
+        review_producers=review_producers,
+        review_models=parsed_models,
+        review_flags_explicit=bool(review_producers or review_models),
+        framework=framework,
+        no_agent=no_agent,
+        setup_github=setup_github,
+        assume_yes=assume_yes,
+        quiet=quiet,
+        json_output=json_output,
+    )
+    preflight = inspect_workspace(request)
     harness = root / ".harness"
-    if harness.exists() and not force:
+    if preflight.harness_state is not HarnessState.ABSENT and not force:
         click.echo(
             format_error(
                 subcommand="init",
@@ -440,135 +567,71 @@ def init_cmd(
             ),
             err=True,
         )
-        sys.exit(EXIT_NO_CONFIG)
-    interactive = _stdin_is_tty()
-    explicit_review_selection = bool(review_producers or review_models)
-    governance_path = harness / "review-governance.yaml"
-    configure_review = not governance_path.is_file() or explicit_review_selection or interactive
-    integrations, review_producers, review_models = _resolve_init_selections(
-        integrations,
-        review_producers,
-        review_models,
-        no_agent=no_agent,
-    )
+        ctx.exit(EXIT_NO_CONFIG)
+
     github_plan = _plan_github_setup(ctx, root) if setup_github else None
-    harness.mkdir(parents=True, exist_ok=True)
-    # events.jsonl created empty (writer appends later)
-    (harness / "events.jsonl").touch()
-    # N-4 fix: create all 4 sub-directories per engineering-integration §2.1
-    for subdir in (
-        "sensor-results",
-        "verification-results",
-        "operation-logs",
-        "pending-reviews",
-    ):
-        (harness / subdir).mkdir(exist_ok=True)
-    for name, content in _skeleton_files().items():
-        path = harness / name
-        if name == "review-governance.yaml" and path.exists() and not configure_review:
-            continue
-        if path.exists() and not force:
-            continue
-        path.write_text(content, encoding="utf-8")
-    if configure_review:
-        try:
-            _configure_review_producers(root, review_producers, review_models)
-        except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as e:
-            click.echo(
-                format_error(
-                    subcommand="init",
-                    message=f"could not configure review producers: {e}",
-                    hint=("Select an installed producer and pass one explicit model per source."),
-                ),
-                err=True,
-            )
-            sys.exit(EXIT_GENERIC)
-    for integration in integrations:
-        try:
-            adapter = install_agent_integration(root, integration)
-        except (RuntimeError, ValueError, yaml.YAMLError, OSError) as e:
-            click.echo(
-                format_error(
-                    subcommand="init",
-                    message=f"could not configure {integration} integration: {e}",
-                    hint=(
-                        f"Install the agent and super-harness hook, then run "
-                        f"`super-harness adapter install {integration}`."
-                    ),
-                ),
-                err=True,
-            )
-            sys.exit(EXIT_GENERIC)
-        if not (ctx.obj.get("quiet") or ctx.obj.get("json")):
-            click.echo(f"configured {integration} integration: {adapter.installed_detail()}")
-    # Wire the repo-root AGENTS.md "super-harness section" (§2.2 / §3.2): create
-    # or append our section (preserving any user content outside the markers),
-    # then replace the framework placeholder with the plain framework block.
-    # PlainAdapter is the single source of the plain block (no hardcoded text).
-    # The injectors' atomic-write / CRLF-safety guarantees are documented in the
-    # `super_harness.engineering.agents_md` module docstring (single source of
-    # truth). Idempotent: a re-render (e.g. --force) replaces the existing section
-    # rather than duplicating it.
-    agents_path = root / "AGENTS.md"
-    # .harness/ is fully scaffolded above. An OSError (unwritable AGENTS.md / full
-    # disk) or AgentsMdInjectionError (duplicate super-harness outer block) here
-    # must surface through format_error like the .harness-exists branch — never a
-    # raw traceback. `init --force` re-renders the section in place, so the
-    # recovery contract is "fix AGENTS.md, re-run init --force".
-    # A re-render (`--force`) rewrites the super-harness section back to the
-    # base template (the no-agent anchor) — but it then RE-INJECTS every adapter
-    # still registered in `.harness/adapters.yaml`, so installed agent/framework
-    # guidance is never lost (full `--force` loop closure). On a fresh init (no
-    # adapters.yaml) re-injection is a no-op, so the render is unconditional. The
-    # shared renderer (init + sync SSOT) lets OSError / AgentsMdInjectionError
-    # propagate into THIS try's AGENTS.md envelope (fail-loud); only its internal
-    # adapters.yaml load is non-fatal (advisory + skip) — see the renderer module.
-    try:
-        from super_harness.engineering.agents_md_render import (
-            render_super_harness_section,
+
+    initial_choices = InitChoices()
+    if github_plan is not None:
+        github_decisions = {
+            item.inspection.path.relative_to(root).as_posix(): item.decision
+            for item in (github_plan.pr_template, github_plan.workflow)
+        }
+        initial_choices = InitChoices(
+            github_decision=GitHubDecision.CREATE,
+            github_file_decisions=github_decisions,
         )
 
-        render_super_harness_section(root, agents_path, __version__)
-    except (OSError, AgentsMdInjectionError) as e:
-        click.echo(
-            format_error(
-                subcommand="init",
-                message=f"scaffolded .harness/ but failed to write AGENTS.md: {e}",
-                hint=(
-                    "Fix AGENTS.md (permissions / duplicate super-harness markers) "
-                    "and re-run `init --force`."
-                ),
-            ),
-            err=True,
-        )
-        sys.exit(EXIT_GENERIC)
-    # Wire the repo-root .gitignore (S2 fix — OPEN-ITEMS #6): write a
-    # marker-bounded block listing the canonical `.harness/` runtime + per-machine
-    # `.claude/` paths so
-    # `git add -A` after init does not commit auto-generated state. Same
-    # marker-discipline contract as AGENTS.md: ≥2 blocks → fail loud (never
-    # splice — Phase 7/9/12 data-loss lesson). We do NOT `git add` — staging is
-    # the user's call.
-    gitignore_path = root / ".gitignore"
+    ui = create_init_ui(
+        capabilities,
+        input_fn=input,
+        output_fn=click.echo,
+        quiet=quiet or json_output,
+    )
     try:
-        inject_gitignore_block(gitignore_path)
-    except (OSError, GitignoreInjectionError) as e:
+        wizard = ui.prepare_plan(request, preflight, initial_choices=initial_choices)
+    except KeyboardInterrupt as error:
+        raise click.Abort() from error
+    except InitPlanValidationError as error:
+        message = str(error)
+        prefix = (
+            "could not configure review producers"
+            if "review" in message or "producer" in message or "model" in message
+            else "could not prepare init plan"
+        )
         click.echo(
             format_error(
                 subcommand="init",
-                message=f"scaffolded .harness/ but failed to write .gitignore: {e}",
-                hint=(
-                    "Fix .gitignore (permissions / duplicate super-harness markers) "
-                    "and re-run `init --force`."
-                ),
+                message=f"{prefix}: {message}",
+                hint="Select valid, complete choices and re-run init.",
             ),
             err=True,
         )
-        sys.exit(EXIT_GENERIC)
-    if github_plan is not None:
-        _setup_github(ctx, root, harness, github_plan)
+        ctx.exit(EXIT_GENERIC)
+
+    if getattr(wizard.decision, "value", wizard.decision) == "cancel":
+        ui.render_cancelled()
+        ctx.exit(EXIT_OK)
+    if wizard.plan is None:  # defensive totality for injected UI implementations
+        raise click.ClickException("init UI confirmed without a plan")
+
+    result = InitExecutor(
+        build_init_operations(ctx=ctx, request=request, github_plan=github_plan)
+    ).apply(wizard.plan, ui.on_step)
+    ui.render_outcome(result)
+    if not result.success:
+        click.echo(
+            format_error(
+                subcommand="init",
+                message=result.message or "initialization failed",
+                hint=result.hint,
+            ),
+            err=True,
+        )
+        ctx.exit(result.exit_code)
+
     click.echo(f"super-harness initialized at {harness}")
-    sys.exit(EXIT_OK)
+    ctx.exit(EXIT_OK)
 
 
 def _plan_github_setup(ctx: click.Context, root: Path) -> GithubPlan:

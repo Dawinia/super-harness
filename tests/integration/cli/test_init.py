@@ -1,6 +1,8 @@
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -8,9 +10,108 @@ from click.testing import CliRunner
 
 from super_harness.adapters.framework.plain import PlainAdapter
 from super_harness.cli import main
+from super_harness.cli.init_plan import (
+    InitChoices,
+    InteractionMode,
+    build_init_plan,
+    inspect_workspace,
+)
+from super_harness.cli.init_ui import (
+    InteractiveInitUI,
+    TerminalCapabilities,
+    WizardResult,
+)
 from super_harness.version import __version__
 
 _FAKE_HOOK = "/usr/local/bin/super-harness-hook"
+
+
+def _assert_init_owned_paths_absent(root: Path) -> None:
+    assert not (root / ".harness").exists()
+    assert not (root / "AGENTS.md").exists()
+    assert not (root / ".gitignore").exists()
+    assert not (root / ".github").exists()
+
+
+class _ScriptedInitUI:
+    def __init__(
+        self,
+        prepare: Callable[[Any, Any, InitChoices | None], WizardResult],
+    ) -> None:
+        self._prepare = prepare
+        self.events: list[Any] = []
+        self.outcome: Any = None
+        self.cancelled_rendered = False
+
+    def prepare_plan(
+        self,
+        request: Any,
+        preflight: Any,
+        *,
+        initial_choices: InitChoices | None = None,
+    ) -> WizardResult:
+        return self._prepare(request, preflight, initial_choices)
+
+    def render_cancelled(self) -> None:
+        self.cancelled_rendered = True
+        print("Setup cancelled")
+
+    def on_step(self, event: Any) -> None:
+        self.events.append(event)
+
+    def render_outcome(self, result: Any) -> None:
+        self.outcome = result
+
+
+class _GuidedAnswers:
+    def __init__(
+        self,
+        *,
+        checkboxes: list[tuple[str, ...] | None],
+        selects: list[str | None],
+        texts: list[str] | None = None,
+        before_review: Callable[[], None] | None = None,
+    ) -> None:
+        self.checkboxes = iter(checkboxes)
+        self.selects = iter(selects)
+        self.texts = iter(texts or [])
+        self.before_review = before_review
+
+    def checkbox(self, _message: str, _choices: Any) -> tuple[str, ...] | None:
+        return next(self.checkboxes)
+
+    def select(
+        self,
+        message: str,
+        _choices: Any,
+        *,
+        default: str | None = None,
+    ) -> str | None:
+        del default
+        if message == "Apply this plan?" and self.before_review is not None:
+            self.before_review()
+        return next(self.selects)
+
+    def text(self, _message: str, *, default: str | None = None) -> str | None:
+        del default
+        return next(self.texts)
+
+
+class _PlanCaptureRenderer:
+    def __init__(self) -> None:
+        self.plans: list[Any] = []
+
+    def render_stage(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    def render_plan(self, plan: Any) -> None:
+        self.plans.append(plan)
+
+    def render_validation(self, _message: str) -> None:
+        return None
+
+    def render_event(self, _event: Any) -> None:
+        return None
 
 
 def test_init_creates_harness_dir(tmp_path: Path):
@@ -110,39 +211,237 @@ def test_init_non_tty_configures_multiple_agent_integrations(
     assert (tmp_path / ".claude" / "settings.local.json").exists()
 
 
-def test_init_tty_wizard_multi_selects_integrations_and_review_producers(
+def test_init_guided_confirmation_boundary_writes_only_after_confirm(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("super_harness.cli.init._stdin_is_tty", lambda: True)
-    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/bin/{name}")
+    def confirm(request: Any, preflight: Any, initial: InitChoices | None) -> WizardResult:
+        _assert_init_owned_paths_absent(tmp_path)
+        return WizardResult.confirmed(build_init_plan(request, preflight, initial or InitChoices()))
+
+    ui = _ScriptedInitUI(confirm)
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".harness" / "events.jsonl").exists()
+    assert (tmp_path / "AGENTS.md").exists()
+    assert (tmp_path / ".gitignore").exists()
+    assert ui.outcome is not None and ui.outcome.success is True
+
+
+def test_init_explicit_cancel_is_a_normal_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def cancel(request: Any, _preflight: Any, _initial: InitChoices | None) -> WizardResult:
+        _assert_init_owned_paths_absent(request.workspace)
+        return WizardResult.cancelled()
+
+    ui = _ScriptedInitUI(cancel)
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+
+    result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert result.exit_code == 0, result.output
+    assert "Setup cancelled" in result.output
+    assert ui.cancelled_rendered is True
+    _assert_init_owned_paths_absent(tmp_path)
+
+
+def test_init_keyboard_interrupt_before_apply_exits_one_without_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def interrupt(request: Any, _preflight: Any, _initial: InitChoices | None) -> WizardResult:
+        _assert_init_owned_paths_absent(request.workspace)
+        raise KeyboardInterrupt
+
     monkeypatch.setattr(
-        "super_harness.adapters.agent.codex.shutil.which",
-        lambda name: f"/abs/bin/{name}",
+        "super_harness.cli.init.create_init_ui",
+        lambda *_a, **_kw: _ScriptedInitUI(interrupt),
+    )
+
+    result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert result.exit_code == 1
+    _assert_init_owned_paths_absent(tmp_path)
+
+
+def test_init_non_tty_accepts_yes_but_never_requires_it(tmp_path: Path) -> None:
+    without_yes = tmp_path / "without-yes"
+    with_yes = tmp_path / "with-yes"
+    without_yes.mkdir()
+    with_yes.mkdir()
+
+    first = CliRunner().invoke(main, ["--workspace", str(without_yes), "init"])
+    second = CliRunner().invoke(main, ["--workspace", str(with_yes), "init", "--yes"])
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert (without_yes / ".harness" / "events.jsonl").exists()
+    assert (with_yes / ".harness" / "events.jsonl").exists()
+
+
+def test_init_help_documents_yes_exactly() -> None:
+    result = CliRunner().invoke(main, ["init", "--help"], terminal_width=200)
+
+    assert result.exit_code == 0
+    assert "--yes" in result.output
+    assert "Skip the final confirmation in interactive mode." in result.output
+
+
+def test_init_line_mode_uses_per_option_prompts_without_comma_parser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capabilities = TerminalCapabilities(InteractionMode.LINE, False, False, 80)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
     )
     monkeypatch.setattr(
-        "super_harness.adapters.agent.claude_code.shutil.which",
-        lambda name: f"/abs/bin/{name}",
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(request, executable_lookup=lambda _name: None),
     )
 
     result = CliRunner().invoke(
         main,
         ["--workspace", str(tmp_path), "init"],
-        input="\n\ngpt-review\nclaude-review\n",
+        input="n\nn\ny\n",
     )
 
     assert result.exit_code == 0, result.output
-    assert "1. codex" in result.output
-    assert "2. claude-code" in result.output
-    assert "1. codex-cli" in result.output
-    assert "2. claude-cli" in result.output
-    assert "both" not in result.output.lower()
-    adapters = yaml.safe_load((tmp_path / ".harness" / "adapters.yaml").read_text())["adapters"]
-    assert [entry["name"] for entry in adapters] == ["codex", "claude-code"]
-    profiles = yaml.safe_load((tmp_path / ".harness" / "review-profiles.local.yaml").read_text())[
-        "sources"
-    ]
-    assert profiles["codex"]["model"] == "gpt-review"
-    assert profiles["claude"]["model"] == "claude-review"
+    assert "Select Codex integration?" in result.output
+    assert "Select Claude Code integration?" in result.output
+    assert "Apply this plan?" in result.output
+    assert "comma-separated" not in result.output
+
+
+def test_init_line_yes_skips_only_final_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capabilities = TerminalCapabilities(InteractionMode.LINE, False, False, 80)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(request, executable_lookup=lambda _name: None),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--yes"],
+        input="n\nn\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Select Codex integration?" in result.output
+    assert "Select Claude Code integration?" in result.output
+    assert "Apply this plan?" not in result.output
+
+
+def test_init_guided_back_applies_the_revised_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answers = _GuidedAnswers(
+        checkboxes=[("codex",), (), (), ()],
+        selects=["back", "confirm"],
+        before_review=lambda: _assert_init_owned_paths_absent(tmp_path),
+    )
+    ui = InteractiveInitUI(prompt_adapter=answers)
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(request, executable_lookup=lambda _name: None),
+    )
+
+    result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert result.exit_code == 0, result.output
+    assert not (tmp_path / ".harness" / "adapters.yaml").exists()
+    assert "comma-separated" not in result.output
+
+
+def test_init_questionary_none_cancels_without_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ui = InteractiveInitUI(
+        prompt_adapter=_GuidedAnswers(checkboxes=[None], selects=[]),
+    )
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+
+    result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert result.exit_code == 0, result.output
+    assert "Setup cancelled" in result.output
+    _assert_init_owned_paths_absent(tmp_path)
+
+
+def test_init_keyboard_interrupt_during_apply_keeps_completed_ledger(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "super_harness.cli.init.install_agent_integration",
+        lambda *_a, **_kw: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--integration", "codex"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert (tmp_path / ".harness" / "events.jsonl").exists()
+    assert "scaffold: Scaffolded .harness and runtime directories." in result.output
+    assert "agent_integrations: Interrupted while running agent_integrations." in result.output
+    assert not (tmp_path / "AGENTS.md").exists()
+
+
+def test_init_force_guided_edits_valid_persisted_review_configuration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/bin/{name}")
+    first = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(tmp_path),
+            "init",
+            "--review-producer",
+            "codex-cli",
+            "--review-model",
+            "codex=gpt-review",
+        ],
+    )
+    assert first.exit_code == 0, first.output
+
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, False, 80)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    renderer = _PlanCaptureRenderer()
+    ui = InteractiveInitUI(
+        prompt_adapter=_GuidedAnswers(
+            checkboxes=[(), ("codex-cli",)],
+            selects=["confirm"],
+        ),
+        renderer=renderer,
+    )
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+
+    forced = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--force"],
+    )
+
+    assert forced.exit_code == 0, forced.output
+    assert renderer.plans[-1].review_write.value == "update"
+    assert renderer.plans[-1].review_producers == ("codex-cli",)
+    assert dict(renderer.plans[-1].review_models) == {"codex": "gpt-review"}
 
 
 def test_init_scaffolds_derived_docs_skeleton(tmp_path: Path):
