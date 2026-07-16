@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Protocol, cast
+
+import questionary
+from rich.console import Console
+from rich.text import Text
 
 from super_harness.cli.init_plan import (
     InitChoices,
@@ -13,6 +17,7 @@ from super_harness.cli.init_plan import (
     InitPreflight,
     InitRequest,
     InteractionMode,
+    build_init_plan,
 )
 
 TextInput = Callable[[str], str]
@@ -143,6 +148,404 @@ _NARROW_WIDTH = 60
 
 class _CollectionCancelled(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class GuidedPromptOption:
+    """Library-neutral prompt option used at the Questionary boundary."""
+
+    value: str
+    title: str
+    checked: bool = False
+    disabled: str | None = None
+
+
+class GuidedPromptAdapter(Protocol):
+    def checkbox(
+        self, message: str, choices: Sequence[GuidedPromptOption]
+    ) -> tuple[str, ...] | None: ...
+    def text(self, message: str, *, default: str | None = None) -> str | None: ...
+    def select(
+        self,
+        message: str,
+        choices: Sequence[GuidedPromptOption],
+        *,
+        default: str | None = None,
+    ) -> str | None: ...
+
+
+class QuestionaryPromptAdapter:
+    """Translate library-neutral prompt values to and from Questionary."""
+
+    @staticmethod
+    def _choices(options: Sequence[GuidedPromptOption]) -> list[questionary.Choice]:
+        return [
+            questionary.Choice(
+                option.title,
+                value=option.value,
+                checked=option.checked,
+                disabled=option.disabled or None,
+            )
+            for option in options
+        ]
+
+    def checkbox(
+        self, message: str, choices: Sequence[GuidedPromptOption]
+    ) -> tuple[str, ...] | None:
+        answer = questionary.checkbox(message, choices=self._choices(choices)).ask()
+        return None if answer is None else tuple(cast(list[str], answer))
+
+    def text(self, message: str, *, default: str | None = None) -> str | None:
+        answer = questionary.text(message, default=default or "").ask()
+        return None if answer is None else str(answer)
+
+    def select(
+        self,
+        message: str,
+        choices: Sequence[GuidedPromptOption],
+        *,
+        default: str | None = None,
+    ) -> str | None:
+        answer = questionary.select(message, choices=self._choices(choices), default=default).ask()
+        return None if answer is None else str(answer)
+
+
+class RailStage(str, Enum):
+    PREFLIGHT = "preflight"
+    CONFIGURATION = "configuration"
+    REVIEW = "review"
+    APPLY = "apply"
+    OUTCOME = "outcome"
+
+
+class RailState(str, Enum):
+    PENDING = "pending"
+    CURRENT = "current"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class GuidedRenderAdapter(Protocol):
+    def render_stage(
+        self,
+        stage: RailStage,
+        state: RailState,
+        detail: str,
+        *,
+        secondary: str | None = None,
+    ) -> None: ...
+    def render_plan(self, plan: InitPlan) -> None: ...
+    def render_validation(self, message: str) -> None: ...
+    def render_event(self, event: StepEventLike) -> None: ...
+
+
+_RAIL_GLYPHS = {
+    True: dict(zip(RailState, ("◇", "◆", "●", "✗"), strict=True)),
+    False: dict(zip(RailState, ("|", "+", "*", "x"), strict=True)),
+}
+_RAIL_STYLES = dict(zip(RailState, ("dim", "cyan", "green", "red"), strict=True))
+_EVENT_GLYPHS = {
+    True: dict(zip(StepRenderState, ("…", "✓", "!", "✗", "!"), strict=True)),
+    False: dict(zip(StepRenderState, ("+", "*", "!", "x", "x"), strict=True)),
+}
+
+
+class RichGuidedRenderer:
+    """Single-column Rich renderer that never acquires live terminal ownership."""
+
+    def __init__(
+        self,
+        *,
+        console: Console | None = None,
+        unicode: bool,
+        color: bool,
+        width: int,
+    ) -> None:
+        self._unicode = unicode
+        self._color = color
+        self._width = max(1, width)
+        self._console = console or Console(color_system="auto" if color else None, width=width)
+
+    def _print(self, value: str, *, style: str | None = None) -> None:
+        self._console.print(
+            Text(value, style=style if self._color and style else ""),
+            overflow="fold",
+            crop=False,
+        )
+
+    def render_stage(
+        self,
+        stage: RailStage,
+        state: RailState,
+        detail: str,
+        *,
+        secondary: str | None = None,
+    ) -> None:
+        self._print(
+            f"{_RAIL_GLYPHS[self._unicode][state]}  {stage.value}: {detail}",
+            style=_RAIL_STYLES[state],
+        )
+        if secondary is not None and self._width >= _NARROW_WIDTH:
+            self._print(f"{'│' if self._unicode else '|'}  {secondary}", style="dim")
+
+    def render_plan(self, plan: InitPlan) -> None:
+        integrations = ", ".join(plan.integrations) if plan.integrations else "(none)"
+        producers = ", ".join(plan.review_producers) if plan.review_producers else "(none)"
+        self._print(f"|  Integrations: {integrations}")
+        self._print(f"|  Review producers: {producers}")
+        if plan.review_models:
+            for source, model in plan.review_models.items():
+                self._print(f"|  Model {source}: {model}")
+        else:
+            self._print("|  Review models: (none)")
+        self._print(f"|  Review configuration: {plan.review_write.value}")
+        self._print(f"|  GitHub setup: {plan.github_decision.value}")
+        for action in plan.file_actions:
+            self._print(f"|  File {action.action.value}: {action.path}")
+            if self._width >= _NARROW_WIDTH:
+                self._print("|    hint: will be written during apply", style="dim")
+
+    def render_validation(self, message: str) -> None:
+        self._print(f"{'!' if self._unicode else 'x'}  {message}", style="yellow")
+
+    def render_event(self, event: StepEventLike) -> None:
+        state = event.state.value if isinstance(event.state, Enum) else str(event.state)
+        glyphs = {key.value: value for key, value in _EVENT_GLYPHS[self._unicode].items()}
+        self._print(f"{glyphs.get(state, '|')}  {event.step_id}: {event.detail}")
+
+
+class WizardDecision(str, Enum):
+    CONFIRM = "confirm"
+    CANCEL = "cancel"
+
+
+@dataclass(frozen=True)
+class WizardResult:
+    decision: WizardDecision
+    plan: InitPlan | None
+
+    @classmethod
+    def confirmed(cls, plan: InitPlan) -> WizardResult:
+        return cls(WizardDecision.CONFIRM, plan)
+
+    @classmethod
+    def cancelled(cls) -> WizardResult:
+        return cls(WizardDecision.CANCEL, None)
+
+
+_CANCEL = object()
+
+
+class InteractiveInitUI:
+    """Questionary input and Rich rail orchestration for capable terminals."""
+
+    def __init__(
+        self,
+        *,
+        prompt_adapter: GuidedPromptAdapter | None = None,
+        renderer: GuidedRenderAdapter | None = None,
+        unicode: bool = True,
+        color: bool = True,
+        width: int = 80,
+    ) -> None:
+        self._prompts = prompt_adapter or QuestionaryPromptAdapter()
+        self._renderer = renderer or RichGuidedRenderer(unicode=unicode, color=color, width=width)
+
+    @staticmethod
+    def _integration_options(
+        preflight: InitPreflight, defaults: frozenset[str]
+    ) -> tuple[GuidedPromptOption, ...]:
+        return tuple(
+            GuidedPromptOption(
+                option.value,
+                f"{option.label}  "
+                + (
+                    "detected · recommended"
+                    if option.value in preflight.detected_integrations
+                    else "not detected"
+                ),
+                option.value in defaults,
+            )
+            for option in _INTEGRATIONS
+        )
+
+    @staticmethod
+    def _producer_options(
+        preflight: InitPreflight, defaults: frozenset[str]
+    ) -> tuple[GuidedPromptOption, ...]:
+        def create(option: _Option) -> GuidedPromptOption:
+            available = option.value in preflight.available_review_producers
+            status = (
+                "detected · recommended"
+                if option.value in preflight.detected_review_producers
+                else "executable not found"
+            )
+            return GuidedPromptOption(
+                option.value,
+                f"{option.label}  {status}",
+                available and option.value in defaults,
+                None if available else "executable not found",
+            )
+
+        return tuple(create(option) for option in _REVIEW_PRODUCERS)
+
+    def _collect_integrations(
+        self, request: InitRequest, preflight: InitPreflight, initial: InitChoices
+    ) -> tuple[str, ...] | None | object:
+        if request.integrations:
+            return initial.integrations
+        defaults = (
+            frozenset(initial.integrations)
+            if initial.integrations is not None
+            else frozenset(preflight.detected_integrations)
+        )
+        answer = self._prompts.checkbox(
+            "Coding-agent integrations", self._integration_options(preflight, defaults)
+        )
+        if answer is None:
+            return _CANCEL
+        allowed = {option.value for option in _INTEGRATIONS}
+        return tuple(value for value in answer if value in allowed)
+
+    def _collect_producers(
+        self, request: InitRequest, preflight: InitPreflight, initial: InitChoices
+    ) -> tuple[str, ...] | None | object:
+        if request.review_producers:
+            return initial.review_producers
+        defaults = (
+            frozenset(initial.review_producers)
+            if initial.review_producers is not None
+            else frozenset(preflight.detected_review_producers)
+        )
+        answer = self._prompts.checkbox(
+            "Automated review producers", self._producer_options(preflight, defaults)
+        )
+        if answer is None:
+            return _CANCEL
+        return tuple(value for value in answer if value in preflight.available_review_producers)
+
+    def _collect_models(
+        self,
+        request: InitRequest,
+        producers: tuple[str, ...] | None,
+        initial: InitChoices,
+    ) -> Mapping[str, str] | None:
+        models = dict(initial.review_models)
+        known = models | dict(request.review_models)
+        options = {option.value: option for option in _REVIEW_PRODUCERS}
+        for producer in request.review_producers or producers or ():
+            option = options.get(producer)
+            if option is None or option.source is None or option.source in known:
+                continue
+            while True:
+                answer = self._prompts.text(f"Model for {option.label}", default=None)
+                if answer is None:
+                    return None
+                if answer.strip():
+                    models[option.source] = answer.strip()
+                    known[option.source] = answer.strip()
+                    break
+                self._renderer.render_validation("A model is required.")
+        return models
+
+    def collect(
+        self,
+        request: InitRequest,
+        preflight: InitPreflight,
+        *,
+        initial_choices: InitChoices | None = None,
+    ) -> ChoiceCollectionResult:
+        initial = initial_choices or InitChoices()
+        self._renderer.render_stage(
+            RailStage.CONFIGURATION, RailState.CURRENT, "Choose integrations and reviews"
+        )
+        integrations = self._collect_integrations(request, preflight, initial)
+        if integrations is _CANCEL:
+            return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
+        producers = self._collect_producers(request, preflight, initial)
+        if producers is _CANCEL:
+            return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
+        typed_integrations = cast(tuple[str, ...] | None, integrations)
+        typed_producers = cast(tuple[str, ...] | None, producers)
+        models = self._collect_models(request, typed_producers, initial)
+        if models is None:
+            return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
+        choices = InitChoices(
+            integrations=typed_integrations,
+            review_write=initial.review_write,
+            review_producers=typed_producers,
+            review_models=models,
+            existing_files=initial.existing_files,
+            github_decision=initial.github_decision,
+        )
+        self._renderer.render_stage(
+            RailStage.CONFIGURATION, RailState.COMPLETED, "Configuration collected"
+        )
+        return ChoiceCollectionResult(ChoiceCollectionDecision.REVIEW, choices)
+
+    def review(self, plan: InitPlan, *, assume_yes: bool = False) -> ReviewDecision:
+        self._renderer.render_stage(RailStage.REVIEW, RailState.CURRENT, "Review planned setup")
+        self._renderer.render_plan(plan)
+        if assume_yes:
+            return ReviewDecision.CONFIRM
+        choices = (
+            GuidedPromptOption("confirm", "Confirm and continue", True),
+            GuidedPromptOption("back", "Back to configuration"),
+            GuidedPromptOption("cancel", "Cancel setup"),
+        )
+        while True:
+            answer = self._prompts.select("Apply this plan?", choices, default="confirm")
+            if answer is None:
+                return ReviewDecision.CANCEL
+            try:
+                return ReviewDecision(answer)
+            except ValueError:
+                self._renderer.render_validation("Choose confirm, back, or cancel.")
+
+    def run(
+        self,
+        request: InitRequest,
+        preflight: InitPreflight,
+        *,
+        assume_yes: bool = False,
+        initial_choices: InitChoices | None = None,
+    ) -> WizardResult:
+        self._renderer.render_stage(
+            RailStage.PREFLIGHT,
+            RailState.COMPLETED,
+            f"Inspected {request.workspace}",
+            secondary="Detection is read-only",
+        )
+        choices = initial_choices
+        while True:
+            collection = self.collect(request, preflight, initial_choices=choices)
+            if collection.decision is ChoiceCollectionDecision.CANCEL:
+                self._render_cancelled()
+                return WizardResult.cancelled()
+            choices = collection.choices
+            plan = build_init_plan(request, preflight, choices)
+            decision = self.review(plan, assume_yes=assume_yes)
+            if decision is ReviewDecision.BACK:
+                continue
+            if decision is ReviewDecision.CANCEL:
+                self._render_cancelled()
+                return WizardResult.cancelled()
+            self._renderer.render_stage(RailStage.REVIEW, RailState.COMPLETED, "Plan confirmed")
+            self._renderer.render_stage(RailStage.APPLY, RailState.PENDING, "Ready for executor")
+            self._renderer.render_stage(
+                RailStage.OUTCOME, RailState.PENDING, "Pending apply outcome"
+            )
+            return WizardResult.confirmed(plan)
+
+    def _render_cancelled(self) -> None:
+        self._renderer.render_stage(RailStage.APPLY, RailState.PENDING, "No writes started")
+        self._renderer.render_stage(RailStage.OUTCOME, RailState.COMPLETED, "Setup cancelled")
+
+    def render_plan(self, plan: InitPlan) -> None:
+        self._renderer.render_plan(plan)
+
+    def render_event(self, event: StepEventLike) -> None:
+        self._renderer.render_event(event)
 
 
 class _PlainInitUI:

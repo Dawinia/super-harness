@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import FrozenInstanceError
+from io import StringIO
 from pathlib import Path
+from typing import Any
 
 import pytest
+from rich.console import Console
 
 from super_harness.cli.init_plan import (
     FileAction,
@@ -20,12 +23,18 @@ from super_harness.cli.init_plan import (
 )
 from super_harness.cli.init_ui import (
     ChoiceCollectionDecision,
+    GuidedPromptOption,
+    InteractiveInitUI,
     LineInitUI,
     NonInteractiveInitUI,
+    RailStage,
+    RailState,
     ReviewDecision,
+    RichGuidedRenderer,
     StepRenderEvent,
     StepRenderState,
     TerminalCapabilities,
+    WizardDecision,
     detect_terminal_capabilities,
 )
 
@@ -517,3 +526,335 @@ def test_step_render_events_are_immutable() -> None:
 
     with pytest.raises(FrozenInstanceError):
         event.detail = "changed"  # type: ignore[misc]
+
+
+class _FakeGuidedRenderer:
+    def __init__(self) -> None:
+        self.live_depth = 0
+        self.stages: list[tuple[RailStage, RailState, str, str | None]] = []
+        self.plans: list[InitPlan] = []
+        self.validations: list[str] = []
+        self.events: list[Any] = []
+
+    def render_stage(
+        self,
+        stage: RailStage,
+        state: RailState,
+        detail: str,
+        *,
+        secondary: str | None = None,
+    ) -> None:
+        assert self.live_depth == 0
+        self.stages.append((stage, state, detail, secondary))
+
+    def render_plan(self, plan: InitPlan) -> None:
+        assert self.live_depth == 0
+        self.plans.append(plan)
+
+    def render_validation(self, message: str) -> None:
+        assert self.live_depth == 0
+        self.validations.append(message)
+
+    def render_event(self, event: Any) -> None:
+        assert self.live_depth == 0
+        self.events.append(event)
+
+
+class _FakePromptAdapter:
+    def __init__(
+        self,
+        *,
+        checkboxes: Sequence[tuple[str, ...] | None | BaseException] = (),
+        texts: Sequence[str | None | BaseException] = (),
+        selects: Sequence[str | None | BaseException] = (),
+        before_prompt: Callable[[], None] | None = None,
+    ) -> None:
+        self._checkboxes = iter(checkboxes)
+        self._texts = iter(texts)
+        self._selects = iter(selects)
+        self._before_prompt = before_prompt or (lambda: None)
+        self.checkbox_calls: list[tuple[str, tuple[GuidedPromptOption, ...]]] = []
+        self.text_calls: list[tuple[str, str | None]] = []
+        self.select_calls: list[tuple[str, tuple[GuidedPromptOption, ...], str | None]] = []
+
+    @staticmethod
+    def _answer(value: Any) -> Any:
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    def checkbox(
+        self,
+        message: str,
+        choices: Sequence[GuidedPromptOption],
+    ) -> tuple[str, ...] | None:
+        self._before_prompt()
+        self.checkbox_calls.append((message, tuple(choices)))
+        return self._answer(next(self._checkboxes))
+
+    def text(self, message: str, *, default: str | None = None) -> str | None:
+        self._before_prompt()
+        self.text_calls.append((message, default))
+        return self._answer(next(self._texts))
+
+    def select(
+        self,
+        message: str,
+        choices: Sequence[GuidedPromptOption],
+        *,
+        default: str | None = None,
+    ) -> str | None:
+        self._before_prompt()
+        self.select_calls.append((message, tuple(choices), default))
+        return self._answer(next(self._selects))
+
+
+def _guided_ui(
+    prompts: _FakePromptAdapter,
+    renderer: _FakeGuidedRenderer | None = None,
+) -> tuple[InteractiveInitUI, _FakeGuidedRenderer]:
+    selected_renderer = renderer or _FakeGuidedRenderer()
+    return (
+        InteractiveInitUI(prompt_adapter=prompts, renderer=selected_renderer),
+        selected_renderer,
+    )
+
+
+def test_guided_preselects_and_labels_detected_options_and_disables_missing_producer(
+    tmp_path: Path,
+) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex", "claude-code"), ("codex-cli",)],
+        texts=["gpt-5-codex"],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(
+            available_integrations=frozenset({"codex"}),
+            available_producers=frozenset({"codex-cli"}),
+        ),
+    )
+
+    integrations = prompts.checkbox_calls[0][1]
+    producers = prompts.checkbox_calls[1][1]
+    assert integrations[0].checked is True
+    assert "detected · recommended" in integrations[0].title
+    assert integrations[1].checked is False
+    assert integrations[1].disabled is None
+    assert "not detected" in integrations[1].title
+    assert producers[0].checked is True
+    assert "detected · recommended" in producers[0].title
+    assert producers[1].disabled == "executable not found"
+    assert result.choices.integrations == ("codex", "claude-code")
+
+
+def test_guided_blank_model_stays_in_prompt_until_non_empty(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("codex-cli",)],
+        texts=["", "   ", "gpt-5-codex"],
+    )
+    ui, renderer = _guided_ui(prompts)
+
+    result = ui.collect(_request(tmp_path), _preflight())
+
+    assert dict(result.choices.review_models) == {"codex": "gpt-5-codex"}
+    assert len(prompts.text_calls) == 3
+    assert all(default is None for _, default in prompts.text_calls)
+    assert renderer.validations == ["A model is required.", "A model is required."]
+
+
+def test_guided_run_back_reuses_choices_then_returns_revised_plan(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[
+            ("codex",),
+            ("codex-cli",),
+            ("claude-code",),
+            ("codex-cli",),
+        ],
+        texts=["gpt-5-codex"],
+        selects=["back", "confirm"],
+    )
+    ui, renderer = _guided_ui(prompts)
+
+    result = ui.run(_request(tmp_path), _preflight())
+
+    assert result.decision is WizardDecision.CONFIRM
+    assert result.plan is not None
+    assert result.plan.integrations == ("claude-code",)
+    second_integrations = prompts.checkbox_calls[2][1]
+    assert [option.checked for option in second_integrations] == [True, False]
+    assert len(prompts.text_calls) == 1
+    assert len(renderer.plans) == 2
+
+
+def test_guided_confirm_returns_an_immutable_result(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        texts=["gpt-5-codex"],
+        selects=["confirm"],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.run(_request(tmp_path), _preflight())
+
+    assert result.decision is WizardDecision.CONFIRM
+    assert result.plan is not None
+    with pytest.raises(FrozenInstanceError):
+        result.plan = None  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        result.plan.review_models["codex"] = "changed"  # type: ignore[index]
+
+
+@pytest.mark.parametrize("cancel_at", ["configuration", "review"])
+def test_guided_none_maps_to_explicit_cancel_with_no_plan(
+    tmp_path: Path,
+    cancel_at: str,
+) -> None:
+    if cancel_at == "configuration":
+        prompts = _FakePromptAdapter(checkboxes=[None])
+    else:
+        prompts = _FakePromptAdapter(
+            checkboxes=[("codex",), ("codex-cli",)],
+            texts=["gpt-5-codex"],
+            selects=[None],
+        )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.run(_request(tmp_path), _preflight())
+
+    assert result.decision is WizardDecision.CANCEL
+    assert result.plan is None
+
+
+def test_guided_explicit_cancel_has_no_plan(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        texts=["gpt-5-codex"],
+        selects=["cancel"],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.run(_request(tmp_path), _preflight())
+
+    assert result.decision is WizardDecision.CANCEL
+    assert result.plan is None
+
+
+def test_guided_keyboard_interrupt_propagates(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(checkboxes=[KeyboardInterrupt()])
+    ui, _ = _guided_ui(prompts)
+
+    with pytest.raises(KeyboardInterrupt):
+        ui.run(_request(tmp_path), _preflight())
+
+
+def test_guided_assume_yes_skips_only_review(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        texts=["gpt-required"],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.run(_request(tmp_path), _preflight(), assume_yes=True)
+
+    assert result.decision is WizardDecision.CONFIRM
+    assert result.plan is not None
+    assert dict(result.plan.review_models) == {"codex": "gpt-required"}
+    assert len(prompts.checkbox_calls) == 2
+    assert len(prompts.text_calls) == 1
+    assert prompts.select_calls == []
+
+
+def test_guided_never_has_a_live_renderer_while_any_prompt_owns_input(
+    tmp_path: Path,
+) -> None:
+    renderer = _FakeGuidedRenderer()
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        texts=["gpt-model"],
+        selects=["confirm"],
+        before_prompt=lambda: (
+            renderer.live_depth == 0 or pytest.fail("Rich live display active during prompt")
+        ),
+    )
+    ui, _ = _guided_ui(prompts, renderer)
+
+    ui.run(_request(tmp_path), _preflight())
+
+    assert len(prompts.checkbox_calls) + len(prompts.text_calls) + len(prompts.select_calls) == 4
+
+
+def test_guided_completed_rail_order_and_five_stage_visibility(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        texts=["gpt-model"],
+        selects=["confirm"],
+    )
+    ui, renderer = _guided_ui(prompts)
+
+    ui.run(_request(tmp_path), _preflight())
+
+    completed = [stage for stage, state, _, _ in renderer.stages if state is RailState.COMPLETED]
+    visible = {stage for stage, _, _, _ in renderer.stages}
+    assert completed == [RailStage.PREFLIGHT, RailStage.CONFIGURATION, RailStage.REVIEW]
+    assert visible == set(RailStage)
+
+
+def test_rich_guided_glyphs_are_independent_of_color() -> None:
+    unicode_buffer = StringIO()
+    ascii_buffer = StringIO()
+    unicode_renderer = RichGuidedRenderer(
+        console=Console(file=unicode_buffer, width=80, color_system=None),
+        unicode=True,
+        color=False,
+        width=80,
+    )
+    ascii_renderer = RichGuidedRenderer(
+        console=Console(file=ascii_buffer, width=80, color_system="standard"),
+        unicode=False,
+        color=True,
+        width=80,
+    )
+
+    unicode_renderer.render_stage(RailStage.PREFLIGHT, RailState.CURRENT, "Inspecting")
+    ascii_renderer.render_stage(RailStage.PREFLIGHT, RailState.CURRENT, "Inspecting")
+    ascii_renderer.render_stage(RailStage.APPLY, RailState.COMPLETED, "Applied")
+    ascii_renderer.render_stage(RailStage.OUTCOME, RailState.FAILED, "Failed")
+
+    assert "◆  preflight: Inspecting" in unicode_buffer.getvalue()
+    ascii_text = ascii_buffer.getvalue()
+    assert "+  preflight: Inspecting" in ascii_text
+    assert "*  apply: Applied" in ascii_text
+    assert "x  outcome: Failed" in ascii_text
+
+
+def test_rich_guided_narrow_output_drops_hints_and_wraps_paths(tmp_path: Path) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=24, color_system=None),
+        unicode=False,
+        color=False,
+        width=24,
+    )
+    plan = _plan(tmp_path)
+
+    renderer.render_plan(plan)
+
+    text = buffer.getvalue()
+    compact = "".join(line.strip() for line in text.splitlines())
+    assert str(plan.file_actions[0].path) in compact
+    assert "will be written during apply" not in text
+    assert "..." not in text
+    assert len(text.splitlines()) > len(plan.file_actions)
+
+
+def test_guided_step_rendering_accepts_plain_structural_event() -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+    event = StepRenderEvent("scaffold", StepRenderState.SUCCEEDED, "Created")
+
+    ui.render_event(event)
+
+    assert renderer.events == [event]
