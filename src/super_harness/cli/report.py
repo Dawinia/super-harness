@@ -68,7 +68,11 @@ def _breakdown_lines(r: ValueReport) -> list[str]:
 
 
 def _bottom_line(r: ValueReport) -> str:
-    if r.findings_resolved == 0 and r.undisclosed_bypasses == 0:
+    if (
+        r.findings_resolved == 0
+        and r.undisclosed_bypasses == 0
+        and r.edits_blocked == 0
+    ):
         return (
             "Bottom line: no measurable catches this window — nothing prevented "
             "that we can prove. On this evidence alone it is not earning its keep here."
@@ -76,6 +80,8 @@ def _bottom_line(r: ValueReport) -> str:
     parts = []
     if r.findings_resolved:
         parts.append(f"review earned its keep: {r.findings_resolved} real fix(es)")
+    if r.edits_blocked:
+        parts.append(f"the gate held {r.edits_blocked} out-of-lifecycle edit target(s)")
     if r.undisclosed_bypasses:
         parts.append(f"{r.undisclosed_bypasses} undisclosed bypass(es) to investigate")
     return "Bottom line: " + "; ".join(parts) + "."
@@ -91,6 +97,8 @@ def _render_human(r: ValueReport) -> str:
         f"  - {r.findings_resolved} problem(s) review found and you fixed",
         f"  - {r.findings_open_undisposed} more review raised that are still open "
         "(no fix or waiver recorded)",
+        f"  - {r.edits_blocked} distinct out-of-lifecycle edit target(s) the gate "
+        "held (file x state; a conservative floor - retries collapse)",
     ]
     if r.undisclosed_bypasses:
         lines.append(
@@ -106,10 +114,10 @@ def _render_human(r: ValueReport) -> str:
         f"  - review rework: {r.findings_wontfix} false alarm(s) (wontfix), "
         f"{r.rejected_rounds} rejected round(s)",
         "",
-        f"  Note: the lifecycle gate, {r.armed_decisions} locked rule(s), verification "
-        "and doc-sync also",
-        "  stand guard in the prevention layer - their successful catches leave no "
-        "trace yet (see Stage 2).",
+        f"  Note: {r.armed_decisions} locked rule(s), verification and doc-sync also "
+        "stand guard in the",
+        "  prevention layer - their successful catches still leave no trace (a further "
+        "Stage 2 cut).",
     ]
     lines += _breakdown_lines(r)
     lines += [
@@ -122,6 +130,8 @@ def _render_human(r: ValueReport) -> str:
 def _render_brief(r: ValueReport) -> str:
     window = f"{r.since or 'all'}-{r.until or 'now'}"
     bits = [f"caught {r.findings_resolved}", f"{_fmt_tokens(r.review_tokens)} review tokens"]
+    if r.edits_blocked:
+        bits.append(f"{r.edits_blocked} distinct target(s) held")
     if r.undisclosed_bypasses:
         bits.append(f"{r.undisclosed_bypasses} undisclosed bypass(es)")
     return f"{window}: " + ", ".join(bits) + "."
