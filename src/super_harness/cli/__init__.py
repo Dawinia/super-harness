@@ -17,53 +17,81 @@ from super_harness.cli.lazy_group import CommandSpec, LazyGroup
 from super_harness.version import __version__
 
 COMMAND_SPECS = {
-    "state": CommandSpec(
-        "super_harness.cli.state:state_group",
-        "Inspect / rebuild the derived state.yaml.",
+    "adapter": CommandSpec(
+        "super_harness.cli.adapter:adapter_group",
+        "Install / uninstall / list super-harness integrations for frameworks + agents.",
     ),
-    "event": CommandSpec(
-        "super_harness.cli.event:event_group",
-        "Inspect the event stream.",
-    ),
-    "init": CommandSpec(
-        "super_harness.cli.init:init_cmd",
-        "Initialize a project for super-harness.",
+    "attest": CommandSpec(
+        "super_harness.cli.attest:attest_group",
+        "Lifecycle attestation: snapshot evidence + verify it covers a diff.",
     ),
     "change": CommandSpec(
         "super_harness.cli.change:change_group",
         "Declare / abandon / list lifecycle changes.",
     ),
-    "status": CommandSpec(
-        "super_harness.cli.status:status_cmd",
-        "Show current state for one change, all changes, or the most recently active change.",
+    "decision": CommandSpec(
+        "super_harness.cli.decision:decision_group",
+        "Author, ratify, and check decision records.",
     ),
-    "report": CommandSpec(
-        "super_harness.cli.report:report_cmd",
-        "Show what the harness measurably did for you over a repo/time-window.",
+    "doc": CommandSpec(
+        "super_harness.cli.doc:doc_group",
+        "Check that derivable docs match their generators.",
     ),
-    "sensor": CommandSpec(
-        "super_harness.cli.sensor:sensor_group",
-        "Inspect the sensor registry.",
+    "done": CommandSpec(
+        "super_harness.cli.done:done_cmd",
+        "Verify a change and emit implementation_complete on a pass.",
+    ),
+    "event": CommandSpec(
+        "super_harness.cli.event:event_group",
+        "Inspect the event stream.",
     ),
     "gate": CommandSpec(
         "super_harness.cli.gate:gate_group",
         "Inspect the gate registry.",
     ),
+    "implementation": CommandSpec(
+        "super_harness.cli.implementation:implementation_group",
+        "Implementation-phase lifecycle verbs.",
+    ),
+    "init": CommandSpec(
+        "super_harness.cli.init:init_cmd",
+        "Initialize a project for super-harness.",
+    ),
     "observe": CommandSpec(
         "super_harness.cli.observe:observe_group",
         "Operate the optional framework-observer host (start / stop / status).",
     ),
-    "adapter": CommandSpec(
-        "super_harness.cli.adapter:adapter_group",
-        "Install / uninstall / list super-harness integrations for frameworks + agents.",
+    "on-merge": CommandSpec(
+        "super_harness.cli.on_merge:on_merge_cli",
+        "Emit a ``merged`` event (transitions the change to ARCHIVED).",
     ),
-    "verify": CommandSpec(
-        "super_harness.cli.verify:verify_cmd",
-        "Run verification checks for a change and report the verdict.",
+    "plan": CommandSpec(
+        "super_harness.cli.plan:plan_group",
+        "Plan-phase lifecycle verbs (plain-mode manual emit).",
     ),
-    "done": CommandSpec(
-        "super_harness.cli.done:done_cmd",
-        "Verify a change and emit implementation_complete on a pass.",
+    "pr": CommandSpec(
+        "super_harness.cli.pr:pr_group",
+        "PR-side helpers (validate PR metadata + lifecycle).",
+    ),
+    "report": CommandSpec(
+        "super_harness.cli.report:report_cmd",
+        "Show what the harness measurably did for you over a repo/time-window.",
+    ),
+    "review": CommandSpec(
+        "super_harness.cli.review:review_group",
+        "Compile contracts, import receipts, or disclose a review skip.",
+    ),
+    "sensor": CommandSpec(
+        "super_harness.cli.sensor:sensor_group",
+        "Inspect the sensor registry.",
+    ),
+    "state": CommandSpec(
+        "super_harness.cli.state:state_group",
+        "Inspect / rebuild the derived state.yaml.",
+    ),
+    "status": CommandSpec(
+        "super_harness.cli.status:status_cmd",
+        "Show current state for one change, all changes, or the most recently active change.",
     ),
     "sync": CommandSpec(
         "super_harness.cli.sync:sync_cmd",
@@ -73,37 +101,9 @@ COMMAND_SPECS = {
         "super_harness.cli.verification:verification_group",
         "Register / manage verification checks in `.harness/verification.yaml`.",
     ),
-    "pr": CommandSpec(
-        "super_harness.cli.pr:pr_group",
-        "PR-side helpers (validate PR metadata + lifecycle).",
-    ),
-    "review": CommandSpec(
-        "super_harness.cli.review:review_group",
-        "Compile contracts, import receipts, or disclose a review skip.",
-    ),
-    "plan": CommandSpec(
-        "super_harness.cli.plan:plan_group",
-        "Plan-phase lifecycle verbs (plain-mode manual emit).",
-    ),
-    "implementation": CommandSpec(
-        "super_harness.cli.implementation:implementation_group",
-        "Implementation-phase lifecycle verbs.",
-    ),
-    "on-merge": CommandSpec(
-        "super_harness.cli.on_merge:on_merge_cli",
-        "Emit a ``merged`` event (transitions the change to ARCHIVED).",
-    ),
-    "attest": CommandSpec(
-        "super_harness.cli.attest:attest_group",
-        "Lifecycle attestation: snapshot evidence + verify it covers a diff.",
-    ),
-    "decision": CommandSpec(
-        "super_harness.cli.decision:decision_group",
-        "Author, ratify, and check decision records.",
-    ),
-    "doc": CommandSpec(
-        "super_harness.cli.doc:doc_group",
-        "Check that derivable docs match their generators.",
+    "verify": CommandSpec(
+        "super_harness.cli.verify:verify_cmd",
+        "Run verification checks for a change and report the verdict.",
     ),
 }
 
