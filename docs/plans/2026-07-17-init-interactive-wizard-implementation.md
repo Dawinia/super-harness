@@ -111,7 +111,7 @@ def test_get_command_imports_only_requested_module(monkeypatch):
     assert "pkg.beta" not in sys.modules
 ```
 
-Also assert the loaded command and descendants are `GroupAwareCommand` / `GroupAwareGroup`, root command order is stable, `--help` still lists every command, and the CLI reference generator can intentionally traverse the complete lazy tree.
+Also assert a real leaf (`init`) resolves as `GroupAwareCommand`, a real subgroup and every descendant resolve as `GroupAwareGroup` / `GroupAwareCommand`, root command order is stable, `--help` still lists every command, and the CLI reference generator can intentionally traverse the complete lazy tree. The real-leaf assertion is the regression guard against passing a leaf to `rewrap_subtree`.
 
 - [ ] **Step 2: Run the focused tests and confirm RED**
 
@@ -148,11 +148,15 @@ class LazyGroup(GroupAwareGroup):
             return None
         module_name, attribute = spec.target.split(":", 1)
         command = getattr(importlib.import_module(module_name), attribute)
-        rewrap_subtree(command)
+        if isinstance(command, click.Group):
+            command.__class__ = GroupAwareGroup
+            rewrap_subtree(command)
+        else:
+            command.__class__ = GroupAwareCommand
         return command
 ```
 
-Override help formatting only as needed to use `CommandSpec.help` without importing command modules. Keep Click's unknown-command behavior and global-option redirection behavior unchanged.
+`rewrap_subtree` accepts a `click.Group` and rewrites only its descendants, so the loader must wrap the loaded root node explicitly and call the helper only for a group. Override help formatting only as needed to use `CommandSpec.help` without importing command modules. Keep Click's unknown-command behavior and global-option redirection behavior unchanged.
 
 - [ ] **Step 4: Replace eager root imports with the stable registry**
 
@@ -1006,7 +1010,7 @@ Expected: all exit 0. Do not dismiss the known old-event warnings as test failur
 
 In a disposable workspace on macOS/Linux, run the guided TTY flow through selection, Back, confirmation, and cancel. Verify ASCII fallback with a safe limited-terminal invocation and non-TTY behavior with redirected stdin. On native Windows Terminal/PowerShell, run the installed wheel and manually exercise arrow, Space, Enter, Back, cancel, ASCII fallback, and a workspace path containing spaces.
 
-Record the native Windows manual evidence in the change handoff. If native Windows is unavailable locally, the Windows CI receipt is required before the change can be called complete; do not replace it with a mocked claim.
+Record the native Windows manual evidence in the change handoff, including Windows version, terminal/shell, installed wheel version or commit, tested path, and observed key/fallback outcomes. This evidence is mandatory and cannot be replaced by Windows CI, mocked prompts, or a non-Windows terminal. If the implementing agent cannot access native Windows, stop before completion and request the manual run from a human or another authorized operator; do not run `super-harness done` or claim the change complete until the evidence is attached.
 
 - [ ] **Step 5: Inspect the exact diff and commits**
 
@@ -1026,7 +1030,7 @@ Expected: only declared-scope files are changed, `.codegraph/` and `.superpowers
 
 If an in-scope verification fix was required, rerun its failing command plus Steps 1–3, then commit with an English message describing the actual fix. If no files changed, do not create an empty commit.
 
-- [ ] **Step 7: Complete authoring lifecycle only after all evidence is green**
+- [ ] **Step 7: Complete authoring lifecycle only after all automated and native Windows evidence is green**
 
 Run:
 
@@ -1034,12 +1038,13 @@ Run:
 super-harness done init-interactive-wizard
 ```
 
-Expected: verification passes and the lifecycle records implementation completion. Do not push, open a PR, start external review, override a gate, or merge without separate user approval.
+Precondition: the native Windows manual evidence from Step 4 is recorded in the handoff. Expected: verification passes and the lifecycle records implementation completion. Do not push, open a PR, start external review, override a gate, or merge without separate user approval.
 
 ## Plan self-review checklist
 
 - [ ] Every acceptance criterion in the approved design maps to at least one task and test above.
 - [ ] Windows acceptance uses the installed console script, not only `CliRunner` or mocked UI.
+- [ ] Native Windows arrow/Space/Enter/Back/cancel/ASCII behavior has mandatory manual evidence before `done`; CI cannot substitute for it.
 - [ ] Non-interactive force preservation never parses or rewrites existing review bytes.
 - [ ] Interactive GitHub conflicts are resolved before final review; the executor has no prompt path.
 - [ ] `--yes` is interactive-confirmation-only and never supplies selections, models, or conflict decisions.
