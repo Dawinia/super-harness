@@ -20,6 +20,7 @@ Coverage:
   6. Repeated regeneration is idempotent (running twice produces no diff)
   7. ``main(["--emit"])`` prints the rendered markdown to stdout and returns 0
   8. ``_HEADER_NOTICE`` references the live `super-harness doc check --fix` gate
+  9. Real ``init`` help documents the interactive-only ``--yes`` behavior
 """
 
 from __future__ import annotations
@@ -138,6 +139,22 @@ def test_render_intentionally_loads_the_complete_lazy_tree(tmp_path, monkeypatch
     assert "## fixture beta" in md
     assert f"{package_name}.alpha" in sys.modules
     assert f"{package_name}.beta" in sys.modules
+
+
+def test_real_init_reference_documents_interactive_yes_without_losing_lazy_commands() -> None:
+    """The real lazy tree includes every root command and init's exact --yes help."""
+    from super_harness.cli import main as real_main
+
+    rendered = gen_cli_reference.render_markdown(real_main, root_name="super-harness")
+    init_section = rendered.split("## super-harness init", 1)[1].split(
+        "## super-harness observe", 1
+    )[0]
+
+    assert (
+        "| `--yes` | flag | `False` | Skip the final confirmation in interactive mode. |"
+    ) in init_section
+    for command_name in real_main.commands:
+        assert f"## super-harness {command_name}\n" in rendered
 
 
 def test_md_escape_cell_handles_pipe_and_newline() -> None:

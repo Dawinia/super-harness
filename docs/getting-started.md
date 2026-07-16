@@ -10,8 +10,9 @@ to landing a PR with all gates green. By the end you'll have:
 - One change driven through every gate: declared, implemented, verified,
   reviewed, merged, and archived.
 
-This guide assumes a Unix shell (macOS or Linux). All commands are
-copy-paste runnable. For the full CLI surface see
+The package-install examples in this guide assume a Unix shell (macOS or
+Linux). Runtime support for `init` is broader and is described separately in
+[Bootstrap a repo](#2-bootstrap-a-repo). For the full CLI surface see
 [`cli-reference.md`](./cli-reference.md). For a runnable end-to-end example,
 see [`examples/demo-openspec-claude/`](../examples/demo-openspec-claude/).
 
@@ -47,25 +48,99 @@ That's it for one-time setup. Everything below is per-repo.
 ## 2. Bootstrap a repo
 
 `cd` into the repo you want to harness. It can be brand new or an existing
-project — `super-harness init` is non-destructive (it never deletes your
-code, only creates `.harness/` + writes a CI workflow file).
+project. `super-harness init` never deletes project code; it plans its managed
+file changes and, in either interactive mode, shows the complete plan before
+the first write.
 
 ```bash
 cd path/to/your/repo
 super-harness init --setup-github
 ```
 
-What `init --setup-github` does:
+The guided setup has five stages:
+
+1. **Preflight** resolves the workspace and detects coding-agent integrations
+   and review-producer executables without writing.
+2. **Configuration** selects integrations and producers, collects one explicit
+   model for every selected automated review source, and resolves existing-file
+   conflicts.
+3. **Review before writes** shows the selected integrations, producers, models,
+   GitHub choice, and every planned create/update/preserve action. In an
+   interactive mode, the workspace is unchanged until this plan is accepted.
+4. **Apply** performs the named operations. Fast writes become completed rows;
+   genuinely long or external operations may show activity, but the wizard does
+   not invent percentages.
+5. **Outcome** reports a completed-step ledger and one next command on success.
+   On partial failure, the ledger keeps completed writes visible, names the
+   failed step and exit code, and gives a recovery command such as
+   `super-harness init --force` after the named problem is corrected; it does not
+   attempt a broad rollback of user-owned files.
+
+On a full interactive terminal, use the arrow keys to move, Space to toggle a
+choice, and Enter to accept it. At the final review, **Back** returns to
+configuration. **Ctrl+C** interrupts setup. Detected integrations and producers
+are preselected and labeled `detected · recommended` on a fresh init. An
+unavailable coding integration remains selectable but is not preselected; an
+unavailable review producer is disabled, and selecting it explicitly is a
+pre-write validation error. The wizard never chooses a model: every selected
+automated review source requires an explicit model value.
+
+A representative narrow terminal session looks like this (paths and selections
+will reflect your machine):
+
+```text
+$ super-harness init --setup-github
+┌  super-harness init
+│
+◆  Preflight
+│  Workspace  /work/my-project
+│
+◆  Configuration
+│  Coding agent  Codex (detected · recommended)
+│  Review source codex-cli · model <your-model>
+│
+◇  Review before writes
+│  Create  .harness/
+│  Update  AGENTS.md
+│  GitHub  enabled
+│  Apply this plan? Yes
+│
+●  Apply
+│  Created  .harness/
+│  Updated  AGENTS.md
+│
+└  Ready. Run super-harness change start <slug>
+```
+
+TTY input with redirected output, `TERM=dumb`, or another cursor-limited
+terminal uses the same stages in deterministic plain text. It asks exactly one
+yes/no question per option and never asks for comma-separated input. If Unicode
+is unsafe, the rail uses `|`, `+`, `*`, and `x`, while plain status rows use
+words such as `OK`, `WARN`, and `FAIL`; color and glyphs never carry meaning by
+themselves.
+
+`--yes` skips only the final confirmation in an interactive mode. It does not
+select integrations, producers, or models, and it does not resolve conflicts
+with existing files. When stdin is not a TTY, `init` preserves the scriptable
+behavior: it does not prompt and applies immediately from explicit flags and
+existing defaults, so CI and redirected scripts do not need `--yes`.
+
+The installed `init` entrypoint supports native Windows (including Windows
+Terminal and PowerShell), macOS, Linux, and WSL. This compatibility statement
+is specifically for `super-harness init`; it does not claim that every
+lifecycle, observer, or daemon command runs natively on Windows. The Unix
+package-install commands in [Install the CLI](#1-install-the-cli) are examples
+for that shell environment, not the boundary of `init` runtime support.
+
+What `init --setup-github` applies after interactive confirmation (or
+immediately when stdin is not a TTY):
 
 1. Creates `.harness/` with the lifecycle data plane: `events.jsonl` (the
    append-only event log), `state.yaml` (the derived current-state cache), and
-   tracked `review-governance.yaml`. In an interactive terminal, init detects
-   installed Codex and Claude tooling and offers independent multi-select prompts
-   for coding-agent integrations and review producers. Selecting a producer also
-   prompts for its explicit model and writes the choice to the gitignored,
-   user-editable `review-profiles.local.yaml`. Selecting none creates a fully
-   usable human-only review configuration. Init never installs a third-party
-   agent or producer binary.
+   tracked `review-governance.yaml`. The selected explicit review models are
+   written to the gitignored, user-editable `review-profiles.local.yaml`.
+   Selecting no producer creates a fully usable human-only review configuration.
+   Init never installs a third-party agent or producer binary.
 2. Writes `AGENTS.md` (or extends an existing one) with a `super-harness`
    section your AI agent will read.
    Selected integrations install their existing local gate hooks. Pass

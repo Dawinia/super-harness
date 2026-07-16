@@ -603,6 +603,7 @@ super-harness init [OPTIONS]
 | `--integration` | {codex\|claude-code} | — | Coding-agent integration to configure; repeat for multiple selections. |
 | `--review-producer` | {claude-cli\|codex-cli} | — | Local review producer protocol to configure; repeat for multiple selections. |
 | `--review-model` | text (repeatable) | — | Explicit model for a selected review source; repeat per source. |
+| `--yes` | flag | `False` | Skip the final confirmation in interactive mode. |
 
 **Exit codes:**
 
