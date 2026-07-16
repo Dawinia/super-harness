@@ -157,8 +157,10 @@ def test_init_preserves_crlf_user_content_around_managed_markers(tmp_path: Path)
     agents = agents_path.read_bytes()
     gitignore = gitignore_path.read_bytes()
     assert agents.startswith(agents_user)
-    assert gitignore.decode("utf-8").replace("\r\n", "\n").startswith(
-        gitignore_user.decode("utf-8").replace("\r\n", "\n")
+    assert (
+        gitignore.decode("utf-8")
+        .replace("\r\n", "\n")
+        .startswith(gitignore_user.decode("utf-8").replace("\r\n", "\n"))
     )
     assert agents.count(_AGENTS_BEGIN) == 1
     assert agents.count(_AGENTS_END) == 1
