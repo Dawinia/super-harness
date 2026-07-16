@@ -1,0 +1,31 @@
+# Report doc-accuracy fix (CODX-007 fast-follow) — Micro Plan
+
+> **For Claude:** REQUIRED SUB-SKILL: superpowers:executing-plans.
+
+**Goal:** Fix the now-inaccurate "reads/counts **only** events" claims in the report code — after PR #83, `report` also reads and windows the gate-block telemetry log (`.harness/gate-blocks.jsonl`). Closes the one open finding CODX-007 from #83's code review.
+
+**Scope (files):** `src/super_harness/cli/report.py`, `src/super_harness/engineering/value_report.py`, `docs/plans/2026-07-16-report-doc-accuracy.md`, `private/OPEN-ITEMS.md`.
+
+**Risk tier: Micro.** Doc/help-text only — no logic change, no new behavior, no gate/hot-path touch. Zero design surface.
+
+**Review intensity (deliberate, dogfoods the risk-tiering established when we killed the tier→review line):**
+- **Plan review: disclosed skip** (`review skip plan-reviewer --override --reason "Micro doc-only fix; no design surface — owner judges plan review has nothing to catch"`). This is the existing, owner-controlled, *disclosed* escape hatch — the honest "low-risk change gets lighter review" path that is owner policy, NOT a self-declared tier relaxation.
+- **Code review: kept, full 2-source.** The last gate before merge is never weakened by tier/skip; but the diff is ~4 lines so it converges in one cheap round. This is the asymmetry we chose: thin *plan* review for low risk, never the code-review floor.
+
+## Task 1: correct the "only events" claims (doc-only)
+
+**Files:** `src/super_harness/cli/report.py`, `src/super_harness/engineering/value_report.py`.
+
+Four edits (exact current → corrected):
+1. `cli/report.py` module docstring — "Reads only existing events; emits nothing." → note it also reads the gate-block telemetry log.
+2. `cli/report.py` `--since` help — "Only count events on/after this ISO date" → "events and gate-block records".
+3. `cli/report.py` `--until` help — same broadening.
+4. `engineering/value_report.py` docstring — "this module only READS events.jsonl" → "reads events.jsonl plus the gate-block telemetry log".
+
+**No new test:** this is doc/help wording only — there is no behavior to assert, and pinning help strings in a test is brittle. Existing suite must stay green (`pytest -q`, ruff, mypy).
+
+**Commit** `docs(report): correct "reads only events" claims — report also reads gate-block telemetry (CODX-007)`
+
+## Phase F: verify + light lifecycle
+
+`pytest -q` / ruff / mypy / `super-harness verify` green → `done` → **code review 2-source (1 round expected)** → merge → `on-merge` → dispose CODX-007 (register closed in OPEN-ITEMS) + refresh ledger/handoff.
