@@ -650,6 +650,24 @@ def test_guided_preselects_and_labels_detected_options_and_disables_missing_prod
     assert result.choices.integrations == ("codex", "claude-code")
 
 
+def test_guided_skips_producer_checkbox_when_every_producer_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    prompts = _FakePromptAdapter(checkboxes=[()])
+    ui, renderer = _guided_ui(prompts)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(detected_producers=(), available_producers=frozenset()),
+    )
+
+    assert [message for message, _ in prompts.checkbox_calls] == ["Coding-agent integrations"]
+    assert result.choices.review_producers == ()
+    assert renderer.validations == [
+        "No automated review producers are available; continuing without one."
+    ]
+
+
 def test_guided_blank_model_stays_in_prompt_until_non_empty(tmp_path: Path) -> None:
     prompts = _FakePromptAdapter(
         checkboxes=[(), ("codex-cli",)],

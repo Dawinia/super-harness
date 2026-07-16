@@ -481,9 +481,13 @@ class InteractiveInitUI:
             if initial.review_producers is not None
             else frozenset(preflight.detected_review_producers)
         )
-        answer = self._prompts.checkbox(
-            "Automated review producers", self._producer_options(preflight, defaults)
-        )
+        options = self._producer_options(preflight, defaults)
+        if not any(option.disabled is None for option in options):
+            self._renderer.render_validation(
+                "No automated review producers are available; continuing without one."
+            )
+            return ()
+        answer = self._prompts.checkbox("Automated review producers", options)
         if answer is None:
             return _CANCEL
         return tuple(value for value in answer if value in preflight.available_review_producers)
