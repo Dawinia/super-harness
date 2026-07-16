@@ -64,6 +64,29 @@ def _stdin_is_tty() -> bool:
     return sys.stdin.isatty()
 
 
+def check_gh() -> None:
+    """Lazily run the GitHub CLI preflight while preserving the patch seam."""
+    from super_harness.engineering.gh import check_gh as _check_gh
+
+    _check_gh()
+
+
+def enable_repo_merge_settings() -> None:
+    """Lazily enable repository settings while preserving the patch seam."""
+    from super_harness.engineering.gh import (
+        enable_repo_merge_settings as _enable_repo_merge_settings,
+    )
+
+    _enable_repo_merge_settings()
+
+
+def _gh_error_type() -> type[GhError]:
+    """Resolve the GitHub integration error type only on an executed error path."""
+    from super_harness.engineering.gh import GhError
+
+    return GhError
+
+
 def _prompt_multi_select(
     title: str,
     options: tuple[str, ...],
@@ -557,12 +580,6 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
     what actually happened (typed outcome from `_write_pr_template` /
     `_write_workflow_file`). Suppressed under ``--quiet`` or ``--json``.
     """
-    from super_harness.engineering.gh import (
-        GhError,
-        check_gh,
-        enable_repo_merge_settings,
-    )
-
     # S3: advisory prints honor --quiet AND --json (init emits no JSON envelope,
     # but prose advisories would pollute JSON-consumer pipelines all the same).
     advise = not (bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
@@ -570,7 +587,7 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
     # --- Step 1: gh checks first (before any .github/ write) ---
     try:
         check_gh()
-    except GhError as e:
+    except _gh_error_type() as e:
         click.echo(
             format_error(
                 subcommand="init",
@@ -599,7 +616,7 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
     # --- Step 3: best-effort repo settings (non-fatal) ---
     try:
         enable_repo_merge_settings()
-    except GhError as e:
+    except _gh_error_type() as e:
         _log_setup_github_failure(harness, e)
         click.echo(
             format_error(

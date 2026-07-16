@@ -95,6 +95,31 @@ assert main.get_command(click.Context(main), "init") is not None
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
+def test_resolving_adapter_does_not_import_lifecycle_writer_modules() -> None:
+    code = """
+import importlib.abc
+import sys
+import click
+
+blocked = {
+    "super_harness.core.writer",
+    "super_harness.core.post_emit",
+}
+
+class Blocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in blocked:
+            raise AssertionError(f"forbidden import: {fullname}")
+        return None
+
+sys.meta_path.insert(0, Blocker())
+from super_harness.cli import main
+assert main.get_command(click.Context(main), "adapter") is not None
+"""
+
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
 def test_help_short_flag():
     result = CliRunner().invoke(main, ["-h"])
     assert result.exit_code == 0
