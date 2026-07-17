@@ -22,6 +22,7 @@ from super_harness.cli.init_ui import (
     TerminalCapabilities,
     WizardResult,
 )
+from super_harness.engineering.gh import GhError
 from super_harness.version import __version__
 
 _FAKE_HOOK = "/usr/local/bin/super-harness-hook"
@@ -53,7 +54,9 @@ class _ScriptedInitUI:
         preflight: Any,
         *,
         initial_choices: InitChoices | None = None,
+        github_resolver: Callable[[], Any] | None = None,
     ) -> WizardResult:
+        del github_resolver
         return self._prepare(request, preflight, initial_choices)
 
     def render_cancelled(self) -> None:
@@ -412,6 +415,53 @@ def test_init_guided_can_enable_github_without_the_flag(
     assert renderer.plans[-1].github_decision is GitHubDecision.CREATE
     assert (tmp_path / ".github" / "pull_request_template.md").is_file()
     assert (tmp_path / ".github" / "workflows" / "super-harness.yml").is_file()
+
+
+def test_init_guided_compacts_github_apply_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, True, 100)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=(lambda name: "/abs/bin/gh" if name == "gh" else None),
+        ),
+    )
+    monkeypatch.setattr("super_harness.cli.init.check_gh", lambda: None)
+    monkeypatch.setattr(
+        "super_harness.cli.init.enable_repo_merge_settings",
+        lambda: (_ for _ in ()).throw(GhError("non-admin")),
+    )
+    answers = _GuidedAnswers(checkboxes=[], selects=["create", "confirm"])
+    monkeypatch.setattr(
+        "super_harness.cli.init.create_init_ui",
+        lambda *_a, **_kw: InteractiveInitUI(
+            prompt_adapter=answers,
+            unicode=True,
+            color=False,
+            width=100,
+        ),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--no-agent"],
+    )
+
+    compact = " ".join(result.output.split())
+    assert result.exit_code == 0, result.output
+    assert "◆ apply: Applying setup" in compact
+    assert "GitHub setup" in compact
+    assert "Settings -> General -> Pull Requests" in compact
+    assert "gh CLI: ok" not in result.output
+    assert "wrote .github" not in result.output
+    assert "could not auto-enable repo merge settings" not in result.output
+    assert "skeleton_config" not in result.output
 
 
 def test_init_guided_uses_configured_reviewer_models_without_text_input(

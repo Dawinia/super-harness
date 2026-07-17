@@ -14,6 +14,7 @@ from super_harness.cli.init_models import ReviewerModelCandidate
 from super_harness.cli.init_plan import (
     FileAction,
     GitHubDecision,
+    GithubFileDecision,
     HarnessState,
     InitChoices,
     InitPlan,
@@ -49,20 +50,12 @@ def _preflight(
     available_integrations: frozenset[str] = frozenset({"codex"}),
     detected_producers: tuple[str, ...] = ("codex-cli",),
     available_producers: frozenset[str] = frozenset({"codex-cli"}),
-    reviewer_model_candidates: dict[
-        str, tuple[ReviewerModelCandidate, ...]
-    ] | None = None,
+    reviewer_model_candidates: dict[str, tuple[ReviewerModelCandidate, ...]] | None = None,
     reviewer_model_errors: dict[str, str] | None = None,
     github_available: bool = False,
 ) -> InitPreflight:
     candidates = (
-        {
-            "codex": (
-                ReviewerModelCandidate(
-                    "codex", "gpt-5-codex", "Codex CLI config", 10
-                ),
-            )
-        }
+        {"codex": (ReviewerModelCandidate("codex", "gpt-5-codex", "Codex CLI config", 10),)}
         if reviewer_model_candidates is None
         else reviewer_model_candidates
     )
@@ -74,9 +67,7 @@ def _preflight(
         detected_integrations=detected_integrations,
         detected_review_producers=detected_producers,
         reviewer_model_candidates=candidates,
-        reviewer_model_errors=(
-            {} if reviewer_model_errors is None else reviewer_model_errors
-        ),
+        reviewer_model_errors=({} if reviewer_model_errors is None else reviewer_model_errors),
         github_available=github_available,
     )
 
@@ -831,6 +822,7 @@ class _FakePromptAdapter:
         self.checkbox_calls: list[tuple[str, tuple[GuidedPromptOption, ...]]] = []
         self.text_calls: list[tuple[str, str | None]] = []
         self.select_calls: list[tuple[str, tuple[GuidedPromptOption, ...], str | None]] = []
+        self.calls: list[str] = []
 
     @staticmethod
     def _answer(value: Any) -> Any:
@@ -844,11 +836,13 @@ class _FakePromptAdapter:
         choices: Sequence[GuidedPromptOption],
     ) -> tuple[str, ...] | None:
         self._before_prompt()
+        self.calls.append(message)
         self.checkbox_calls.append((message, tuple(choices)))
         return self._answer(next(self._checkboxes))
 
     def text(self, message: str, *, default: str | None = None) -> str | None:
         self._before_prompt()
+        self.calls.append(message)
         self.text_calls.append((message, default))
         return self._answer(next(self._texts))
 
@@ -860,6 +854,7 @@ class _FakePromptAdapter:
         default: str | None = None,
     ) -> str | None:
         self._before_prompt()
+        self.calls.append(message)
         self.select_calls.append((message, tuple(choices), default))
         return self._answer(next(self._selects))
 
@@ -904,12 +899,8 @@ def test_guided_preselects_and_labels_detected_options_and_disables_missing_prod
     assert integrations[1].disabled is None
     assert "not detected" in integrations[1].title
     assert producers[0].checked is True
-    assert producers[0].title == (
-        "Codex reviewer — runs via Codex CLI  detected · recommended"
-    )
-    assert producers[1].title == (
-        "Claude reviewer — runs via Claude CLI  executable not found"
-    )
+    assert producers[0].title == ("Codex reviewer — runs via Codex CLI  detected · recommended")
+    assert producers[1].title == ("Claude reviewer — runs via Claude CLI  executable not found")
     assert producers[1].disabled == "executable not found"
     assert result.choices.integrations == ("codex", "claude-code")
 
@@ -961,6 +952,70 @@ def test_guided_github_setup_is_a_default_off_choice(tmp_path: Path) -> None:
     assert default == "skip"
 
 
+def test_guided_collects_github_after_integrations_and_reviewers(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("codex-cli",)],
+        selects=["create"],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(github_available=True),
+    )
+
+    assert prompts.calls == [
+        "Coding-agent integrations",
+        "Automated reviewers — choose which detected CLIs may review changes",
+        "Configure GitHub files and repository settings?",
+    ]
+    assert result.choices.github_decision is GitHubDecision.CREATE
+
+
+def test_guided_completes_configuration_after_github_resolution(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(selects=["create", "confirm"])
+    ui, renderer = _guided_ui(prompts)
+    request = replace(_request(tmp_path), no_agent=True)
+    preflight = _preflight(
+        detected_producers=(),
+        available_producers=frozenset(),
+        github_available=True,
+    )
+
+    def resolve_github() -> Any:
+        assert not any(
+            stage is RailStage.CONFIGURATION and state is RailState.COMPLETED
+            for stage, state, _, _ in renderer.stages
+        )
+        return SimpleNamespace(
+            root=tmp_path,
+            pr_template=SimpleNamespace(
+                inspection=SimpleNamespace(path=tmp_path / ".github" / "pull_request_template.md"),
+                decision=GithubFileDecision.CREATE,
+            ),
+            workflow=SimpleNamespace(
+                inspection=SimpleNamespace(
+                    path=tmp_path / ".github" / "workflows" / "super-harness.yml"
+                ),
+                decision=GithubFileDecision.CREATE,
+            ),
+        )
+
+    ui.prepare_plan(request, preflight, github_resolver=resolve_github)
+
+    completed_index = next(
+        index
+        for index, (stage, state, _, _) in enumerate(renderer.stages)
+        if stage is RailStage.CONFIGURATION and state is RailState.COMPLETED
+    )
+    review_index = next(
+        index
+        for index, (stage, state, _, _) in enumerate(renderer.stages)
+        if stage is RailStage.REVIEW and state is RailState.CURRENT
+    )
+    assert completed_index < review_index
+
+
 def test_guided_selects_from_multiple_configured_models(tmp_path: Path) -> None:
     prompts = _FakePromptAdapter(
         checkboxes=[(), ("codex-cli",)],
@@ -970,12 +1025,8 @@ def test_guided_selects_from_multiple_configured_models(tmp_path: Path) -> None:
     preflight = _preflight(
         reviewer_model_candidates={
             "codex": (
-                ReviewerModelCandidate(
-                    "codex", "gpt-workspace", "existing workspace profile", 0
-                ),
-                ReviewerModelCandidate(
-                    "codex", "gpt-fast", "Codex CLI profile fast", 20
-                ),
+                ReviewerModelCandidate("codex", "gpt-workspace", "existing workspace profile", 0),
+                ReviewerModelCandidate("codex", "gpt-fast", "Codex CLI profile fast", 20),
             )
         }
     )
@@ -1006,9 +1057,7 @@ def test_guided_uses_provider_error_only_for_the_affected_reviewer(
         available_producers=frozenset({"codex-cli", "claude-cli"}),
         reviewer_model_candidates={
             "claude": (
-                ReviewerModelCandidate(
-                    "claude", "opus-configured", "Claude CLI config", 10
-                ),
+                ReviewerModelCandidate("claude", "opus-configured", "Claude CLI config", 10),
             )
         },
         reviewer_model_errors={"codex": "Codex CLI config is not valid TOML"},
@@ -1196,7 +1245,7 @@ def test_guided_completed_rail_order_and_five_stage_visibility(tmp_path: Path) -
     completed = [stage for stage, state, _, _ in renderer.stages if state is RailState.COMPLETED]
     visible = {stage for stage, _, _, _ in renderer.stages}
     assert completed == [RailStage.PREFLIGHT, RailStage.CONFIGURATION, RailStage.REVIEW]
-    assert visible == set(RailStage)
+    assert visible == {RailStage.PREFLIGHT, RailStage.CONFIGURATION, RailStage.REVIEW}
 
 
 def test_rich_guided_glyphs_are_independent_of_color() -> None:
@@ -1266,7 +1315,7 @@ def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -
     assert "Codex  gpt-5.6-sol" in text
     assert "Claude  opus[1m]" in text
     assert "GitHub" in text
-    assert "Create workflow and PR template" in text
+    assert "Ensure workflow and PR template" in text
     assert "Files" in text
     assert "Update    4 files" in text
     assert "Create    1 file" in text
@@ -1310,6 +1359,79 @@ def test_guided_step_rendering_accepts_plain_structural_event() -> None:
     ui.render_event(event)
 
     assert renderer.events == [event]
+
+
+def test_rich_guided_apply_groups_successes_without_internal_step_ids() -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=100, color_system=None),
+        unicode=True,
+        color=False,
+        width=100,
+    )
+    events = (
+        StepRenderEvent("scaffold", StepRenderState.STARTED, "Scaffolding .harness."),
+        StepRenderEvent("scaffold", StepRenderState.SUCCEEDED, "Scaffolded .harness."),
+        StepRenderEvent(
+            "skeleton_config", StepRenderState.SUCCEEDED, "Wrote skeleton configuration."
+        ),
+        StepRenderEvent(
+            "review_config", StepRenderState.SUCCEEDED, "Configured review configuration."
+        ),
+        StepRenderEvent(
+            "agent_integrations",
+            StepRenderState.SUCCEEDED,
+            "Codex and Claude Code integrations configured.",
+        ),
+        StepRenderEvent("agents_md", StepRenderState.SUCCEEDED, "Updated AGENTS.md."),
+        StepRenderEvent("gitignore", StepRenderState.SUCCEEDED, "Updated .gitignore."),
+        StepRenderEvent("github", StepRenderState.SUCCEEDED, "GitHub files ensured."),
+    )
+
+    for event in events:
+        renderer.render_event(event)
+
+    text = buffer.getvalue()
+    assert text.count("apply: Applying setup") == 1
+    assert "Harness configuration ready" in text
+    assert "Codex and Claude Code integrations configured" in text
+    assert "AGENTS.md and .gitignore updated" in text
+    assert "GitHub files ensured" in text
+    for internal_id in (
+        "scaffold:",
+        "skeleton_config",
+        "review_config",
+        "agent_integrations",
+        "agents_md",
+        "gitignore:",
+        "github:",
+    ):
+        assert internal_id not in text
+
+
+def test_rich_guided_apply_keeps_github_warning_actionable() -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=100, color_system=None),
+        unicode=True,
+        color=False,
+        width=100,
+    )
+
+    renderer.render_event(
+        StepRenderEvent(
+            "github",
+            StepRenderState.WARNED,
+            "GitHub repository settings need manual confirmation. "
+            "Settings -> General -> Pull Requests.",
+        )
+    )
+
+    text = buffer.getvalue()
+    compact = " ".join(text.split())
+    assert "GitHub setup" in text
+    assert "Settings -> General -> Pull Requests" in compact
+    assert "github:" not in text
 
 
 @pytest.mark.parametrize(

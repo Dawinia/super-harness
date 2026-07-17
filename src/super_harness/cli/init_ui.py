@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import IO, Protocol, cast
 
@@ -12,6 +12,7 @@ import questionary
 from rich.console import Console
 from rich.text import Text
 
+from super_harness.cli.init_github import GithubPlan
 from super_harness.cli.init_models import ReviewerModelCandidate
 from super_harness.cli.init_plan import (
     FileAction,
@@ -27,6 +28,7 @@ from super_harness.cli.init_plan import (
 
 TextInput = Callable[[str], str]
 TextOutput = Callable[[str], None]
+GithubResolver = Callable[[], GithubPlan]
 
 
 @dataclass(frozen=True)
@@ -202,9 +204,7 @@ _GUIDED_REVIEWER_LABELS = {
     "claude-cli": "Claude reviewer — runs via Claude CLI",
 }
 
-_QUESTIONARY_CHECKBOX_STYLE = questionary.Style(
-    [("selected", "fg:ansigreen noreverse")]
-)
+_QUESTIONARY_CHECKBOX_STYLE = questionary.Style([("selected", "fg:ansigreen noreverse")])
 _QUESTIONARY_NO_COLOR_CHECKBOX_STYLE = questionary.Style([("selected", "noreverse")])
 _NARROW_WIDTH = 60
 
@@ -242,9 +242,7 @@ class QuestionaryPromptAdapter:
 
     def __init__(self, *, color: bool = True) -> None:
         self._checkbox_style = (
-            _QUESTIONARY_CHECKBOX_STYLE
-            if color
-            else _QUESTIONARY_NO_COLOR_CHECKBOX_STYLE
+            _QUESTIONARY_CHECKBOX_STYLE if color else _QUESTIONARY_NO_COLOR_CHECKBOX_STYLE
         )
 
     @staticmethod
@@ -344,6 +342,15 @@ _FILE_ACTION_LABELS = {
     FileAction.PRESERVE: "Preserve",
     FileAction.SKIP: "Skip",
 }
+_PUBLIC_STEP_LABELS = {
+    "scaffold": "Harness scaffolding",
+    "skeleton_config": "Harness configuration",
+    "review_config": "Review configuration",
+    "agent_integrations": "Agent integrations",
+    "agents_md": "AGENTS.md",
+    "gitignore": ".gitignore",
+    "github": "GitHub setup",
+}
 
 
 def _file_action_display_rows(plan: InitPlan, action: FileAction) -> tuple[str, ...]:
@@ -379,6 +386,7 @@ class RichGuidedRenderer:
         self._color = color
         self._width = max(1, width)
         self._console = console or Console(color_system="auto" if color else None, width=width)
+        self._apply_started = False
 
     def _print(self, value: str, *, style: str | None = None) -> None:
         self._console.print(
@@ -420,7 +428,7 @@ class RichGuidedRenderer:
 
         self._print("|  GitHub")
         github = (
-            "Create workflow and PR template"
+            "Ensure workflow and PR template"
             if plan.github_decision is GitHubDecision.CREATE
             else "Skip GitHub setup"
         )
@@ -442,7 +450,27 @@ class RichGuidedRenderer:
     def render_event(self, event: StepEventLike) -> None:
         state = event.state.value if isinstance(event.state, Enum) else str(event.state)
         glyphs = {key.value: value for key, value in _EVENT_GLYPHS[self._unicode].items()}
-        self._print(f"{glyphs.get(state, '|')}  {event.step_id}: {event.detail}")
+        if not self._apply_started:
+            self.render_stage(RailStage.APPLY, RailState.CURRENT, "Applying setup")
+            self._apply_started = True
+        if state == StepRenderState.STARTED.value:
+            return
+        if state == StepRenderState.SUCCEEDED.value:
+            if event.step_id in {"scaffold", "skeleton_config", "agents_md"}:
+                return
+            detail = {
+                "review_config": "Harness configuration ready",
+                "gitignore": "AGENTS.md and .gitignore updated",
+            }.get(event.step_id, event.detail)
+            if event.step_id == "agent_integrations" and detail.startswith("No agent"):
+                return
+            self._print(f"{glyphs[state]}  {detail}", style="green")
+            return
+        label = _PUBLIC_STEP_LABELS.get(event.step_id, "Setup")
+        self._print(
+            f"{glyphs.get(state, '|')}  {label}: {event.detail}",
+            style="yellow" if state == StepRenderState.WARNED.value else "red",
+        )
 
 
 class WizardDecision(str, Enum):
@@ -454,10 +482,11 @@ class WizardDecision(str, Enum):
 class WizardResult:
     decision: WizardDecision
     plan: InitPlan | None
+    github_plan: GithubPlan | None = None
 
     @classmethod
-    def confirmed(cls, plan: InitPlan) -> WizardResult:
-        return cls(WizardDecision.CONFIRM, plan)
+    def confirmed(cls, plan: InitPlan, github_plan: GithubPlan | None = None) -> WizardResult:
+        return cls(WizardDecision.CONFIRM, plan, github_plan)
 
     @classmethod
     def cancelled(cls) -> WizardResult:
@@ -492,6 +521,20 @@ def _interactive_initial_choices(
         github_decision=initial.github_decision,
         github_file_decisions=initial.github_file_decisions,
     )
+
+
+def _resolve_github_choices(
+    choices: InitChoices,
+    github_resolver: GithubResolver | None,
+) -> tuple[InitChoices, GithubPlan | None]:
+    if choices.github_decision is not GitHubDecision.CREATE or github_resolver is None:
+        return choices, None
+    plan = github_resolver()
+    decisions = {
+        item.inspection.path.relative_to(plan.root).as_posix(): item.decision
+        for item in (plan.pr_template, plan.workflow)
+    }
+    return replace(choices, github_file_decisions=decisions), plan
 
 
 class InteractiveInitUI:
@@ -646,9 +689,7 @@ class InteractiveInitUI:
             candidates = preflight.reviewer_model_candidates.get(option.source, ())
             if not candidates:
                 self._renderer.render_validation(
-                    preflight.reviewer_model_errors.get(
-                        option.source, "model not configured"
-                    )
+                    preflight.reviewer_model_errors.get(option.source, "model not configured")
                 )
                 return None
             if len(candidates) == 1:
@@ -716,17 +757,19 @@ class InteractiveInitUI:
         models = self._collect_models(request, preflight, typed_producers, initial)
         if models is None:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
+        github_decision = self.collect_github_setup(request, preflight)
+        if github_decision is None:
+            return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
         choices = InitChoices(
             integrations=typed_integrations,
             review_write=initial.review_write,
             review_producers=typed_producers,
             review_models=models,
             existing_files=initial.existing_files,
-            github_decision=initial.github_decision,
-            github_file_decisions=initial.github_file_decisions,
-        )
-        self._renderer.render_stage(
-            RailStage.CONFIGURATION, RailState.COMPLETED, "Configuration collected"
+            github_decision=github_decision,
+            github_file_decisions=(
+                initial.github_file_decisions if github_decision is initial.github_decision else {}
+            ),
         )
         return ChoiceCollectionResult(ChoiceCollectionDecision.REVIEW, choices)
 
@@ -756,6 +799,7 @@ class InteractiveInitUI:
         *,
         assume_yes: bool | None = None,
         initial_choices: InitChoices | None = None,
+        github_resolver: GithubResolver | None = None,
     ) -> WizardResult:
         self._renderer.render_stage(
             RailStage.PREFLIGHT,
@@ -769,7 +813,12 @@ class InteractiveInitUI:
             collection = self.collect(request, preflight, initial_choices=choices)
             if collection.decision is ChoiceCollectionDecision.CANCEL:
                 return WizardResult.cancelled()
-            choices = collection.choices
+            choices, github_plan = _resolve_github_choices(collection.choices, github_resolver)
+            self._renderer.render_stage(
+                RailStage.CONFIGURATION,
+                RailState.COMPLETED,
+                "Configuration collected",
+            )
             plan = build_init_plan(request, preflight, choices)
             decision = self.review(plan, assume_yes=effective_assume_yes)
             if decision is ReviewDecision.BACK:
@@ -777,11 +826,7 @@ class InteractiveInitUI:
             if decision is ReviewDecision.CANCEL:
                 return WizardResult.cancelled()
             self._renderer.render_stage(RailStage.REVIEW, RailState.COMPLETED, "Plan confirmed")
-            self._renderer.render_stage(RailStage.APPLY, RailState.PENDING, "Ready for executor")
-            self._renderer.render_stage(
-                RailStage.OUTCOME, RailState.PENDING, "Pending apply outcome"
-            )
-            return WizardResult.confirmed(plan)
+            return WizardResult.confirmed(plan, github_plan)
 
     def run(
         self,
@@ -925,20 +970,29 @@ class _PlainInitUI:
         preflight: InitPreflight,
         *,
         initial_choices: InitChoices | None = None,
+        github_resolver: GithubResolver | None = None,
     ) -> WizardResult:
         choices = initial_choices
         while True:
             collection = self.collect(request, preflight, initial_choices=choices)
             if collection.decision is ChoiceCollectionDecision.CANCEL:
                 return WizardResult.cancelled()
-            choices = collection.choices
+            collected = collection.choices
+            if collected.github_decision is None:
+                collected = replace(
+                    collected,
+                    github_decision=(
+                        GitHubDecision.CREATE if request.setup_github else GitHubDecision.SKIP
+                    ),
+                )
+            choices, github_plan = _resolve_github_choices(collected, github_resolver)
             plan = build_init_plan(request, preflight, choices)
             decision = self.review(plan, assume_yes=request.assume_yes)
             if decision is ReviewDecision.BACK:
                 continue
             if decision is ReviewDecision.CANCEL:
                 return WizardResult.cancelled()
-            return WizardResult.confirmed(plan)
+            return WizardResult.confirmed(plan, github_plan)
 
 
 class LineInitUI(_PlainInitUI):
@@ -955,9 +1009,7 @@ class LineInitUI(_PlainInitUI):
             return GitHubDecision.SKIP
         return (
             GitHubDecision.CREATE
-            if self._ask_yes_no(
-                "Configure GitHub files and repository settings?", default=False
-            )
+            if self._ask_yes_no("Configure GitHub files and repository settings?", default=False)
             else GitHubDecision.SKIP
         )
 
@@ -990,6 +1042,7 @@ class LineInitUI(_PlainInitUI):
             integrations = self._collect_integrations(request, preflight, initial)
             producers = self._collect_producers(request, preflight, initial)
             models = self._collect_models(request, preflight, producers, initial)
+            github_decision = self.collect_github_setup(request, preflight)
         except _CollectionCancelled:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
 
@@ -1001,8 +1054,12 @@ class LineInitUI(_PlainInitUI):
                 review_producers=producers,
                 review_models=models,
                 existing_files=initial.existing_files,
-                github_decision=initial.github_decision,
-                github_file_decisions=initial.github_file_decisions,
+                github_decision=github_decision,
+                github_file_decisions=(
+                    initial.github_file_decisions
+                    if github_decision is initial.github_decision
+                    else {}
+                ),
             ),
         )
 
@@ -1054,9 +1111,7 @@ class LineInitUI(_PlainInitUI):
                 self._output(f"{option.label} review producer unavailable (executable not found).")
                 continue
             has_explicit_model = option.source in request.review_models
-            has_candidate = bool(
-                preflight.reviewer_model_candidates.get(option.source or "", ())
-            )
+            has_candidate = bool(preflight.reviewer_model_candidates.get(option.source or "", ()))
             if not has_explicit_model and not has_candidate:
                 reason = preflight.reviewer_model_errors.get(
                     option.source or "", "model not configured"
@@ -1093,17 +1148,13 @@ class LineInitUI(_PlainInitUI):
             candidates = preflight.reviewer_model_candidates.get(option.source, ())
             if not candidates:
                 self._output(
-                    preflight.reviewer_model_errors.get(
-                        option.source, "model not configured"
-                    )
+                    preflight.reviewer_model_errors.get(option.source, "model not configured")
                 )
                 raise _CollectionCancelled
             if len(candidates) == 1:
                 candidate = candidates[0]
                 model = candidate.model
-                self._output(
-                    f"{option.label} reviewer model: {model} ({candidate.origin})."
-                )
+                self._output(f"{option.label} reviewer model: {model} ({candidate.origin}).")
             else:
                 model = self._ask_model_choice(option.label, candidates)
             entered_models[option.source] = model

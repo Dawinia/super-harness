@@ -9,6 +9,7 @@ from super_harness.cli.init_plan import (
     ExistingFileDecision,
     FileAction,
     GitHubDecision,
+    GithubFileDecision,
     HarnessState,
     InitChoices,
     InitPlanValidationError,
@@ -101,9 +102,7 @@ def _review_actions(plan):
 def _write_user_models(home: Path) -> None:
     (home / ".codex").mkdir(parents=True)
     (home / ".claude").mkdir(parents=True)
-    (home / ".codex" / "config.toml").write_text(
-        'model = "gpt-configured"\n', encoding="utf-8"
-    )
+    (home / ".codex" / "config.toml").write_text('model = "gpt-configured"\n', encoding="utf-8")
     (home / ".claude" / "settings.json").write_text(
         '{"model": "opus-configured"}', encoding="utf-8"
     )
@@ -175,9 +174,7 @@ def test_preflight_records_sanitized_reviewer_model_error(tmp_path: Path) -> Non
         home=home,
     )
 
-    assert dict(result.reviewer_model_errors) == {
-        "codex": "Codex CLI config is not valid TOML"
-    }
+    assert dict(result.reviewer_model_errors) == {"codex": "Codex CLI config is not valid TOML"}
 
 
 def test_explicit_reviewer_model_excludes_its_provider_from_discovery(tmp_path: Path) -> None:
@@ -649,8 +646,6 @@ def test_closed_state_enums_and_forbidden_ui_lifecycle_imports() -> None:
 
 
 def test_github_file_decisions_are_closed_and_choices_are_immutable() -> None:
-    from super_harness.cli.init_plan import GithubFileDecision
-
     mutable = {
         ".github/pull_request_template.md": GithubFileDecision.APPEND,
         ".github/workflows/super-harness.yml": GithubFileDecision.OVERWRITE,
@@ -670,3 +665,25 @@ def test_github_file_decisions_are_closed_and_choices_are_immutable() -> None:
     )
     with pytest.raises(TypeError):
         choices.github_file_decisions[".github/pull_request_template.md"] = GithubFileDecision.KEEP  # type: ignore[index]
+
+
+def test_resolved_github_file_decisions_drive_truthful_file_actions(
+    tmp_path: Path,
+) -> None:
+    request = _request(tmp_path, mode=InteractionMode.GUIDED)
+    preflight = inspect_workspace(request, executable_lookup=_lookup("gh"))
+    plan = build_init_plan(
+        request,
+        preflight,
+        InitChoices(
+            github_decision=GitHubDecision.CREATE,
+            github_file_decisions={
+                ".github/pull_request_template.md": GithubFileDecision.KEEP,
+                ".github/workflows/super-harness.yml": GithubFileDecision.OVERWRITE,
+            },
+        ),
+    )
+    actions = {action.path.as_posix(): action.action for action in plan.file_actions}
+
+    assert actions[".github/pull_request_template.md"] is FileAction.PRESERVE
+    assert actions[".github/workflows/super-harness.yml"] is FileAction.UPDATE

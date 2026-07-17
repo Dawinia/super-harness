@@ -140,9 +140,9 @@ class InitPreflight:
     detected_review_producers: tuple[str, ...]
     persisted_review_producers: tuple[str, ...] = ()
     persisted_review_models: Mapping[str, str] = field(default_factory=dict)
-    reviewer_model_candidates: Mapping[
-        str, tuple[ReviewerModelCandidate, ...]
-    ] = field(default_factory=dict)
+    reviewer_model_candidates: Mapping[str, tuple[ReviewerModelCandidate, ...]] = field(
+        default_factory=dict
+    )
     reviewer_model_errors: Mapping[str, str] = field(default_factory=dict)
     review_config_error: str | None = None
     github_available: bool = False
@@ -175,10 +175,7 @@ class InitPreflight:
             self,
             "reviewer_model_candidates",
             _frozen_mapping(
-                {
-                    source: tuple(values)
-                    for source, values in self.reviewer_model_candidates.items()
-                }
+                {source: tuple(values) for source, values in self.reviewer_model_candidates.items()}
             ),
         )
         object.__setattr__(
@@ -727,7 +724,17 @@ def build_init_plan(
 
     for path, content in _GITHUB_FILES:
         if github_decision is GitHubDecision.CREATE:
-            actions.append(_ordinary_action(path, content, preflight))
+            decision = choices.github_file_decisions.get(path.as_posix())
+            if decision is None:
+                actions.append(_ordinary_action(path, content, preflight))
+                continue
+            action = {
+                GithubFileDecision.CREATE: FileAction.CREATE,
+                GithubFileDecision.KEEP: FileAction.PRESERVE,
+                GithubFileDecision.APPEND: FileAction.UPDATE,
+                GithubFileDecision.OVERWRITE: FileAction.UPDATE,
+            }[decision]
+            actions.append(PlannedFileAction(path, action, content))
         else:
             actions.append(PlannedFileAction(path, FileAction.SKIP))
 

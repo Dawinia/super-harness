@@ -37,13 +37,12 @@ from super_harness.cli.init_github import (
     resolve_github_plan,
 )
 from super_harness.cli.init_plan import (
-    GitHubDecision,
     GithubFileDecision,
     HarnessState,
-    InitChoices,
     InitPlan,
     InitPlanValidationError,
     InitRequest,
+    InteractionMode,
     ReviewWrite,
     inspect_workspace,
 )
@@ -394,11 +393,21 @@ def build_init_operations(
                     ),
                 ) from error
             configured.append(integration)
-            if not (request.quiet or request.json_output):
+            if not (
+                request.quiet
+                or request.json_output
+                or request.interaction_mode is InteractionMode.GUIDED
+            ):
                 click.echo(f"configured {integration} integration: {adapter.installed_detail()}")
+        labels = {"codex": "Codex", "claude-code": "Claude Code"}
+        named = [labels.get(integration, integration) for integration in configured]
+        if len(named) > 1:
+            rendered = f"{', '.join(named[:-1])} and {named[-1]}"
+        else:
+            rendered = "".join(named)
         detail = (
-            f"Configured integrations: {', '.join(configured)}."
-            if configured
+            f"{rendered} {'integrations' if len(named) > 1 else 'integration'} configured."
+            if named
             else "No agent integrations selected."
         )
         return InitOperationResult(detail)
@@ -440,14 +449,22 @@ def build_init_operations(
         if github_plan is None:
             return InitOperationResult("GitHub setup skipped.")
         try:
-            _setup_github(ctx, root, harness, github_plan)
+            warning = _setup_github(
+                ctx,
+                root,
+                harness,
+                github_plan,
+                compact_output=request.interaction_mode is InteractionMode.GUIDED,
+            )
         except GithubFileError as error:
             raise InitOperationError(
                 str(error),
                 exit_code=EXIT_GENERIC,
                 hint=error.hint,
             ) from error
-        return InitOperationResult("Applied GitHub setup.")
+        if warning is not None:
+            return InitOperationResult(warning, warned=True)
+        return InitOperationResult("GitHub files ensured.")
 
     return InitOperations(
         scaffold=scaffold,
@@ -575,29 +592,17 @@ def init_cmd(
         output_fn=click.echo,
         quiet=quiet or json_output,
     )
-    github_choice = ui.collect_github_setup(request, preflight)
-    if github_choice is None:
-        ui.render_cancelled()
-        ctx.exit(EXIT_OK)
-    github_plan = (
-        _plan_github_setup(ctx, root)
-        if github_choice is GitHubDecision.CREATE
-        else None
-    )
-
-    initial_choices = InitChoices(github_decision=github_choice)
-    if github_plan is not None:
-        github_decisions = {
-            item.inspection.path.relative_to(root).as_posix(): item.decision
-            for item in (github_plan.pr_template, github_plan.workflow)
-        }
-        initial_choices = InitChoices(
-            github_decision=GitHubDecision.CREATE,
-            github_file_decisions=github_decisions,
-        )
 
     try:
-        wizard = ui.prepare_plan(request, preflight, initial_choices=initial_choices)
+        wizard = ui.prepare_plan(
+            request,
+            preflight,
+            github_resolver=lambda: _plan_github_setup(
+                ctx,
+                root,
+                compact_output=capabilities.mode is InteractionMode.GUIDED,
+            ),
+        )
     except KeyboardInterrupt as error:
         raise click.Abort() from error
     except InitPlanValidationError as error:
@@ -624,7 +629,7 @@ def init_cmd(
         raise click.ClickException("init UI confirmed without a plan")
 
     result = InitExecutor(
-        build_init_operations(ctx=ctx, request=request, github_plan=github_plan)
+        build_init_operations(ctx=ctx, request=request, github_plan=wizard.github_plan)
     ).apply(wizard.plan, ui.on_step)
     ui.render_outcome(result)
     if not result.success:
@@ -642,10 +647,15 @@ def init_cmd(
     ctx.exit(EXIT_OK)
 
 
-def _plan_github_setup(ctx: click.Context, root: Path) -> GithubPlan:
+def _plan_github_setup(
+    ctx: click.Context,
+    root: Path,
+    *,
+    compact_output: bool = False,
+) -> GithubPlan:
     """Resolve every GitHub file conflict before the first init write."""
 
-    advise = not (bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
+    advise = not (compact_output or bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
     try:
         check_gh()
     except _gh_error_type() as e:
@@ -729,7 +739,9 @@ def _setup_github(
     root: Path,
     harness: Path,
     plan: GithubPlan,
-) -> None:
+    *,
+    compact_output: bool = False,
+) -> str | None:
     """Phase 12 `--setup-github` flow (engineering-integration §2.6 / §3.1).
 
     The read-only inspection, ``gh`` preflight, and every conflict prompt have
@@ -740,13 +752,13 @@ def _setup_github(
     2. Best-effort repo settings — a ``GhError`` is non-fatal: write an
        operation-log + advisory to stderr + continue (exit stays 0; AC-7).
 
-    S3 fix (OPEN-ITEMS #6): each substep prints a stdout advisory describing
-    what actually happened (typed outcome from `_write_pr_template` /
-    `_write_workflow_file`). Suppressed under ``--quiet`` or ``--json``.
+    Plain modes print one stdout advisory per substep, preserving the existing
+    typed outcomes from `_write_pr_template` / `_write_workflow_file`. Guided
+    mode suppresses those raw lines and returns an actionable repository-setting
+    warning for the executor renderer instead.
     """
-    # S3: advisory prints honor --quiet AND --json (init emits no JSON envelope,
-    # but prose advisories would pollute JSON-consumer pipelines all the same).
-    advise = not (bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
+    # Raw advisories stay in plain modes and remain suppressed for quiet / JSON.
+    advise = not (compact_output or bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
 
     # --- Step 2: write / marker-merge .github/pull_request_template.md ---
     pr_outcome = _write_pr_template(ctx, root, plan.pr_template)
@@ -763,6 +775,11 @@ def _setup_github(
         enable_repo_merge_settings()
     except _gh_error_type() as e:
         _log_setup_github_failure(harness, e)
+        if compact_output:
+            return (
+                "GitHub repository settings need manual confirmation. "
+                "Settings -> General -> Pull Requests."
+            )
         click.echo(
             format_error(
                 subcommand="init",
@@ -780,6 +797,7 @@ def _setup_github(
         # existing format_error already informs the user via stderr.
         if advise:
             click.echo("repo merge settings: enabled auto-merge + squash")
+    return None
 
 
 def _echo_outcome(label: str, outcome: PRTemplateOutcome | WorkflowOutcome) -> None:
