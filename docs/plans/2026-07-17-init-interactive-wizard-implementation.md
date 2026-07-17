@@ -538,6 +538,8 @@ Expected: clean dependency resolution on Python 3.10+.
 Test the complete state machine:
 
 - detected choices are preselected and labeled;
+- checkbox selection is conveyed by the filled/empty leading indicator without
+  prompt_toolkit's inherited reverse-video selected-row background;
 - unavailable producers are disabled;
 - unavailable integrations remain selectable;
 - a model prompt stays active until non-empty;
@@ -560,7 +562,7 @@ Expected: guided backend is missing or does not satisfy the five-stage transitio
 
 - [ ] **Step 4: Implement `InteractiveInitUI`**
 
-Use Questionary only through an injected prompt adapter and Rich only through an injected console. Render completed rail rows before and after each prompt; use `Console.status` only during executor operations, never while Questionary owns stdin.
+Use Questionary only through an injected prompt adapter and Rich only through an injected console. Render completed rail rows before and after each prompt; use `Console.status` only during executor operations, never while Questionary owns stdin. Pass an explicit Questionary checkbox style that neutralizes prompt_toolkit's inherited `selected: reverse` rule, leaving the built-in filled/empty indicator as the selection cue and the pointer as the independent focus cue.
 
 The configuration loop must be explicit:
 
@@ -1050,6 +1052,7 @@ Precondition: local automated checks and available manual terminal checks from S
 - [ ] `--yes` is interactive-confirmation-only and never supplies selections, models, or conflict decisions.
 - [ ] Explicit cancel and both interruption boundaries have asserted exit codes and write boundaries.
 - [ ] Rich and Questionary never own live terminal rendering simultaneously.
+- [ ] Checkbox selection uses the leading filled/empty indicator without a reverse-video row background.
 - [ ] No package-wide Windows classifier or claim is added.
 - [ ] All code, tests, docs, plan text, and commit messages are English.
 - [ ] `.codegraph/`, `.superpowers/`, and unrelated user files remain unstaged.

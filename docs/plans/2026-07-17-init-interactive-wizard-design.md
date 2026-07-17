@@ -133,6 +133,12 @@ The selected direction is a continuous guided rail:
 └  Ready. Run super-harness change start <slug>
 ```
 
+Checkbox selection follows the CodeGraph/Clack visual model: the leading
+filled or empty indicator is the sole selection-state cue. A selected row must
+not inherit prompt_toolkit's reverse-video `selected` style or gain a full-row
+background. The pointer identifies keyboard focus independently from the
+filled/empty indicator.
+
 The rail supplies continuity, not decoration. Completed questions collapse to a
 short answer. Secondary hints disappear first on narrow terminals. Paths and
 errors wrap; they are never truncated.
@@ -464,7 +470,8 @@ acceptance.
 
 1. A TTY user sees the approved five-stage guided rail.
 2. Detected integrations and producers are preselected and can be toggled with
-   arrow keys and space.
+   arrow keys and space; filled/empty leading indicators show selection without
+   reverse-video row backgrounds.
 3. An interactive user can review, return, confirm, or cancel before writes.
 4. Confirmation and cancel tests prove the workspace remains unchanged until
    apply begins.
