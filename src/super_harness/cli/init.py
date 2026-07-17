@@ -569,9 +569,23 @@ def init_cmd(
         )
         ctx.exit(EXIT_NO_CONFIG)
 
-    github_plan = _plan_github_setup(ctx, root) if setup_github else None
+    ui = create_init_ui(
+        capabilities,
+        input_fn=input,
+        output_fn=click.echo,
+        quiet=quiet or json_output,
+    )
+    github_choice = ui.collect_github_setup(request, preflight)
+    if github_choice is None:
+        ui.render_cancelled()
+        ctx.exit(EXIT_OK)
+    github_plan = (
+        _plan_github_setup(ctx, root)
+        if github_choice is GitHubDecision.CREATE
+        else None
+    )
 
-    initial_choices = InitChoices()
+    initial_choices = InitChoices(github_decision=github_choice)
     if github_plan is not None:
         github_decisions = {
             item.inspection.path.relative_to(root).as_posix(): item.decision
@@ -582,12 +596,6 @@ def init_cmd(
             github_file_decisions=github_decisions,
         )
 
-    ui = create_init_ui(
-        capabilities,
-        input_fn=input,
-        output_fn=click.echo,
-        quiet=quiet or json_output,
-    )
     try:
         wizard = ui.prepare_plan(request, preflight, initial_choices=initial_choices)
     except KeyboardInterrupt as error:

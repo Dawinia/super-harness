@@ -53,6 +53,7 @@ def _preflight(
         str, tuple[ReviewerModelCandidate, ...]
     ] | None = None,
     reviewer_model_errors: dict[str, str] | None = None,
+    github_available: bool = False,
 ) -> InitPreflight:
     candidates = (
         {
@@ -76,7 +77,7 @@ def _preflight(
         reviewer_model_errors=(
             {} if reviewer_model_errors is None else reviewer_model_errors
         ),
-        github_available=False,
+        github_available=github_available,
     )
 
 
@@ -505,6 +506,39 @@ def test_line_collect_returns_closed_cancel_result(tmp_path: Path) -> None:
     assert result.choices is initial
 
 
+def test_line_github_setup_defaults_off_and_can_be_enabled(tmp_path: Path) -> None:
+    default_read, default_prompts = _sequence_input([""])
+    enabled_read, enabled_prompts = _sequence_input(["y"])
+    default_ui = LineInitUI(
+        input_fn=default_read, output_fn=lambda _: None, unicode=False, width=80
+    )
+    enabled_ui = LineInitUI(
+        input_fn=enabled_read, output_fn=lambda _: None, unicode=False, width=80
+    )
+    request = _request(tmp_path)
+    preflight = _preflight(github_available=True)
+
+    assert default_ui.collect_github_setup(request, preflight) is GitHubDecision.SKIP
+    assert enabled_ui.collect_github_setup(request, preflight) is GitHubDecision.CREATE
+    assert default_prompts == ["Configure GitHub files and repository settings? [y/N] "]
+    assert enabled_prompts == ["Configure GitHub files and repository settings? [y/N] "]
+
+
+def test_explicit_setup_github_never_prompts(tmp_path: Path) -> None:
+    request = replace(_request(tmp_path), setup_github=True)
+    preflight = _preflight(github_available=False)
+    line = LineInitUI(
+        input_fn=lambda _: pytest.fail("line GitHub prompt called"),
+        output_fn=lambda _: None,
+        unicode=False,
+        width=80,
+    )
+    guided, _ = _guided_ui(_FakePromptAdapter())
+
+    assert line.collect_github_setup(request, preflight) is GitHubDecision.CREATE
+    assert guided.collect_github_setup(request, preflight) is GitHubDecision.CREATE
+
+
 @pytest.mark.parametrize("prompt_name", ["checkbox", "text", "select"])
 def test_questionary_prompt_adapter_propagates_keyboard_interrupt(
     monkeypatch: pytest.MonkeyPatch, prompt_name: str
@@ -909,6 +943,22 @@ def test_guided_auto_selects_the_only_configured_model(tmp_path: Path) -> None:
     assert dict(result.choices.review_models) == {"codex": "gpt-5-codex"}
     assert prompts.text_calls == []
     assert prompts.select_calls == []
+
+
+def test_guided_github_setup_is_a_default_off_choice(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(selects=["create"])
+    ui, _ = _guided_ui(prompts)
+
+    decision = ui.collect_github_setup(
+        _request(tmp_path),
+        _preflight(github_available=True),
+    )
+
+    assert decision is GitHubDecision.CREATE
+    message, choices, default = prompts.select_calls[0]
+    assert message == "Configure GitHub files and repository settings?"
+    assert [choice.value for choice in choices] == ["skip", "create"]
+    assert default == "skip"
 
 
 def test_guided_selects_from_multiple_configured_models(tmp_path: Path) -> None:

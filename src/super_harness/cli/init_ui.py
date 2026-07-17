@@ -15,6 +15,7 @@ from rich.text import Text
 from super_harness.cli.init_models import ReviewerModelCandidate
 from super_harness.cli.init_plan import (
     FileAction,
+    GitHubDecision,
     InitChoices,
     InitPlan,
     InitPreflight,
@@ -460,6 +461,29 @@ class InteractiveInitUI:
         self._prompts = prompt_adapter or QuestionaryPromptAdapter(color=color)
         self._renderer = renderer or RichGuidedRenderer(unicode=unicode, color=color, width=width)
 
+    def collect_github_setup(
+        self,
+        request: InitRequest,
+        preflight: InitPreflight,
+    ) -> GitHubDecision | None:
+        """Resolve the optional top-level GitHub setup choice before inspection."""
+
+        if request.setup_github:
+            return GitHubDecision.CREATE
+        if not preflight.github_available:
+            return GitHubDecision.SKIP
+        answer = self._prompts.select(
+            "Configure GitHub files and repository settings?",
+            (
+                GuidedPromptOption("skip", "Skip GitHub setup", True),
+                GuidedPromptOption("create", "Configure GitHub", False),
+            ),
+            default="skip",
+        )
+        if answer is None:
+            return None
+        return GitHubDecision(answer)
+
     @staticmethod
     def _integration_options(
         preflight: InitPreflight, defaults: frozenset[str]
@@ -872,6 +896,23 @@ class _PlainInitUI:
 class LineInitUI(_PlainInitUI):
     """Deterministic one-question-per-option interaction for limited terminals."""
 
+    def collect_github_setup(
+        self,
+        request: InitRequest,
+        preflight: InitPreflight,
+    ) -> GitHubDecision:
+        if request.setup_github:
+            return GitHubDecision.CREATE
+        if not preflight.github_available:
+            return GitHubDecision.SKIP
+        return (
+            GitHubDecision.CREATE
+            if self._ask_yes_no(
+                "Configure GitHub files and repository settings?", default=False
+            )
+            else GitHubDecision.SKIP
+        )
+
     def collect(
         self,
         request: InitRequest,
@@ -1072,6 +1113,14 @@ class LineInitUI(_PlainInitUI):
 
 class NonInteractiveInitUI(_PlainInitUI):
     """Prompt-free backend that renders values but derives no configuration."""
+
+    def collect_github_setup(
+        self,
+        request: InitRequest,
+        preflight: InitPreflight,
+    ) -> GitHubDecision:
+        del preflight
+        return GitHubDecision.CREATE if request.setup_github else GitHubDecision.SKIP
 
     def collect(
         self,

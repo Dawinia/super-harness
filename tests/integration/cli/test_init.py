@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from super_harness.adapters.framework.plain import PlainAdapter
 from super_harness.cli import main
 from super_harness.cli.init_plan import (
+    GitHubDecision,
     InitChoices,
     InteractionMode,
     build_init_plan,
@@ -42,6 +43,9 @@ class _ScriptedInitUI:
         self.events: list[Any] = []
         self.outcome: Any = None
         self.cancelled_rendered = False
+
+    def collect_github_setup(self, request: Any, _preflight: Any) -> GitHubDecision:
+        return GitHubDecision.CREATE if request.setup_github else GitHubDecision.SKIP
 
     def prepare_plan(
         self,
@@ -365,11 +369,58 @@ def test_init_guided_back_applies_the_revised_plan(
     assert "comma-separated" not in result.output
 
 
+def test_init_guided_can_enable_github_without_the_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, False, 80)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: "/abs/bin/gh" if name == "gh" else None,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=(
+                lambda name: "/abs/bin/gh" if name == "gh" else None
+            ),
+        ),
+    )
+    monkeypatch.setattr("super_harness.cli.init.check_gh", lambda: None)
+    monkeypatch.setattr(
+        "super_harness.cli.init.enable_repo_merge_settings", lambda: None
+    )
+    renderer = _PlanCaptureRenderer()
+    ui = InteractiveInitUI(
+        prompt_adapter=_GuidedAnswers(
+            checkboxes=[],
+            selects=["create", "confirm"],
+        ),
+        renderer=renderer,
+    )
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--no-agent"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert renderer.plans[-1].github_decision is GitHubDecision.CREATE
+    assert (tmp_path / ".github" / "pull_request_template.md").is_file()
+    assert (tmp_path / ".github" / "workflows" / "super-harness.yml").is_file()
+
+
 def test_init_questionary_none_cancels_without_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ui = InteractiveInitUI(
-        prompt_adapter=_GuidedAnswers(checkboxes=[None], selects=[]),
+        prompt_adapter=_GuidedAnswers(checkboxes=[None], selects=["skip"]),
     )
     monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
 
@@ -427,7 +478,7 @@ def test_init_force_guided_edits_valid_persisted_review_configuration(
     ui = InteractiveInitUI(
         prompt_adapter=_GuidedAnswers(
             checkboxes=[(), ("codex-cli",)],
-            selects=["confirm"],
+            selects=["skip", "confirm"],
         ),
         renderer=renderer,
     )
