@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 from rich.console import Console
 
+from super_harness.cli.init_models import ReviewerModelCandidate
 from super_harness.cli.init_plan import (
     FileAction,
     GitHubDecision,
@@ -48,7 +49,22 @@ def _preflight(
     available_integrations: frozenset[str] = frozenset({"codex"}),
     detected_producers: tuple[str, ...] = ("codex-cli",),
     available_producers: frozenset[str] = frozenset({"codex-cli"}),
+    reviewer_model_candidates: dict[
+        str, tuple[ReviewerModelCandidate, ...]
+    ] | None = None,
+    reviewer_model_errors: dict[str, str] | None = None,
 ) -> InitPreflight:
+    candidates = (
+        {
+            "codex": (
+                ReviewerModelCandidate(
+                    "codex", "gpt-5-codex", "Codex CLI config", 10
+                ),
+            )
+        }
+        if reviewer_model_candidates is None
+        else reviewer_model_candidates
+    )
     return InitPreflight(
         harness_state=HarnessState.ABSENT,
         existing_file_bytes={},
@@ -56,6 +72,10 @@ def _preflight(
         available_review_producers=available_producers,
         detected_integrations=detected_integrations,
         detected_review_producers=detected_producers,
+        reviewer_model_candidates=candidates,
+        reviewer_model_errors=(
+            {} if reviewer_model_errors is None else reviewer_model_errors
+        ),
         github_available=False,
     )
 
@@ -262,7 +282,7 @@ def test_terminal_capabilities_are_immutable() -> None:
 def test_line_collect_asks_one_yes_no_question_per_selectable_option(
     tmp_path: Path,
 ) -> None:
-    read, prompts = _sequence_input(["", "y", "", "gpt-5-codex"])
+    read, prompts = _sequence_input(["", "y", ""])
     output: list[str] = []
     ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
 
@@ -276,7 +296,6 @@ def test_line_collect_asks_one_yes_no_question_per_selectable_option(
         "Select Codex integration? [Y/n] ",
         "Select Claude Code integration? [y/N] ",
         "Select Codex CLI review producer? [Y/n] ",
-        "Model for Codex CLI: ",
     ]
     assert all("," not in prompt for prompt in prompts)
     assert "comma" not in "\n".join(output).lower()
@@ -364,30 +383,77 @@ def test_unavailable_producers_are_not_prompted_or_defaulted(tmp_path: Path) -> 
     assert "Claude CLI review producer unavailable (executable not found)." in output
 
 
-def test_blank_model_input_repeats_until_non_empty(tmp_path: Path) -> None:
-    read, prompts = _sequence_input(["n", "n", "", "", "  ", "gpt-5-codex"])
+def test_line_auto_selects_the_only_configured_model(tmp_path: Path) -> None:
+    read, prompts = _sequence_input(["n", "n", ""])
     output: list[str] = []
     ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
 
     result = ui.collect(_request(tmp_path), _preflight())
 
     assert dict(result.choices.review_models) == {"codex": "gpt-5-codex"}
-    assert prompts.count("Model for Codex CLI: ") == 3
-    assert output.count("A model is required.") == 2
+    assert all(not prompt.startswith("Model") for prompt in prompts)
+    assert "Codex CLI reviewer model: gpt-5-codex (Codex CLI config)." in output
+
+
+def test_line_selects_configured_model_by_number_without_accepting_raw_text(
+    tmp_path: Path,
+) -> None:
+    read, prompts = _sequence_input(["n", "n", "", "gpt-fast", "2"])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+    preflight = _preflight(
+        reviewer_model_candidates={
+            "codex": (
+                ReviewerModelCandidate("codex", "gpt-workspace", "workspace", 0),
+                ReviewerModelCandidate("codex", "gpt-fast", "profile fast", 20),
+            )
+        }
+    )
+
+    result = ui.collect(_request(tmp_path), preflight)
+
+    assert dict(result.choices.review_models) == {"codex": "gpt-fast"}
+    assert prompts[-2:] == ["Model [1]: ", "Model [1]: "]
+    assert "Choose a number from 1 to 2." in output
+    assert "  1. gpt-workspace (workspace)" in output
+    assert "  2. gpt-fast (profile fast)" in output
 
 
 def test_explicit_invalid_producer_is_left_for_plan_validation(tmp_path: Path) -> None:
-    read, prompts = _sequence_input(["n", "n", "gpt-explicit"])
+    read, prompts = _sequence_input(["n", "n"])
     ui = LineInitUI(input_fn=read, output_fn=lambda _: None, unicode=False, width=80)
 
     result = ui.collect(
-        _request(tmp_path, producers=("codex-cli",)),
-        _preflight(available_producers=frozenset()),
+        _request(
+            tmp_path,
+            producers=("codex-cli",),
+            models={"codex": "gpt-explicit"},
+        ),
+        _preflight(
+            available_producers=frozenset(),
+            reviewer_model_candidates={},
+        ),
     )
 
     assert result.choices.review_producers is None
     assert dict(result.choices.review_models) == {"codex": "gpt-explicit"}
-    assert prompts[-1] == "Model for Codex CLI: "
+    assert all(not prompt.startswith("Model") for prompt in prompts)
+
+
+def test_line_disables_reviewer_without_a_configured_model(tmp_path: Path) -> None:
+    read, prompts = _sequence_input(["n", "n"])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(reviewer_model_candidates={}),
+    )
+
+    assert result.choices.review_producers == ()
+    assert dict(result.choices.review_models) == {}
+    assert all("review producer" not in prompt for prompt in prompts)
+    assert "Codex CLI reviewer unavailable (model not configured)." in output
 
 
 @pytest.mark.parametrize(
@@ -415,7 +481,7 @@ def test_line_review_returns_closed_decisions(
 
 
 def test_assume_yes_skips_only_final_review_input(tmp_path: Path) -> None:
-    read, prompts = _sequence_input(["n", "n", "", "gpt-model"])
+    read, prompts = _sequence_input(["n", "n", ""])
     output: list[str] = []
     ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
 
@@ -423,9 +489,9 @@ def test_assume_yes_skips_only_final_review_input(tmp_path: Path) -> None:
     decision = ui.review(_plan(tmp_path), assume_yes=True)
 
     assert result.choices.integrations == ()
-    assert dict(result.choices.review_models) == {"codex": "gpt-model"}
+    assert dict(result.choices.review_models) == {"codex": "gpt-5-codex"}
     assert decision is ReviewDecision.CONFIRM
-    assert prompts[-1] == "Model for Codex CLI: "
+    assert prompts[-1] == "Select Codex CLI review producer? [Y/n] "
 
 
 def test_line_collect_returns_closed_cancel_result(tmp_path: Path) -> None:
@@ -828,23 +894,123 @@ def test_guided_skips_producer_checkbox_when_every_producer_is_unavailable(
     assert [message for message, _ in prompts.checkbox_calls] == ["Coding-agent integrations"]
     assert result.choices.review_producers == ()
     assert renderer.validations == [
-        "No automated review producers are available; continuing without one."
+        "No automated reviewers are ready; install a CLI and configure its model."
     ]
 
 
-def test_guided_blank_model_stays_in_prompt_until_non_empty(tmp_path: Path) -> None:
+def test_guided_auto_selects_the_only_configured_model(tmp_path: Path) -> None:
     prompts = _FakePromptAdapter(
         checkboxes=[(), ("codex-cli",)],
-        texts=["", "   ", "gpt-5-codex"],
     )
-    ui, renderer = _guided_ui(prompts)
+    ui, _ = _guided_ui(prompts)
 
     result = ui.collect(_request(tmp_path), _preflight())
 
     assert dict(result.choices.review_models) == {"codex": "gpt-5-codex"}
-    assert len(prompts.text_calls) == 3
-    assert all(default is None for _, default in prompts.text_calls)
-    assert renderer.validations == ["A model is required.", "A model is required."]
+    assert prompts.text_calls == []
+    assert prompts.select_calls == []
+
+
+def test_guided_selects_from_multiple_configured_models(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("codex-cli",)],
+        selects=["gpt-fast"],
+    )
+    ui, _ = _guided_ui(prompts)
+    preflight = _preflight(
+        reviewer_model_candidates={
+            "codex": (
+                ReviewerModelCandidate(
+                    "codex", "gpt-workspace", "existing workspace profile", 0
+                ),
+                ReviewerModelCandidate(
+                    "codex", "gpt-fast", "Codex CLI profile fast", 20
+                ),
+            )
+        }
+    )
+
+    result = ui.collect(_request(tmp_path), preflight)
+
+    message, choices, default = prompts.select_calls[0]
+    assert message == "Model for Codex reviewer"
+    assert [choice.value for choice in choices] == ["gpt-workspace", "gpt-fast"]
+    assert [choice.title for choice in choices] == [
+        "gpt-workspace  existing workspace profile",
+        "gpt-fast  Codex CLI profile fast",
+    ]
+    assert default == "gpt-workspace"
+    assert dict(result.choices.review_models) == {"codex": "gpt-fast"}
+    assert prompts.text_calls == []
+
+
+def test_guided_uses_provider_error_only_for_the_affected_reviewer(
+    tmp_path: Path,
+) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("claude-cli",)],
+    )
+    ui, _ = _guided_ui(prompts)
+    preflight = _preflight(
+        detected_producers=("codex-cli", "claude-cli"),
+        available_producers=frozenset({"codex-cli", "claude-cli"}),
+        reviewer_model_candidates={
+            "claude": (
+                ReviewerModelCandidate(
+                    "claude", "opus-configured", "Claude CLI config", 10
+                ),
+            )
+        },
+        reviewer_model_errors={"codex": "Codex CLI config is not valid TOML"},
+    )
+
+    result = ui.collect(_request(tmp_path), preflight)
+
+    producer_options = prompts.checkbox_calls[1][1]
+    assert producer_options[0].disabled == "Codex CLI config is not valid TOML"
+    assert producer_options[1].disabled is None
+    assert dict(result.choices.review_models) == {"claude": "opus-configured"}
+
+
+def test_guided_explicit_model_bypasses_candidate_selection(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(checkboxes=[()])
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.collect(
+        _request(
+            tmp_path,
+            producers=("codex-cli",),
+            models={"codex": "gpt-explicit"},
+        ),
+        _preflight(reviewer_model_candidates={}),
+    )
+
+    assert dict(result.choices.review_models) == {"codex": "gpt-explicit"}
+    assert prompts.text_calls == []
+    assert prompts.select_calls == []
+
+
+def test_guided_cancel_from_model_selection_cancels_configuration(
+    tmp_path: Path,
+) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("codex-cli",)],
+        selects=[None],
+    )
+    ui, _ = _guided_ui(prompts)
+    preflight = _preflight(
+        reviewer_model_candidates={
+            "codex": (
+                ReviewerModelCandidate("codex", "gpt-one", "one", 10),
+                ReviewerModelCandidate("codex", "gpt-two", "two", 20),
+            )
+        }
+    )
+
+    result = ui.collect(_request(tmp_path), preflight)
+
+    assert result.decision is ChoiceCollectionDecision.CANCEL
+    assert prompts.text_calls == []
 
 
 def test_guided_run_back_reuses_choices_then_returns_revised_plan(tmp_path: Path) -> None:
@@ -867,7 +1033,7 @@ def test_guided_run_back_reuses_choices_then_returns_revised_plan(tmp_path: Path
     assert result.plan.integrations == ("claude-code",)
     second_integrations = prompts.checkbox_calls[2][1]
     assert [option.checked for option in second_integrations] == [True, False]
-    assert len(prompts.text_calls) == 1
+    assert prompts.text_calls == []
     assert len(renderer.plans) == 2
 
 
@@ -935,7 +1101,6 @@ def test_guided_keyboard_interrupt_propagates(tmp_path: Path) -> None:
 def test_guided_assume_yes_skips_only_review(tmp_path: Path) -> None:
     prompts = _FakePromptAdapter(
         checkboxes=[("codex",), ("codex-cli",)],
-        texts=["gpt-required"],
     )
     ui, _ = _guided_ui(prompts)
 
@@ -943,9 +1108,9 @@ def test_guided_assume_yes_skips_only_review(tmp_path: Path) -> None:
 
     assert result.decision is WizardDecision.CONFIRM
     assert result.plan is not None
-    assert dict(result.plan.review_models) == {"codex": "gpt-required"}
+    assert dict(result.plan.review_models) == {"codex": "gpt-5-codex"}
     assert len(prompts.checkbox_calls) == 2
-    assert len(prompts.text_calls) == 1
+    assert prompts.text_calls == []
     assert prompts.select_calls == []
 
 
@@ -965,7 +1130,7 @@ def test_guided_never_has_a_live_renderer_while_any_prompt_owns_input(
 
     ui.run(_request(tmp_path), _preflight())
 
-    assert len(prompts.checkbox_calls) + len(prompts.text_calls) + len(prompts.select_calls) == 4
+    assert len(prompts.checkbox_calls) + len(prompts.text_calls) + len(prompts.select_calls) == 3
 
 
 def test_guided_completed_rail_order_and_five_stage_visibility(tmp_path: Path) -> None:

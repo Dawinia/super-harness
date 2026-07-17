@@ -12,6 +12,7 @@ import questionary
 from rich.console import Console
 from rich.text import Text
 
+from super_harness.cli.init_models import ReviewerModelCandidate
 from super_harness.cli.init_plan import (
     FileAction,
     InitChoices,
@@ -479,20 +480,34 @@ class InteractiveInitUI:
 
     @staticmethod
     def _producer_options(
-        preflight: InitPreflight, defaults: frozenset[str]
+        preflight: InitPreflight,
+        defaults: frozenset[str],
+        explicit_models: Mapping[str, str],
     ) -> tuple[GuidedPromptOption, ...]:
         def create(option: _Option) -> GuidedPromptOption:
             available = option.value in preflight.available_review_producers
-            status = (
-                "detected · recommended"
-                if option.value in preflight.detected_review_producers
-                else "executable not found"
+            ready = option.source in explicit_models or bool(
+                preflight.reviewer_model_candidates.get(option.source or "", ())
             )
+            if not available:
+                disabled = "executable not found"
+            elif not ready:
+                disabled = preflight.reviewer_model_errors.get(
+                    option.source or "", "model not configured"
+                )
+            else:
+                disabled = None
+            if disabled is not None:
+                status = disabled
+            elif option.value in preflight.detected_review_producers:
+                status = "detected · recommended"
+            else:
+                status = "available"
             return GuidedPromptOption(
                 option.value,
                 f"{_GUIDED_REVIEWER_LABELS[option.value]}  {status}",
-                available and option.value in defaults,
-                None if available else "executable not found",
+                disabled is None and option.value in defaults,
+                disabled,
             )
 
         return tuple(create(option) for option in _REVIEW_PRODUCERS)
@@ -527,10 +542,10 @@ class InteractiveInitUI:
             if initial.review_producers is not None
             else frozenset(preflight.detected_review_producers)
         )
-        options = self._producer_options(preflight, defaults)
+        options = self._producer_options(preflight, defaults, request.review_models)
         if not any(option.disabled is None for option in options):
             self._renderer.render_validation(
-                "No automated review producers are available; continuing without one."
+                "No automated reviewers are ready; install a CLI and configure its model."
             )
             return ()
         answer = self._prompts.checkbox(
@@ -544,25 +559,47 @@ class InteractiveInitUI:
     def _collect_models(
         self,
         request: InitRequest,
+        preflight: InitPreflight,
         producers: tuple[str, ...] | None,
         initial: InitChoices,
     ) -> Mapping[str, str] | None:
         models = dict(initial.review_models)
-        known = models | dict(request.review_models)
+        models.update(request.review_models)
+        known = dict(models)
         options = {option.value: option for option in _REVIEW_PRODUCERS}
         for producer in request.review_producers or producers or ():
             option = options.get(producer)
             if option is None or option.source is None or option.source in known:
                 continue
-            while True:
-                answer = self._prompts.text(f"Model for {option.label}", default=None)
-                if answer is None:
+            candidates = preflight.reviewer_model_candidates.get(option.source, ())
+            if not candidates:
+                self._renderer.render_validation(
+                    preflight.reviewer_model_errors.get(
+                        option.source, "model not configured"
+                    )
+                )
+                return None
+            if len(candidates) == 1:
+                answer = candidates[0].model
+            else:
+                choices = tuple(
+                    GuidedPromptOption(
+                        candidate.model,
+                        f"{candidate.model}  {candidate.origin}",
+                        checked=index == 0,
+                    )
+                    for index, candidate in enumerate(candidates)
+                )
+                selected_answer = self._prompts.select(
+                    f"Model for {option.label.removesuffix(' CLI')} reviewer",
+                    choices,
+                    default=candidates[0].model,
+                )
+                if selected_answer is None:
                     return None
-                if answer.strip():
-                    models[option.source] = answer.strip()
-                    known[option.source] = answer.strip()
-                    break
-                self._renderer.render_validation("A model is required.")
+                answer = selected_answer
+            models[option.source] = answer
+            known[option.source] = answer
         return models
 
     def collect(
@@ -604,7 +641,7 @@ class InteractiveInitUI:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
         typed_integrations = cast(tuple[str, ...] | None, integrations)
         typed_producers = cast(tuple[str, ...] | None, producers)
-        models = self._collect_models(request, typed_producers, initial)
+        models = self._collect_models(request, preflight, typed_producers, initial)
         if models is None:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
         choices = InitChoices(
@@ -863,7 +900,7 @@ class LineInitUI(_PlainInitUI):
                 )
             integrations = self._collect_integrations(request, preflight, initial)
             producers = self._collect_producers(request, preflight, initial)
-            models = self._collect_models(request, producers, initial)
+            models = self._collect_models(request, preflight, producers, initial)
         except _CollectionCancelled:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
 
@@ -927,6 +964,16 @@ class LineInitUI(_PlainInitUI):
             if option.value not in preflight.available_review_producers:
                 self._output(f"{option.label} review producer unavailable (executable not found).")
                 continue
+            has_explicit_model = option.source in request.review_models
+            has_candidate = bool(
+                preflight.reviewer_model_candidates.get(option.source or "", ())
+            )
+            if not has_explicit_model and not has_candidate:
+                reason = preflight.reviewer_model_errors.get(
+                    option.source or "", "model not configured"
+                )
+                self._output(f"{option.label} reviewer unavailable ({reason}).")
+                continue
             if self._width >= _NARROW_WIDTH and option.value in preflight.detected_review_producers:
                 self._output(f"{option.label} review producer detected (recommended).")
             if self._ask_yes_no(
@@ -939,6 +986,7 @@ class LineInitUI(_PlainInitUI):
     def _collect_models(
         self,
         request: InitRequest,
+        preflight: InitPreflight,
         selected_producers: tuple[str, ...] | None,
         initial: InitChoices,
     ) -> Mapping[str, str]:
@@ -946,17 +994,50 @@ class LineInitUI(_PlainInitUI):
             request.review_producers if request.review_producers else selected_producers or ()
         )
         entered_models = dict(initial.review_models)
+        entered_models.update(request.review_models)
         known_models = dict(entered_models)
-        known_models.update(request.review_models)
         options = {option.value: option for option in _REVIEW_PRODUCERS}
         for producer in producers:
             option = options.get(producer)
             if option is None or option.source is None or option.source in known_models:
                 continue
-            model = self._ask_required(f"Model for {option.label}: ")
+            candidates = preflight.reviewer_model_candidates.get(option.source, ())
+            if not candidates:
+                self._output(
+                    preflight.reviewer_model_errors.get(
+                        option.source, "model not configured"
+                    )
+                )
+                raise _CollectionCancelled
+            if len(candidates) == 1:
+                candidate = candidates[0]
+                model = candidate.model
+                self._output(
+                    f"{option.label} reviewer model: {model} ({candidate.origin})."
+                )
+            else:
+                model = self._ask_model_choice(option.label, candidates)
             entered_models[option.source] = model
             known_models[option.source] = model
         return entered_models
+
+    def _ask_model_choice(
+        self,
+        label: str,
+        candidates: tuple[ReviewerModelCandidate, ...],
+    ) -> str:
+        self._output(f"Choose model for {label} reviewer:")
+        for index, candidate in enumerate(candidates, start=1):
+            self._output(f"  {index}. {candidate.model} ({candidate.origin})")
+        while True:
+            answer = self._input("Model [1]: ").strip().lower()
+            if not answer:
+                return candidates[0].model
+            if answer in {"cancel", "quit", "q"}:
+                raise _CollectionCancelled
+            if answer.isdigit() and 1 <= int(answer) <= len(candidates):
+                return candidates[int(answer) - 1].model
+            self._output(f"Choose a number from 1 to {len(candidates)}.")
 
     def _ask_yes_no(self, question: str, *, default: bool) -> bool:
         suffix = "[Y/n]" if default else "[y/N]"
@@ -971,15 +1052,6 @@ class LineInitUI(_PlainInitUI):
             if answer in {"cancel", "quit", "q"}:
                 raise _CollectionCancelled
             self._output("Please answer yes or no.")
-
-    def _ask_required(self, prompt: str) -> str:
-        while True:
-            answer = self._input(prompt).strip()
-            if answer:
-                if answer.lower() in {"cancel", "quit", "q"}:
-                    raise _CollectionCancelled
-                return answer
-            self._output("A model is required.")
 
     def review(self, plan: InitPlan, *, assume_yes: bool = False) -> ReviewDecision:
         """Render the plan and resolve the only prompt that ``--yes`` skips."""
