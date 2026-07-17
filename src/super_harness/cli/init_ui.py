@@ -332,6 +332,37 @@ _EVENT_GLYPHS = {
     False: dict(zip(StepRenderState, ("+", "*", "!", "x", "x"), strict=True)),
 }
 
+_FILE_ACTION_ORDER = (
+    FileAction.UPDATE,
+    FileAction.CREATE,
+    FileAction.PRESERVE,
+    FileAction.SKIP,
+)
+_FILE_ACTION_LABELS = {
+    FileAction.UPDATE: "Update",
+    FileAction.CREATE: "Create",
+    FileAction.PRESERVE: "Preserve",
+    FileAction.SKIP: "Skip",
+}
+
+
+def _file_action_display_rows(plan: InitPlan, action: FileAction) -> tuple[str, ...]:
+    selected = tuple(item for item in plan.file_actions if item.action is action)
+    if action is FileAction.SKIP:
+        return ()
+    if action is FileAction.PRESERVE:
+        return tuple(str(item.path) for item in selected)
+
+    harness = tuple(item for item in selected if ".harness" in item.path.parts)
+    other = tuple(item for item in selected if ".harness" not in item.path.parts)
+    rows: list[str] = []
+    if len(harness) > 1:
+        rows.append(f".harness configuration ({len(harness)} files)")
+    elif harness:
+        rows.append(str(harness[0].path))
+    rows.extend(str(item.path) for item in other)
+    return tuple(rows)
+
 
 class RichGuidedRenderer:
     """Single-column Rich renderer that never acquires live terminal ownership."""
@@ -372,21 +403,38 @@ class RichGuidedRenderer:
             self._print(f"{'│' if self._unicode else '|'}  {secondary}", style="dim")
 
     def render_plan(self, plan: InitPlan) -> None:
-        integrations = ", ".join(plan.integrations) if plan.integrations else "(none)"
-        producers = ", ".join(plan.review_producers) if plan.review_producers else "(none)"
-        self._print(f"|  Integrations: {integrations}")
-        self._print(f"|  Review producers: {producers}")
+        integration_labels = {option.value: option.label for option in _INTEGRATIONS}
+        self._print("|  Integrations")
+        if plan.integrations:
+            for integration in plan.integrations:
+                self._print(f"|    {integration_labels.get(integration, integration)}")
+        else:
+            self._print("|    (none)")
+
+        self._print("|  Automated reviewers")
         if plan.review_models:
             for source, model in plan.review_models.items():
-                self._print(f"|  Model {source}: {model}")
+                self._print(f"|    {source.title()}  {model}")
         else:
-            self._print("|  Review models: (none)")
-        self._print(f"|  Review configuration: {plan.review_write.value}")
-        self._print(f"|  GitHub setup: {plan.github_decision.value}")
-        for action in plan.file_actions:
-            self._print(f"|  File {action.action.value}: {action.path}")
-            if self._width >= _NARROW_WIDTH:
-                self._print(f"|    hint: {_FILE_ACTION_HINTS[action.action]}", style="dim")
+            self._print("|    Human review only")
+
+        self._print("|  GitHub")
+        github = (
+            "Create workflow and PR template"
+            if plan.github_decision is GitHubDecision.CREATE
+            else "Skip GitHub setup"
+        )
+        self._print(f"|    {github}")
+
+        self._print("|  Files")
+        for action in _FILE_ACTION_ORDER:
+            count = sum(item.action is action for item in plan.file_actions)
+            if count == 0:
+                continue
+            noun = "file" if count == 1 else "files"
+            self._print(f"|    {_FILE_ACTION_LABELS[action]:<9} {count} {noun}")
+            for row in _file_action_display_rows(plan, action):
+                self._print(f"|      {row}")
 
     def render_validation(self, message: str) -> None:
         self._print(f"{'!' if self._unicode else 'x'}  {message}", style="yellow")

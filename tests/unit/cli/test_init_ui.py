@@ -1227,6 +1227,61 @@ def test_rich_guided_glyphs_are_independent_of_color() -> None:
     assert "x  outcome: Failed" in ascii_text
 
 
+def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=120, color_system=None),
+        unicode=True,
+        color=False,
+        width=120,
+    )
+    plan = replace(
+        _plan(tmp_path),
+        integrations=("codex", "claude-code"),
+        review_producers=("codex-cli", "claude-cli"),
+        review_models={"codex": "gpt-5.6-sol", "claude": "opus[1m]"},
+        github_decision=GitHubDecision.CREATE,
+        file_actions=(
+            PlannedFileAction(tmp_path / ".harness" / "state.yaml", FileAction.UPDATE),
+            PlannedFileAction(tmp_path / ".harness" / "sensors.yaml", FileAction.UPDATE),
+            PlannedFileAction(tmp_path / "AGENTS.md", FileAction.UPDATE),
+            PlannedFileAction(tmp_path / ".codex" / "hooks.json", FileAction.UPDATE),
+            PlannedFileAction(
+                tmp_path / ".github" / "workflows" / "super-harness.yml",
+                FileAction.CREATE,
+            ),
+            PlannedFileAction(tmp_path / ".harness" / "events.jsonl", FileAction.PRESERVE),
+            PlannedFileAction(tmp_path / ".harness" / "state.yaml", FileAction.SKIP),
+        ),
+    )
+
+    renderer.render_plan(plan)
+
+    text = buffer.getvalue()
+    compact = "".join(line.strip() for line in text.splitlines())
+    assert "Integrations" in text
+    assert "Codex" in text
+    assert "Claude Code" in text
+    assert "Automated reviewers" in text
+    assert "Codex  gpt-5.6-sol" in text
+    assert "Claude  opus[1m]" in text
+    assert "GitHub" in text
+    assert "Create workflow and PR template" in text
+    assert "Files" in text
+    assert "Update    4 files" in text
+    assert "Create    1 file" in text
+    assert "Preserve  1 file" in text
+    assert "Skip      1 file" in text
+    assert ".harness configuration (2 files)" in text
+    assert str(tmp_path / "AGENTS.md") in compact
+    assert str(tmp_path / ".codex" / "hooks.json") in compact
+    assert str(tmp_path / ".harness" / "events.jsonl") in compact
+    assert str(tmp_path / ".harness" / "state.yaml") not in compact
+    assert "hint:" not in text
+    assert "will be written during apply" not in text
+    assert "File update:" not in text
+
+
 def test_rich_guided_narrow_output_drops_hints_and_wraps_paths(tmp_path: Path) -> None:
     buffer = StringIO()
     renderer = RichGuidedRenderer(
