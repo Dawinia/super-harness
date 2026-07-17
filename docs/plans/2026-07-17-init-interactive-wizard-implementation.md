@@ -5,6 +5,7 @@ tier_hint: Large
 scope:
   files:
     - pyproject.toml
+    - uv.lock
     - .github/workflows/test.yml
     - src/super_harness/cli/__init__.py
     - src/super_harness/cli/lazy_group.py
@@ -515,6 +516,7 @@ git commit -m "feat(init): add terminal capability and plain UI backends"
 **Files:**
 
 - Modify: `pyproject.toml`
+- Modify: `uv.lock`
 - Modify: `src/super_harness/cli/init_ui.py`
 - Modify: `tests/unit/cli/test_init_ui.py`
 
@@ -526,6 +528,9 @@ Add:
 "questionary>=2.1,<3",
 "rich>=14,<15",
 ```
+
+Run `uv lock` after changing `pyproject.toml` so the tracked runtime dependency
+graph stays reproducible before installing the editable package.
 
 Run:
 
@@ -607,7 +612,7 @@ Run:
 
 ```bash
 super-harness decision check --changed
-git add pyproject.toml src/super_harness/cli/init_ui.py tests/unit/cli/test_init_ui.py
+git add pyproject.toml uv.lock src/super_harness/cli/init_ui.py tests/unit/cli/test_init_ui.py
 git commit -m "feat(init): add Questionary and Rich guided wizard"
 ```
 
@@ -982,6 +987,7 @@ git commit -m "docs(init): document the guided cross-platform workflow"
 **Files:**
 
 - Modify: `pyproject.toml`
+- Modify: `uv.lock`
 - Create: `src/super_harness/cli/init_models.py`
 - Create: `tests/unit/cli/test_init_models.py`
 
@@ -995,6 +1001,10 @@ Add the following runtime dependency next to the existing UI dependencies:
 
 The implementation uses stdlib `tomllib` on Python 3.11+ and `tomli` only on
 Python 3.10. Do not add a vendor-model package or network lookup.
+
+Run `uv lock` and confirm the `super-harness` package dependency list contains
+the marker-bounded direct `tomli` entry. The lockfile must be staged with the
+dependency change.
 
 - [ ] **Step 2: Write failing provider-discovery tests**
 
@@ -1034,7 +1044,8 @@ def test_discovery_orders_workspace_active_and_named_profile_models(tmp_path: Pa
 
 Malformed-file tests must assert a source-scoped message such as
 `Codex CLI config is not valid TOML` or `Claude CLI config is not valid JSON`
-without including raw file content.
+without including raw file content. Add a source-filter test proving that an
+excluded provider file is not opened, even when it is malformed or unreadable.
 
 - [ ] **Step 3: Run the discovery tests and confirm RED**
 
@@ -1056,7 +1067,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -1094,7 +1105,10 @@ class ReviewerModelDiscovery:
 
 
 def discover_reviewer_models(
-    *, home: Path, persisted_models: Mapping[str, str]
+    *,
+    home: Path,
+    persisted_models: Mapping[str, str],
+    sources: Collection[str] | None = None,
 ) -> ReviewerModelDiscovery:
     """Read only configured model identifiers; never retain raw provider config."""
 ```
@@ -1106,6 +1120,8 @@ ignored. Catch `OSError`, `UnicodeDecodeError`, `tomllib.TOMLDecodeError`, and
 `json.JSONDecodeError` at the provider boundary and record a sanitized error for
 only that source. Deduplicate exact model identifiers while preserving
 precedence: workspace `0`, active CLI config `10`, named profile `20`.
+`sources=None` means all supported sources; an explicit collection restricts
+both persisted-candidate collection and provider file access to those sources.
 
 - [ ] **Step 5: Run discovery checks and commit**
 
@@ -1116,7 +1132,7 @@ pytest -q tests/unit/cli/test_init_models.py
 ruff check src/super_harness/cli/init_models.py tests/unit/cli/test_init_models.py
 mypy src/super_harness/cli/init_models.py
 super-harness decision check --changed
-git add pyproject.toml src/super_harness/cli/init_models.py tests/unit/cli/test_init_models.py
+git add pyproject.toml uv.lock src/super_harness/cli/init_models.py tests/unit/cli/test_init_models.py
 git commit -m "feat(init): discover configured reviewer models"
 ```
 
@@ -1156,7 +1172,10 @@ def test_preflight_captures_reviewer_model_candidates(tmp_path: Path) -> None:
 
 Also cover persisted-model precedence during interactive `--force`, a malformed
 provider config recorded in `reviewer_model_errors`, and an omitted `home`
-calling `Path.home()` at runtime rather than import time.
+calling `Path.home()` at runtime rather than import time. Add a regression test
+with an explicit Codex model and malformed Codex config that spies on file access
+and proves the Codex provider file is never opened while another non-explicit
+source may still be discovered.
 
 - [ ] **Step 2: Run the focused tests and confirm RED**
 
@@ -1213,10 +1232,14 @@ def inspect_workspace(
     home: Path | None = None,
 ) -> InitPreflight:
     # existing workspace and executable inspection
+    discovery_sources = frozenset({"codex", "claude"}).difference(
+        request.review_models
+    )
     discovery = (
         discover_reviewer_models(
             home=home if home is not None else Path.home(),
             persisted_models=persisted_models,
+            sources=discovery_sources,
         )
         if request.interaction_mode is not InteractionMode.NON_INTERACTIVE
         else ReviewerModelDiscovery()
@@ -1230,8 +1253,9 @@ def inspect_workspace(
 
 Do not intersect `available_review_producers` with model availability: that
 field continues to mean the executable exists, which preserves explicit flag
-and non-interactive validation semantics. Add a regression assertion that
-non-interactive inspection does not call `Path.home()` or open provider config.
+and non-interactive validation semantics. Add regression assertions that
+non-interactive inspection does not call `Path.home()` or open provider config,
+and that each explicitly modeled source is excluded from provider discovery.
 
 - [ ] **Step 4: Run plan/preflight checks and commit**
 
@@ -1300,7 +1324,8 @@ def test_guided_selects_from_multiple_configured_models(tmp_path: Path) -> None:
 ```
 
 Add separate tests that a reviewer with no candidates is disabled as `model not
-configured`, a malformed provider config uses its sanitized disabled reason, an
+configured`, a malformed provider config uses its sanitized disabled reason and
+does not prevent choosing another ready reviewer or continuing human-only, an
 explicit `request.review_models` value bypasses discovery, cancellation from a
 multi-model select cancels before writes, and line mode auto-selects one or asks
 for a numeric choice among many without accepting a raw model string.
@@ -1447,7 +1472,10 @@ Use `monkeypatch.setenv("HOME", str(home))` on POSIX-facing tests and inject the
 both reviewers without any text answers, writes the exact configured models to
 `.harness/review-profiles.local.yaml`, and performs no writes before final
 confirmation. Add a no-model case that disables automated review and leaves a
-human-only governance file.
+human-only governance file. Add a malformed-Codex/valid-Claude case that proves
+Codex is disabled, Claude remains selectable, final confirmation may still
+write the selected Claude profile, and the malformed provider file remains
+byte-for-byte unchanged.
 
 - [ ] **Step 2: Add native-Windows path and malformed-config cases**
 

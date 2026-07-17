@@ -202,8 +202,10 @@ automatically, or presents multiple candidates as a single-choice prompt.
 Model discovery runs only for guided or line interaction and is read-only and
 provider-specific behind a common boundary. Non-interactive invocations retain
 their explicit flag/preservation behavior and do not inspect user CLI config.
-For each selected review source, candidates are collected in this precedence
-order and deduplicated by exact model identifier:
+An explicit `--review-model SOURCE=MODEL` excludes that source from discovery:
+the corresponding provider configuration is never opened, even when another
+source still needs discovery. For each remaining review source, candidates are
+collected in this precedence order and deduplicated by exact model identifier:
 
 1. the current workspace's `.harness/review-profiles.local.yaml`,
 2. the CLI's active user model (`~/.codex/config.toml` or
@@ -222,8 +224,10 @@ or more candidates use a Questionary single-select with the highest-precedence
 candidate preselected; line mode uses a deterministic numbered choice over the
 same candidates. No candidate disables that reviewer with `model not
 configured`; neither interactive mode falls back to text entry or a stale
-built-in catalog. Malformed or unreadable provider configuration produces a
-specific disabled reason and performs no writes.
+built-in catalog. Malformed or unreadable provider configuration disables only
+that reviewer with a specific reason. Discovery never mutates the provider
+configuration, and init may still proceed with another ready reviewer or with
+human review only.
 
 Explicit `--review-model SOURCE=MODEL` values remain authoritative and bypass
 discovery. Non-interactive semantics and the requirement that every selected
@@ -412,7 +416,7 @@ not additions to `.harness/events.jsonl`.
 | One configured model | Select automatically and show its value and origin |
 | Multiple configured models | Present a preselected single-choice list; never request free text |
 | No configured model | Disable that reviewer with `model not configured` |
-| Malformed/unreadable provider model config | Disable that reviewer with a specific reason; write nothing |
+| Malformed/unreadable provider model config | Disable only that reviewer with a specific reason; do not mutate provider config; allow init to continue with other reviewers or human-only review |
 | Explicit Cancel before apply | Write nothing; print `Setup cancelled`; exit 0 |
 | Ctrl+C before apply | Write nothing; Click-compatible interruption; exit 1 |
 | Ctrl+C during apply | Keep completed steps, mark interrupted step, no rollback; exit 1 |
