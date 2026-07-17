@@ -539,6 +539,31 @@ an exceptional outcome. The confirmation prompt immediately follows the compact
 summary. Narrow terminals retain the same information hierarchy and fold long
 paths without truncating them.
 
+## Configuration order and apply readability
+
+The optional GitHub setup decision is part of configuration. Guided init first
+renders the completed read-only preflight, then collects integrations, automated
+reviewers and models, and finally the GitHub setup choice. Only a Create choice
+may run the GitHub CLI preflight or inspect GitHub files. Conflict decisions are
+resolved before review, and Back repeats configuration without reusing a stale
+GitHub file plan.
+
+The review describes setup intent and exact file dispositions separately.
+GitHub setup is labelled as ensuring the workflow and pull-request template;
+each identical or explicitly kept file is Preserve, while append and overwrite
+are Update. A force rerun must never claim that an unchanged GitHub file will be
+updated.
+
+Guided apply output is an outcome summary rather than a dump of executor event
+identifiers. The immutable executor ledger retains every started and completed
+operation, while the guided renderer emits one Apply stage and a small set of
+user-facing completion groups: harness configuration, agent integrations,
+AGENTS.md plus `.gitignore`, and optional GitHub setup. Internal names such as
+`skeleton_config` and `agent_integrations` are not shown. Warnings and failures
+remain visible and actionable; a GitHub repository-settings warning includes
+the manual Settings path. Line and non-interactive output retain their stable
+plain behavior.
+
 ## Acceptance criteria
 
 1. A TTY user sees the approved five-stage guided rail.
@@ -570,6 +595,14 @@ paths without truncating them.
     configuration rows, prints no repeated per-file apply hints, keeps
     user-facing files visible, and places confirmation directly after the
     summary.
+15. Guided GitHub setup is collected after the preflight rail and within the
+    configuration stage; selecting Skip performs no GitHub CLI check or file
+    inspection.
+16. Identical or explicitly kept GitHub files render as Preserve, append and
+    overwrite render as Update, and the setup summary uses ensure semantics.
+17. Guided apply renders one Apply stage, user-facing grouped outcomes, and
+    actionable warnings without exposing executor step identifiers or duplicate
+    raw advisories.
 
 ## Risks and mitigations
 

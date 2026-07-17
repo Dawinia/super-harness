@@ -1658,7 +1658,110 @@ git add src/super_harness/cli/init_ui.py tests/unit/cli/test_init_ui.py
 git commit -m "fix(init): compact the review summary"
 ```
 
-## Task 16: Verify the complete change and advance the lifecycle
+## Task 16: Align configuration order and compact guided apply output
+
+**Files:**
+
+- Modify: `src/super_harness/cli/init.py`
+- Modify: `src/super_harness/cli/init_plan.py`
+- Modify: `src/super_harness/cli/init_ui.py`
+- Test: `tests/unit/cli/test_init_plan.py`
+- Test: `tests/unit/cli/test_init_ui.py`
+- Test: `tests/integration/cli/test_init.py`
+- Test: `tests/integration/cli/test_init_setup_github.py`
+
+- [ ] **Step 1: Add failing tests for configuration order and GitHub action truth**
+
+Add a guided command test that records rendered stages and prompt calls. Assert
+that preflight completes before the GitHub prompt, the prompt occurs after the
+integration and reviewer choices, and choosing Skip never calls `check_gh` or
+`inspect_github_files`. Add plan tests with explicit GitHub decisions:
+
+```python
+assert action_for(".github/pull_request_template.md") is FileAction.PRESERVE
+assert action_for(".github/workflows/super-harness.yml") is FileAction.UPDATE
+```
+
+The first decision is KEEP and the second is OVERWRITE. Also update the compact
+review expectation to `Ensure workflow and PR template`.
+
+- [ ] **Step 2: Move GitHub resolution into plan preparation**
+
+Collect the top-level GitHub decision at the end of each backend's configuration
+collection. Inject a resolver into `prepare_plan` that converts the collected
+choice into both enriched immutable `InitChoices` and the exact `GithubPlan`.
+Return that resolved GitHub plan in `WizardResult`, and pass it unchanged to the
+executor. Back must repeat collection and resolution; Skip returns no plan and
+does not invoke the GitHub resolver.
+
+- [ ] **Step 3: Map resolved GitHub decisions to truthful file actions**
+
+Use the closed decision mapping when `build_init_plan` adds GitHub paths:
+
+```python
+{
+    GithubFileDecision.CREATE: FileAction.CREATE,
+    GithubFileDecision.KEEP: FileAction.PRESERVE,
+    GithubFileDecision.APPEND: FileAction.UPDATE,
+    GithubFileDecision.OVERWRITE: FileAction.UPDATE,
+}
+```
+
+Retain the existing missing/existing fallback only when no resolved decision is
+present, preserving explicit non-interactive behavior.
+
+- [ ] **Step 4: Add failing guided-renderer tests for compact apply output**
+
+Feed the renderer the normal executor event sequence and assert one Apply stage,
+no started-event duplication, and these user-facing completion rows:
+
+```text
+Harness configuration ready
+Codex and Claude Code integrations configured
+AGENTS.md and .gitignore updated
+GitHub files ensured
+```
+
+Assert that `scaffold`, `skeleton_config`, `review_config`,
+`agent_integrations`, `agents_md`, and `gitignore` never appear. Add a warning
+case asserting the manual path `Settings -> General -> Pull Requests` remains
+visible.
+
+- [ ] **Step 5: Compact only the guided presentation boundary**
+
+Keep the executor ledger unchanged. Make `RichGuidedRenderer` collapse started
+and succeeded events into the approved public rows while rendering every warned,
+failed, and interrupted event with a user-facing label. Remove the pending Apply
+and Outcome rows from pre-review confirmation; the first started event opens the
+Apply stage, and `render_outcome` remains authoritative for the final rail row.
+
+Suppress per-integration, per-GitHub-file, and `gh CLI: ok` raw advisories only
+for guided mode. Convert a non-fatal GitHub repository-settings failure into a
+warned executor outcome carrying the manual Settings path. Preserve line,
+non-interactive, quiet, and JSON compatibility behavior.
+
+- [ ] **Step 6: Run focused verification and commit**
+
+Run:
+
+```bash
+pytest -q tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py tests/integration/cli/test_init.py tests/integration/cli/test_init_setup_github.py
+ruff format --check src/super_harness/cli/init.py src/super_harness/cli/init_plan.py src/super_harness/cli/init_ui.py tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py tests/integration/cli/test_init.py tests/integration/cli/test_init_setup_github.py
+ruff check src/super_harness/cli/init.py src/super_harness/cli/init_plan.py src/super_harness/cli/init_ui.py tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py tests/integration/cli/test_init.py tests/integration/cli/test_init_setup_github.py
+mypy src/super_harness/cli/init.py src/super_harness/cli/init_plan.py src/super_harness/cli/init_ui.py
+super-harness decision check --changed
+```
+
+Expected: all commands exit zero and `git diff --check` is clean.
+
+Commit only the implementation and tests with:
+
+```bash
+git add src/super_harness/cli/init.py src/super_harness/cli/init_plan.py src/super_harness/cli/init_ui.py tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py tests/integration/cli/test_init.py tests/integration/cli/test_init_setup_github.py
+git commit -m "fix(init): clarify configuration and apply output"
+```
+
+## Task 17: Verify the complete change and advance the lifecycle
 
 **Files:**
 
@@ -1753,6 +1856,12 @@ Precondition: local automated checks and available manual terminal checks from S
 - [ ] Guided review output groups real file actions by outcome, collapses only
   routine `.harness` display rows, retains user-facing paths, and contains no
   repeated per-file apply hints.
+- [ ] Guided configuration renders preflight before the GitHub choice and never
+  invokes GitHub inspection after Skip.
+- [ ] Resolved GitHub KEEP actions render as Preserve; APPEND and OVERWRITE
+  render as Update; setup intent uses ensure semantics.
+- [ ] Guided apply output groups successful operations into public outcomes,
+  hides internal step identifiers, and keeps actionable warnings visible.
 - [ ] No package-wide Windows classifier or claim is added.
 - [ ] All code, tests, docs, plan text, and commit messages are English.
 - [ ] `.codegraph/`, `.superpowers/`, and unrelated user files remain unstaged.
