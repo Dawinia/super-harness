@@ -896,6 +896,32 @@ def test_apply_github_plan_consumes_resolved_template_decisions(
     assert outcomes.pr_template == ("kept-existing" if template_decision == "keep" else "wrote")
 
 
+def test_append_rejects_pr_template_changed_after_inspection(tmp_path: Path) -> None:
+    from super_harness.cli.init_github import (
+        GithubFileError,
+        apply_github_file,
+        inspect_github_files,
+        resolve_github_plan,
+    )
+    from super_harness.cli.init_plan import GithubFileDecision
+
+    bundled_pr, bundled_workflow = _github_bundles()
+    template = _template_path(tmp_path)
+    template.parent.mkdir(parents=True)
+    template.write_bytes(b"inspected\n")
+    inspection = inspect_github_files(tmp_path, bundled_pr, bundled_workflow)
+    plan = resolve_github_plan(
+        inspection,
+        {".github/pull_request_template.md": GithubFileDecision.APPEND},
+    )
+    template.write_bytes(b"concurrent edit\n")
+
+    with pytest.raises(GithubFileError, match="changed after inspection"):
+        apply_github_file(plan.pr_template)
+
+    assert template.read_bytes() == b"concurrent edit\n"
+
+
 def test_apply_github_plan_never_calls_any_prompt_seam(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

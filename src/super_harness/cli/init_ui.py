@@ -244,11 +244,11 @@ class QuestionaryPromptAdapter:
     def checkbox(
         self, message: str, choices: Sequence[GuidedPromptOption]
     ) -> tuple[str, ...] | None:
-        answer = questionary.checkbox(message, choices=self._choices(choices)).ask()
+        answer = questionary.checkbox(message, choices=self._choices(choices)).unsafe_ask()
         return None if answer is None else tuple(cast(list[str], answer))
 
     def text(self, message: str, *, default: str | None = None) -> str | None:
-        answer = questionary.text(message, default=default or "").ask()
+        answer = questionary.text(message, default=default or "").unsafe_ask()
         return None if answer is None else str(answer)
 
     def select(
@@ -258,7 +258,9 @@ class QuestionaryPromptAdapter:
         *,
         default: str | None = None,
     ) -> str | None:
-        answer = questionary.select(message, choices=self._choices(choices), default=default).ask()
+        answer = questionary.select(
+            message, choices=self._choices(choices), default=default
+        ).unsafe_ask()
         return None if answer is None else str(answer)
 
 

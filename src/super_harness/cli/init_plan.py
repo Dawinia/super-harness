@@ -683,11 +683,7 @@ def build_init_plan(
         if existing is None:
             actions.append(PlannedFileAction(path, FileAction.CREATE, user_contents[path.name]))
             continue
-        decision = choices.existing_files.get(path.as_posix(), ExistingFileDecision.PRESERVE)
-        if decision is ExistingFileDecision.PRESERVE:
-            actions.append(PlannedFileAction(path, FileAction.PRESERVE, existing))
-        else:
-            actions.append(PlannedFileAction(path, FileAction.UPDATE, user_contents[path.name]))
+        actions.append(PlannedFileAction(path, FileAction.UPDATE, existing))
 
     for path, content in _GITHUB_FILES:
         if github_decision is GitHubDecision.CREATE:

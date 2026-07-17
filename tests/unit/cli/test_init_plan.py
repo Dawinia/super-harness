@@ -420,7 +420,7 @@ def test_file_actions_are_ordered_before_any_apply_boundary(tmp_path: Path) -> N
     assert by_path[".harness/review-governance.yaml"].review_write is ReviewWrite.UPDATE
     assert by_path[".codex/hooks.json"].action is FileAction.CREATE
     assert by_path[".claude/settings.local.json"].action is FileAction.SKIP
-    assert by_path["AGENTS.md"].action is FileAction.PRESERVE
+    assert by_path["AGENTS.md"].action is FileAction.UPDATE
     assert by_path[".gitignore"].action is FileAction.UPDATE
     assert by_path[".github/workflows/super-harness.yml"].action is FileAction.CREATE
 

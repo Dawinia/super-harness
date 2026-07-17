@@ -259,7 +259,15 @@ def apply_github_file(plan: GithubFilePlan) -> GithubFileOutcome:
 
     if plan.decision is GithubFileDecision.APPEND:
         assert file.existing_content is not None
-        existing = file.existing_content.decode("utf-8")
+        current = _read_existing(file.path)
+        if current != file.existing_content:
+            raise GithubFileError(
+                f"{file.path} changed after inspection; refusing to append",
+                path=file.path,
+                hint="Re-run init to inspect the current file.",
+            )
+        assert current is not None
+        existing = current.decode("utf-8")
         block = parse_metadata_block(existing)
         if block.block_count:
             raise GithubFileError(

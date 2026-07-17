@@ -28,6 +28,7 @@ from super_harness.cli.init_ui import (
     InteractiveInitUI,
     LineInitUI,
     NonInteractiveInitUI,
+    QuestionaryPromptAdapter,
     RailStage,
     RailState,
     ReviewDecision,
@@ -436,6 +437,30 @@ def test_line_collect_returns_closed_cancel_result(tmp_path: Path) -> None:
 
     assert result.decision is ChoiceCollectionDecision.CANCEL
     assert result.choices is initial
+
+
+@pytest.mark.parametrize("prompt_name", ["checkbox", "text", "select"])
+def test_questionary_prompt_adapter_propagates_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch, prompt_name: str
+) -> None:
+    import questionary
+
+    question = questionary.text("unused")
+
+    def interrupt(_patch_stdout: bool = False) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(question, "unsafe_ask", interrupt)
+    monkeypatch.setattr(questionary, prompt_name, lambda *_args, **_kwargs: question)
+    adapter = QuestionaryPromptAdapter()
+
+    with pytest.raises(KeyboardInterrupt):
+        if prompt_name == "checkbox":
+            adapter.checkbox("Choose", (GuidedPromptOption("one", "One"),))
+        elif prompt_name == "text":
+            adapter.text("Model")
+        else:
+            adapter.select("Apply", (GuidedPromptOption("yes", "Yes"),))
 
 
 def test_keyboard_interrupt_from_line_input_propagates(tmp_path: Path) -> None:
