@@ -556,13 +556,20 @@ Test the complete state machine:
   its backing CLI instead of repeating coding-agent choices;
 - unavailable producers are disabled;
 - unavailable integrations remain selectable;
-- configured reviewer models are selected without free-text entry;
+- selected reviewer sources receive a required provisional text model in this
+  milestone so the plan remains valid; Tasks 11–13 replace this isolated prompt
+  with configuration-driven selection and remove reviewer-model text entry;
 - review returns `BACK`, `CONFIRM`, or `CANCEL`;
 - `--yes` bypasses only review confirmation;
 - Questionary `None` becomes explicit cancel and `KeyboardInterrupt` remains interruption;
 - unsafe encoding uses `+`, `|`, `*`, and `x` ASCII glyphs;
 - narrow output omits secondary hints before wrapping primary values;
 - no Rich live display is active during a Questionary call.
+
+Task 5 deliberately establishes the prompt adapter and state machine before
+model discovery exists. Its reviewer-model text prompt is an intermediate,
+tested compatibility seam, not the final UX; no earlier task claims the final
+selection-only behavior.
 
 - [ ] **Step 3: Run guided tests and confirm RED**
 
@@ -593,6 +600,8 @@ while True:
 ```
 
 Render the approved `preflight -> configuration -> review -> apply -> outcome` rail, color-independent labels, path wrapping, and a single next/recovery command.
+Keep the provisional required reviewer-model prompt behind the injected prompt
+adapter so Task 13 can delete it without changing plan or executor boundaries.
 
 - [ ] **Step 5: Run all UI tests and static checks**
 
@@ -623,12 +632,21 @@ git commit -m "feat(init): add Questionary and Rich guided wizard"
 - Create: `src/super_harness/cli/init_github.py`
 - Modify: `src/super_harness/cli/init_plan.py`
 - Modify: `src/super_harness/cli/init.py`
+- Modify: `src/super_harness/cli/init_ui.py`
 - Modify: `tests/unit/cli/test_init_plan.py`
+- Modify: `tests/unit/cli/test_init_ui.py`
 - Modify: `tests/integration/cli/test_init_setup_github.py`
 
 - [ ] **Step 1: Add failing tests for prompt-free GitHub planning**
 
-Cover fresh files, identical files, one valid metadata block, duplicate blocks, non-UTF-8 content, TTY append/overwrite/keep decisions, non-TTY skip without `--quiet`, `--quiet` append/overwrite, explicit cancel, and Ctrl+C.
+Cover fresh files, identical files, one valid metadata block, duplicate blocks,
+non-UTF-8 content, TTY append/overwrite/keep decisions, non-TTY skip without
+`--quiet`, `--quiet` append/overwrite, explicit cancel, and Ctrl+C. Add guided
+and line-backend tests for the top-level GitHub decision: explicit
+`--setup-github` is authoritative and does not prompt; otherwise GitHub setup is
+off by default, Create resolves file conflicts before review, and Skip never
+calls the GitHub resolver. Add a public-command test proving an interactive
+Create choice reaches the reviewed plan and executor even without the flag.
 
 Add a hard executor-boundary assertion:
 
@@ -643,12 +661,25 @@ def test_apply_github_plan_never_calls_input(monkeypatch, github_plan):
 Run:
 
 ```bash
-pytest -q tests/unit/cli/test_init_plan.py tests/integration/cli/test_init_setup_github.py
+pytest -q tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py tests/integration/cli/test_init_setup_github.py
 ```
 
-Expected: GitHub conflict prompts still occur during apply or the new module is missing.
+Expected: the top-level interactive GitHub choice is absent, GitHub conflict
+prompts still occur during apply, or the new module is missing.
 
-- [ ] **Step 3: Extract read-only inspection and prompt-free application**
+- [ ] **Step 3: Collect the top-level GitHub choice before file decisions**
+
+Add backend-specific `_collect_github_decision` behavior. Guided mode uses a
+Create/Skip single-select and line mode uses one yes/no question; both default
+to Skip. When `request.setup_github` is true, use Create without asking. When
+`gh` is unavailable, show a disabled/specific reason for an interactive choice;
+an explicit flag retains the existing validation error before writes.
+
+Only a Create decision may invoke GitHub inspection. Skip must not run `gh`,
+read or validate existing GitHub files, or create a `GithubPlan`. `--yes` skips
+only final confirmation and never answers this unresolved choice.
+
+- [ ] **Step 4: Extract read-only inspection and prompt-free application**
 
 Represent each file decision in the plan:
 
@@ -660,21 +691,35 @@ class GithubFileDecision(Enum):
     OVERWRITE = "overwrite"
 ```
 
-`inspect_github_files` reads and validates existing content. The UI resolves any interactive ambiguity before review. `apply_github_plan` consumes only resolved decisions and retains current `gh` exit code 4, settings advisories, log naming, bundled-template bytes, and duplicate-block validation.
+`inspect_github_files` reads and validates existing content only after Create is
+chosen. The UI resolves any interactive ambiguity before review.
+`prepare_plan` receives an injected prompt-free GitHub resolver; guided and line
+backends own all top-level and per-file prompts. Extend `WizardResult` with the
+exact `GithubPlan | None` resolved for the reviewed `InitPlan`, so the executor
+cannot apply a different or post-review resolution. Back re-enters configuration
+and invalidates the prior GitHub resolution when the choice changes.
 
-- [ ] **Step 4: Remove all apply-time prompts from `init.py`**
+`apply_github_plan` consumes only resolved decisions and retains current `gh`
+exit code 4, settings advisories, log naming, bundled-template bytes, and
+duplicate-block validation.
 
-The old helpers may remain temporarily as thin delegates, but no function reachable after final confirmation may call `click.confirm`, `input`, or Questionary.
+- [ ] **Step 5: Remove all apply-time prompts from `init.py`**
 
-- [ ] **Step 5: Run GitHub compatibility tests and commit**
+The old helpers may remain temporarily as thin delegates, but no function
+reachable after final confirmation may call `click.confirm`, `input`, or
+Questionary. `init_cmd` must pass `wizard_result.github_plan` into
+`build_init_operations`; it must not derive GitHub setup again from the original
+Click flag after review.
+
+- [ ] **Step 6: Run GitHub compatibility tests and commit**
 
 Run:
 
 ```bash
-pytest -q tests/integration/cli/test_init_setup_github.py tests/unit/cli/test_init_plan.py
-ruff check src/super_harness/cli/init_github.py src/super_harness/cli/init_plan.py tests/integration/cli/test_init_setup_github.py
+pytest -q tests/integration/cli/test_init_setup_github.py tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py
+ruff check src/super_harness/cli/init_github.py src/super_harness/cli/init_plan.py src/super_harness/cli/init.py src/super_harness/cli/init_ui.py tests/integration/cli/test_init_setup_github.py tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py
 super-harness decision check --changed
-git add src/super_harness/cli/init_github.py src/super_harness/cli/init_plan.py src/super_harness/cli/init.py tests/unit/cli/test_init_plan.py tests/integration/cli/test_init_setup_github.py
+git add src/super_harness/cli/init_github.py src/super_harness/cli/init_plan.py src/super_harness/cli/init.py src/super_harness/cli/init_ui.py tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py tests/integration/cli/test_init_setup_github.py
 git commit -m "refactor(init): resolve GitHub conflicts before apply"
 ```
 
@@ -771,6 +816,9 @@ Add `--yes` help coverage and integration scenarios for:
 - non-TTY with and without `--yes` applies immediately;
 - partial explicit flags prompt only for unresolved interactive values;
 - TTY stdin plus redirected stdout and `TERM=dumb` use line yes/no prompts;
+- guided and line flows offer GitHub setup default-off when `--setup-github`
+  is absent, preserve the flag as authoritative when present, and review the
+  exact resolved GitHub file actions before any write;
 - force review preservation/reconfiguration/reset matrix;
 - old comma-entry input is absent from the interaction path;
 - adapter, AGENTS.md, `.gitignore`, and GitHub failure exit codes remain unchanged.
@@ -828,16 +876,26 @@ request = request_from_click(
 )
 preflight = inspect_workspace(request)
 ui = create_init_ui(capabilities, quiet=request.quiet)
-wizard_result = ui.prepare_plan(request, preflight)
+github_resolver = create_github_resolver(ctx, request.workspace)
+wizard_result = ui.prepare_plan(
+    request,
+    preflight,
+    github_resolver=github_resolver,
+)
 if wizard_result.cancelled:
     ui.render_cancelled()
     return
-operations = build_init_operations(workspace=request.workspace)
+operations = build_init_operations(
+    workspace=request.workspace,
+    github_plan=wizard_result.github_plan,
+)
 result = InitExecutor(operations=operations).apply(wizard_result.plan, ui.on_step)
 ui.render_outcome(result)
 ```
 
 Translate explicit cancel, Questionary sentinel, pre-apply interruption, and during-apply interruption only at their owning boundary. Preserve the current JSON caveat and quiet behavior.
+The resolver is never invoked for Skip, performs no writes, and returns the
+same immutable `GithubPlan` shown in review and later consumed by the executor.
 
 - [ ] **Step 4: Delete superseded comma-prompt and mixed orchestration helpers**
 
