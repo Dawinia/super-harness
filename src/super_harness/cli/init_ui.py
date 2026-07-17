@@ -195,6 +195,8 @@ _REVIEW_PRODUCERS = (
     _Option("codex-cli", "Codex CLI", "codex"),
     _Option("claude-cli", "Claude CLI", "claude"),
 )
+
+_QUESTIONARY_CHECKBOX_STYLE = questionary.Style([("selected", "noreverse")])
 _NARROW_WIDTH = 60
 
 
@@ -244,7 +246,11 @@ class QuestionaryPromptAdapter:
     def checkbox(
         self, message: str, choices: Sequence[GuidedPromptOption]
     ) -> tuple[str, ...] | None:
-        answer = questionary.checkbox(message, choices=self._choices(choices)).unsafe_ask()
+        answer = questionary.checkbox(
+            message,
+            choices=self._choices(choices),
+            style=_QUESTIONARY_CHECKBOX_STYLE,
+        ).unsafe_ask()
         return None if answer is None else tuple(cast(list[str], answer))
 
     def text(self, message: str, *, default: str | None = None) -> str | None:

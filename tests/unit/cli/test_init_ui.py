@@ -463,6 +463,31 @@ def test_questionary_prompt_adapter_propagates_keyboard_interrupt(
             adapter.select("Apply", (GuidedPromptOption("yes", "Yes"),))
 
 
+def test_questionary_checkbox_uses_icon_only_selection_style(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from prompt_toolkit.styles import default_ui_style, merge_styles
+    from questionary.question import Question
+
+    selected_style: list[Any] = []
+
+    def capture_style(question: Question, _patch_stdout: bool = False) -> list[str]:
+        effective = merge_styles([default_ui_style(), question.application.style])
+        selected_style.append(effective.get_attrs_for_style_str("class:selected"))
+        return []
+
+    monkeypatch.setattr(Question, "unsafe_ask", capture_style)
+
+    QuestionaryPromptAdapter().checkbox(
+        "Choose",
+        (GuidedPromptOption("codex", "Codex", checked=True),),
+    )
+
+    assert len(selected_style) == 1
+    assert selected_style[0].reverse is False
+    assert selected_style[0].bgcolor == ""
+
+
 def test_keyboard_interrupt_from_line_input_propagates(tmp_path: Path) -> None:
     def interrupt(_: str) -> str:
         raise KeyboardInterrupt
