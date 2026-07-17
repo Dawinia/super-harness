@@ -199,7 +199,9 @@ automatically, or presents multiple candidates as a single-choice prompt.
 
 ### Reviewer model discovery
 
-Model discovery is read-only and provider-specific behind a common boundary.
+Model discovery runs only for guided or line interaction and is read-only and
+provider-specific behind a common boundary. Non-interactive invocations retain
+their explicit flag/preservation behavior and do not inspect user CLI config.
 For each selected review source, candidates are collected in this precedence
 order and deduplicated by exact model identifier:
 

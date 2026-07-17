@@ -11,12 +11,14 @@ scope:
     - src/super_harness/adapters/install.py
     - src/super_harness/cli/adapter.py
     - src/super_harness/cli/init.py
+    - src/super_harness/cli/init_models.py
     - src/super_harness/cli/init_plan.py
     - src/super_harness/cli/init_ui.py
     - src/super_harness/cli/init_executor.py
     - src/super_harness/cli/init_github.py
     - tests/unit/cli/test_lazy_group.py
     - tests/unit/cli/test_entrypoint.py
+    - tests/unit/cli/test_init_models.py
     - tests/unit/adapters/test_install.py
     - tests/integration/cli/test_adapter.py
     - tests/integration/cli/test_adapter_install.py
@@ -549,7 +551,7 @@ Test the complete state machine:
   its backing CLI instead of repeating coding-agent choices;
 - unavailable producers are disabled;
 - unavailable integrations remain selectable;
-- a model prompt stays active until non-empty;
+- configured reviewer models are selected without free-text entry;
 - review returns `BACK`, `CONFIRM`, or `CANCEL`;
 - `--yes` bypasses only review confirmation;
 - Questionary `None` becomes explicit cancel and `KeyboardInterrupt` remains interruption;
@@ -975,7 +977,520 @@ git add scripts/gen_cli_reference.py tests/unit/scripts/test_gen_cli_reference.p
 git commit -m "docs(init): document the guided cross-platform workflow"
 ```
 
-## Task 11: Verify the complete change and advance the lifecycle
+## Task 11: Discover configured reviewer models without reading secrets
+
+**Files:**
+
+- Modify: `pyproject.toml`
+- Create: `src/super_harness/cli/init_models.py`
+- Create: `tests/unit/cli/test_init_models.py`
+
+- [ ] **Step 1: Add the Python 3.10 TOML compatibility dependency**
+
+Add the following runtime dependency next to the existing UI dependencies:
+
+```toml
+"tomli>=2.0; python_version < '3.11'",
+```
+
+The implementation uses stdlib `tomllib` on Python 3.11+ and `tomli` only on
+Python 3.10. Do not add a vendor-model package or network lookup.
+
+- [ ] **Step 2: Write failing provider-discovery tests**
+
+Create `tests/unit/cli/test_init_models.py` with isolated `tmp_path` homes. Cover
+workspace precedence, Codex's active model and named profiles, Claude's active
+model, exact-value deduplication, missing files, malformed TOML/JSON, and
+unreadable files. The core ordering assertion is:
+
+```python
+def test_discovery_orders_workspace_active_and_named_profile_models(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".claude").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text(
+        'model = "gpt-active"\n[profiles.fast]\nmodel = "gpt-fast"\n',
+        encoding="utf-8",
+    )
+    (home / ".claude" / "settings.json").write_text(
+        '{"model": "opus"}', encoding="utf-8"
+    )
+
+    result = discover_reviewer_models(
+        home=home,
+        persisted_models={"codex": "gpt-workspace"},
+    )
+
+    assert [(item.model, item.origin) for item in result.candidates["codex"]] == [
+        ("gpt-workspace", "existing workspace profile"),
+        ("gpt-active", "Codex CLI config"),
+        ("gpt-fast", "Codex CLI profile fast"),
+    ]
+    assert [(item.model, item.origin) for item in result.candidates["claude"]] == [
+        ("opus", "Claude CLI config")
+    ]
+    assert dict(result.errors) == {}
+```
+
+Malformed-file tests must assert a source-scoped message such as
+`Codex CLI config is not valid TOML` or `Claude CLI config is not valid JSON`
+without including raw file content.
+
+- [ ] **Step 3: Run the discovery tests and confirm RED**
+
+Run:
+
+```bash
+pytest -q tests/unit/cli/test_init_models.py
+```
+
+Expected: collection fails because `super_harness.cli.init_models` does not yet
+exist.
+
+- [ ] **Step 4: Implement immutable candidates and provider readers**
+
+Create `src/super_harness/cli/init_models.py` with this public boundary:
+
+```python
+from __future__ import annotations
+
+import json
+import sys
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from pathlib import Path
+from types import MappingProxyType
+
+if sys.version_info >= (3, 11):
+    import tomllib
+else:
+    import tomli as tomllib
+
+
+@dataclass(frozen=True)
+class ReviewerModelCandidate:
+    source: str
+    model: str
+    origin: str
+    precedence: int
+
+
+@dataclass(frozen=True)
+class ReviewerModelDiscovery:
+    candidates: Mapping[str, tuple[ReviewerModelCandidate, ...]] = field(
+        default_factory=dict
+    )
+    errors: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "candidates",
+            MappingProxyType(
+                {source: tuple(values) for source, values in self.candidates.items()}
+            ),
+        )
+        object.__setattr__(self, "errors", MappingProxyType(dict(self.errors)))
+
+
+def discover_reviewer_models(
+    *, home: Path, persisted_models: Mapping[str, str]
+) -> ReviewerModelDiscovery:
+    """Read only configured model identifiers; never retain raw provider config."""
+```
+
+Use private `_read_codex_models` and `_read_claude_models` functions. Codex reads
+the top-level `model` and sorted `profiles.<name>.model` strings. Claude reads
+only the top-level `model` string. Unknown keys and non-string model fields are
+ignored. Catch `OSError`, `UnicodeDecodeError`, `tomllib.TOMLDecodeError`, and
+`json.JSONDecodeError` at the provider boundary and record a sanitized error for
+only that source. Deduplicate exact model identifiers while preserving
+precedence: workspace `0`, active CLI config `10`, named profile `20`.
+
+- [ ] **Step 5: Run discovery checks and commit**
+
+Run:
+
+```bash
+pytest -q tests/unit/cli/test_init_models.py
+ruff check src/super_harness/cli/init_models.py tests/unit/cli/test_init_models.py
+mypy src/super_harness/cli/init_models.py
+super-harness decision check --changed
+git add pyproject.toml src/super_harness/cli/init_models.py tests/unit/cli/test_init_models.py
+git commit -m "feat(init): discover configured reviewer models"
+```
+
+Expected: all checks pass; no test reads the runner's real home directory.
+
+## Task 12: Add model candidates to the immutable preflight snapshot
+
+**Files:**
+
+- Modify: `src/super_harness/cli/init_plan.py`
+- Modify: `tests/unit/cli/test_init_plan.py`
+
+- [ ] **Step 1: Write failing preflight tests**
+
+Add tests that inject a temporary home and assert that `inspect_workspace`
+returns immutable candidates without changing executable availability:
+
+```python
+def test_preflight_captures_reviewer_model_candidates(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text(
+        'model = "gpt-configured"\n', encoding="utf-8"
+    )
+    request = InitRequest(workspace=tmp_path, interaction_mode=InteractionMode.GUIDED)
+
+    result = inspect_workspace(
+        request,
+        executable_lookup=lambda name: f"/bin/{name}",
+        home=home,
+    )
+
+    assert result.reviewer_model_candidates["codex"][0].model == "gpt-configured"
+    with pytest.raises(TypeError):
+        result.reviewer_model_candidates["codex"] = ()  # type: ignore[index]
+```
+
+Also cover persisted-model precedence during interactive `--force`, a malformed
+provider config recorded in `reviewer_model_errors`, and an omitted `home`
+calling `Path.home()` at runtime rather than import time.
+
+- [ ] **Step 2: Run the focused tests and confirm RED**
+
+Run:
+
+```bash
+pytest -q tests/unit/cli/test_init_plan.py -k reviewer_model
+```
+
+Expected: FAIL because `InitPreflight` has no candidate/error fields and
+`inspect_workspace` has no `home` seam.
+
+- [ ] **Step 3: Extend `InitPreflight` and `inspect_workspace`**
+
+Import `ReviewerModelCandidate`, `ReviewerModelDiscovery`, and
+`discover_reviewer_models`, then add:
+
+```python
+@dataclass(frozen=True)
+class InitPreflight:
+    # existing fields stay unchanged
+    reviewer_model_candidates: Mapping[
+        str, tuple[ReviewerModelCandidate, ...]
+    ] = field(default_factory=dict)
+    reviewer_model_errors: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # existing normalization stays unchanged
+        object.__setattr__(
+            self,
+            "reviewer_model_candidates",
+            _frozen_mapping(
+                {
+                    source: tuple(values)
+                    for source, values in self.reviewer_model_candidates.items()
+                }
+            ),
+        )
+        object.__setattr__(
+            self,
+            "reviewer_model_errors",
+            _frozen_mapping(self.reviewer_model_errors),
+        )
+```
+
+Change the inspection signature and populate the fields after persisted review
+configuration has been inspected:
+
+```python
+def inspect_workspace(
+    request: InitRequest,
+    executable_lookup: Callable[[str], str | None] = shutil.which,
+    *,
+    home: Path | None = None,
+) -> InitPreflight:
+    # existing workspace and executable inspection
+    discovery = (
+        discover_reviewer_models(
+            home=home if home is not None else Path.home(),
+            persisted_models=persisted_models,
+        )
+        if request.interaction_mode is not InteractionMode.NON_INTERACTIVE
+        else ReviewerModelDiscovery()
+    )
+    return InitPreflight(
+        # existing fields
+        reviewer_model_candidates=discovery.candidates,
+        reviewer_model_errors=discovery.errors,
+    )
+```
+
+Do not intersect `available_review_producers` with model availability: that
+field continues to mean the executable exists, which preserves explicit flag
+and non-interactive validation semantics. Add a regression assertion that
+non-interactive inspection does not call `Path.home()` or open provider config.
+
+- [ ] **Step 4: Run plan/preflight checks and commit**
+
+Run:
+
+```bash
+pytest -q tests/unit/cli/test_init_plan.py
+ruff check src/super_harness/cli/init_plan.py tests/unit/cli/test_init_plan.py
+mypy src/super_harness/cli/init_plan.py
+super-harness decision check --changed
+git add src/super_harness/cli/init_plan.py tests/unit/cli/test_init_plan.py
+git commit -m "feat(init): expose reviewer model candidates"
+```
+
+Expected: all pass and existing non-interactive preservation tests remain green.
+
+## Task 13: Replace interactive model text entry with configured selection
+
+**Files:**
+
+- Modify: `src/super_harness/cli/init_ui.py`
+- Modify: `tests/unit/cli/test_init_ui.py`
+
+- [ ] **Step 1: Write failing guided and line-mode behavior tests**
+
+Add tests for these exact behaviors:
+
+```python
+def test_guided_auto_selects_the_only_configured_model(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(checkboxes=[(), ("codex-cli",)], selects=[])
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(
+            reviewer_model_candidates={
+                "codex": (
+                    ReviewerModelCandidate(
+                        "codex", "gpt-configured", "Codex CLI config", 10
+                    ),
+                )
+            }
+        ),
+    )
+
+    assert dict(result.choices.review_models) == {"codex": "gpt-configured"}
+    assert prompts.text_calls == []
+    assert prompts.select_calls == []
+
+
+def test_guided_selects_from_multiple_configured_models(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("codex-cli",)],
+        selects=["gpt-fast"],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.collect(_request(tmp_path), _preflight_with_two_codex_models())
+
+    message, choices, default = prompts.select_calls[0]
+    assert message == "Model for Codex reviewer"
+    assert [choice.value for choice in choices] == ["gpt-workspace", "gpt-fast"]
+    assert default == "gpt-workspace"
+    assert dict(result.choices.review_models) == {"codex": "gpt-fast"}
+    assert prompts.text_calls == []
+```
+
+Add separate tests that a reviewer with no candidates is disabled as `model not
+configured`, a malformed provider config uses its sanitized disabled reason, an
+explicit `request.review_models` value bypasses discovery, cancellation from a
+multi-model select cancels before writes, and line mode auto-selects one or asks
+for a numeric choice among many without accepting a raw model string.
+
+- [ ] **Step 2: Run the UI tests and confirm RED**
+
+Run:
+
+```bash
+pytest -q tests/unit/cli/test_init_ui.py -k 'model or producer'
+```
+
+Expected: FAIL because both interactive backends still call free-text model
+input and reviewer availability ignores candidates.
+
+- [ ] **Step 3: Make reviewer availability model-aware**
+
+Pass `request.review_models` into `_producer_options`. An option is enabled only
+when its executable exists and either its source has an explicit request model
+or preflight has at least one candidate. Use this reason precedence:
+
+```python
+if option.value not in preflight.available_review_producers:
+    disabled = "executable not found"
+elif option.source in explicit_models or preflight.reviewer_model_candidates.get(
+    option.source, ()
+):
+    disabled = None
+else:
+    disabled = preflight.reviewer_model_errors.get(
+        option.source, "model not configured"
+    )
+```
+
+Only enabled detected reviewers are preselected. If every reviewer is disabled,
+render `No automated reviewers are ready; install a CLI and configure its model.`
+and continue with human review instead of opening an empty checkbox.
+
+- [ ] **Step 4: Implement guided model selection**
+
+Replace the text loop with candidate selection while preserving explicit and
+persisted values:
+
+```python
+def _collect_models(
+    self,
+    request: InitRequest,
+    preflight: InitPreflight,
+    producers: tuple[str, ...] | None,
+    initial: InitChoices,
+) -> Mapping[str, str] | None:
+    models = dict(initial.review_models)
+    known = models | dict(request.review_models)
+    options = {option.value: option for option in _REVIEW_PRODUCERS}
+    for producer in request.review_producers or producers or ():
+        option = options.get(producer)
+        if option is None or option.source is None or option.source in known:
+            continue
+        candidates = preflight.reviewer_model_candidates.get(option.source, ())
+        if len(candidates) == 1:
+            models[option.source] = candidates[0].model
+            known[option.source] = candidates[0].model
+            continue
+        choices = tuple(
+            GuidedPromptOption(
+                candidate.model,
+                f"{candidate.model}  {candidate.origin}",
+                checked=index == 0,
+            )
+            for index, candidate in enumerate(candidates)
+        )
+        answer = self._prompts.select(
+            f"Model for {option.label.removesuffix(' CLI')} reviewer",
+            choices,
+            default=candidates[0].model,
+        )
+        if answer is None:
+            return None
+        models[option.source] = answer
+        known[option.source] = answer
+    return models
+```
+
+Pass `preflight` from `collect`. Candidate exhaustion is prevented by the
+reviewer option gate; if an explicitly supplied producer reaches this method
+without either an explicit model or candidates, render the same source-specific
+error and cancel before plan construction.
+
+- [ ] **Step 5: Implement deterministic line-mode choice**
+
+Pass `preflight` into `LineInitUI._collect_models` and remove `_ask_required`
+from model collection. For one candidate, assign it and print `<CLI> reviewer
+model: <model> (<origin>).` For multiple candidates, print a numbered list and
+use a helper that accepts only `1..N`, empty input for the first candidate, or
+`cancel`/`quit`/`q`:
+
+```python
+def _ask_model_choice(
+    self, label: str, candidates: tuple[ReviewerModelCandidate, ...]
+) -> str:
+    self._output(f"Choose model for {label} reviewer:")
+    for index, candidate in enumerate(candidates, start=1):
+        self._output(f"  {index}. {candidate.model} ({candidate.origin})")
+    while True:
+        answer = self._input("Model [1]: ").strip().lower()
+        if not answer:
+            return candidates[0].model
+        if answer in {"cancel", "quit", "q"}:
+            raise _CollectionCancelled
+        if answer.isdigit() and 1 <= int(answer) <= len(candidates):
+            return candidates[int(answer) - 1].model
+        self._output(f"Choose a number from 1 to {len(candidates)}.")
+```
+
+- [ ] **Step 6: Run UI checks and commit**
+
+Run:
+
+```bash
+pytest -q tests/unit/cli/test_init_ui.py
+ruff check src/super_harness/cli/init_ui.py tests/unit/cli/test_init_ui.py
+mypy src/super_harness/cli/init_ui.py
+super-harness decision check --changed
+git add src/super_harness/cli/init_ui.py tests/unit/cli/test_init_ui.py
+git commit -m "fix(init): select configured reviewer models"
+```
+
+Expected: all pass and `QuestionaryPromptAdapter.text` remains available for
+other prompts but is never called for reviewer models.
+
+## Task 14: Prove configuration-driven selection across CLI and OS boundaries
+
+**Files:**
+
+- Modify: `tests/integration/cli/test_init.py`
+- Modify: `tests/integration/cli/test_init_windows_entrypoint.py`
+- Modify: `.github/workflows/test.yml`
+- Modify: `docs/getting-started.md`
+
+- [ ] **Step 1: Add integration tests with isolated homes**
+
+Use `monkeypatch.setenv("HOME", str(home))` on POSIX-facing tests and inject the
+`home` seam for platform-neutral tests. Cover a fresh guided init that selects
+both reviewers without any text answers, writes the exact configured models to
+`.harness/review-profiles.local.yaml`, and performs no writes before final
+confirmation. Add a no-model case that disables automated review and leaves a
+human-only governance file.
+
+- [ ] **Step 2: Add native-Windows path and malformed-config cases**
+
+Extend `tests/integration/cli/test_init_windows_entrypoint.py` with paths such as
+`Path("C:/Users/Test User/.codex/config.toml")` through the injected home seam;
+assert parsing never assumes `/`-rooted homes. Add the new discovery test file
+to the `windows-init` focused pytest command:
+
+```yaml
+run: >-
+  pytest -q
+  tests/integration/cli/test_init_windows_entrypoint.py
+  tests/unit/cli/test_init_models.py
+  tests/unit/cli/test_init_plan.py
+  tests/unit/cli/test_init_ui.py
+  tests/unit/cli/test_init_executor.py
+```
+
+- [ ] **Step 3: Update onboarding guidance**
+
+Document that interactive init reads model identifiers from the existing local
+review profile, `~/.codex/config.toml`, and `~/.claude/settings.json`; one model
+is automatic, multiple models produce a selection, and no configured model
+disables that reviewer. State explicitly that credentials and unrelated config
+are never copied and that scripts retain `--review-model SOURCE=MODEL`.
+
+- [ ] **Step 4: Run integration/docs checks and commit**
+
+Run:
+
+```bash
+pytest -q tests/integration/cli/test_init.py tests/integration/cli/test_init_windows_entrypoint.py
+super-harness doc check
+ruff check tests/integration/cli/test_init.py tests/integration/cli/test_init_windows_entrypoint.py
+super-harness decision check --changed
+git add .github/workflows/test.yml tests/integration/cli/test_init.py tests/integration/cli/test_init_windows_entrypoint.py docs/getting-started.md
+git commit -m "test(init): verify configured model selection"
+```
+
+Expected: all local checks pass; the native Windows CI job remains the mandatory
+installed-wheel proof.
+
+## Task 15: Verify the complete change and advance the lifecycle
 
 **Files:**
 
@@ -1060,6 +1575,13 @@ Precondition: local automated checks and available manual terminal checks from S
 - [ ] Explicit cancel and both interruption boundaries have asserted exit codes and write boundaries.
 - [ ] Rich and Questionary never own live terminal rendering simultaneously.
 - [ ] Checkbox selection uses filled-plus-green for selected options and empty-plus-normal foreground for unselected options when color is enabled, retains the indicator distinction when color is disabled, and never uses a reverse-video row background.
+- [ ] Interactive reviewer models come only from the existing workspace profile
+  or provider CLI configuration; one candidate is automatic, multiple candidates
+  are selectable, and no candidate disables the reviewer without free text.
+- [ ] Provider discovery is read-only, retains no raw configuration or secrets,
+  uses `Path.home()` only during interaction, and has native-Windows path tests.
+- [ ] Explicit `--review-model` and non-interactive preservation/reconfiguration
+  semantics remain unchanged.
 - [ ] No package-wide Windows classifier or claim is added.
 - [ ] All code, tests, docs, plan text, and commit messages are English.
 - [ ] `.codegraph/`, `.superpowers/`, and unrelated user files remain unstaged.
