@@ -544,6 +544,9 @@ Test the complete state machine:
   selected-row background;
 - `NO_COLOR` and other color-disabled capability paths retain the filled/empty
   indicator distinction without emitting selection color;
+- the second guided checkbox is labeled as automated reviewers, explains that
+  detected CLIs execute reviews, and names each option by reviewer role plus
+  its backing CLI instead of repeating coding-agent choices;
 - unavailable producers are disabled;
 - unavailable integrations remain selectable;
 - a model prompt stays active until non-empty;
@@ -566,7 +569,7 @@ Expected: guided backend is missing or does not satisfy the five-stage transitio
 
 - [ ] **Step 4: Implement `InteractiveInitUI`**
 
-Use Questionary only through an injected prompt adapter and Rich only through an injected console. Render completed rail rows before and after each prompt; use `Console.status` only during executor operations, never while Questionary owns stdin. Pass terminal color capability into the prompt adapter. Its explicit checkbox style must neutralize prompt_toolkit's inherited `selected: reverse` rule and apply a portable ANSI green foreground to selected options only when color is enabled. The built-in filled/empty indicator remains the color-independent selection cue, and the pointer remains the independent focus cue.
+Use Questionary only through an injected prompt adapter and Rich only through an injected console. Render completed rail rows before and after each prompt; use `Console.status` only during executor operations, never while Questionary owns stdin. Pass terminal color capability into the prompt adapter. Its explicit checkbox style must neutralize prompt_toolkit's inherited `selected: reverse` rule and apply a portable ANSI green foreground to selected options only when color is enabled. The built-in filled/empty indicator remains the color-independent selection cue, and the pointer remains the independent focus cue. Keep integration and reviewer semantics independent, but make the reviewer checkbox title and option labels state that detected CLIs execute automated reviews.
 
 The configuration loop must be explicit:
 

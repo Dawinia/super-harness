@@ -164,12 +164,20 @@ This preserves the existing ability to configure a coding-agent integration
 for later use while retaining the rule that a selected review producer must be
 installed because its explicit local profile is immediately actionable.
 
+The guided UI must present these as two distinct decisions rather than repeat
+agent product names. The second checkbox is titled `Automated reviewers —
+choose which detected CLIs may review changes`. Its choices describe the role
+and execution boundary explicitly: `Codex reviewer — runs via Codex CLI` and
+`Claude reviewer — runs via Claude CLI`. Reviewer availability, defaults,
+stored producer identifiers, and independence from coding-agent integrations
+remain unchanged.
+
 ### Stage 2 — Configure
 
 Ask only for values that were not supplied explicitly:
 
 - coding-agent integrations,
-- review producers,
+- automated reviewers, shown with the CLI that executes each review,
 - one explicit model per selected automated review source,
 - whether to configure GitHub when not already enabled by the CLI surface,
 - append/overwrite decisions for existing GitHub template/workflow files when
