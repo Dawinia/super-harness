@@ -524,6 +524,21 @@ scope for this change. Windows blockers reachable only after dispatching an
 unrelated command are documented but do not widen this change or weaken `init`
 acceptance.
 
+## Compact review summary
+
+The final confirmation screen is a decision summary, not an execution trace.
+It presents integrations, automated reviewers with their selected models, and
+GitHub setup first. File actions are grouped by create, update, preserve, and
+skip; repeated `.harness` configuration updates collapse into one counted row,
+while user-facing files such as `AGENTS.md`, agent hooks, `.gitignore`, and
+GitHub files remain individually visible.
+
+The renderer does not print a second `hint` line for every file. Preserve and
+skip actions are summarized unless their individual path is needed to explain
+an exceptional outcome. The confirmation prompt immediately follows the compact
+summary. Narrow terminals retain the same information hierarchy and fold long
+paths without truncating them.
+
 ## Acceptance criteria
 
 1. A TTY user sees the approved five-stage guided rail.
@@ -551,6 +566,10 @@ acceptance.
 12. The init-focused suite passes on Ubuntu, macOS, and Windows CI runners.
 13. pytest, ruff, mypy, CLI-reference/doc checks,
     `super-harness decision check --changed`, and `super-harness verify` pass.
+14. The final review groups file actions, collapses routine `.harness`
+    configuration rows, prints no repeated per-file apply hints, keeps
+    user-facing files visible, and places confirmation directly after the
+    summary.
 
 ## Risks and mitigations
 
@@ -624,3 +643,5 @@ support claim unless the rest of the CLI has separate evidence.
   auto-select one, select among many, and disable the reviewer when none exist.
 - Never request free-text models in interactive modes and never maintain a
   built-in vendor model catalog.
+- Render the final review as a compact, grouped decision summary rather than a
+  per-file execution dump with repeated hints.

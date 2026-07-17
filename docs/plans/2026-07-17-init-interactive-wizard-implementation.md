@@ -1576,7 +1576,89 @@ git commit -m "test(init): verify configured model selection"
 Expected: all local checks pass; the native Windows CI job remains the mandatory
 installed-wheel proof.
 
-## Task 15: Verify the complete change and advance the lifecycle
+## Task 15: Compact the guided review summary
+
+**Files:**
+
+- Modify: `src/super_harness/cli/init_ui.py:323-390`
+- Test: `tests/unit/cli/test_init_ui.py:1230-1248`
+
+- [ ] **Step 1: Replace the verbose-renderer expectation with a failing compact-summary test**
+
+Construct a plan containing integrations, two reviewer models, routine
+`.harness` updates, user-facing updates, create, preserve, and skip actions.
+Assert that the rendered text contains the configuration headings, model rows,
+group counts, one collapsed `.harness configuration (N files)` row, and every
+user-facing path. Assert that it does not contain `hint:`, `will be written
+during apply`, `not part of this run`, or one `File update:` row per action.
+
+Run:
+
+```bash
+pytest -q tests/unit/cli/test_init_ui.py -k "compact_review or narrow_output"
+```
+
+Expected: FAIL because `RichGuidedRenderer.render_plan()` still emits every
+action and its hint on separate lines.
+
+- [ ] **Step 2: Add a pure file-action grouping seam**
+
+In `src/super_harness/cli/init_ui.py`, group the immutable
+`plan.file_actions` by `FileAction`. Within create/update groups, collapse paths
+under `.harness/` into the display row `.harness configuration (N files)` when
+there is more than one routine harness action. Keep paths outside `.harness/`
+as individual rows. Preserve stable `plan.file_actions` order inside each group.
+
+Do not change `InitPlan`, executor behavior, file decisions, or the line-mode
+renderer. Remove `_FILE_ACTION_HINTS` after its final use disappears.
+
+- [ ] **Step 3: Render a compact decision hierarchy**
+
+Make `RichGuidedRenderer.render_plan()` emit these sections in order:
+
+```text
+|  Integrations
+|    <selected integration or (none)>
+|  Automated reviewers
+|    <source>  <model or configured status>
+|  GitHub
+|    <create or skip>
+|  Files
+|    Update  <count> files
+|      .harness configuration (<count> files)
+|      <user-facing path>
+|    Create  <count> files
+|      <path>
+|    Preserve  <count> files
+|    Skip  <count> files
+```
+
+Counts always describe actual `FileAction` entries, not display rows. Use plain
+text labels in addition to indentation so color and glyphs never carry meaning.
+Continue using Rich folding with `crop=False`; do not truncate paths.
+
+- [ ] **Step 4: Verify focused behavior and commit**
+
+Run:
+
+```bash
+pytest -q tests/unit/cli/test_init_ui.py tests/integration/cli/test_init.py
+ruff format --check src/super_harness/cli/init_ui.py tests/unit/cli/test_init_ui.py
+ruff check src/super_harness/cli/init_ui.py tests/unit/cli/test_init_ui.py
+mypy src/super_harness/cli/init_ui.py
+super-harness decision check --changed
+```
+
+Expected: all pass and `git diff --check` is clean.
+
+Commit only the renderer and its tests with:
+
+```bash
+git add src/super_harness/cli/init_ui.py tests/unit/cli/test_init_ui.py
+git commit -m "fix(init): compact the review summary"
+```
+
+## Task 16: Verify the complete change and advance the lifecycle
 
 **Files:**
 
@@ -1668,6 +1750,9 @@ Precondition: local automated checks and available manual terminal checks from S
   uses `Path.home()` only during interaction, and has native-Windows path tests.
 - [ ] Explicit `--review-model` and non-interactive preservation/reconfiguration
   semantics remain unchanged.
+- [ ] Guided review output groups real file actions by outcome, collapses only
+  routine `.harness` display rows, retains user-facing paths, and contains no
+  repeated per-file apply hints.
 - [ ] No package-wide Windows classifier or claim is added.
 - [ ] All code, tests, docs, plan text, and commit messages are English.
 - [ ] `.codegraph/`, `.superpowers/`, and unrelated user files remain unstaged.
