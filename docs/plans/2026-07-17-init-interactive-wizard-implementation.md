@@ -538,8 +538,12 @@ Expected: clean dependency resolution on Python 3.10+.
 Test the complete state machine:
 
 - detected choices are preselected and labeled;
-- checkbox selection is conveyed by the filled/empty leading indicator without
-  prompt_toolkit's inherited reverse-video selected-row background;
+- checkbox selection uses a filled indicator plus green foreground when color
+  is available, while unselected options use an empty indicator plus normal
+  foreground and neither state inherits prompt_toolkit's reverse-video
+  selected-row background;
+- `NO_COLOR` and other color-disabled capability paths retain the filled/empty
+  indicator distinction without emitting selection color;
 - unavailable producers are disabled;
 - unavailable integrations remain selectable;
 - a model prompt stays active until non-empty;
@@ -562,7 +566,7 @@ Expected: guided backend is missing or does not satisfy the five-stage transitio
 
 - [ ] **Step 4: Implement `InteractiveInitUI`**
 
-Use Questionary only through an injected prompt adapter and Rich only through an injected console. Render completed rail rows before and after each prompt; use `Console.status` only during executor operations, never while Questionary owns stdin. Pass an explicit Questionary checkbox style that neutralizes prompt_toolkit's inherited `selected: reverse` rule, leaving the built-in filled/empty indicator as the selection cue and the pointer as the independent focus cue.
+Use Questionary only through an injected prompt adapter and Rich only through an injected console. Render completed rail rows before and after each prompt; use `Console.status` only during executor operations, never while Questionary owns stdin. Pass terminal color capability into the prompt adapter. Its explicit checkbox style must neutralize prompt_toolkit's inherited `selected: reverse` rule and apply a portable ANSI green foreground to selected options only when color is enabled. The built-in filled/empty indicator remains the color-independent selection cue, and the pointer remains the independent focus cue.
 
 The configuration loop must be explicit:
 
@@ -1052,7 +1056,7 @@ Precondition: local automated checks and available manual terminal checks from S
 - [ ] `--yes` is interactive-confirmation-only and never supplies selections, models, or conflict decisions.
 - [ ] Explicit cancel and both interruption boundaries have asserted exit codes and write boundaries.
 - [ ] Rich and Questionary never own live terminal rendering simultaneously.
-- [ ] Checkbox selection uses the leading filled/empty indicator without a reverse-video row background.
+- [ ] Checkbox selection uses filled-plus-green for selected options and empty-plus-normal foreground for unselected options when color is enabled, retains the indicator distinction when color is disabled, and never uses a reverse-video row background.
 - [ ] No package-wide Windows classifier or claim is added.
 - [ ] All code, tests, docs, plan text, and commit messages are English.
 - [ ] `.codegraph/`, `.superpowers/`, and unrelated user files remain unstaged.
