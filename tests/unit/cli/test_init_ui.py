@@ -463,8 +463,14 @@ def test_questionary_prompt_adapter_propagates_keyboard_interrupt(
             adapter.select("Apply", (GuidedPromptOption("yes", "Yes"),))
 
 
-def test_questionary_checkbox_uses_icon_only_selection_style(
+@pytest.mark.parametrize(
+    ("color", "expected_foreground"),
+    [(True, "ansigreen"), (False, "")],
+)
+def test_questionary_checkbox_uses_color_aware_selection_style(
     monkeypatch: pytest.MonkeyPatch,
+    color: bool,
+    expected_foreground: str,
 ) -> None:
     from prompt_toolkit.styles import default_ui_style, merge_styles
     from questionary.question import Question
@@ -478,14 +484,35 @@ def test_questionary_checkbox_uses_icon_only_selection_style(
 
     monkeypatch.setattr(Question, "unsafe_ask", capture_style)
 
-    QuestionaryPromptAdapter().checkbox(
+    QuestionaryPromptAdapter(color=color).checkbox(
         "Choose",
         (GuidedPromptOption("codex", "Codex", checked=True),),
     )
 
     assert len(selected_style) == 1
+    assert selected_style[0].color == expected_foreground
     assert selected_style[0].reverse is False
     assert selected_style[0].bgcolor == ""
+
+
+def test_interactive_ui_passes_color_capability_to_questionary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: list[bool] = []
+
+    class CapturingPromptAdapter(_FakePromptAdapter):
+        def __init__(self, *, color: bool = True) -> None:
+            received.append(color)
+            super().__init__()
+
+    monkeypatch.setattr(
+        "super_harness.cli.init_ui.QuestionaryPromptAdapter",
+        CapturingPromptAdapter,
+    )
+
+    InteractiveInitUI(color=False, renderer=_FakeGuidedRenderer())
+
+    assert received == [False]
 
 
 def test_keyboard_interrupt_from_line_input_propagates(tmp_path: Path) -> None:

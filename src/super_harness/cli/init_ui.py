@@ -196,7 +196,10 @@ _REVIEW_PRODUCERS = (
     _Option("claude-cli", "Claude CLI", "claude"),
 )
 
-_QUESTIONARY_CHECKBOX_STYLE = questionary.Style([("selected", "noreverse")])
+_QUESTIONARY_CHECKBOX_STYLE = questionary.Style(
+    [("selected", "fg:ansigreen noreverse")]
+)
+_QUESTIONARY_NO_COLOR_CHECKBOX_STYLE = questionary.Style([("selected", "noreverse")])
 _NARROW_WIDTH = 60
 
 
@@ -231,6 +234,13 @@ class GuidedPromptAdapter(Protocol):
 class QuestionaryPromptAdapter:
     """Translate library-neutral prompt values to and from Questionary."""
 
+    def __init__(self, *, color: bool = True) -> None:
+        self._checkbox_style = (
+            _QUESTIONARY_CHECKBOX_STYLE
+            if color
+            else _QUESTIONARY_NO_COLOR_CHECKBOX_STYLE
+        )
+
     @staticmethod
     def _choices(options: Sequence[GuidedPromptOption]) -> list[questionary.Choice]:
         return [
@@ -249,7 +259,7 @@ class QuestionaryPromptAdapter:
         answer = questionary.checkbox(
             message,
             choices=self._choices(choices),
-            style=_QUESTIONARY_CHECKBOX_STYLE,
+            style=self._checkbox_style,
         ).unsafe_ask()
         return None if answer is None else tuple(cast(list[str], answer))
 
@@ -442,7 +452,7 @@ class InteractiveInitUI:
         color: bool = True,
         width: int = 80,
     ) -> None:
-        self._prompts = prompt_adapter or QuestionaryPromptAdapter()
+        self._prompts = prompt_adapter or QuestionaryPromptAdapter(color=color)
         self._renderer = renderer or RichGuidedRenderer(unicode=unicode, color=color, width=width)
 
     @staticmethod
