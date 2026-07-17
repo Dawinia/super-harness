@@ -17,6 +17,11 @@ from typing import TypeVar
 
 import yaml
 
+from super_harness.cli.init_models import (
+    ReviewerModelCandidate,
+    ReviewerModelDiscovery,
+    discover_reviewer_models,
+)
 from super_harness.engineering.review_governance import (
     ReviewGovernanceError,
     load_review_governance,
@@ -135,6 +140,10 @@ class InitPreflight:
     detected_review_producers: tuple[str, ...]
     persisted_review_producers: tuple[str, ...] = ()
     persisted_review_models: Mapping[str, str] = field(default_factory=dict)
+    reviewer_model_candidates: Mapping[
+        str, tuple[ReviewerModelCandidate, ...]
+    ] = field(default_factory=dict)
+    reviewer_model_errors: Mapping[str, str] = field(default_factory=dict)
     review_config_error: str | None = None
     github_available: bool = False
 
@@ -161,6 +170,21 @@ class InitPreflight:
             self,
             "persisted_review_models",
             _frozen_mapping(self.persisted_review_models),
+        )
+        object.__setattr__(
+            self,
+            "reviewer_model_candidates",
+            _frozen_mapping(
+                {
+                    source: tuple(values)
+                    for source, values in self.reviewer_model_candidates.items()
+                }
+            ),
+        )
+        object.__setattr__(
+            self,
+            "reviewer_model_errors",
+            _frozen_mapping(self.reviewer_model_errors),
         )
 
 
@@ -336,6 +360,8 @@ def _inspect_persisted_review(root: Path) -> tuple[tuple[str, ...], Mapping[str,
 def inspect_workspace(
     request: InitRequest,
     executable_lookup: Callable[[str], str | None] = shutil.which,
+    *,
+    home: Path | None = None,
 ) -> InitPreflight:
     """Capture workspace state without creating, updating, or deleting anything."""
 
@@ -384,6 +410,18 @@ def inspect_workspace(
         except (ReviewGovernanceError, ReviewProfilesError) as exc:
             review_error = str(exc)
 
+    discovery = ReviewerModelDiscovery()
+    if request.interaction_mode is not InteractionMode.NON_INTERACTIVE:
+        discovery_sources = frozenset(
+            definition.source for definition in _REVIEW_PRODUCERS.values()
+        ).difference(request.review_models)
+        if discovery_sources:
+            discovery = discover_reviewer_models(
+                home=home if home is not None else Path.home(),
+                persisted_models=persisted_models,
+                sources=discovery_sources,
+            )
+
     return InitPreflight(
         harness_state=harness_state,
         existing_file_bytes=existing,
@@ -393,6 +431,8 @@ def inspect_workspace(
         detected_review_producers=detected_producers,
         persisted_review_producers=persisted_producers,
         persisted_review_models=persisted_models,
+        reviewer_model_candidates=discovery.candidates,
+        reviewer_model_errors=discovery.errors,
         review_config_error=review_error,
         github_available=executable_paths["gh"] is not None,
     )

@@ -98,6 +98,17 @@ def _review_actions(plan):
     }
 
 
+def _write_user_models(home: Path) -> None:
+    (home / ".codex").mkdir(parents=True)
+    (home / ".claude").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text(
+        'model = "gpt-configured"\n', encoding="utf-8"
+    )
+    (home / ".claude" / "settings.json").write_text(
+        '{"model": "opus-configured"}', encoding="utf-8"
+    )
+
+
 def test_noninteractive_fresh_explicit_configuration_builds_plan(tmp_path: Path) -> None:
     request = _request(
         tmp_path,
@@ -118,6 +129,113 @@ def test_noninteractive_fresh_explicit_configuration_builds_plan(tmp_path: Path)
     assert dict(plan.review_models) == {"codex": "gpt-review"}
     assert plan.github_decision is GitHubDecision.CREATE
     assert all(action.action is not FileAction.PRESERVE for action in plan.file_actions)
+
+
+def test_preflight_captures_immutable_reviewer_model_candidates(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    _write_user_models(home)
+    request = _request(tmp_path, mode=InteractionMode.GUIDED)
+
+    result = inspect_workspace(
+        request,
+        executable_lookup=_lookup("codex", "claude"),
+        home=home,
+    )
+
+    assert result.reviewer_model_candidates["codex"][0].model == "gpt-configured"
+    assert result.reviewer_model_candidates["claude"][0].model == "opus-configured"
+    with pytest.raises(TypeError):
+        result.reviewer_model_candidates["codex"] = ()  # type: ignore[index]
+    with pytest.raises(TypeError):
+        result.reviewer_model_errors["codex"] = "changed"  # type: ignore[index]
+
+
+def test_preflight_orders_persisted_model_before_user_config(tmp_path: Path) -> None:
+    _write_review_config(tmp_path, model="gpt-workspace")
+    home = tmp_path / "home"
+    _write_user_models(home)
+    request = _request(tmp_path, mode=InteractionMode.GUIDED, force=True)
+
+    result = inspect_workspace(request, executable_lookup=_lookup("codex"), home=home)
+
+    assert [item.model for item in result.reviewer_model_candidates["codex"]] == [
+        "gpt-workspace",
+        "gpt-configured",
+    ]
+
+
+def test_preflight_records_sanitized_reviewer_model_error(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text("model = [", encoding="utf-8")
+
+    result = inspect_workspace(
+        _request(tmp_path, mode=InteractionMode.LINE),
+        executable_lookup=_lookup("codex"),
+        home=home,
+    )
+
+    assert dict(result.reviewer_model_errors) == {
+        "codex": "Codex CLI config is not valid TOML"
+    }
+
+
+def test_explicit_reviewer_model_excludes_its_provider_from_discovery(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".claude").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text("model = [", encoding="utf-8")
+    (home / ".claude" / "settings.json").write_text(
+        '{"model": "opus-configured"}', encoding="utf-8"
+    )
+    request = _request(
+        tmp_path,
+        mode=InteractionMode.GUIDED,
+        models={"codex": "gpt-explicit"},
+    )
+
+    result = inspect_workspace(
+        request,
+        executable_lookup=_lookup("codex", "claude"),
+        home=home,
+    )
+
+    assert "codex" not in result.reviewer_model_candidates
+    assert "codex" not in result.reviewer_model_errors
+    assert result.reviewer_model_candidates["claude"][0].model == "opus-configured"
+
+
+def test_interactive_preflight_resolves_home_at_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "runtime-home"
+    _write_user_models(home)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+
+    result = inspect_workspace(
+        _request(tmp_path, mode=InteractionMode.GUIDED),
+        executable_lookup=_lookup("codex"),
+    )
+
+    assert result.reviewer_model_candidates["codex"][0].model == "gpt-configured"
+
+
+def test_noninteractive_preflight_never_resolves_home_or_reads_provider_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        Path,
+        "home",
+        classmethod(lambda cls: pytest.fail("noninteractive init resolved the user home")),
+    )
+
+    result = inspect_workspace(
+        _request(tmp_path, mode=InteractionMode.NON_INTERACTIVE),
+        executable_lookup=_lookup("codex", "claude"),
+    )
+
+    assert dict(result.reviewer_model_candidates) == {}
+    assert dict(result.reviewer_model_errors) == {}
 
 
 @pytest.mark.parametrize(
