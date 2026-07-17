@@ -75,7 +75,7 @@ directly to that function would deepen the coupling.
 
 - Replacing Click as the command parser.
 - Building a full-screen TUI.
-- Changing review-governance semantics or choosing model names for the user.
+- Changing review-governance semantics or maintaining a vendor model catalog.
 - Installing Codex, Claude Code, or review-producer executables.
 - Automatically rolling back user-owned files after a partial write failure.
 - Declaring the entire `super-harness` CLI Windows-compatible.
@@ -193,9 +193,39 @@ append/overwrite questions. For non-interactive compatibility, existing files
 continue to be skipped without `--quiet`, while `--quiet` retains its current
 authorization to append/overwrite.
 
-Model fields are required and validated immediately. The UI may show an example
-format, but it must not hard-code a model default that can become stale or choose
-a billable model on the user's behalf.
+Model fields remain explicit, but interactive modes must not require free-text
+model entry. The wizard discovers configured models, selects the only candidate
+automatically, or presents multiple candidates as a single-choice prompt.
+
+### Reviewer model discovery
+
+Model discovery is read-only and provider-specific behind a common boundary.
+For each selected review source, candidates are collected in this precedence
+order and deduplicated by exact model identifier:
+
+1. the current workspace's `.harness/review-profiles.local.yaml`,
+2. the CLI's active user model (`~/.codex/config.toml` or
+   `~/.claude/settings.json`),
+3. additional named CLI profile models when the provider configuration exposes
+   them.
+
+Paths are resolved from `Path.home()` so the same logic works with Unix home
+directories and native Windows user profiles. Discovery reads only model fields;
+it must not copy, render, or persist credentials, environment values, or other
+provider settings.
+
+Each candidate carries its exact value and a human-readable origin. One
+candidate is adopted automatically and shown in the configuration summary. Two
+or more candidates use a Questionary single-select with the highest-precedence
+candidate preselected; line mode uses a deterministic numbered choice over the
+same candidates. No candidate disables that reviewer with `model not
+configured`; neither interactive mode falls back to text entry or a stale
+built-in catalog. Malformed or unreadable provider configuration produces a
+specific disabled reason and performs no writes.
+
+Explicit `--review-model SOURCE=MODEL` values remain authoritative and bypass
+discovery. Non-interactive semantics and the requirement that every selected
+automated source has an explicit stored model remain unchanged.
 
 ### Stage 3 — Review before writes
 
@@ -301,6 +331,12 @@ have acquired Windows-safe locking semantics.
 
 ### `InitPlan`
 
+`InitPreflight` carries immutable reviewer-model candidates and per-provider
+discovery errors alongside executable detection. A candidate contains only the
+review source, exact model identifier, origin label, and precedence; it never
+contains raw provider configuration. UI backends consume this common snapshot
+and never reopen user configuration files.
+
 An immutable value object contains the resolved workspace, force behavior,
 integration choices, review choices, parsed models, GitHub choice, existing
 GitHub-file decisions, review-write decision, and planned file actions. Building
@@ -371,7 +407,10 @@ not additions to `.harness/events.jsonl`.
 | Detected integration/producer | Preselect and label as detected/recommended on fresh init |
 | Unavailable integration | Allow selection; do not preselect; label not detected |
 | Unavailable producer | Disable interactively; explicit selection fails before writes |
-| Empty model | Keep prompt active with inline validation |
+| One configured model | Select automatically and show its value and origin |
+| Multiple configured models | Present a preselected single-choice list; never request free text |
+| No configured model | Disable that reviewer with `model not configured` |
+| Malformed/unreadable provider model config | Disable that reviewer with a specific reason; write nothing |
 | Explicit Cancel before apply | Write nothing; print `Setup cancelled`; exit 0 |
 | Ctrl+C before apply | Write nothing; Click-compatible interruption; exit 1 |
 | Ctrl+C during apply | Keep completed steps, mark interrupted step, no rollback; exit 1 |
@@ -411,8 +450,8 @@ does not emit a machine-readable JSON envelope also remains unchanged.
 - Independent input/render-mode selection across TTY/non-TTY stdin, redirected
   stdout, CI, `TERM=dumb`, `NO_COLOR`, encoding, and narrow-width combinations.
 - Plan construction precedence: explicit flags over detected/prompted values.
-- Questionary and line-mode behavior for defaults, toggle/yes-no results, text
-  validation, back, confirmation, explicit cancel, and Ctrl+C.
+- Questionary and line-mode behavior for defaults, toggle/yes-no results,
+  model discovery/selection, back, confirmation, explicit cancel, and Ctrl+C.
 - Unicode and ASCII glyph selection.
 - Step-event ordering and success/warning/failure rendering.
 - Executor orchestration with each existing operation replaced by a fake.
@@ -441,6 +480,9 @@ does not emit a machine-readable JSON envelope also remains unchanged.
 - Opaque non-TTY preservation accepts malformed or unknown-version existing
   review files without parsing; interactive edit fails preflight or requires an
   explicit reset choice.
+- Model discovery uses isolated home-directory fixtures for Codex and Claude,
+  covers one/multiple/no-candidate and malformed/unreadable configurations, and
+  never reads the test runner's real user configuration.
 - Explicit Cancel, pre-apply Ctrl+C, and during-apply Ctrl+C assert their
   specified exit codes and write/step-ledger boundaries.
 
@@ -484,21 +526,24 @@ acceptance.
    foreground when color is available, unselected options use an empty
    indicator plus normal foreground, and neither state uses a reverse-video row
    background. With color disabled, the indicators remain distinguishable.
-3. An interactive user can review, return, confirm, or cancel before writes.
-4. Confirmation and cancel tests prove the workspace remains unchanged until
+3. Reviewer models come only from the existing workspace profile or detected
+   CLI configuration: one candidate is automatic, multiple candidates use a
+   select prompt, and no candidate disables the reviewer without text entry.
+4. An interactive user can review, return, confirm, or cancel before writes.
+5. Confirmation and cancel tests prove the workspace remains unchanged until
    apply begins.
-5. `--yes` skips only the final interactive confirmation; non-TTY scripts do
+6. `--yes` skips only the final interactive confirmation; non-TTY scripts do
    not require it.
-6. Existing flags and non-interactive workflows retain their semantics,
+7. Existing flags and non-interactive workflows retain their semantics,
    including GitHub-file skip/quiet behavior and force-rerun review preservation.
-7. Plain fallback contains no dynamic control sequences and remains readable.
-8. Unicode, ASCII, narrow-terminal, Windows-path, and CRLF scenarios pass.
-9. Success and partial failure output name truthful completed/failed steps and
+8. Plain fallback contains no dynamic control sequences and remains readable.
+9. Unicode, ASCII, narrow-terminal, Windows-path, and CRLF scenarios pass.
+10. Success and partial failure output name truthful completed/failed steps and
    a next or recovery command.
-10. A real installed-wheel `super-harness init` invocation passes on native
+11. A real installed-wheel `super-harness init` invocation passes on native
     Windows without importing POSIX-only command modules.
-11. The init-focused suite passes on Ubuntu, macOS, and Windows CI runners.
-12. pytest, ruff, mypy, CLI-reference/doc checks,
+12. The init-focused suite passes on Ubuntu, macOS, and Windows CI runners.
+13. pytest, ruff, mypy, CLI-reference/doc checks,
     `super-harness decision check --changed`, and `super-harness verify` pass.
 
 ## Risks and mitigations
@@ -525,6 +570,13 @@ formatting never becomes the only rendering path.
 Extract orchestration behind the plan/executor seam while reusing existing
 helpers. Existing integration tests remain and are expanded before behavior is
 changed.
+
+### Provider configuration drift
+
+Keep Codex and Claude parsing in separate read-only adapters with fixture-based
+tests. Unknown keys are ignored, model identifiers remain opaque strings, and a
+missing or unsupported shape disables only the affected reviewer. Do not ship a
+model catalog or silently switch to a CLI default.
 
 ### Overclaiming Windows support
 
@@ -562,3 +614,7 @@ support claim unless the rest of the CLI has separate evidence.
   non-TTY skip / `--quiet` overwrite behavior.
 - Preserve existing review config on non-TTY `--force` when no new review flags
   are supplied.
+- Discover reviewer model candidates from workspace and CLI configuration;
+  auto-select one, select among many, and disable the reviewer when none exist.
+- Never request free-text models in interactive modes and never maintain a
+  built-in vendor model catalog.
