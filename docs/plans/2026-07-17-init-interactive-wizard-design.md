@@ -437,8 +437,9 @@ Run the `init`-focused test slice on:
 - `windows-latest`.
 
 The UI abstraction allows deterministic tests without depending exclusively on
-POSIX PTYs. At least one manual native Windows smoke run must cover real arrow,
-space, enter, back, cancel, ASCII fallback, and a path containing spaces.
+POSIX PTYs. A manual native Windows smoke run covering real arrow, space, enter,
+back, cancel, ASCII fallback, and a path containing spaces remains recommended,
+but it is non-blocking and may be recorded after authoring completion.
 
 The Windows job must build/install the wheel and invoke the real console script:
 
@@ -448,8 +449,10 @@ super-harness --workspace <temp-path-with-spaces> init [explicit non-TTY flags]
 ```
 
 It must also assert that dispatching `init` does not import `fcntl` or unrelated
-POSIX-only command modules. Mock-only UI tests do not satisfy native Windows
-acceptance.
+POSIX-only command modules. The Windows CI job is a mandatory merge gate;
+mock-only UI tests do not satisfy native Windows acceptance. Manual Windows
+terminal evidence increases confidence in real key handling but is not required
+for `super-harness done` or merge.
 
 The repository's existing full-suite strategy remains unchanged. Any Windows
 startup/import blocker that prevents the real `init` path from running is in

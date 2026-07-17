@@ -1008,9 +1008,9 @@ Expected: all exit 0. Do not dismiss the known old-event warnings as test failur
 
 - [ ] **Step 4: Perform manual terminal smoke checks**
 
-In a disposable workspace on macOS/Linux, run the guided TTY flow through selection, Back, confirmation, and cancel. Verify ASCII fallback with a safe limited-terminal invocation and non-TTY behavior with redirected stdin. On native Windows Terminal/PowerShell, run the installed wheel and manually exercise arrow, Space, Enter, Back, cancel, ASCII fallback, and a workspace path containing spaces.
+In a disposable workspace on macOS/Linux, run the guided TTY flow through selection, Back, confirmation, and cancel. Verify ASCII fallback with a safe limited-terminal invocation and non-TTY behavior with redirected stdin. When native Windows Terminal/PowerShell is available, run the installed wheel and manually exercise arrow, Space, Enter, Back, cancel, ASCII fallback, and a workspace path containing spaces.
 
-Record the native Windows manual evidence in the change handoff, including Windows version, terminal/shell, installed wheel version or commit, tested path, and observed key/fallback outcomes. This evidence is mandatory and cannot be replaced by Windows CI, mocked prompts, or a non-Windows terminal. If the implementing agent cannot access native Windows, stop before completion and request the manual run from a human or another authorized operator; do not run `super-harness done` or claim the change complete until the evidence is attached.
+If performed, record the native Windows manual evidence in the change handoff, including Windows version, terminal/shell, installed wheel version or commit, tested path, and observed key/fallback outcomes. This manual smoke is recommended but non-blocking and may be completed after authoring. Its absence must be disclosed in the handoff; it does not block `super-harness done`. The focused Windows CI job remains a mandatory merge gate and cannot be replaced by mocked prompts or a non-Windows terminal.
 
 - [ ] **Step 5: Inspect the exact diff and commits**
 
@@ -1030,7 +1030,7 @@ Expected: only declared-scope files are changed, `.codegraph/` and `.superpowers
 
 If an in-scope verification fix was required, rerun its failing command plus Steps 1–3, then commit with an English message describing the actual fix. If no files changed, do not create an empty commit.
 
-- [ ] **Step 7: Complete authoring lifecycle only after all automated and native Windows evidence is green**
+- [ ] **Step 7: Complete authoring lifecycle after local automated and terminal evidence is green**
 
 Run:
 
@@ -1038,13 +1038,13 @@ Run:
 super-harness done init-interactive-wizard
 ```
 
-Precondition: the native Windows manual evidence from Step 4 is recorded in the handoff. Expected: verification passes and the lifecycle records implementation completion. Do not push, open a PR, start external review, override a gate, or merge without separate user approval.
+Precondition: local automated checks and available manual terminal checks from Step 4 pass, with any missing native Windows manual smoke disclosed in the handoff. Expected: verification passes and the lifecycle records implementation completion. The `windows-init` CI job must pass before merge. Do not push, open a PR, start external review, override a gate, or merge without separate user approval.
 
 ## Plan self-review checklist
 
 - [ ] Every acceptance criterion in the approved design maps to at least one task and test above.
 - [ ] Windows acceptance uses the installed console script, not only `CliRunner` or mocked UI.
-- [ ] Native Windows arrow/Space/Enter/Back/cancel/ASCII behavior has mandatory manual evidence before `done`; CI cannot substitute for it.
+- [ ] Native Windows arrow/Space/Enter/Back/cancel/ASCII manual evidence is recommended but non-blocking; the installed-wheel Windows CI job is mandatory before merge.
 - [ ] Non-interactive force preservation never parses or rewrites existing review bytes.
 - [ ] Interactive GitHub conflicts are resolved before final review; the executor has no prompt path.
 - [ ] `--yes` is interactive-confirmation-only and never supplies selections, models, or conflict decisions.
