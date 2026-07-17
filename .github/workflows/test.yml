@@ -104,6 +104,7 @@ jobs:
         run: |
           python -P -m pytest --import-mode=importlib -q `
             tests/integration/cli/test_init_windows_entrypoint.py `
+            tests/unit/cli/test_init_models.py `
             tests/unit/cli/test_init_plan.py `
             tests/unit/cli/test_init_ui.py `
             tests/unit/cli/test_init_executor.py

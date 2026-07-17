@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from super_harness.cli.init_models import discover_reviewer_models
+
 _AGENTS_BEGIN = b"<!-- super-harness section begin "
 _AGENTS_END = b"<!-- super-harness section end -->"
 _GITIGNORE_BEGIN = b"# >>> super-harness gitignore (do not edit between markers)"
@@ -139,6 +141,23 @@ def test_non_tty_console_init_accepts_workspace_path_with_spaces(tmp_path: Path)
 
     assert result.returncode == 0, result.stderr or result.stdout
     assert (workspace / ".harness").is_dir()
+
+
+def test_reviewer_model_discovery_accepts_windows_style_home_with_spaces(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "C:" / "Users" / "Test User"
+    config = home / ".codex" / "config.toml"
+    config.parent.mkdir(parents=True)
+    config.write_text('model = "gpt-5.2-codex"\n', encoding="utf-8")
+
+    discovery = discover_reviewer_models(
+        home=home,
+        persisted_models={},
+        sources={"codex"},
+    )
+
+    assert [candidate.model for candidate in discovery.candidates["codex"]] == ["gpt-5.2-codex"]
 
 
 def test_init_preserves_crlf_user_content_around_managed_markers(tmp_path: Path) -> None:

@@ -61,8 +61,8 @@ The guided setup has five stages:
 
 1. **Preflight** resolves the workspace and detects coding-agent integrations
    and review-producer executables without writing.
-2. **Configuration** selects integrations and producers, collects one explicit
-   model for every selected automated review source, and resolves existing-file
+2. **Configuration** selects integrations and producers, chooses from reviewer
+   models already configured in the relevant CLI, and resolves existing-file
    conflicts.
 3. **Review before writes** shows the selected integrations, producers, models,
    GitHub choice, and every planned create/update/preserve action. In an
@@ -82,8 +82,21 @@ configuration. **Ctrl+C** interrupts setup. Detected integrations and producers
 are preselected and labeled `detected · recommended` on a fresh init. An
 unavailable coding integration remains selectable but is not preselected; an
 unavailable review producer is disabled, and selecting it explicitly is a
-pre-write validation error. The wizard never chooses a model: every selected
-automated review source requires an explicit model value.
+pre-write validation error. For each available reviewer, the wizard reads model
+identifiers from the existing workspace profile and that reviewer's native CLI
+configuration. One candidate is selected automatically; multiple candidates
+are presented as a choice with their origin. If no model is configured, that
+reviewer is disabled and setup can continue with another reviewer or human-only
+review. The wizard never asks users to type a model identifier.
+
+Interactive discovery reads `.harness/review-profiles.local.yaml`,
+`~/.codex/config.toml`, and `~/.claude/settings.json` as applicable. It retains
+only model identifiers and their display origins: credentials and unrelated
+provider settings are never copied or shown. A malformed provider file disables
+only that provider, remains byte-for-byte unchanged, and does not prevent init
+from continuing. Scripts can bypass discovery with explicit
+`--review-model SOURCE=MODEL` values; non-interactive init uses explicit flags
+and persisted workspace defaults and does not inspect user CLI configuration.
 
 A representative narrow terminal session looks like this (paths and selections
 will reflect your machine):
@@ -97,7 +110,7 @@ $ super-harness init --setup-github
 │
 ◆  Configuration
 │  Coding agent  Codex (detected · recommended)
-│  Review source codex-cli · model <your-model>
+│  Review source codex-cli · model gpt-5.2-codex (Codex CLI config)
 │
 ◇  Review before writes
 │  Create  .harness/
@@ -120,10 +133,11 @@ words such as `OK`, `WARN`, and `FAIL`; color and glyphs never carry meaning by
 themselves.
 
 `--yes` skips only the final confirmation in an interactive mode. It does not
-select integrations, producers, or models, and it does not resolve conflicts
-with existing files. When stdin is not a TTY, `init` preserves the scriptable
-behavior: it does not prompt and applies immediately from explicit flags and
-existing defaults, so CI and redirected scripts do not need `--yes`.
+select integrations or producers, choose among multiple model candidates, or
+resolve conflicts with existing files. When stdin is not a TTY, `init` preserves
+the scriptable behavior: it does not prompt or read user CLI configuration and
+applies immediately from explicit flags and existing workspace defaults, so CI
+and redirected scripts do not need `--yes`.
 
 The installed `init` entrypoint supports native Windows (including Windows
 Terminal and PowerShell), macOS, Linux, and WSL. This compatibility statement
@@ -139,7 +153,7 @@ immediately when stdin is not a TTY):
    tracked skeleton configuration, and `review-governance.yaml`. The derived
    `state.yaml` cache appears after the first lifecycle event, while
    `adapters.yaml` is created only when an integration is selected. Explicit
-   review models are written to the gitignored, user-editable
+   selected review models are written to the gitignored, user-editable
    `review-profiles.local.yaml`. Selecting no producer creates a fully usable
    human-only review configuration. Init never installs a third-party agent or
    producer binary.

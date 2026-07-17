@@ -80,6 +80,7 @@ class _GuidedAnswers:
         self.selects = iter(selects)
         self.texts = iter(texts or [])
         self.before_review = before_review
+        self.text_calls: list[str] = []
 
     def checkbox(self, _message: str, _choices: Any) -> tuple[str, ...] | None:
         return next(self.checkboxes)
@@ -96,8 +97,9 @@ class _GuidedAnswers:
             self.before_review()
         return next(self.selects)
 
-    def text(self, _message: str, *, default: str | None = None) -> str | None:
+    def text(self, message: str, *, default: str | None = None) -> str | None:
         del default
+        self.text_calls.append(message)
         return next(self.texts)
 
 
@@ -386,15 +388,11 @@ def test_init_guided_can_enable_github_without_the_flag(
         "super_harness.cli.init.inspect_workspace",
         lambda request: inspect_workspace(
             request,
-            executable_lookup=(
-                lambda name: "/abs/bin/gh" if name == "gh" else None
-            ),
+            executable_lookup=(lambda name: "/abs/bin/gh" if name == "gh" else None),
         ),
     )
     monkeypatch.setattr("super_harness.cli.init.check_gh", lambda: None)
-    monkeypatch.setattr(
-        "super_harness.cli.init.enable_repo_merge_settings", lambda: None
-    )
+    monkeypatch.setattr("super_harness.cli.init.enable_repo_merge_settings", lambda: None)
     renderer = _PlanCaptureRenderer()
     ui = InteractiveInitUI(
         prompt_adapter=_GuidedAnswers(
@@ -414,6 +412,125 @@ def test_init_guided_can_enable_github_without_the_flag(
     assert renderer.plans[-1].github_decision is GitHubDecision.CREATE
     assert (tmp_path / ".github" / "pull_request_template.md").is_file()
     assert (tmp_path / ".github" / "workflows" / "super-harness.yml").is_file()
+
+
+def test_init_guided_uses_configured_reviewer_models_without_text_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".claude").mkdir()
+    (home / ".codex" / "config.toml").write_text('model = "gpt-5.2-codex"\n')
+    (home / ".claude" / "settings.json").write_text(
+        json.dumps({"model": "claude-opus-4-1", "apiKey": "never-copy-me"})
+    )
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, False, 80)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=(
+                lambda name: f"/abs/bin/{name}" if name in {"codex", "claude"} else None
+            ),
+            home=home,
+        ),
+    )
+    answers = _GuidedAnswers(
+        checkboxes=[(), ("codex-cli", "claude-cli")],
+        selects=["confirm"],
+        before_review=lambda: _assert_init_owned_paths_absent(tmp_path),
+    )
+    ui = InteractiveInitUI(prompt_adapter=answers)
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+
+    result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert result.exit_code == 0, result.output
+    assert answers.text_calls == []
+    profiles = yaml.safe_load((tmp_path / ".harness" / "review-profiles.local.yaml").read_text())
+    assert profiles["sources"]["codex"]["model"] == "gpt-5.2-codex"
+    assert profiles["sources"]["claude"]["model"] == "claude-opus-4-1"
+    assert "never-copy-me" not in json.dumps(profiles)
+
+
+def test_init_guided_without_configured_models_uses_human_only_review(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "empty-home"
+    home.mkdir()
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, False, 80)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=(
+                lambda name: f"/abs/bin/{name}" if name in {"codex", "claude"} else None
+            ),
+            home=home,
+        ),
+    )
+    answers = _GuidedAnswers(checkboxes=[()], selects=["confirm"])
+    ui = InteractiveInitUI(prompt_adapter=answers)
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+
+    result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert result.exit_code == 0, result.output
+    governance = yaml.safe_load((tmp_path / ".harness" / "review-governance.yaml").read_text())[
+        "review"
+    ]
+    assert governance["sources"] == {"human": {"kind": "human"}}
+    assert governance["roles"]["plan-reviewer"]["participants"] == ["human"]
+    assert not (tmp_path / ".harness" / "review-profiles.local.yaml").exists()
+
+
+def test_init_guided_isolates_malformed_provider_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".claude").mkdir()
+    codex_config = home / ".codex" / "config.toml"
+    malformed = b'model = "unterminated\n'
+    codex_config.write_bytes(malformed)
+    (home / ".claude" / "settings.json").write_text(json.dumps({"model": "claude-sonnet-4"}))
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, False, 80)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=(
+                lambda name: f"/abs/bin/{name}" if name in {"codex", "claude"} else None
+            ),
+            home=home,
+        ),
+    )
+    answers = _GuidedAnswers(
+        checkboxes=[(), ("claude-cli",)],
+        selects=["confirm"],
+    )
+    ui = InteractiveInitUI(prompt_adapter=answers)
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+
+    result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert result.exit_code == 0, result.output
+    profiles = yaml.safe_load((tmp_path / ".harness" / "review-profiles.local.yaml").read_text())
+    assert set(profiles["sources"]) == {"claude"}
+    assert profiles["sources"]["claude"]["model"] == "claude-sonnet-4"
+    assert codex_config.read_bytes() == malformed
 
 
 def test_init_questionary_none_cancels_without_writes(
