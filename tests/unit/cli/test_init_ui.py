@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import FrozenInstanceError, replace
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -35,6 +36,7 @@ from super_harness.cli.init_ui import (
     StepRenderState,
     TerminalCapabilities,
     WizardDecision,
+    detect_runtime_terminal_capabilities,
     detect_terminal_capabilities,
 )
 
@@ -125,6 +127,57 @@ def test_capability_mode_matrix(
         term=term,
         no_color=False,
         encoding="utf-8",
+        width=80,
+    )
+
+    assert capabilities.mode is expected
+
+
+def test_ci_forces_noninteractive_mode_even_when_both_streams_are_ttys() -> None:
+    capabilities = detect_terminal_capabilities(
+        stdin_tty=True,
+        stdout_tty=True,
+        term="xterm-256color",
+        no_color=False,
+        encoding="utf-8",
+        width=80,
+        ci=True,
+    )
+
+    assert capabilities.mode is InteractionMode.NON_INTERACTIVE
+
+
+class _TTYProbe:
+    def __init__(self, *, tty: bool | BaseException, encoding: str = "utf-8") -> None:
+        self._tty = tty
+        self.encoding = encoding
+
+    def isatty(self) -> bool:
+        if isinstance(self._tty, BaseException):
+            raise self._tty
+        return self._tty
+
+
+@pytest.mark.parametrize(
+    ("stdin_probe", "stdout_probe", "expected"),
+    [
+        (
+            _TTYProbe(tty=OSError("stdin probe failed")),
+            _TTYProbe(tty=True),
+            InteractionMode.NON_INTERACTIVE,
+        ),
+        (_TTYProbe(tty=True), _TTYProbe(tty=OSError("stdout probe failed")), InteractionMode.LINE),
+    ],
+)
+def test_runtime_terminal_probe_failures_fall_back_to_plain_modes(
+    stdin_probe: _TTYProbe,
+    stdout_probe: _TTYProbe,
+    expected: InteractionMode,
+) -> None:
+    capabilities = detect_runtime_terminal_capabilities(  # type: ignore[arg-type]
+        stdin_probe,
+        stdout_probe,
+        {"TERM": "xterm-256color"},
         width=80,
     )
 
@@ -901,3 +954,37 @@ def test_guided_step_rendering_accepts_plain_structural_event() -> None:
     ui.render_event(event)
 
     assert renderer.events == [event]
+
+
+@pytest.mark.parametrize(
+    ("success", "message", "next_command", "recovery_command", "expected_secondary"),
+    [
+        (True, None, "super-harness status", None, "Next: super-harness status"),
+        (
+            False,
+            "GitHub setup failed",
+            None,
+            "gh auth login && super-harness init --force",
+            "Recovery: gh auth login && super-harness init --force",
+        ),
+    ],
+)
+def test_guided_outcome_includes_the_next_or_recovery_command(
+    success: bool,
+    message: str | None,
+    next_command: str | None,
+    recovery_command: str | None,
+    expected_secondary: str,
+) -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+    result = SimpleNamespace(
+        success=success,
+        message=message,
+        next_command=next_command,
+        recovery_command=recovery_command,
+    )
+
+    ui.render_outcome(result)
+
+    assert renderer.stages[-1][3] == expected_secondary

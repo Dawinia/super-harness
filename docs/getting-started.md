@@ -135,12 +135,14 @@ for that shell environment, not the boundary of `init` runtime support.
 What `init --setup-github` applies after interactive confirmation (or
 immediately when stdin is not a TTY):
 
-1. Creates `.harness/` with the lifecycle data plane: `events.jsonl` (the
-   append-only event log), `state.yaml` (the derived current-state cache), and
-   tracked `review-governance.yaml`. The selected explicit review models are
-   written to the gitignored, user-editable `review-profiles.local.yaml`.
-   Selecting no producer creates a fully usable human-only review configuration.
-   Init never installs a third-party agent or producer binary.
+1. Creates `.harness/` with `events.jsonl` (the append-only lifecycle log),
+   tracked skeleton configuration, and `review-governance.yaml`. The derived
+   `state.yaml` cache appears after the first lifecycle event, while
+   `adapters.yaml` is created only when an integration is selected. Explicit
+   review models are written to the gitignored, user-editable
+   `review-profiles.local.yaml`. Selecting no producer creates a fully usable
+   human-only review configuration. Init never installs a third-party agent or
+   producer binary.
 2. Writes `AGENTS.md` (or extends an existing one) with a `super-harness`
    section your AI agent will read.
    Selected integrations install their existing local gate hooks. Pass

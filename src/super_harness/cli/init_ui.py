@@ -47,6 +47,20 @@ def _supports_unicode(encoding: str | None) -> bool:
     return True
 
 
+def _safe_isatty(stream: IO[str]) -> bool:
+    try:
+        return bool(stream.isatty())
+    except Exception:
+        return False
+
+
+def _safe_encoding(stream: IO[str]) -> str | None:
+    try:
+        return getattr(stream, "encoding", None)
+    except Exception:
+        return None
+
+
 def detect_terminal_capabilities(
     *,
     stdin_tty: bool,
@@ -55,12 +69,13 @@ def detect_terminal_capabilities(
     no_color: bool,
     encoding: str | None,
     width: int | None,
+    ci: bool = False,
 ) -> TerminalCapabilities:
     """Select interaction and rendering capabilities from injected stream facts."""
 
     normalized_term = (term or "").strip().lower()
     cursor_limited = normalized_term in {"dumb", "unknown"} or normalized_term.startswith("dumb-")
-    if not stdin_tty:
+    if ci or not stdin_tty:
         mode = InteractionMode.NON_INTERACTIVE
     elif stdout_tty and not cursor_limited:
         mode = InteractionMode.GUIDED
@@ -86,12 +101,13 @@ def detect_runtime_terminal_capabilities(
     """Capture real streams/environment once while remaining directly injectable."""
 
     return detect_terminal_capabilities(
-        stdin_tty=stdin.isatty(),
-        stdout_tty=stdout.isatty(),
+        stdin_tty=_safe_isatty(stdin),
+        stdout_tty=_safe_isatty(stdout),
         term=environ.get("TERM"),
         no_color="NO_COLOR" in environ,
-        encoding=getattr(stdout, "encoding", None),
+        encoding=_safe_encoding(stdout),
         width=width if width is not None else shutil.get_terminal_size((80, 24)).columns,
+        ci=bool(environ.get("CI")),
     )
 
 
@@ -670,7 +686,14 @@ class InteractiveInitUI:
     def render_outcome(self, result: ExecutionResultLike) -> None:
         state = RailState.COMPLETED if result.success else RailState.FAILED
         detail = "Setup complete" if result.success else (result.message or "Setup failed")
-        self._renderer.render_stage(RailStage.OUTCOME, state, detail)
+        command = result.next_command if result.success else result.recovery_command
+        command_label = "Next" if result.success else "Recovery"
+        self._renderer.render_stage(
+            RailStage.OUTCOME,
+            state,
+            detail,
+            secondary=f"{command_label}: {command}" if command else None,
+        )
 
 
 class _PlainInitUI:
