@@ -195,6 +195,10 @@ _REVIEW_PRODUCERS = (
     _Option("codex-cli", "Codex CLI", "codex"),
     _Option("claude-cli", "Claude CLI", "claude"),
 )
+_GUIDED_REVIEWER_LABELS = {
+    "codex-cli": "Codex reviewer — runs via Codex CLI",
+    "claude-cli": "Claude reviewer — runs via Claude CLI",
+}
 
 _QUESTIONARY_CHECKBOX_STYLE = questionary.Style(
     [("selected", "fg:ansigreen noreverse")]
@@ -486,7 +490,7 @@ class InteractiveInitUI:
             )
             return GuidedPromptOption(
                 option.value,
-                f"{option.label}  {status}",
+                f"{_GUIDED_REVIEWER_LABELS[option.value]}  {status}",
                 available and option.value in defaults,
                 None if available else "executable not found",
             )
@@ -529,7 +533,10 @@ class InteractiveInitUI:
                 "No automated review producers are available; continuing without one."
             )
             return ()
-        answer = self._prompts.checkbox("Automated review producers", options)
+        answer = self._prompts.checkbox(
+            "Automated reviewers — choose which detected CLIs may review changes",
+            options,
+        )
         if answer is None:
             return _CANCEL
         return tuple(value for value in answer if value in preflight.available_review_producers)

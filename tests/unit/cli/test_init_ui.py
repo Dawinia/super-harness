@@ -794,13 +794,22 @@ def test_guided_preselects_and_labels_detected_options_and_disables_missing_prod
 
     integrations = prompts.checkbox_calls[0][1]
     producers = prompts.checkbox_calls[1][1]
+    assert [message for message, _ in prompts.checkbox_calls] == [
+        "Coding-agent integrations",
+        "Automated reviewers — choose which detected CLIs may review changes",
+    ]
     assert integrations[0].checked is True
     assert "detected · recommended" in integrations[0].title
     assert integrations[1].checked is False
     assert integrations[1].disabled is None
     assert "not detected" in integrations[1].title
     assert producers[0].checked is True
-    assert "detected · recommended" in producers[0].title
+    assert producers[0].title == (
+        "Codex reviewer — runs via Codex CLI  detected · recommended"
+    )
+    assert producers[1].title == (
+        "Claude reviewer — runs via Claude CLI  executable not found"
+    )
     assert producers[1].disabled == "executable not found"
     assert result.choices.integrations == ("codex", "claude-code")
 
