@@ -39,9 +39,10 @@ from super_harness.adapters.agent import _stop_protocol
 if TYPE_CHECKING:
     from super_harness.core.authoring_check import Verdict
 from super_harness.adapters.agent._settings_merge import (
-    merge_pre_tool_use_hook,
-    merge_session_start_hook,
-    merge_stop_hook,
+    SettingsMergePlan,
+    apply_settings_merge_plan,
+    plan_settings_merge,
+    restore_or_remove_managed_hooks,
 )
 
 __all__ = [
@@ -155,11 +156,9 @@ class ClaudeCodeAdapter(AgentAdapter):
     def install_hooks(self, workspace: Path) -> None:
         """Register the super-harness PreToolUse + SessionStart hooks.
 
-        Resolves BOTH binaries to absolute paths UP FRONT (so a missing binary
-        aborts before any write), then merges three entries into
-        ``.claude/settings.local.json`` (no clobber, idempotent — see
-        ``merge_pre_tool_use_hook`` / ``merge_session_start_hook`` /
-        ``merge_stop_hook``). The hook
+        Resolves both management binaries to absolute paths up front, plans all
+        three hook entries as one settings transaction, then applies that plan
+        with at most one pristine backup. The hook
         ``command`` pins a machine-specific absolute path, so it belongs in the
         per-machine, conventionally-gitignored ``settings.local.json`` — never
         the committed shared ``settings.json``:
@@ -170,13 +169,6 @@ class ClaudeCodeAdapter(AgentAdapter):
           (no slug → active change); Claude Code injects its stdout as context.
 
         Per spec §3.5 this writes NO ``.sh`` script.
-
-        Registering TWO hooks widens the partial-write window, so the settings
-        file is snapshotted ONCE before both merges; if either merge raises, the
-        snapshot is restored (original bytes rewritten, or the file deleted if it
-        was absent) and the error re-raised (spec §3.5 step 3 rollback / OI-9).
-        The per-merge backups preserve the *user's* prior content; this snapshot
-        is the install *transaction* boundary, a distinct concern.
 
         Raises:
             RuntimeError: if ``super-harness-hook`` or ``super-harness`` is not
@@ -198,37 +190,21 @@ class ClaudeCodeAdapter(AgentAdapter):
                 f"available before installing the Claude Code adapter."
             )
 
-        settings_path = workspace / ".claude" / "settings.local.json"
-        pre_tool_use_command = f"{resolved_hook} --agent claude-code"
-        # No-arg `change resume` → resume the active change at session start.
-        session_start_command = f"{resolved_cli} change resume"
-        # Turn-end authoring-time conformance advisory (non-blocking, loop-safe).
-        stop_command = f"{resolved_hook} --agent claude-code --event stop"
-
-        # Snapshot the install transaction boundary: capture the file's exact
-        # pre-install content, or that it was absent. Restored on ANY failure.
-        snapshot: str | None = (
-            settings_path.read_text(encoding="utf-8") if settings_path.exists() else None
+        plan = self.plan_hook_install(
+            workspace, hook_executable=resolved_hook, cli_executable=resolved_cli
         )
-        try:
-            merge_pre_tool_use_hook(settings_path, command=pre_tool_use_command)
-            merge_session_start_hook(settings_path, command=session_start_command)
-            merge_stop_hook(settings_path, command=stop_command)
-        except BaseException:
-            self._restore_snapshot(settings_path, snapshot)
-            raise
+        assert plan is not None
+        apply_settings_merge_plan(plan)
 
-    @staticmethod
-    def _restore_snapshot(settings_path: Path, snapshot: str | None) -> None:
-        """Restore ``settings_path`` to its pre-install state (snapshot rollback).
-
-        ``snapshot is None`` means the file did not exist pre-install → delete
-        whatever a partial merge wrote. Otherwise rewrite the original bytes.
-        """
-        if snapshot is None:
-            settings_path.unlink(missing_ok=True)
-        else:
-            settings_path.write_text(snapshot, encoding="utf-8")
+    def plan_hook_install(
+        self, workspace: Path, *, hook_executable: str, cli_executable: str
+    ) -> SettingsMergePlan:
+        return plan_settings_merge(
+            workspace / ".claude" / "settings.local.json",
+            pre_tool_use_command=f"{hook_executable} --agent claude-code",
+            session_start_command=f"{cli_executable} change resume",
+            stop_command=f"{hook_executable} --agent claude-code --event stop",
+        )
 
     def stop_should_check(self, payload: dict[str, Any]) -> bool:
         """Skip the continuation turn a prior block created (loop-safety). Delegates to
@@ -281,46 +257,10 @@ class ClaudeCodeAdapter(AgentAdapter):
         )
 
     def on_uninstall(self, workspace: Path) -> None:
-        """Best-effort restore of the EARLIEST settings.local.json backup (pristine).
-
-        Targets ``.claude/settings.local.json`` — the per-machine, gitignored
-        file ``install_hooks`` wrote to, never the committed shared
-        ``settings.json``. Each merge backs the file up to
-        ``settings.local.json.super-harness-backup.<time_ns>`` before its write
-        (the glob follows ``settings_path.name``). ``install_hooks`` runs TWO
-        merges, so a
-        single install on a pre-existing file writes TWO backups: the FIRST
-        (lowest ts) captures the truly pristine file; the SECOND captures
-        pristine + our PreToolUse entry. To undo BOTH of our hooks we must
-        restore the EARLIEST backup — restoring the newest would leave our
-        PreToolUse entry behind. (Idempotent re-installs write no backup, and a
-        binary relocation only adds *newer* backups, so the earliest backup
-        stays pristine across re-installs.)
-
-        If no backup exists we leave the file untouched — a minimal, documented
-        best-effort suitable for v0.1 (clean per-entry removal is a Phase 9+
-        refinement).
-        """
+        """Restore the earliest pristine backup or remove marker-owned hooks."""
         settings_path = workspace / ".claude" / "settings.local.json"
-        backups = sorted(
-            settings_path.parent.glob(f"{settings_path.name}.super-harness-backup.*"),
-            key=_backup_sort_key,
+        restore_or_remove_managed_hooks(
+            settings_path,
+            pre_tool_use_marker="--agent claude-code",
+            stop_marker="--agent claude-code --event stop",
         )
-        if not backups:
-            return
-        settings_path.write_text(backups[0].read_text(encoding="utf-8"), encoding="utf-8")
-
-
-def _backup_sort_key(path: Path) -> int:
-    """Sort key extracting the trailing unix-ts from a backup filename.
-
-    Backups are named ``settings.local.json.super-harness-backup.<ts>``; sorting by the
-    integer ts orders them chronologically so the newest restores last. A
-    non-integer suffix sorts first (treated as oldest) so a malformed name never
-    shadows a real, newer backup.
-    """
-    suffix = path.name.rsplit(".", 1)[-1]
-    try:
-        return int(suffix)
-    except ValueError:
-        return -1

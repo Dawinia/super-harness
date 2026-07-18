@@ -382,14 +382,19 @@ def build_init_operations(
         configured: list[str] = []
         for integration in plan.integrations:
             try:
-                adapter = install_agent_integration(root, integration)
+                adapter = install_agent_integration(
+                    root,
+                    integration,
+                    plan=plan.integration_plans[integration],
+                )
             except (RuntimeError, ValueError, yaml.YAMLError, OSError) as error:
                 raise InitOperationError(
                     f"could not configure {integration} integration: {error}",
                     exit_code=EXIT_GENERIC,
                     hint=(
-                        f"Install the agent and super-harness hook, then run "
-                        f"`super-harness adapter install {integration}`."
+                        "Settings or executable paths may have changed after review; "
+                        "rerun init and review the refreshed plan. If a management "
+                        "executable is missing, reinstall super-harness first."
                     ),
                 ) from error
             configured.append(integration)

@@ -22,7 +22,7 @@ from super_harness.cli.init_plan import (
 
 
 def _lookup(*available: str):
-    installed = frozenset(available)
+    installed = frozenset((*available, "super-harness-hook", "super-harness"))
     return lambda executable: f"/bin/{executable}" if executable in installed else None
 
 
@@ -566,6 +566,46 @@ def test_plan_marks_an_existing_selected_integration_hook_for_update(tmp_path: P
 
     by_path = {action.path.as_posix(): action for action in plan.file_actions}
     assert by_path[".codex/hooks.json"].action is FileAction.UPDATE
+
+
+def test_plan_freezes_selected_integration_transactions_and_truthful_backups(
+    tmp_path: Path,
+) -> None:
+    existing = tmp_path / ".codex" / "hooks.json"
+    existing.parent.mkdir()
+    existing.write_text('{"user":true}\n')
+    current = tmp_path / ".claude" / "settings.local.json"
+    current.parent.mkdir()
+    current.write_text("{}\n")
+    lookup = _lookup("super-harness-hook", "super-harness")
+    current.write_bytes(
+        inspect_workspace(
+            _request(tmp_path, integrations=("claude-code",)),
+            executable_lookup=lookup,
+        ).integration_plans["claude-code"].settings.desired_bytes
+    )
+
+    request = _request(tmp_path, integrations=("codex", "claude-code"))
+    plan = build_init_plan(
+        request,
+        inspect_workspace(request, executable_lookup=lookup),
+        InitChoices(),
+    )
+
+    assert tuple(plan.integration_plans) == ("codex", "claude-code")
+    assert plan.backup_paths == (tmp_path / ".codex" / "hooks.json",)
+    by_path = {action.path.as_posix(): action for action in plan.file_actions}
+    assert by_path[".claude/settings.local.json"].action is FileAction.PRESERVE
+
+
+def test_integration_preflight_needs_management_binaries_not_agent_binaries(
+    tmp_path: Path,
+) -> None:
+    preflight = inspect_workspace(
+        _request(tmp_path, mode=InteractionMode.GUIDED),
+        executable_lookup=_lookup("super-harness-hook", "super-harness"),
+    )
+    assert preflight.available_integrations == frozenset({"codex", "claude-code"})
 
 
 def test_no_model_default_is_invented(tmp_path: Path) -> None:

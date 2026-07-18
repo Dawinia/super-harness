@@ -218,6 +218,33 @@ def test_init_non_tty_configures_multiple_agent_integrations(
     assert [entry["name"] for entry in adapters] == ["codex", "claude-code"]
     assert (tmp_path / ".codex" / "hooks.json").exists()
     assert (tmp_path / ".claude" / "settings.local.json").exists()
+    assert list(tmp_path.rglob("*.super-harness-backup.*")) == []
+
+
+def test_init_rejects_reviewed_settings_drift_before_backup_or_settings_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/{name}")
+    settings = tmp_path / ".codex" / "hooks.json"
+
+    def confirm(request: Any, preflight: Any, initial: InitChoices | None) -> WizardResult:
+        plan = build_init_plan(request, preflight, initial or InitChoices())
+        settings.parent.mkdir()
+        settings.write_bytes(b'{"review":"drifted"}\n')
+        return WizardResult.confirmed(plan)
+
+    ui = _ScriptedInitUI(confirm)
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--integration", "codex"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert settings.read_bytes() == b'{"review":"drifted"}\n'
+    assert list(settings.parent.glob("*.super-harness-backup.*")) == []
+    assert "changed after review" in result.output
+    assert "rerun init" in result.output
 
 
 def test_init_guided_confirmation_boundary_writes_only_after_confirm(
@@ -311,7 +338,14 @@ def test_init_line_mode_uses_per_option_prompts_without_comma_parser(
     )
     monkeypatch.setattr(
         "super_harness.cli.init.inspect_workspace",
-        lambda request: inspect_workspace(request, executable_lookup=lambda _name: None),
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=lambda name: (
+                f"/abs/{name}"
+                if name in {"super-harness-hook", "super-harness"}
+                else None
+            ),
+        ),
     )
 
     result = CliRunner().invoke(
@@ -364,7 +398,14 @@ def test_init_guided_back_applies_the_revised_plan(
     monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
     monkeypatch.setattr(
         "super_harness.cli.init.inspect_workspace",
-        lambda request: inspect_workspace(request, executable_lookup=lambda _name: None),
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=lambda name: (
+                f"/abs/{name}"
+                if name in {"super-harness-hook", "super-harness"}
+                else None
+            ),
+        ),
     )
 
     result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
@@ -838,10 +879,10 @@ def test_init_selected_integration_missing_hook_fails_actionably(
         ["--workspace", str(tmp_path), "init", "--integration", "claude-code"],
     )
     assert result.exit_code == 1, result.output
-    assert (tmp_path / ".harness").is_dir()
+    assert not (tmp_path / ".harness").exists()
     assert not (tmp_path / ".claude" / "settings.local.json").exists()
-    assert "could not configure claude-code integration" in result.output
-    assert "not found on PATH" in result.output
+    assert "could not prepare init plan" in result.output
+    assert "must be available" in result.output
 
 
 def test_init_no_agent_flag_skips_hook(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

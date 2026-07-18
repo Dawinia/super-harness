@@ -17,6 +17,7 @@ from typing import TypeVar
 
 import yaml
 
+from super_harness.adapters.install import AgentIntegrationPlan, preview_agent_integration
 from super_harness.cli.init_models import (
     ReviewerModelCandidate,
     ReviewerModelDiscovery,
@@ -138,6 +139,8 @@ class InitPreflight:
     available_review_producers: frozenset[str]
     detected_integrations: tuple[str, ...]
     detected_review_producers: tuple[str, ...]
+    integration_plans: Mapping[str, AgentIntegrationPlan] = field(default_factory=dict)
+    integration_plans_captured: bool = False
     persisted_review_producers: tuple[str, ...] = ()
     persisted_review_models: Mapping[str, str] = field(default_factory=dict)
     reviewer_model_candidates: Mapping[str, tuple[ReviewerModelCandidate, ...]] = field(
@@ -156,6 +159,7 @@ class InitPreflight:
             frozenset(self.available_review_producers),
         )
         object.__setattr__(self, "detected_integrations", tuple(self.detected_integrations))
+        object.__setattr__(self, "integration_plans", _frozen_mapping(self.integration_plans))
         object.__setattr__(
             self,
             "detected_review_producers",
@@ -235,6 +239,7 @@ class InitPlan:
     review_models: Mapping[str, str]
     github_decision: GitHubDecision
     file_actions: tuple[PlannedFileAction, ...]
+    integration_plans: Mapping[str, AgentIntegrationPlan] = field(default_factory=dict)
     github_file_decisions: Mapping[str, GithubFileDecision] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -242,10 +247,19 @@ class InitPlan:
         object.__setattr__(self, "review_producers", tuple(self.review_producers))
         object.__setattr__(self, "review_models", _frozen_mapping(self.review_models))
         object.__setattr__(self, "file_actions", tuple(self.file_actions))
+        object.__setattr__(self, "integration_plans", _frozen_mapping(self.integration_plans))
         object.__setattr__(
             self,
             "github_file_decisions",
             _frozen_mapping(self.github_file_decisions),
+        )
+
+    @property
+    def backup_paths(self) -> tuple[Path, ...]:
+        return tuple(
+            plan.settings.path
+            for plan in self.integration_plans.values()
+            if plan.settings.changed and plan.settings.backup_required
         )
 
 
@@ -356,12 +370,13 @@ def _inspect_persisted_review(root: Path) -> tuple[tuple[str, ...], Mapping[str,
 
 def inspect_workspace(
     request: InitRequest,
-    executable_lookup: Callable[[str], str | None] = shutil.which,
+    executable_lookup: Callable[[str], str | None] | None = None,
     *,
     home: Path | None = None,
 ) -> InitPreflight:
     """Capture workspace state without creating, updating, or deleting anything."""
 
+    executable_lookup = executable_lookup or shutil.which
     root = request.workspace
     harness = root / ".harness"
     if not harness.exists():
@@ -378,19 +393,31 @@ def inspect_workspace(
             existing[relative.as_posix()] = path.read_bytes()
 
     executable_paths = {
-        executable: executable_lookup(executable) for executable in {"codex", "claude", "gh"}
+        executable: executable_lookup(executable)
+        for executable in {
+            "codex",
+            "claude",
+            "gh",
+            "super-harness-hook",
+            "super-harness",
+        }
     }
-    available_integrations = frozenset(
-        name
-        for name, definition in _INTEGRATIONS.items()
-        if executable_paths[definition.executable] is not None
+    management_available = all(
+        executable_paths[name] is not None
+        for name in ("super-harness-hook", "super-harness")
     )
+    available_integrations = frozenset(_INTEGRATIONS) if management_available else frozenset()
     available_producers = frozenset(
         name
         for name, definition in _REVIEW_PRODUCERS.items()
         if executable_paths[definition.executable] is not None
     )
-    detected_integrations = tuple(name for name in _INTEGRATIONS if name in available_integrations)
+    detected_integrations = tuple(
+        name
+        for name, definition in _INTEGRATIONS.items()
+        if name in available_integrations
+        and executable_paths[definition.executable] is not None
+    )
     detected_producers = tuple(name for name in _REVIEW_PRODUCERS if name in available_producers)
 
     persisted_producers: tuple[str, ...] = ()
@@ -419,6 +446,18 @@ def inspect_workspace(
                 sources=discovery_sources,
             )
 
+    integration_plans: dict[str, AgentIntegrationPlan] = {}
+    if management_available:
+        def frozen_lookup(executable: str) -> str | None:
+            return executable_paths.get(executable)
+
+        integration_plans = {
+            name: preview_agent_integration(
+                root, name, executable_lookup=frozen_lookup
+            )
+            for name in _INTEGRATIONS
+        }
+
     return InitPreflight(
         harness_state=harness_state,
         existing_file_bytes=existing,
@@ -426,6 +465,8 @@ def inspect_workspace(
         available_review_producers=available_producers,
         detected_integrations=detected_integrations,
         detected_review_producers=detected_producers,
+        integration_plans=integration_plans,
+        integration_plans_captured=True,
         persisted_review_producers=persisted_producers,
         persisted_review_models=persisted_models,
         reviewer_model_candidates=discovery.candidates,
@@ -664,6 +705,17 @@ def build_init_plan(
         )
 
     integrations = _resolve_integrations(request, preflight, choices, review_write)
+    missing_plans = [
+        name
+        for name in integrations
+        if preflight.integration_plans_captured
+        and name not in preflight.integration_plans
+    ]
+    if missing_plans:
+        raise InitPlanValidationError(
+            "super-harness-hook and super-harness must be available to configure "
+            f"integration {missing_plans[0]!r}"
+        )
     producers, models = _resolve_reviews(request, preflight, choices, review_write)
     governance, profile = _review_content(producers, models)
 
@@ -707,7 +759,21 @@ def build_init_plan(
     actions.extend(_review_file_actions(preflight, review_write, governance, profile))
     for name, definition in _INTEGRATIONS.items():
         if name in integrations:
-            actions.append(_ordinary_action(definition.path, b"", preflight))
+            transaction = preflight.integration_plans.get(name)
+            if transaction is None:
+                actions.append(_ordinary_action(definition.path, b"", preflight))
+            else:
+                settings = transaction.settings
+                action = (
+                    FileAction.CREATE
+                    if settings.original_bytes is None
+                    else FileAction.UPDATE
+                    if settings.changed
+                    else FileAction.PRESERVE
+                )
+                actions.append(
+                    PlannedFileAction(definition.path, action, settings.desired_bytes)
+                )
         else:
             actions.append(PlannedFileAction(definition.path, FileAction.SKIP))
 
@@ -746,5 +812,10 @@ def build_init_plan(
         review_models=models,
         github_decision=github_decision,
         file_actions=tuple(actions),
+        integration_plans={
+            name: preflight.integration_plans[name]
+            for name in integrations
+            if name in preflight.integration_plans
+        },
         github_file_decisions=choices.github_file_decisions,
     )

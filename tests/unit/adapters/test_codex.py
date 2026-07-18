@@ -165,3 +165,26 @@ def test_codex_agents_md_teaches_compiled_review_contract():
     assert "plan, scope, or requirements changed" in sub
     assert "never widen it to the whole pr" in sub
     assert "must never confirm the human nonce" in sub
+
+
+def test_codex_fresh_install_uninstall_removes_managed_only_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/{name}")
+    adapter = CodexAdapter()
+    adapter.install_hooks(tmp_path)
+    path = tmp_path / ".codex" / "hooks.json"
+    assert path.exists()
+    adapter.on_uninstall(tmp_path)
+    assert not path.exists()
+
+
+def test_codex_uninstall_without_backup_strips_only_managed_markers(tmp_path):
+    path = tmp_path / ".codex" / "hooks.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps({"theme": "dark", "hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": "keep-me"}]},
+        {"hooks": [{"type": "command", "command": "/h --agent codex --event stop"}]},
+    ]}}))
+    CodexAdapter().on_uninstall(tmp_path)
+    assert json.loads(path.read_text()) == {"theme": "dark", "hooks": {"Stop": [
+        {"hooks": [{"type": "command", "command": "keep-me"}]}
+    ]}}

@@ -15,6 +15,7 @@ from super_harness.adapters.install import (
     _read_adapter_entries,
     _remove_install_entry,
     install_agent_integration,
+    preview_agent_integration,
 )
 
 
@@ -150,3 +151,23 @@ def test_install_agent_integration_installs_hooks_and_registry_entry(
             "enabled": True,
         }
     ]
+
+
+def test_frozen_integration_plan_rejects_executable_drift_before_settings_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".harness").mkdir()
+    settings = tmp_path / ".codex" / "hooks.json"
+    settings.parent.mkdir()
+    original = b'{"user":true}\n'
+    settings.write_bytes(original)
+    monkeypatch.setattr(shutil, "which", lambda name: f"/reviewed/{name}")
+    plan = preview_agent_integration(tmp_path, "codex")
+    monkeypatch.setattr(shutil, "which", lambda name: f"/drifted/{name}")
+
+    with pytest.raises(RuntimeError, match="executable path changed after review"):
+        install_agent_integration(tmp_path, "codex", plan=plan)
+
+    assert settings.read_bytes() == original
+    assert list(settings.parent.glob("*.super-harness-backup.*")) == []
+    assert not _adapters_yaml(tmp_path).exists()

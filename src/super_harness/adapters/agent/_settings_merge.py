@@ -29,13 +29,19 @@ from __future__ import annotations
 import copy
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "SettingsMergePlan",
+    "StaleSettingsPlanError",
+    "apply_settings_merge_plan",
     "merge_pre_tool_use_hook",
     "merge_session_start_hook",
     "merge_stop_hook",
+    "plan_settings_merge",
+    "restore_or_remove_managed_hooks",
 ]
 
 # The PreToolUse matcher super-harness registers (sensor-gate §3.2.1). Covers
@@ -70,6 +76,135 @@ _STOP_OURS_MARKER = "--agent claude-code --event stop"
 # Per-hook timeout (seconds) for the Stop authoring-check command; matches the
 # PreToolUse/SessionStart budget shape and is the OUTER bound the inner check must beat.
 _STOP_TIMEOUT = 10
+
+
+class StaleSettingsPlanError(RuntimeError):
+    """The settings file no longer matches the bytes captured for review."""
+
+
+@dataclass(frozen=True)
+class SettingsMergePlan:
+    path: Path
+    original_bytes: bytes | None
+    desired_bytes: bytes
+    changed: bool
+    backup_required: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", Path(self.path))
+
+
+def plan_settings_merge(
+    settings_path: Path,
+    *,
+    pre_tool_use_command: str,
+    session_start_command: str,
+    stop_command: str,
+    pre_tool_use_matcher: str = _MATCHER,
+    pre_tool_use_marker: str = _OURS_MARKER,
+    session_start_marker: str = _SESSION_OURS_MARKER,
+    stop_marker: str = _STOP_OURS_MARKER,
+) -> SettingsMergePlan:
+    """Purely compute the complete three-hook settings transaction."""
+    original_bytes = settings_path.read_bytes() if settings_path.exists() else None
+    original = (
+        _parse_settings_bytes(settings_path, original_bytes)
+        if original_bytes is not None
+        else {}
+    )
+    settings = copy.deepcopy(original)
+    hooks = _ensure_hooks_dict(settings)
+
+    pre_tool_use = _ensure_event_list(hooks, "PreToolUse")
+    _strip_entries(pre_tool_use, pre_tool_use_marker)
+    pre_tool_use.append(_hook_entry(pre_tool_use_command, pre_tool_use_matcher))
+
+    session_start = _ensure_event_list(hooks, "SessionStart")
+    _strip_entries(session_start, session_start_marker)
+    session_start.append(_session_start_entry(session_start_command))
+
+    stop = _ensure_event_list(hooks, "Stop")
+    _strip_entries(stop, stop_marker)
+    stop.append(_stop_entry(stop_command))
+
+    changed = settings != original
+    desired_bytes = (
+        json.dumps(settings, indent=2).encode("utf-8") + b"\n"
+        if changed
+        else original_bytes or b""
+    )
+    return SettingsMergePlan(
+        path=settings_path,
+        original_bytes=original_bytes,
+        desired_bytes=desired_bytes,
+        changed=changed,
+        backup_required=changed and original_bytes is not None,
+    )
+
+
+def apply_settings_merge_plan(plan: SettingsMergePlan) -> None:
+    """Apply exactly a reviewed plan, rejecting byte drift before mutation."""
+    current = plan.path.read_bytes() if plan.path.exists() else None
+    if current != plan.original_bytes:
+        raise StaleSettingsPlanError(
+            f"{plan.path} changed after review; rerun init and review the new plan."
+        )
+    if not plan.changed:
+        return
+    if plan.backup_required:
+        _write_backup_bytes(plan.path, plan.original_bytes or b"")
+    else:
+        plan.path.parent.mkdir(parents=True, exist_ok=True)
+    plan.path.write_bytes(plan.desired_bytes)
+
+
+def restore_or_remove_managed_hooks(
+    settings_path: Path,
+    *,
+    pre_tool_use_marker: str,
+    session_start_marker: str = _SESSION_OURS_MARKER,
+    stop_marker: str,
+) -> None:
+    """Restore the pristine backup, or remove only marker-owned hook entries."""
+    backups = sorted(
+        settings_path.parent.glob(f"{settings_path.name}.super-harness-backup.*"),
+        key=_backup_sort_key,
+    )
+    if backups:
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings_path.write_bytes(backups[0].read_bytes())
+        return
+    if not settings_path.exists():
+        return
+
+    original_bytes = settings_path.read_bytes()
+    settings = _parse_settings_bytes(settings_path, original_bytes)
+    hooks = settings.get("hooks")
+    if not isinstance(hooks, dict):
+        return
+    changed = False
+    for event, marker in (
+        ("PreToolUse", pre_tool_use_marker),
+        ("SessionStart", session_start_marker),
+        ("Stop", stop_marker),
+    ):
+        entries = hooks.get(event)
+        if not isinstance(entries, list):
+            continue
+        before = copy.deepcopy(entries)
+        _strip_entries(entries, marker)
+        if entries != before:
+            changed = True
+        if not entries:
+            hooks.pop(event, None)
+    if not changed:
+        return
+    if not hooks:
+        settings.pop("hooks", None)
+    if not settings:
+        settings_path.unlink()
+        return
+    settings_path.write_bytes(json.dumps(settings, indent=2).encode("utf-8") + b"\n")
 
 
 def merge_pre_tool_use_hook(
@@ -219,10 +354,13 @@ def merge_stop_hook(
 
 
 def _read_settings(settings_path: Path) -> dict[str, Any]:
-    raw = settings_path.read_text(encoding="utf-8")
+    return _parse_settings_bytes(settings_path, settings_path.read_bytes())
+
+
+def _parse_settings_bytes(settings_path: Path, raw: bytes) -> dict[str, Any]:
     try:
-        parsed: Any = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        parsed: Any = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(
             f"{settings_path} is not valid JSON ({exc}); fix or remove it before "
             f"installing the super-harness hook."
@@ -242,6 +380,10 @@ def _write_backup(settings_path: Path) -> None:
     wall-clock second get distinct names; if the chosen path somehow already
     exists, bump until unique so a backup can never silently overwrite another.
     """
+    _write_backup_bytes(settings_path, settings_path.read_bytes())
+
+
+def _write_backup_bytes(settings_path: Path, content: bytes) -> Path:
     stamp = time.time_ns()
     backup = settings_path.with_name(
         f"{settings_path.name}.super-harness-backup.{stamp}"
@@ -251,7 +393,15 @@ def _write_backup(settings_path: Path) -> None:
         backup = settings_path.with_name(
             f"{settings_path.name}.super-harness-backup.{stamp}"
         )
-    backup.write_text(settings_path.read_text(encoding="utf-8"), encoding="utf-8")
+    backup.write_bytes(content)
+    return backup
+
+
+def _backup_sort_key(path: Path) -> int:
+    try:
+        return int(path.name.rsplit(".", 1)[-1])
+    except ValueError:
+        return -1
 
 
 def _ensure_hooks_dict(settings: dict[str, Any]) -> dict[str, Any]:

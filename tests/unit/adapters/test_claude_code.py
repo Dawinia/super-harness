@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import glob
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -179,7 +180,7 @@ def test_install_hooks_idempotent(
     assert _session_commands(settings).count(_EXPECTED_SESSION_COMMAND) == 1
 
 
-def test_install_hooks_rolls_back_on_second_merge_failure(
+def test_install_hooks_preserves_existing_file_when_atomic_apply_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If the SECOND merge raises mid-install, settings.local.json is restored to
@@ -200,21 +201,21 @@ def test_install_hooks_rolls_back_on_second_merge_failure(
     )
 
     def boom(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("simulated SessionStart merge failure")
+        raise RuntimeError("simulated atomic apply failure")
 
     monkeypatch.setattr(
-        "super_harness.adapters.agent.claude_code.merge_session_start_hook",
+        "super_harness.adapters.agent.claude_code.apply_settings_merge_plan",
         boom,
     )
 
-    with pytest.raises(RuntimeError, match="simulated SessionStart"):
+    with pytest.raises(RuntimeError, match="simulated atomic apply"):
         ClaudeCodeAdapter().install_hooks(tmp_path)
 
     # Snapshot restored: byte-identical to the pre-install file.
     assert settings_path.read_text() == pristine
 
 
-def test_install_hooks_rolls_back_to_absent_when_file_was_absent(
+def test_install_hooks_preserves_absence_when_atomic_apply_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If settings.local.json did not exist pre-install and a merge fails, rollback
@@ -228,14 +229,14 @@ def test_install_hooks_rolls_back_to_absent_when_file_was_absent(
     )
 
     def boom(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("simulated SessionStart merge failure")
+        raise RuntimeError("simulated atomic apply failure")
 
     monkeypatch.setattr(
-        "super_harness.adapters.agent.claude_code.merge_session_start_hook",
+        "super_harness.adapters.agent.claude_code.apply_settings_merge_plan",
         boom,
     )
 
-    with pytest.raises(RuntimeError, match="simulated SessionStart"):
+    with pytest.raises(RuntimeError, match="simulated atomic apply"):
         ClaudeCodeAdapter().install_hooks(tmp_path)
 
     assert not settings_path.exists()
@@ -364,8 +365,8 @@ def test_install_then_uninstall_round_trip_restores_pristine(
     )
     settings_path = tmp_path / ".claude" / "settings.local.json"
     settings_path.parent.mkdir(parents=True)
-    pristine = {"model": "claude-opus", "permissions": {"allow": ["Bash(ls:*)"]}}
-    settings_path.write_text(json.dumps(pristine, indent=2))
+    pristine_bytes = b'{ "model": "claude-opus", "permissions": {"allow": ["Bash(ls:*)"]} }\n\n'
+    settings_path.write_bytes(pristine_bytes)
 
     adapter = ClaudeCodeAdapter()
     adapter.install_hooks(tmp_path)
@@ -376,7 +377,7 @@ def test_install_then_uninstall_round_trip_restores_pristine(
 
     adapter.on_uninstall(tmp_path)
 
-    assert json.loads(settings_path.read_text()) == pristine
+    assert settings_path.read_bytes() == pristine_bytes
 
 
 def test_on_uninstall_no_backup_is_noop(tmp_path: Path) -> None:
@@ -492,3 +493,15 @@ def test_stop_advisory_has_no_self_authorized_bypass():
     assert "deliberate, disclosed exception, proceed" not in low
     assert "proceed on your own authority" in low  # explicitly forbidden
     assert "surface it to the human" in low
+
+
+def test_fresh_install_uninstall_removes_managed_only_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/{name}")
+    adapter = ClaudeCodeAdapter()
+    adapter.install_hooks(tmp_path)
+    path = tmp_path / ".claude" / "settings.local.json"
+    assert path.exists()
+    adapter.on_uninstall(tmp_path)
+    assert not path.exists()

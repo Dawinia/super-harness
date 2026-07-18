@@ -15,9 +15,12 @@ from pathlib import Path
 import pytest
 
 from super_harness.adapters.agent._settings_merge import (
+    StaleSettingsPlanError,
+    apply_settings_merge_plan,
     merge_pre_tool_use_hook,
     merge_session_start_hook,
     merge_stop_hook,
+    plan_settings_merge,
 )
 
 _COMMAND = "/abs/bin/super-harness-hook --agent claude-code"
@@ -461,3 +464,43 @@ def test_merge_stop_preserves_unrelated_stop_hook(tmp_path):
     cmds = [h["command"] for e in entries for h in e["hooks"]]
     assert "othertool --event stop" in cmds  # user's unrelated hook survives
     assert any("--agent claude-code --event stop" in c for c in cmds)  # ours added
+
+
+def test_batch_merge_has_one_backup_only_for_changed_existing_file(tmp_path: Path) -> None:
+    path = tmp_path / ".claude" / "settings.local.json"
+    kwargs = {
+        "pre_tool_use_command": "/bin/hook --agent claude-code",
+        "session_start_command": "/bin/super-harness change resume",
+        "stop_command": "/bin/hook --agent claude-code --event stop",
+    }
+    apply_settings_merge_plan(plan_settings_merge(path, **kwargs))
+    assert list(path.parent.glob("*.super-harness-backup.*")) == []
+
+    path.write_bytes(b'{"theme":"dark"}\n')
+    original = path.read_bytes()
+    apply_settings_merge_plan(plan_settings_merge(path, **kwargs))
+    backups = list(path.parent.glob("*.super-harness-backup.*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+
+    apply_settings_merge_plan(plan_settings_merge(path, **kwargs))
+    assert list(path.parent.glob("*.super-harness-backup.*")) == backups
+
+
+def test_settings_plan_rejects_byte_drift_before_backup_or_write(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_bytes(b'{"theme":"dark"}\n')
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    drifted = b'{"theme":"light"}\n'
+    path.write_bytes(drifted)
+
+    with pytest.raises(StaleSettingsPlanError, match="changed after review"):
+        apply_settings_merge_plan(plan)
+
+    assert path.read_bytes() == drifted
+    assert list(tmp_path.glob("*.super-harness-backup.*")) == []
