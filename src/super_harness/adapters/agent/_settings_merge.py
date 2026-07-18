@@ -155,7 +155,14 @@ def apply_settings_merge_plan(plan: SettingsMergePlan) -> None:
         _write_backup_bytes(plan.path, plan.original_bytes or b"")
     else:
         plan.path.parent.mkdir(parents=True, exist_ok=True)
-    plan.path.write_bytes(plan.desired_bytes)
+    try:
+        plan.path.write_bytes(plan.desired_bytes)
+    except BaseException:
+        if plan.original_bytes is None:
+            plan.path.unlink(missing_ok=True)
+        else:
+            plan.path.write_bytes(plan.original_bytes)
+        raise
 
 
 def restore_or_remove_managed_hooks(

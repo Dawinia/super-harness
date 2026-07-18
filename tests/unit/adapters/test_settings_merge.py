@@ -504,3 +504,44 @@ def test_settings_plan_rejects_byte_drift_before_backup_or_write(tmp_path: Path)
 
     assert path.read_bytes() == drifted
     assert list(tmp_path.glob("*.super-harness-backup.*")) == []
+
+
+@pytest.mark.parametrize("original", [b'{"theme":"dark"}\n', None])
+def test_settings_plan_rolls_back_partial_target_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    original: bytes | None,
+) -> None:
+    path = tmp_path / "settings.json"
+    if original is not None:
+        path.write_bytes(original)
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    real_write_bytes = Path.write_bytes
+    target_attempted = False
+
+    def partial_target_write(target: Path, data: bytes) -> int:
+        nonlocal target_attempted
+        if target == path and not target_attempted:
+            target_attempted = True
+            real_write_bytes(target, b"partial")
+            raise OSError("simulated partial target write")
+        return real_write_bytes(target, data)
+
+    monkeypatch.setattr(Path, "write_bytes", partial_target_write)
+
+    with pytest.raises(OSError, match="simulated partial target write"):
+        apply_settings_merge_plan(plan)
+
+    if original is None:
+        assert not path.exists()
+        assert list(tmp_path.glob("*.super-harness-backup.*")) == []
+    else:
+        assert path.read_bytes() == original
+        backups = list(tmp_path.glob("*.super-harness-backup.*"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == original
