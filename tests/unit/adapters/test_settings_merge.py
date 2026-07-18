@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import glob
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from super_harness.adapters.agent import _settings_merge as settings_merge_module
 from super_harness.adapters.agent._settings_merge import (
     StaleSettingsPlanError,
     apply_settings_merge_plan,
@@ -507,10 +509,12 @@ def test_settings_plan_rejects_byte_drift_before_backup_or_write(tmp_path: Path)
 
 
 @pytest.mark.parametrize("original", [b'{"theme":"dark"}\n', None])
-def test_settings_plan_rolls_back_partial_target_write(
+@pytest.mark.parametrize("failure_stage", ["temp-write", "replace"])
+def test_settings_plan_atomic_failure_leaves_target_exact(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     original: bytes | None,
+    failure_stage: str,
 ) -> None:
     path = tmp_path / "settings.json"
     if original is not None:
@@ -521,20 +525,27 @@ def test_settings_plan_rolls_back_partial_target_write(
         session_start_command="/bin/super-harness change resume",
         stop_command="/bin/hook --agent claude-code --event stop",
     )
-    real_write_bytes = Path.write_bytes
-    target_attempted = False
+    if failure_stage == "temp-write":
+        def partial_temp_write(fd: int, _data: bytes) -> None:
+            os.write(fd, b"partial-temp")
+            raise OSError("simulated temp write failure")
 
-    def partial_target_write(target: Path, data: bytes) -> int:
-        nonlocal target_attempted
-        if target == path and not target_attempted:
-            target_attempted = True
-            real_write_bytes(target, b"partial")
-            raise OSError("simulated partial target write")
-        return real_write_bytes(target, data)
+        monkeypatch.setattr(
+            settings_merge_module,
+            "_write_temp_bytes",
+            partial_temp_write,
+            raising=False,
+        )
+    else:
+        monkeypatch.setattr(
+            os,
+            "replace",
+            lambda _source, _target: (_ for _ in ()).throw(
+                OSError("simulated replace failure")
+            ),
+        )
 
-    monkeypatch.setattr(Path, "write_bytes", partial_target_write)
-
-    with pytest.raises(OSError, match="simulated partial target write"):
+    with pytest.raises(OSError, match=f"simulated {failure_stage.replace('-', ' ')} failure"):
         apply_settings_merge_plan(plan)
 
     if original is None:
@@ -545,3 +556,38 @@ def test_settings_plan_rolls_back_partial_target_write(
         backups = list(tmp_path.glob("*.super-harness-backup.*"))
         assert len(backups) == 1
         assert backups[0].read_bytes() == original
+    assert not path.with_name(f"{path.name}.super-harness.lock").exists()
+    assert list(tmp_path.glob(f".{path.name}.super-harness.*.tmp")) == []
+
+
+def test_concurrent_settings_apply_fails_clearly_without_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "settings.json"
+    original = b'{"theme":"dark"}\n'
+    path.write_bytes(original)
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    real_replace = os.replace
+    concurrent_error: list[str] = []
+
+    def interleaved_replace(source: str | bytes, target: str | bytes) -> None:
+        with pytest.raises(RuntimeError, match="another settings update is in progress") as exc:
+            apply_settings_merge_plan(plan)
+        concurrent_error.append(str(exc.value))
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", interleaved_replace)
+
+    apply_settings_merge_plan(plan)
+
+    assert concurrent_error
+    assert path.read_bytes() == plan.desired_bytes
+    backups = list(tmp_path.glob("*.super-harness-backup.*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+    assert not path.with_name(f"{path.name}.super-harness.lock").exists()

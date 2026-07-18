@@ -171,3 +171,20 @@ def test_frozen_integration_plan_rejects_executable_drift_before_settings_write(
     assert settings.read_bytes() == original
     assert list(settings.parent.glob("*.super-harness-backup.*")) == []
     assert not _adapters_yaml(tmp_path).exists()
+
+
+def test_frozen_integration_plan_cannot_be_reused_in_another_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    reviewed = tmp_path / "reviewed"
+    requested = tmp_path / "requested"
+    monkeypatch.setattr(shutil, "which", lambda name: f"/reviewed/{name}")
+    plan = preview_agent_integration(reviewed, "codex")
+
+    with pytest.raises(ValueError, match="does not belong to requested workspace"):
+        install_agent_integration(requested, "codex", plan=plan)
+
+    assert not (reviewed / ".codex" / "hooks.json").exists()
+    assert not (requested / ".codex" / "hooks.json").exists()
+    assert not _adapters_yaml(reviewed).exists()
+    assert not _adapters_yaml(requested).exists()

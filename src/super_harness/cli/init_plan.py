@@ -140,6 +140,7 @@ class InitPreflight:
     detected_integrations: tuple[str, ...]
     detected_review_producers: tuple[str, ...]
     integration_plans: Mapping[str, AgentIntegrationPlan] = field(default_factory=dict)
+    integration_plan_errors: Mapping[str, str] = field(default_factory=dict)
     integration_plans_captured: bool = False
     persisted_review_producers: tuple[str, ...] = ()
     persisted_review_models: Mapping[str, str] = field(default_factory=dict)
@@ -160,6 +161,11 @@ class InitPreflight:
         )
         object.__setattr__(self, "detected_integrations", tuple(self.detected_integrations))
         object.__setattr__(self, "integration_plans", _frozen_mapping(self.integration_plans))
+        object.__setattr__(
+            self,
+            "integration_plan_errors",
+            _frozen_mapping(self.integration_plan_errors),
+        )
         object.__setattr__(
             self,
             "detected_review_producers",
@@ -387,7 +393,10 @@ def inspect_workspace(
         harness_state = HarnessState.PARTIAL
 
     existing: dict[str, bytes] = {}
+    integration_paths = {definition.path for definition in _INTEGRATIONS.values()}
     for relative in _ALL_OBSERVED_PATHS:
+        if relative in integration_paths:
+            continue
         path = root / relative
         if path.is_file():
             existing[relative.as_posix()] = path.read_bytes()
@@ -447,16 +456,18 @@ def inspect_workspace(
             )
 
     integration_plans: dict[str, AgentIntegrationPlan] = {}
+    integration_plan_errors: dict[str, str] = {}
     if management_available:
         def frozen_lookup(executable: str) -> str | None:
             return executable_paths.get(executable)
 
-        integration_plans = {
-            name: preview_agent_integration(
-                root, name, executable_lookup=frozen_lookup
-            )
-            for name in _INTEGRATIONS
-        }
+        for name in _INTEGRATIONS:
+            try:
+                integration_plans[name] = preview_agent_integration(
+                    root, name, executable_lookup=frozen_lookup
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                integration_plan_errors[name] = str(error)
 
     return InitPreflight(
         harness_state=harness_state,
@@ -466,6 +477,7 @@ def inspect_workspace(
         detected_integrations=detected_integrations,
         detected_review_producers=detected_producers,
         integration_plans=integration_plans,
+        integration_plan_errors=integration_plan_errors,
         integration_plans_captured=True,
         persisted_review_producers=persisted_producers,
         persisted_review_models=persisted_models,
@@ -705,6 +717,17 @@ def build_init_plan(
         )
 
     integrations = _resolve_integrations(request, preflight, choices, review_write)
+    selected_plan_errors = [
+        (name, preflight.integration_plan_errors[name])
+        for name in integrations
+        if name in preflight.integration_plan_errors
+    ]
+    if selected_plan_errors:
+        name, error = selected_plan_errors[0]
+        raise InitPlanValidationError(
+            f"could not plan integration {name!r}: {error}",
+            code="integration-plan-error",
+        )
     missing_plans = [
         name
         for name in integrations

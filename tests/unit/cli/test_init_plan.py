@@ -608,6 +608,60 @@ def test_integration_preflight_needs_management_binaries_not_agent_binaries(
     assert preflight.available_integrations == frozenset({"codex", "claude-code"})
 
 
+def test_unselected_malformed_integration_config_does_not_block_plan(tmp_path: Path) -> None:
+    bad = tmp_path / ".claude" / "settings.local.json"
+    bad.parent.mkdir()
+    bad.write_text("{not-json")
+    request = _request(tmp_path, integrations=("codex",))
+
+    preflight = inspect_workspace(request, executable_lookup=_lookup())
+    plan = build_init_plan(request, preflight, InitChoices())
+
+    assert "claude-code" in preflight.integration_plan_errors
+    assert plan.integrations == ("codex",)
+    assert not (tmp_path / ".codex" / "hooks.json").exists()
+
+
+def test_selected_malformed_integration_config_fails_at_plan_boundary(
+    tmp_path: Path,
+) -> None:
+    bad = tmp_path / ".claude" / "settings.local.json"
+    bad.parent.mkdir()
+    original = b"{not-json"
+    bad.write_bytes(original)
+    request = _request(tmp_path, integrations=("claude-code",))
+
+    preflight = inspect_workspace(request, executable_lookup=_lookup())
+    with pytest.raises(InitPlanValidationError, match=r"claude-code.*not valid JSON"):
+        build_init_plan(request, preflight, InitChoices())
+
+    assert bad.read_bytes() == original
+    assert not (tmp_path / ".harness").exists()
+
+
+def test_unselected_unreadable_integration_config_is_captured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = tmp_path / ".claude" / "settings.local.json"
+    bad.parent.mkdir()
+    bad.touch()
+    real_read_bytes = Path.read_bytes
+
+    def deny_bad_settings(path: Path) -> bytes:
+        if path == bad:
+            raise PermissionError("settings are unreadable")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", deny_bad_settings)
+    request = _request(tmp_path, integrations=("codex",))
+
+    preflight = inspect_workspace(request, executable_lookup=_lookup())
+    plan = build_init_plan(request, preflight, InitChoices())
+
+    assert preflight.integration_plan_errors["claude-code"] == "settings are unreadable"
+    assert plan.integrations == ("codex",)
+
+
 def test_no_model_default_is_invented(tmp_path: Path) -> None:
     request = _request(tmp_path, mode=InteractionMode.GUIDED)
     preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))

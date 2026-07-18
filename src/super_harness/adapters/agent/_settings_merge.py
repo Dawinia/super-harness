@@ -28,6 +28,8 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +37,7 @@ from typing import Any
 
 __all__ = [
     "SettingsMergePlan",
+    "SettingsUpdateInProgressError",
     "StaleSettingsPlanError",
     "apply_settings_merge_plan",
     "merge_pre_tool_use_hook",
@@ -80,6 +83,10 @@ _STOP_TIMEOUT = 10
 
 class StaleSettingsPlanError(RuntimeError):
     """The settings file no longer matches the bytes captured for review."""
+
+
+class SettingsUpdateInProgressError(RuntimeError):
+    """Another super-harness writer owns the settings transaction lock."""
 
 
 @dataclass(frozen=True)
@@ -143,26 +150,40 @@ def plan_settings_merge(
 
 
 def apply_settings_merge_plan(plan: SettingsMergePlan) -> None:
-    """Apply exactly a reviewed plan, rejecting byte drift before mutation."""
-    current = plan.path.read_bytes() if plan.path.exists() else None
-    if current != plan.original_bytes:
-        raise StaleSettingsPlanError(
-            f"{plan.path} changed after review; rerun init and review the new plan."
-        )
-    if not plan.changed:
-        return
-    if plan.backup_required:
-        _write_backup_bytes(plan.path, plan.original_bytes or b"")
-    else:
-        plan.path.parent.mkdir(parents=True, exist_ok=True)
+    """Apply a reviewed plan under an exclusive sibling lock and atomic replace."""
+    plan.path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = plan.path.with_name(f"{plan.path.name}.super-harness.lock")
+    _acquire_settings_lock(lock_path)
+    temp_path: Path | None = None
     try:
-        plan.path.write_bytes(plan.desired_bytes)
-    except BaseException:
-        if plan.original_bytes is None:
-            plan.path.unlink(missing_ok=True)
-        else:
-            plan.path.write_bytes(plan.original_bytes)
-        raise
+        current = plan.path.read_bytes() if plan.path.exists() else None
+        if current != plan.original_bytes:
+            raise StaleSettingsPlanError(
+                f"{plan.path} changed after review; rerun init and review the new plan."
+            )
+        if not plan.changed:
+            return
+        if plan.backup_required:
+            _write_backup_bytes(plan.path, plan.original_bytes or b"")
+
+        temp_fd, temp_name = tempfile.mkstemp(
+            prefix=f".{plan.path.name}.super-harness.",
+            suffix=".tmp",
+            dir=plan.path.parent,
+        )
+        temp_path = Path(temp_name)
+        try:
+            _write_temp_bytes(temp_fd, plan.desired_bytes)
+        finally:
+            os.close(temp_fd)
+        os.replace(temp_path, plan.path)
+        temp_path = None
+    finally:
+        try:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+        finally:
+            lock_path.unlink(missing_ok=True)
 
 
 def restore_or_remove_managed_hooks(
@@ -392,16 +413,67 @@ def _write_backup(settings_path: Path) -> None:
 
 def _write_backup_bytes(settings_path: Path, content: bytes) -> Path:
     stamp = time.time_ns()
-    backup = settings_path.with_name(
-        f"{settings_path.name}.super-harness-backup.{stamp}"
-    )
-    while backup.exists():
-        stamp += 1
+    while True:
         backup = settings_path.with_name(
             f"{settings_path.name}.super-harness-backup.{stamp}"
         )
-    backup.write_bytes(content)
-    return backup
+        try:
+            fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            stamp += 1
+            continue
+        try:
+            _write_fd_bytes(fd, content)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            backup.unlink(missing_ok=True)
+            raise
+        try:
+            os.close(fd)
+        except BaseException:
+            backup.unlink(missing_ok=True)
+            raise
+        return backup
+
+
+def _acquire_settings_lock(lock_path: Path) -> None:
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as exc:
+        raise SettingsUpdateInProgressError(
+            f"another settings update is in progress for {lock_path.name}"
+        ) from exc
+    try:
+        _write_fd_bytes(fd, str(os.getpid()).encode("ascii"))
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        lock_path.unlink(missing_ok=True)
+        raise
+    try:
+        os.close(fd)
+    except BaseException:
+        lock_path.unlink(missing_ok=True)
+        raise
+
+
+def _write_temp_bytes(fd: int, content: bytes) -> None:
+    _write_fd_bytes(fd, content)
+
+
+def _write_fd_bytes(fd: int, content: bytes) -> None:
+    remaining = memoryview(content)
+    while remaining:
+        written = os.write(fd, remaining)
+        if written == 0:
+            raise OSError("could not complete settings write")
+        remaining = remaining[written:]
+    os.fsync(fd)
 
 
 def _backup_sort_key(path: Path) -> int:

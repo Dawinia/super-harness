@@ -82,6 +82,12 @@ def install_agent_integration(
     frozen = plan if plan is not None else preview_agent_integration(root, name)
     if frozen.name != name:
         raise ValueError(f"integration plan for {frozen.name!r} cannot install {name!r}")
+    expected_settings_path = (root / adapter.local_config_relpath()).resolve()
+    if frozen.settings.path.resolve() != expected_settings_path:
+        raise ValueError(
+            f"integration plan settings path {frozen.settings.path} does not belong "
+            f"to requested workspace {root}"
+        )
     current_hook = shutil.which("super-harness-hook")
     current_cli = shutil.which("super-harness")
     if (current_hook, current_cli) != (frozen.hook_executable, frozen.cli_executable):
