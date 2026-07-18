@@ -4,6 +4,8 @@ stage: plan
 tier_hint: Normal
 scope:
   files:
+    - src/super_harness/adapters/__init__.py
+    - src/super_harness/adapters/install.py
     - src/super_harness/adapters/agent/_settings_merge.py
     - src/super_harness/adapters/agent/codex.py
     - src/super_harness/adapters/agent/claude_code.py
@@ -11,6 +13,7 @@ scope:
     - src/super_harness/cli/init_plan.py
     - src/super_harness/cli/init_ui.py
     - src/super_harness/cli/init_executor.py
+    - tests/unit/adapters/test_install.py
     - tests/unit/adapters/test_settings_merge.py
     - tests/unit/adapters/test_codex.py
     - tests/unit/adapters/test_claude_code.py
@@ -29,7 +32,7 @@ scope:
 
 **Goal:** Make the guided `init` session visually coherent and operationally truthful while preserving the existing configuration semantics and non-interactive contracts.
 
-**Architecture:** Keep Questionary as the native keyboard-input backend and Rich as the session renderer, but give both one restrained visual vocabulary. Merge each agent's three hook mutations as one settings transaction so a fresh install creates no synthetic backups and a real existing config produces exactly one backup that is disclosed in `InitPlan`. Extend the executor result with measured elapsed time and keep reinitialization inside the guided session frame.
+**Architecture:** Keep Questionary as the native keyboard-input backend and Rich as the session renderer, but give both one restrained visual vocabulary. Plan and apply each agent's three hook mutations through the same pure settings transformation so a fresh install creates no synthetic backups, a changed existing config produces exactly one disclosed backup, and an already-current config produces none. Extend the executor result with measured elapsed time and keep reinitialization inside the guided session frame.
 
 **Tech Stack:** Python 3.10+, Click, Questionary, prompt_toolkit, Rich, pytest, Ruff, mypy.
 
@@ -42,13 +45,16 @@ This follow-up retains the approved five-stage wizard and changes only its prese
 - Selected checkboxes use a green filled indicator while the label stays at normal emphasis; unselected indicators and secondary text are dim. Color remains optional and the filled/empty glyph remains sufficient under `NO_COLOR`.
 - Questionary uses the same `◆` current-step glyph, a short `›` focus pointer, short prompt titles, and one compact navigation instruction. It disables prompt_toolkit's CPR probe for these non-full-screen prompts so terminals that do not answer CPR do not print warnings.
 - The Rich renderer opens once with `┌  super-harness init`, uses `│` consistently for summaries, and closes once with `└`. Guided success does not print a second legacy `initialized at` line.
-- Review groups ordinary file work and separately discloses every existing local agent config that will receive a timestamped backup.
+- Review groups ordinary file work and separately discloses only local agent configs whose planned settings transformation differs from the captured bytes and therefore will receive a timestamped backup.
 - Agent hook installation reads, mutates, compares, backs up, and writes one settings file once. A fresh file creates zero backups; a changed existing file creates exactly one backup; an idempotent reinstall creates none.
+- Uninstall restores the earliest pristine backup when one exists. When installation started from an absent file and therefore has no backup, uninstall strips only the three marker-owned hooks, preserves unrelated settings, prunes empty hook scaffolding, and removes the settings file only when nothing user-owned remains.
 - Re-running without `--force` stays in the guided frame and recommends `super-harness status` first, then `super-harness init --force` to review reconfiguration. Line and non-interactive modes keep deterministic error output with the same truthful guidance.
 
 ## File structure
 
-- `src/super_harness/adapters/agent/_settings_merge.py` owns single-event and batched hook-setting transactions.
+- `src/super_harness/adapters/__init__.py` exposes an optional read-only hook-install preview boundary for agent adapters.
+- `src/super_harness/adapters/install.py` resolves the same built-in adapter for preflight preview and apply.
+- `src/super_harness/adapters/agent/_settings_merge.py` owns pure hook transformation, single-event and batched settings transactions, and marker-only removal.
 - `src/super_harness/adapters/agent/codex.py` and `claude_code.py` install all three managed hooks through the batch transaction.
 - `src/super_harness/cli/init_plan.py` records existing agent configs that require backup.
 - `src/super_harness/cli/init_ui.py` owns prompt styling, the continuous rail, compact review, reinitialization, and outcome rendering.
@@ -60,9 +66,12 @@ This follow-up retains the approved five-stage wizard and changes only its prese
 **Files:**
 
 - Modify: `src/super_harness/adapters/agent/_settings_merge.py`
+- Modify: `src/super_harness/adapters/__init__.py`
+- Modify: `src/super_harness/adapters/install.py`
 - Modify: `src/super_harness/adapters/agent/codex.py`
 - Modify: `src/super_harness/adapters/agent/claude_code.py`
 - Modify: `src/super_harness/cli/init_plan.py`
+- Test: `tests/unit/adapters/test_install.py`
 - Test: `tests/unit/adapters/test_settings_merge.py`
 - Test: `tests/unit/adapters/test_codex.py`
 - Test: `tests/unit/adapters/test_claude_code.py`
@@ -70,41 +79,41 @@ This follow-up retains the approved five-stage wizard and changes only its prese
 - Test: `tests/unit/cli/test_init_plan.py`
 - Test: `tests/integration/cli/test_init.py`
 
-- [ ] **Step 1: Add failing atomic-backup tests**
+- [ ] **Step 1: Add failing atomic-backup and uninstall tests**
 
-Add tests proving that installing all three hooks into an absent settings file creates no `*.super-harness-backup.*` files, installing into a user-owned settings file creates exactly one backup containing the exact original bytes, and an idempotent reinstall creates no additional backup. Add an init integration regression asserting a fresh guided-equivalent apply creates the 14 planned files and zero backup files.
+Add tests proving that installing all three hooks into an absent settings file creates no `*.super-harness-backup.*` files, installing into a user-owned settings file creates exactly one backup containing the exact original bytes, and an idempotent reinstall creates no additional backup. Add install/uninstall round trips for both agents: a pre-existing file restores exact original bytes, while a fresh file with only managed hooks is removed and a fresh file with unrelated content retains that content after the managed hooks are stripped. Add an init integration regression asserting a fresh guided-equivalent apply creates the 14 planned files and zero backup files.
 
 - [ ] **Step 2: Run the atomic-backup tests and confirm RED**
 
 Run:
 
 ```bash
-pytest -q tests/unit/adapters/test_settings_merge.py tests/unit/adapters/test_codex.py tests/unit/adapters/test_claude_code.py tests/integration/adapter/test_claude_code.py tests/integration/cli/test_init.py -k 'backup or fresh_init'
+pytest -q tests/unit/adapters/test_install.py tests/unit/adapters/test_settings_merge.py tests/unit/adapters/test_codex.py tests/unit/adapters/test_claude_code.py tests/integration/adapter/test_claude_code.py tests/integration/cli/test_init.py -k 'backup or uninstall or fresh_init'
 ```
 
 Expected: the fresh and changed-config assertions fail because each adapter currently performs three independent writes and leaves two intermediate backups.
 
-- [ ] **Step 3: Implement one batched settings transaction**
+- [ ] **Step 3: Implement one planned settings transaction**
 
-Refactor the existing event-specific mutations behind a shared read/compare/write boundary and expose a batch function with explicit pre-tool, session-start, and stop commands/markers. The batch must parse once, mutate a deep copy, compare once, call `_write_backup` once only when the original file existed and the final mapping differs, and write once. Keep the existing single-event public functions behavior-compatible for their callers and tests.
+Refactor the existing event-specific mutations behind a pure transformation that returns an immutable settings plan containing the original bytes, desired bytes, `changed`, and `backup_required`. Expose a batch planner with explicit pre-tool, session-start, and stop commands/markers, plus an apply function that parses once, mutates a deep copy, compares once, calls `_write_backup` once only when the original file existed and the final mapping differs, and writes once. Keep the existing single-event public functions behavior-compatible for their callers and tests.
 
-- [ ] **Step 4: Route Codex and Claude Code installation through the batch**
+- [ ] **Step 4: Route preflight, install, and uninstall through the shared transformation**
 
-Replace the three sequential merge calls in both adapters with the new batch call. Preserve upfront binary resolution, exact markers/matchers, rollback to the pre-install snapshot on any exception, and installed-detail text.
+Add a non-mutating `plan_hook_install` method to the agent-adapter boundary with a default `None` result for adapters that do not manage a local settings file. Codex and Claude Code implement it with the shared batch planner and injectable executable lookup. `adapters.install` exposes the built-in preview to init preflight and continues to resolve the same adapter for apply. Replace the three sequential merge calls in both adapters with one planned apply while preserving upfront binary resolution, exact markers/matchers, rollback to the pre-install snapshot on any exception, and installed-detail text. When no pristine backup exists, uninstall invokes marker-only removal; it prunes empty event lists and the empty `hooks` mapping, deleting the file only when the resulting top-level mapping is empty.
 
 - [ ] **Step 5: Record planned backups**
 
-Add `backup_paths: tuple[Path, ...] = ()` to `InitPlan`. Populate it with selected integration config paths that were present during preflight. A fresh plan has no backup paths; a force plan updating existing `.codex/hooks.json` or `.claude/settings.local.json` lists those paths in stable integration order.
+Add immutable integration-preview facts to `InitPreflight` and `backup_paths: tuple[Path, ...] = ()` to `InitPlan`. `inspect_workspace` obtains previews with the injected executable lookup, and `build_init_plan` includes a selected integration path only when the shared transformation reports `changed=True` and `backup_required=True`. A fresh plan and an already-current force plan have no backup paths; a force plan that will actually change existing `.codex/hooks.json` or `.claude/settings.local.json` lists those paths in stable integration order.
 
 - [ ] **Step 6: Run focused tests and confirm GREEN**
 
 Run:
 
 ```bash
-pytest -q tests/unit/adapters/test_settings_merge.py tests/unit/adapters/test_codex.py tests/unit/adapters/test_claude_code.py tests/integration/adapter/test_claude_code.py tests/unit/cli/test_init_plan.py tests/integration/cli/test_init.py
+pytest -q tests/unit/adapters/test_install.py tests/unit/adapters/test_settings_merge.py tests/unit/adapters/test_codex.py tests/unit/adapters/test_claude_code.py tests/integration/adapter/test_claude_code.py tests/unit/cli/test_init_plan.py tests/integration/cli/test_init.py
 ```
 
-Expected: all selected tests pass; fresh installs have no backups, changed existing configs have one exact backup, and plans identify those backup sources.
+Expected: all selected tests pass; fresh installs have no backups and uninstall cleanly, changed existing configs have one exact backup, idempotent configs disclose no backup, and plans identify only actual backup-producing changes.
 
 ## Task 2: Unify prompt and review presentation
 
@@ -223,12 +232,11 @@ Expected: both exit zero.
 Run:
 
 ```bash
-ruff format --check src/super_harness/adapters/agent/_settings_merge.py src/super_harness/adapters/agent/codex.py src/super_harness/adapters/agent/claude_code.py src/super_harness/cli/init.py src/super_harness/cli/init_plan.py src/super_harness/cli/init_ui.py src/super_harness/cli/init_executor.py tests/unit/adapters/test_settings_merge.py tests/unit/adapters/test_codex.py tests/unit/adapters/test_claude_code.py tests/integration/adapter/test_claude_code.py tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py tests/unit/cli/test_init_executor.py tests/integration/cli/test_init.py
+ruff format --check src/super_harness/adapters/__init__.py src/super_harness/adapters/install.py src/super_harness/adapters/agent/_settings_merge.py src/super_harness/adapters/agent/codex.py src/super_harness/adapters/agent/claude_code.py src/super_harness/cli/init.py src/super_harness/cli/init_plan.py src/super_harness/cli/init_ui.py src/super_harness/cli/init_executor.py tests/unit/adapters/test_install.py tests/unit/adapters/test_settings_merge.py tests/unit/adapters/test_codex.py tests/unit/adapters/test_claude_code.py tests/integration/adapter/test_claude_code.py tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py tests/unit/cli/test_init_executor.py tests/integration/cli/test_init.py
 ruff check src/super_harness tests
 mypy src/super_harness
-pytest -q tests/unit/adapters/test_settings_merge.py tests/unit/adapters/test_codex.py tests/unit/adapters/test_claude_code.py tests/integration/adapter/test_claude_code.py tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py tests/unit/cli/test_init_executor.py tests/integration/cli/test_init.py tests/integration/cli/test_init_windows_entrypoint.py
+pytest -q tests/unit/adapters/test_install.py tests/unit/adapters/test_settings_merge.py tests/unit/adapters/test_codex.py tests/unit/adapters/test_claude_code.py tests/integration/adapter/test_claude_code.py tests/unit/cli/test_init_plan.py tests/unit/cli/test_init_ui.py tests/unit/cli/test_init_executor.py tests/integration/cli/test_init.py tests/integration/cli/test_init_windows_entrypoint.py
 super-harness verify
 ```
 
 Expected: all commands exit zero and `super-harness verify` reports zero failed checks.
-
