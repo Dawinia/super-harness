@@ -913,6 +913,12 @@ class _FakeGuidedRenderer:
         self.validations: list[str] = []
         self.events: list[Any] = []
 
+    def open_session(self) -> None:
+        return None
+
+    def close_session(self) -> None:
+        return None
+
     def render_stage(
         self,
         stage: RailStage,
@@ -1493,6 +1499,36 @@ def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -
     assert "hint:" not in text
     assert "will be written during apply" not in text
     assert "File update:" not in text
+
+
+def test_rich_guided_explicit_session_keeps_review_open_until_final_outcome(
+    tmp_path: Path,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=100, color_system=None),
+        unicode=True,
+        color=False,
+        width=100,
+    )
+
+    renderer.open_session()
+    renderer.render_plan(_plan(tmp_path))
+    assert "└" not in buffer.getvalue()
+    renderer.render_stage(
+        RailStage.OUTCOME,
+        RailState.COMPLETED,
+        "Setup complete in 152ms",
+        secondary="Next: super-harness status",
+    )
+    renderer.close_session()
+    renderer.close_session()
+
+    text = buffer.getvalue()
+    assert text.count("┌ super-harness init") == 1
+    assert text.count("└") == 1
+    assert text.index("┌ super-harness init") < text.index("Setup complete in 152ms")
+    assert text.index("Setup complete in 152ms") < text.index("└")
 
 
 def test_rich_guided_narrow_output_drops_hints_and_wraps_paths(tmp_path: Path) -> None:

@@ -28,6 +28,13 @@ from super_harness.version import __version__
 _FAKE_HOOK = "/usr/local/bin/super-harness-hook"
 
 
+def _assert_single_guided_frame(output: str, final_content: str) -> None:
+    assert output.count("┌ super-harness init") == 1
+    assert output.count("└") == 1
+    assert output.index("┌ super-harness init") < output.index(final_content)
+    assert output.index(final_content) < output.index("└")
+
+
 def _assert_init_owned_paths_absent(root: Path) -> None:
     assert not (root / ".harness").exists()
     assert not (root / "AGENTS.md").exists()
@@ -45,6 +52,14 @@ class _ScriptedInitUI:
         self.outcome: Any = None
         self.cancelled_rendered = False
         self.already_initialized_path: Path | None = None
+        self.session_opened = False
+        self.session_closed = False
+
+    def open_session(self) -> None:
+        self.session_opened = True
+
+    def close_session(self) -> None:
+        self.session_closed = True
 
     def collect_github_setup(self, request: Any, _preflight: Any) -> GitHubDecision:
         return GitHubDecision.CREATE if request.setup_github else GitHubDecision.SKIP
@@ -113,6 +128,12 @@ class _GuidedAnswers:
 class _PlanCaptureRenderer:
     def __init__(self) -> None:
         self.plans: list[Any] = []
+
+    def open_session(self) -> None:
+        return None
+
+    def close_session(self) -> None:
+        return None
 
     def render_stage(self, *_args: Any, **_kwargs: Any) -> None:
         return None
@@ -631,8 +652,16 @@ def test_init_guided_isolates_malformed_provider_config(
 def test_init_questionary_none_cancels_without_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, True, 80)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
     ui = InteractiveInitUI(
         prompt_adapter=_GuidedAnswers(checkboxes=[None], selects=["skip"]),
+        unicode=True,
+        color=False,
+        width=80,
     )
     monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
 
@@ -640,6 +669,7 @@ def test_init_questionary_none_cancels_without_writes(
 
     assert result.exit_code == 0, result.output
     assert "Setup cancelled" in result.output
+    _assert_single_guided_frame(result.output, "Setup cancelled")
     _assert_init_owned_paths_absent(tmp_path)
 
 
@@ -761,6 +791,7 @@ def test_init_guided_existing_harness_uses_cohesive_status_first_recovery(
     assert "Next: super-harness status" in repeated.output
     assert "Review/reconfigure: super-harness init --force" in repeated.output
     assert "Error: super-harness init" not in repeated.output
+    _assert_single_guided_frame(repeated.output, "Review/reconfigure")
 
 
 def test_init_guided_success_has_one_completion_without_legacy_final_line(
@@ -793,6 +824,48 @@ def test_init_guided_success_has_one_completion_without_legacy_final_line(
     assert result.exit_code == 0, result.output
     assert result.output.count("outcome: Setup complete in ") == 1
     assert "super-harness initialized at" not in result.output
+    _assert_single_guided_frame(result.output, "outcome: Setup complete in ")
+
+
+def test_init_guided_apply_interrupt_closes_frame_after_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, True, 100)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.create_init_ui",
+        lambda *_a, **_kw: InteractiveInitUI(
+            prompt_adapter=_GuidedAnswers(checkboxes=[], selects=["confirm"]),
+            unicode=True,
+            color=False,
+            width=100,
+        ),
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=lambda name: (
+                f"/abs/{name}" if name in {"super-harness-hook", "super-harness"} else None
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.install_agent_integration",
+        lambda *_a, **_kw: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--integration", "codex"],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "Recovery: super-harness init --force" in result.output
+    _assert_single_guided_frame(result.output, "Recovery: super-harness init --force")
 
 
 def test_init_non_guided_success_preserves_legacy_final_line(tmp_path: Path) -> None:

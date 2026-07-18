@@ -584,6 +584,8 @@ def init_cmd(
         output_fn=click.echo,
         quiet=quiet or json_output,
     )
+    ui.open_session()
+    ctx.call_on_close(ui.close_session)
     preflight = inspect_workspace(request)
     harness = root / ".harness"
     if preflight.harness_state is not HarnessState.ABSENT and not force:

@@ -375,6 +375,8 @@ class RailState(str, Enum):
 
 
 class GuidedRenderAdapter(Protocol):
+    def open_session(self) -> None: ...
+    def close_session(self) -> None: ...
     def render_stage(
         self,
         stage: RailStage,
@@ -462,6 +464,21 @@ class RichGuidedRenderer:
         self._width = max(1, width)
         self._console = console or Console(color_system="auto" if color else None, width=width)
         self._apply_started = False
+        self._session_open = False
+        self._session_closed = False
+
+    def open_session(self) -> None:
+        if self._session_open or self._session_closed:
+            return
+        self._session_open = True
+        self._print(f"{'┌' if self._unicode else '+'} super-harness init")
+
+    def close_session(self) -> None:
+        if not self._session_open or self._session_closed:
+            return
+        self._print("└" if self._unicode else "+")
+        self._session_open = False
+        self._session_closed = True
 
     def _print(self, value: str, *, style: str | None = None) -> None:
         self._console.print(
@@ -498,9 +515,11 @@ class RichGuidedRenderer:
             self._print(f"{'│' if self._unicode else '|'}  {secondary}", style="dim")
 
     def render_plan(self, plan: InitPlan) -> None:
+        owns_session = not self._session_open
+        if owns_session:
+            self.open_session()
         integration_labels = {option.value: option.label for option in _INTEGRATIONS}
-        corner_open, rail, corner_close = ("┌", "│", "└") if self._unicode else ("+", "|", "+")
-        self._print(f"{corner_open} super-harness init")
+        rail = "│" if self._unicode else "|"
         self._print_review_row(rail, "Integrations")
         if plan.integrations:
             for integration in plan.integrations:
@@ -539,7 +558,8 @@ class RichGuidedRenderer:
             self._print_review_row(rail, f"  {'Back up':<9} {len(plan.backup_paths)} {noun}")
             for path in plan.backup_paths:
                 self._print_review_row(rail, f"    {path}")
-        self._print(corner_close)
+        if owns_session:
+            self.close_session()
 
     def render_validation(self, message: str) -> None:
         self._print(f"{'!' if self._unicode else 'x'}  {message}", style="yellow")
@@ -648,6 +668,12 @@ class InteractiveInitUI:
     ) -> None:
         self._prompts = prompt_adapter or QuestionaryPromptAdapter(color=color, unicode=unicode)
         self._renderer = renderer or RichGuidedRenderer(unicode=unicode, color=color, width=width)
+
+    def open_session(self) -> None:
+        self._renderer.open_session()
+
+    def close_session(self) -> None:
+        self._renderer.close_session()
 
     def collect_github_setup(
         self,
@@ -1007,6 +1033,12 @@ class _PlainInitUI:
         self._width = max(1, width)
         # Kept as an explicit capability for API symmetry. Plain rendering never emits ANSI.
         self._color = color
+
+    def open_session(self) -> None:
+        pass
+
+    def close_session(self) -> None:
+        pass
 
     def collect(
         self,
