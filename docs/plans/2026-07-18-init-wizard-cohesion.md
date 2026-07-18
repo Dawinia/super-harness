@@ -23,6 +23,8 @@ scope:
     - tests/unit/cli/test_init_executor.py
     - tests/integration/cli/test_init.py
     - docs/getting-started.md
+    - docs/adapters/codex.md
+    - docs/adapters/claude-code.md
     - docs/plans/2026-07-18-init-wizard-cohesion.md
 ---
 
@@ -32,7 +34,7 @@ scope:
 
 **Goal:** Make the guided `init` session visually coherent and operationally truthful while preserving the existing configuration semantics and non-interactive contracts.
 
-**Architecture:** Keep Questionary as the native keyboard-input backend and Rich as the session renderer, but give both one restrained visual vocabulary. Plan and apply each agent's three hook mutations through the same pure settings transformation so a fresh install creates no synthetic backups, a changed existing config produces exactly one disclosed backup, and an already-current config produces none. Extend the executor result with measured elapsed time and keep reinitialization inside the guided session frame.
+**Architecture:** Keep Questionary as the native keyboard-input backend and Rich as the session renderer, but give both one restrained visual vocabulary. Preflight freezes each selected agent's original settings bytes, desired bytes, and resolved executable paths into `InitPlan`; apply consumes that exact transaction and rejects workspace or PATH drift before writing. This makes backup disclosure exact while ensuring a fresh install creates no synthetic backups, a changed existing config produces exactly one disclosed backup, and an already-current config produces none. Extend the executor result with measured elapsed time and keep reinitialization inside the guided session frame.
 
 **Tech Stack:** Python 3.10+, Click, Questionary, prompt_toolkit, Rich, pytest, Ruff, mypy.
 
@@ -47,16 +49,17 @@ This follow-up retains the approved five-stage wizard and changes only its prese
 - The Rich renderer opens once with `┌  super-harness init`, uses `│` consistently for summaries, and closes once with `└`. Guided success does not print a second legacy `initialized at` line.
 - Review groups ordinary file work and separately discloses only local agent configs whose planned settings transformation differs from the captured bytes and therefore will receive a timestamped backup.
 - Agent hook installation reads, mutates, compares, backs up, and writes one settings file once. A fresh file creates zero backups; a changed existing file creates exactly one backup; an idempotent reinstall creates none.
+- The reviewed agent transaction is immutable. Apply compares current settings bytes and current resolved binary paths with the frozen inputs; any drift aborts that operation before backup or write and instructs the user to rerun configuration/review.
 - Uninstall restores the earliest pristine backup when one exists. When installation started from an absent file and therefore has no backup, uninstall strips only the three marker-owned hooks, preserves unrelated settings, prunes empty hook scaffolding, and removes the settings file only when nothing user-owned remains.
 - Re-running without `--force` stays in the guided frame and recommends `super-harness status` first, then `super-harness init --force` to review reconfiguration. Line and non-interactive modes keep deterministic error output with the same truthful guidance.
 
 ## File structure
 
 - `src/super_harness/adapters/__init__.py` exposes an optional read-only hook-install preview boundary for agent adapters.
-- `src/super_harness/adapters/install.py` resolves the same built-in adapter for preflight preview and apply.
+- `src/super_harness/adapters/install.py` defines the immutable integration transaction, resolves it during preflight, and validates/consumes it during apply.
 - `src/super_harness/adapters/agent/_settings_merge.py` owns pure hook transformation, single-event and batched settings transactions, and marker-only removal.
 - `src/super_harness/adapters/agent/codex.py` and `claude_code.py` install all three managed hooks through the batch transaction.
-- `src/super_harness/cli/init_plan.py` records existing agent configs that require backup.
+- `src/super_harness/cli/init_plan.py` carries frozen integration transactions and derives the exact configs that require backup.
 - `src/super_harness/cli/init_ui.py` owns prompt styling, the continuous rail, compact review, reinitialization, and outcome rendering.
 - `src/super_harness/cli/init_executor.py` measures real apply duration without fake progress.
 - `src/super_harness/cli/init.py` selects guided versus legacy completion and reinitialization output.
@@ -93,17 +96,17 @@ pytest -q tests/unit/adapters/test_install.py tests/unit/adapters/test_settings_
 
 Expected: the fresh and changed-config assertions fail because each adapter currently performs three independent writes and leaves two intermediate backups.
 
-- [ ] **Step 3: Implement one planned settings transaction**
+- [ ] **Step 3: Implement one frozen settings transaction**
 
-Refactor the existing event-specific mutations behind a pure transformation that returns an immutable settings plan containing the original bytes, desired bytes, `changed`, and `backup_required`. Expose a batch planner with explicit pre-tool, session-start, and stop commands/markers, plus an apply function that parses once, mutates a deep copy, compares once, calls `_write_backup` once only when the original file existed and the final mapping differs, and writes once. Keep the existing single-event public functions behavior-compatible for their callers and tests.
+Refactor the existing event-specific mutations behind a pure transformation that returns an immutable settings plan containing the settings path, original bytes, desired bytes, `changed`, and `backup_required`. Expose a batch planner with explicit pre-tool, session-start, and stop commands/markers, plus an apply function that first compares the current raw bytes with the frozen original bytes, then calls `_write_backup` once only when the original file existed and the final mapping differs, and writes once. A byte mismatch raises a specific stale-plan error before backup or write. Keep the existing single-event public functions behavior-compatible for their callers and tests.
 
 - [ ] **Step 4: Route preflight, install, and uninstall through the shared transformation**
 
-Add a non-mutating `plan_hook_install` method to the agent-adapter boundary with a default `None` result for adapters that do not manage a local settings file. Codex and Claude Code implement it with the shared batch planner and injectable executable lookup. `adapters.install` exposes the built-in preview to init preflight and continues to resolve the same adapter for apply. Replace the three sequential merge calls in both adapters with one planned apply while preserving upfront binary resolution, exact markers/matchers, rollback to the pre-install snapshot on any exception, and installed-detail text. When no pristine backup exists, uninstall invokes marker-only removal; it prunes empty event lists and the empty `hooks` mapping, deleting the file only when the resulting top-level mapping is empty.
+Add a non-mutating `plan_hook_install` method to the agent-adapter boundary with a default `None` result for adapters that do not manage a local settings file. Codex and Claude Code implement it with the shared batch planner and injectable executable lookup. `adapters.install` wraps that settings plan plus the exact resolved `super-harness-hook` and `super-harness` paths in an immutable integration transaction. Apply accepts the frozen transaction, verifies both executable lookups still resolve to the recorded paths, and delegates its settings plan without recomputing commands or desired bytes. Replace the three sequential merge calls in both adapters with this planned apply while preserving exact markers/matchers, rollback to the pre-install snapshot on any exception, and installed-detail text. When no pristine backup exists, uninstall invokes marker-only removal; it prunes empty event lists and the empty `hooks` mapping, deleting the file only when the resulting top-level mapping is empty.
 
 - [ ] **Step 5: Record planned backups**
 
-Add immutable integration-preview facts to `InitPreflight` and `backup_paths: tuple[Path, ...] = ()` to `InitPlan`. `inspect_workspace` obtains previews with the injected executable lookup, and `build_init_plan` includes a selected integration path only when the shared transformation reports `changed=True` and `backup_required=True`. A fresh plan and an already-current force plan have no backup paths; a force plan that will actually change existing `.codex/hooks.json` or `.claude/settings.local.json` lists those paths in stable integration order.
+Add immutable integration transactions to `InitPreflight` and `InitPlan`, plus `backup_paths: tuple[Path, ...] = ()` derived from those selected transactions. `inspect_workspace` obtains transactions with the injected executable lookup; `build_init_plan` freezes the selected subset; and the executor passes each exact transaction to `install_agent_integration`. Include a drift regression that mutates settings bytes after review and another that changes executable lookup results: both must fail before creating a backup or modifying settings. A fresh plan and an already-current force plan have no backup paths; a force plan that will actually change existing `.codex/hooks.json` or `.claude/settings.local.json` lists those paths in stable integration order.
 
 - [ ] **Step 6: Run focused tests and confirm GREEN**
 
@@ -113,7 +116,7 @@ Run:
 pytest -q tests/unit/adapters/test_install.py tests/unit/adapters/test_settings_merge.py tests/unit/adapters/test_codex.py tests/unit/adapters/test_claude_code.py tests/integration/adapter/test_claude_code.py tests/unit/cli/test_init_plan.py tests/integration/cli/test_init.py
 ```
 
-Expected: all selected tests pass; fresh installs have no backups and uninstall cleanly, changed existing configs have one exact backup, idempotent configs disclose no backup, and plans identify only actual backup-producing changes.
+Expected: all selected tests pass; fresh installs have no backups and uninstall cleanly, changed existing configs have one exact backup, idempotent configs disclose no backup, plans identify only actual backup-producing changes, and post-review settings/PATH drift is rejected without writes.
 
 ## Task 2: Unify prompt and review presentation
 
@@ -210,11 +213,13 @@ Expected: all pass with guided and legacy behavior separated explicitly.
 **Files:**
 
 - Modify: `docs/getting-started.md`
+- Modify: `docs/adapters/codex.md`
+- Modify: `docs/adapters/claude-code.md`
 - Modify: `docs/plans/2026-07-18-init-wizard-cohesion.md`
 
 - [ ] **Step 1: Update the representative guided transcript**
 
-Document the single framed session, icon-only selection emphasis, compact review groups, disclosed local backups, one timed outcome, and status-first reinitialization guidance. Do not claim package-wide Windows support beyond the existing `init` boundary.
+Document the single framed session, icon-only selection emphasis, compact review groups, disclosed local backups, one timed outcome, and status-first reinitialization guidance. Update both agent-adapter pages to describe one backup for a changed existing config, zero backup for a fresh/idempotent install, stale-plan rejection, earliest-backup restoration, and marker-only cleanup when no backup exists. Do not claim package-wide Windows support beyond the existing `init` boundary.
 
 - [ ] **Step 2: Run decision and documentation checks**
 
