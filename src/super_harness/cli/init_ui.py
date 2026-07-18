@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import textwrap
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -308,25 +307,25 @@ class QuestionaryPromptAdapter:
     def checkbox(
         self, message: str, choices: Sequence[GuidedPromptOption]
     ) -> tuple[str, ...] | None:
-        question = questionary.checkbox(
-            message,
-            choices=self._choices(choices),
-            style=self._checkbox_style,
-            qmark=self._qmark,
-            pointer=self._pointer,
-            instruction=self._checkbox_instruction,
-        )
         with _questionary_no_cpr():
+            question = questionary.checkbox(
+                message,
+                choices=self._choices(choices),
+                style=self._checkbox_style,
+                qmark=self._qmark,
+                pointer=self._pointer,
+                instruction=self._checkbox_instruction,
+            )
             answer = question.unsafe_ask()
         return None if answer is None else tuple(cast(list[str], answer))
 
     def text(self, message: str, *, default: str | None = None) -> str | None:
-        question = questionary.text(
-            message,
-            default=default or "",
-            qmark=self._qmark,
-        )
         with _questionary_no_cpr():
+            question = questionary.text(
+                message,
+                default=default or "",
+                qmark=self._qmark,
+            )
             answer = question.unsafe_ask()
         return None if answer is None else str(answer)
 
@@ -337,15 +336,15 @@ class QuestionaryPromptAdapter:
         *,
         default: str | None = None,
     ) -> str | None:
-        question = questionary.select(
-            message,
-            choices=self._choices(choices),
-            default=default,
-            qmark=self._qmark,
-            pointer=self._pointer,
-            instruction=self._select_instruction,
-        )
         with _questionary_no_cpr():
+            question = questionary.select(
+                message,
+                choices=self._choices(choices),
+                default=default,
+                qmark=self._qmark,
+                pointer=self._pointer,
+                instruction=self._select_instruction,
+            )
             answer = question.unsafe_ask()
         return None if answer is None else str(answer)
 
@@ -463,15 +462,15 @@ class RichGuidedRenderer:
 
     def _print_review_row(self, rail: str, value: str) -> None:
         leading_spaces = len(value) - len(value.lstrip(" "))
-        wrapped = textwrap.wrap(
-            value,
-            width=max(1, self._width - len(rail) - 2),
-            subsequent_indent=" " * leading_spaces,
-            break_long_words=True,
-            break_on_hyphens=False,
-        ) or [""]
+        available = max(1, self._width - Text(rail).cell_len - 2)
+        indent = min(leading_spaces, max(0, available - 1))
+        wrapped = Text(value.lstrip(" ")).wrap(
+            self._console,
+            max(1, available - indent),
+            overflow="fold",
+        ) or [Text()]
         for line in wrapped:
-            self._print(f"{rail}  {line}")
+            self._print(f"{rail}  {' ' * indent}{line}")
 
     def render_stage(
         self,

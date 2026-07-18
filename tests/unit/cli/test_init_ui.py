@@ -608,6 +608,46 @@ def test_questionary_prompts_use_compact_native_chrome_and_restore_cpr_environme
     assert "PROMPT_TOOLKIT_NO_CPR" not in os.environ
 
 
+@pytest.mark.parametrize("prompt_name", ["checkbox", "text", "select"])
+@pytest.mark.parametrize("raises", [False, True])
+def test_questionary_cpr_guard_covers_prompt_construction_and_ask(
+    monkeypatch: pytest.MonkeyPatch,
+    prompt_name: str,
+    raises: bool,
+) -> None:
+    import questionary
+
+    class _Question:
+        def unsafe_ask(self) -> object:
+            assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
+            if raises:
+                raise RuntimeError("prompt failed")
+            return [] if prompt_name == "checkbox" else "answer"
+
+    def construct(*_args: object, **_kwargs: object) -> _Question:
+        assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
+        return _Question()
+
+    monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "previous")
+    monkeypatch.setattr(questionary, prompt_name, construct)
+    adapter = QuestionaryPromptAdapter()
+
+    def ask() -> object:
+        if prompt_name == "checkbox":
+            return adapter.checkbox("Integrations", (GuidedPromptOption("codex", "Codex"),))
+        if prompt_name == "text":
+            return adapter.text("Model")
+        return adapter.select("GitHub setup", (GuidedPromptOption("skip", "Skip"),))
+
+    if raises:
+        with pytest.raises(RuntimeError, match="prompt failed"):
+            ask()
+    else:
+        ask()
+
+    assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "previous"
+
+
 def test_questionary_prompt_chrome_has_an_ascii_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1473,6 +1513,31 @@ def test_rich_guided_narrow_output_drops_hints_and_wraps_paths(tmp_path: Path) -
     assert "will be written during apply" not in text
     assert "..." not in text
     assert len(text.splitlines()) > len(plan.file_actions)
+
+
+def test_rich_guided_cjk_windows_path_wraps_inside_every_review_rail_line(
+    tmp_path: Path,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=22, color_system=None),
+        unicode=True,
+        color=False,
+        width=22,
+    )
+    windows_path = Path(r"C:\项目\非常长的配置目录\设置文件.yaml")
+    plan = replace(
+        _plan(tmp_path),
+        file_actions=(PlannedFileAction(windows_path, FileAction.CREATE),),
+    )
+
+    renderer.render_plan(plan)
+
+    lines = buffer.getvalue().splitlines()
+    assert lines[0] == "┌ super-harness init"
+    assert lines[-1] == "└"
+    assert all(line.startswith("│") for line in lines[1:-1])
+    assert str(windows_path) in "".join(line.lstrip("│").strip() for line in lines)
 
 
 def test_guided_step_rendering_accepts_plain_structural_event() -> None:
