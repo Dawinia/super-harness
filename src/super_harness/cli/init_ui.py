@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import shutil
-from collections.abc import Callable, Mapping, Sequence
+import textwrap
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import IO, Protocol, cast
@@ -204,13 +207,48 @@ _GUIDED_REVIEWER_LABELS = {
     "claude-cli": "Claude reviewer — runs via Claude CLI",
 }
 
-_QUESTIONARY_CHECKBOX_STYLE = questionary.Style([("selected", "fg:ansigreen noreverse")])
-_QUESTIONARY_NO_COLOR_CHECKBOX_STYLE = questionary.Style([("selected", "noreverse")])
+_QUESTIONARY_CHECKBOX_STYLE = questionary.Style(
+    [
+        ("selected", "fg:ansigreen noreverse"),
+        ("text", "dim noreverse"),
+        ("choice", "noreverse"),
+        ("highlighted", "noreverse"),
+    ]
+)
+_QUESTIONARY_NO_COLOR_CHECKBOX_STYLE = questionary.Style(
+    [
+        ("selected", "noreverse"),
+        ("text", "dim noreverse"),
+        ("choice", "noreverse"),
+        ("highlighted", "noreverse"),
+    ]
+)
+_QUESTIONARY_QMARK = "◆"
+_QUESTIONARY_POINTER = "›"  # noqa: RUF001 - intentional terminal pointer glyph
+_QUESTIONARY_CHECKBOX_INSTRUCTION = "(↑/↓ move · space select · enter confirm)"
+_QUESTIONARY_SELECT_INSTRUCTION = "(↑/↓ move · enter confirm)"
+_QUESTIONARY_ASCII_QMARK = "?"
+_QUESTIONARY_ASCII_POINTER = ">"
+_QUESTIONARY_ASCII_CHECKBOX_INSTRUCTION = "(up/down move, space select, enter confirm)"
+_QUESTIONARY_ASCII_SELECT_INSTRUCTION = "(up/down move, enter confirm)"
 _NARROW_WIDTH = 60
 
 
 class _CollectionCancelled(Exception):
     pass
+
+
+@contextmanager
+def _questionary_no_cpr() -> Iterator[None]:
+    previous = os.environ.get("PROMPT_TOOLKIT_NO_CPR")
+    os.environ["PROMPT_TOOLKIT_NO_CPR"] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("PROMPT_TOOLKIT_NO_CPR", None)
+        else:
+            os.environ["PROMPT_TOOLKIT_NO_CPR"] = previous
 
 
 @dataclass(frozen=True)
@@ -240,16 +278,26 @@ class GuidedPromptAdapter(Protocol):
 class QuestionaryPromptAdapter:
     """Translate library-neutral prompt values to and from Questionary."""
 
-    def __init__(self, *, color: bool = True) -> None:
+    def __init__(self, *, color: bool = True, unicode: bool = True) -> None:
         self._checkbox_style = (
             _QUESTIONARY_CHECKBOX_STYLE if color else _QUESTIONARY_NO_COLOR_CHECKBOX_STYLE
+        )
+        self._qmark = _QUESTIONARY_QMARK if unicode else _QUESTIONARY_ASCII_QMARK
+        self._pointer = _QUESTIONARY_POINTER if unicode else _QUESTIONARY_ASCII_POINTER
+        self._checkbox_instruction = (
+            _QUESTIONARY_CHECKBOX_INSTRUCTION
+            if unicode
+            else _QUESTIONARY_ASCII_CHECKBOX_INSTRUCTION
+        )
+        self._select_instruction = (
+            _QUESTIONARY_SELECT_INSTRUCTION if unicode else _QUESTIONARY_ASCII_SELECT_INSTRUCTION
         )
 
     @staticmethod
     def _choices(options: Sequence[GuidedPromptOption]) -> list[questionary.Choice]:
         return [
             questionary.Choice(
-                option.title,
+                [("class:choice", option.title)],
                 value=option.value,
                 checked=option.checked,
                 disabled=option.disabled or None,
@@ -260,15 +308,26 @@ class QuestionaryPromptAdapter:
     def checkbox(
         self, message: str, choices: Sequence[GuidedPromptOption]
     ) -> tuple[str, ...] | None:
-        answer = questionary.checkbox(
+        question = questionary.checkbox(
             message,
             choices=self._choices(choices),
             style=self._checkbox_style,
-        ).unsafe_ask()
+            qmark=self._qmark,
+            pointer=self._pointer,
+            instruction=self._checkbox_instruction,
+        )
+        with _questionary_no_cpr():
+            answer = question.unsafe_ask()
         return None if answer is None else tuple(cast(list[str], answer))
 
     def text(self, message: str, *, default: str | None = None) -> str | None:
-        answer = questionary.text(message, default=default or "").unsafe_ask()
+        question = questionary.text(
+            message,
+            default=default or "",
+            qmark=self._qmark,
+        )
+        with _questionary_no_cpr():
+            answer = question.unsafe_ask()
         return None if answer is None else str(answer)
 
     def select(
@@ -278,9 +337,16 @@ class QuestionaryPromptAdapter:
         *,
         default: str | None = None,
     ) -> str | None:
-        answer = questionary.select(
-            message, choices=self._choices(choices), default=default
-        ).unsafe_ask()
+        question = questionary.select(
+            message,
+            choices=self._choices(choices),
+            default=default,
+            qmark=self._qmark,
+            pointer=self._pointer,
+            instruction=self._select_instruction,
+        )
+        with _questionary_no_cpr():
+            answer = question.unsafe_ask()
         return None if answer is None else str(answer)
 
 
@@ -395,6 +461,18 @@ class RichGuidedRenderer:
             crop=False,
         )
 
+    def _print_review_row(self, rail: str, value: str) -> None:
+        leading_spaces = len(value) - len(value.lstrip(" "))
+        wrapped = textwrap.wrap(
+            value,
+            width=max(1, self._width - len(rail) - 2),
+            subsequent_indent=" " * leading_spaces,
+            break_long_words=True,
+            break_on_hyphens=False,
+        ) or [""]
+        for line in wrapped:
+            self._print(f"{rail}  {line}")
+
     def render_stage(
         self,
         stage: RailStage,
@@ -412,37 +490,47 @@ class RichGuidedRenderer:
 
     def render_plan(self, plan: InitPlan) -> None:
         integration_labels = {option.value: option.label for option in _INTEGRATIONS}
-        self._print("|  Integrations")
+        corner_open, rail, corner_close = ("┌", "│", "└") if self._unicode else ("+", "|", "+")
+        self._print(f"{corner_open} super-harness init")
+        self._print_review_row(rail, "Integrations")
         if plan.integrations:
             for integration in plan.integrations:
-                self._print(f"|    {integration_labels.get(integration, integration)}")
+                self._print_review_row(
+                    rail, f"  {integration_labels.get(integration, integration)}"
+                )
         else:
-            self._print("|    (none)")
+            self._print_review_row(rail, "  (none)")
 
-        self._print("|  Automated reviewers")
+        self._print_review_row(rail, "Automated reviewers")
         if plan.review_models:
             for source, model in plan.review_models.items():
-                self._print(f"|    {source.title()}  {model}")
+                self._print_review_row(rail, f"  {source.title()}  {model}")
         else:
-            self._print("|    Human review only")
+            self._print_review_row(rail, "  Human review only")
 
-        self._print("|  GitHub")
+        self._print_review_row(rail, "GitHub")
         github = (
             "Ensure workflow and PR template"
             if plan.github_decision is GitHubDecision.CREATE
             else "Skip GitHub setup"
         )
-        self._print(f"|    {github}")
+        self._print_review_row(rail, f"  {github}")
 
-        self._print("|  Files")
+        self._print_review_row(rail, "Files")
         for action in _FILE_ACTION_ORDER:
             count = sum(item.action is action for item in plan.file_actions)
             if count == 0:
                 continue
             noun = "file" if count == 1 else "files"
-            self._print(f"|    {_FILE_ACTION_LABELS[action]:<9} {count} {noun}")
+            self._print_review_row(rail, f"  {_FILE_ACTION_LABELS[action]:<9} {count} {noun}")
             for row in _file_action_display_rows(plan, action):
-                self._print(f"|      {row}")
+                self._print_review_row(rail, f"    {row}")
+        if plan.backup_paths:
+            noun = "settings file" if len(plan.backup_paths) == 1 else "settings files"
+            self._print_review_row(rail, f"  {'Back up':<9} {len(plan.backup_paths)} {noun}")
+            for path in plan.backup_paths:
+                self._print_review_row(rail, f"    {path}")
+        self._print(corner_close)
 
     def render_validation(self, message: str) -> None:
         self._print(f"{'!' if self._unicode else 'x'}  {message}", style="yellow")
@@ -549,7 +637,7 @@ class InteractiveInitUI:
         color: bool = True,
         width: int = 80,
     ) -> None:
-        self._prompts = prompt_adapter or QuestionaryPromptAdapter(color=color)
+        self._prompts = prompt_adapter or QuestionaryPromptAdapter(color=color, unicode=unicode)
         self._renderer = renderer or RichGuidedRenderer(unicode=unicode, color=color, width=width)
 
     def collect_github_setup(
@@ -564,7 +652,7 @@ class InteractiveInitUI:
         if not preflight.github_available:
             return GitHubDecision.SKIP
         answer = self._prompts.select(
-            "Configure GitHub files and repository settings?",
+            "GitHub setup",
             (
                 GuidedPromptOption("skip", "Skip GitHub setup", True),
                 GuidedPromptOption("create", "Configure GitHub", False),
@@ -640,7 +728,7 @@ class InteractiveInitUI:
             else frozenset(preflight.detected_integrations)
         )
         answer = self._prompts.checkbox(
-            "Coding-agent integrations", self._integration_options(preflight, defaults)
+            "Integrations", self._integration_options(preflight, defaults)
         )
         if answer is None:
             return _CANCEL
@@ -664,7 +752,7 @@ class InteractiveInitUI:
             )
             return ()
         answer = self._prompts.checkbox(
-            "Automated reviewers — choose which detected CLIs may review changes",
+            "Automated reviewers",
             options,
         )
         if answer is None:

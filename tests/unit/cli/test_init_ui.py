@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import FrozenInstanceError, replace
 from io import StringIO
@@ -10,6 +11,8 @@ from typing import Any
 import pytest
 from rich.console import Console
 
+from super_harness.adapters.agent._settings_merge import SettingsMergePlan
+from super_harness.adapters.install import AgentIntegrationPlan
 from super_harness.cli.init_models import ReviewerModelCandidate
 from super_harness.cli.init_plan import (
     FileAction,
@@ -538,7 +541,10 @@ def test_questionary_prompt_adapter_propagates_keyboard_interrupt(
 
     question = questionary.text("unused")
 
+    monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "previous")
+
     def interrupt(_patch_stdout: bool = False) -> None:
+        assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
         raise KeyboardInterrupt
 
     monkeypatch.setattr(question, "unsafe_ask", interrupt)
@@ -553,6 +559,81 @@ def test_questionary_prompt_adapter_propagates_keyboard_interrupt(
         else:
             adapter.select("Apply", (GuidedPromptOption("yes", "Yes"),))
 
+    assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "previous"
+
+
+def test_questionary_prompts_use_compact_native_chrome_and_restore_cpr_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import questionary
+
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    class _Question:
+        def __init__(self, result: object) -> None:
+            self._result = result
+
+        def unsafe_ask(self) -> object:
+            assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
+            return self._result
+
+    def factory(name: str, result: object) -> Callable[..., _Question]:
+        def create(message: str, **kwargs: Any) -> _Question:
+            calls.append((name, message, kwargs))
+            return _Question(result)
+
+        return create
+
+    monkeypatch.delenv("PROMPT_TOOLKIT_NO_CPR", raising=False)
+    monkeypatch.setattr(questionary, "checkbox", factory("checkbox", []))
+    monkeypatch.setattr(questionary, "select", factory("select", "confirm"))
+    monkeypatch.setattr(questionary, "text", factory("text", "model"))
+    adapter = QuestionaryPromptAdapter()
+
+    adapter.checkbox("Integrations", (GuidedPromptOption("codex", "Codex"),))
+    adapter.select("GitHub setup", (GuidedPromptOption("confirm", "Confirm"),))
+    adapter.text("Model")
+
+    checkbox = calls[0][2]
+    select = calls[1][2]
+    text = calls[2][2]
+    assert checkbox["qmark"] == "◆"
+    assert checkbox["pointer"] == "›"  # noqa: RUF001 - intentional pointer glyph
+    assert checkbox["instruction"] == "(↑/↓ move · space select · enter confirm)"
+    assert checkbox["choices"][0].title == [("class:choice", "Codex")]
+    assert select["qmark"] == "◆"
+    assert select["pointer"] == "›"  # noqa: RUF001 - intentional pointer glyph
+    assert select["instruction"] == "(↑/↓ move · enter confirm)"
+    assert text["qmark"] == "◆"
+    assert "PROMPT_TOOLKIT_NO_CPR" not in os.environ
+
+
+def test_questionary_prompt_chrome_has_an_ascii_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import questionary
+
+    captured: dict[str, Any] = {}
+
+    class _Question:
+        def unsafe_ask(self) -> list[str]:
+            return []
+
+    def checkbox(_message: str, **kwargs: Any) -> _Question:
+        captured.update(kwargs)
+        return _Question()
+
+    monkeypatch.setattr(questionary, "checkbox", checkbox)
+
+    QuestionaryPromptAdapter(unicode=False).checkbox(
+        "Integrations", (GuidedPromptOption("codex", "Codex"),)
+    )
+
+    assert captured["qmark"] == "?"
+    assert captured["pointer"] == ">"
+    assert captured["instruction"] == "(up/down move, space select, enter confirm)"
+    captured["instruction"].encode("ascii")
+
 
 @pytest.mark.parametrize(
     ("color", "expected_foreground"),
@@ -566,11 +647,13 @@ def test_questionary_checkbox_uses_color_aware_selection_style(
     from prompt_toolkit.styles import default_ui_style, merge_styles
     from questionary.question import Question
 
-    selected_style: list[Any] = []
+    effective_styles: list[Any] = []
 
     def capture_style(question: Question, _patch_stdout: bool = False) -> list[str]:
-        effective = merge_styles([default_ui_style(), question.application.style])
-        selected_style.append(effective.get_attrs_for_style_str("class:selected"))
+        application_style = question.application.style
+        assert application_style is not None
+        effective = merge_styles([default_ui_style(), application_style])
+        effective_styles.append(effective)
         return []
 
     monkeypatch.setattr(Question, "unsafe_ask", capture_style)
@@ -580,20 +663,28 @@ def test_questionary_checkbox_uses_color_aware_selection_style(
         (GuidedPromptOption("codex", "Codex", checked=True),),
     )
 
-    assert len(selected_style) == 1
-    assert selected_style[0].color == expected_foreground
-    assert selected_style[0].reverse is False
-    assert selected_style[0].bgcolor == ""
+    assert len(effective_styles) == 1
+    selected = effective_styles[0].get_attrs_for_style_str("class:selected")
+    unselected = effective_styles[0].get_attrs_for_style_str("class:text")
+    choice = effective_styles[0].get_attrs_for_style_str("class:choice")
+    assert selected.color == expected_foreground
+    assert selected.reverse is False
+    assert selected.bgcolor == ""
+    assert unselected.dim is True
+    assert unselected.reverse is False
+    assert choice.color == ""
+    assert choice.bgcolor == ""
+    assert choice.reverse is False
 
 
 def test_interactive_ui_passes_color_capability_to_questionary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    received: list[bool] = []
+    received: list[tuple[bool, bool]] = []
 
     class CapturingPromptAdapter(_FakePromptAdapter):
-        def __init__(self, *, color: bool = True) -> None:
-            received.append(color)
+        def __init__(self, *, color: bool = True, unicode: bool = True) -> None:
+            received.append((color, unicode))
             super().__init__()
 
     monkeypatch.setattr(
@@ -601,9 +692,9 @@ def test_interactive_ui_passes_color_capability_to_questionary(
         CapturingPromptAdapter,
     )
 
-    InteractiveInitUI(color=False, renderer=_FakeGuidedRenderer())
+    InteractiveInitUI(color=False, unicode=False, renderer=_FakeGuidedRenderer())
 
-    assert received == [False]
+    assert received == [(False, False)]
 
 
 def test_keyboard_interrupt_from_line_input_propagates(tmp_path: Path) -> None:
@@ -890,8 +981,8 @@ def test_guided_preselects_and_labels_detected_options_and_disables_missing_prod
     integrations = prompts.checkbox_calls[0][1]
     producers = prompts.checkbox_calls[1][1]
     assert [message for message, _ in prompts.checkbox_calls] == [
-        "Coding-agent integrations",
-        "Automated reviewers — choose which detected CLIs may review changes",
+        "Integrations",
+        "Automated reviewers",
     ]
     assert integrations[0].checked is True
     assert "detected · recommended" in integrations[0].title
@@ -916,7 +1007,7 @@ def test_guided_skips_producer_checkbox_when_every_producer_is_unavailable(
         _preflight(detected_producers=(), available_producers=frozenset()),
     )
 
-    assert [message for message, _ in prompts.checkbox_calls] == ["Coding-agent integrations"]
+    assert [message for message, _ in prompts.checkbox_calls] == ["Integrations"]
     assert result.choices.review_producers == ()
     assert renderer.validations == [
         "No automated reviewers are ready; install a CLI and configure its model."
@@ -947,7 +1038,7 @@ def test_guided_github_setup_is_a_default_off_choice(tmp_path: Path) -> None:
 
     assert decision is GitHubDecision.CREATE
     message, choices, default = prompts.select_calls[0]
-    assert message == "Configure GitHub files and repository settings?"
+    assert message == "GitHub setup"
     assert [choice.value for choice in choices] == ["skip", "create"]
     assert default == "skip"
 
@@ -965,9 +1056,9 @@ def test_guided_collects_github_after_integrations_and_reviewers(tmp_path: Path)
     )
 
     assert prompts.calls == [
-        "Coding-agent integrations",
-        "Automated reviewers — choose which detected CLIs may review changes",
-        "Configure GitHub files and repository settings?",
+        "Integrations",
+        "Automated reviewers",
+        "GitHub setup",
     ]
     assert result.choices.github_decision is GitHubDecision.CREATE
 
@@ -1290,6 +1381,32 @@ def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -
         review_producers=("codex-cli", "claude-cli"),
         review_models={"codex": "gpt-5.6-sol", "claude": "opus[1m]"},
         github_decision=GitHubDecision.CREATE,
+        integration_plans={
+            "codex": AgentIntegrationPlan(
+                "codex",
+                "/usr/local/bin/super-harness-hook",
+                "/usr/local/bin/super-harness",
+                SettingsMergePlan(
+                    path=tmp_path / ".codex" / "hooks.json",
+                    original_bytes=b"{}\n",
+                    desired_bytes=b'{"hooks": {}}\n',
+                    changed=True,
+                    backup_required=True,
+                ),
+            ),
+            "claude-code": AgentIntegrationPlan(
+                "claude-code",
+                "/usr/local/bin/super-harness-hook",
+                "/usr/local/bin/super-harness",
+                SettingsMergePlan(
+                    path=tmp_path / ".claude" / "settings.local.json",
+                    original_bytes=b"{}\n",
+                    desired_bytes=b'{"hooks": {}}\n',
+                    changed=True,
+                    backup_required=True,
+                ),
+            ),
+        },
         file_actions=(
             PlannedFileAction(tmp_path / ".harness" / "state.yaml", FileAction.UPDATE),
             PlannedFileAction(tmp_path / ".harness" / "sensors.yaml", FileAction.UPDATE),
@@ -1307,7 +1424,12 @@ def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -
     renderer.render_plan(plan)
 
     text = buffer.getvalue()
-    compact = "".join(line.strip() for line in text.splitlines())
+    lines = text.splitlines()
+    compact = "".join(line.lstrip("│|").strip() for line in text.splitlines())
+    assert lines[0] == "┌ super-harness init"
+    assert all(line.startswith("│") for line in lines[1:-1])
+    assert lines[-1] == "└"
+    assert text.count("└") == 1
     assert "Integrations" in text
     assert "Codex" in text
     assert "Claude Code" in text
@@ -1321,9 +1443,11 @@ def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -
     assert "Create    1 file" in text
     assert "Preserve  1 file" in text
     assert "Skip      1 file" in text
+    assert "Back up   2 settings files" in text
     assert ".harness configuration (2 files)" in text
     assert str(tmp_path / "AGENTS.md") in compact
     assert str(tmp_path / ".codex" / "hooks.json") in compact
+    assert str(tmp_path / ".claude" / "settings.local.json") in compact
     assert str(tmp_path / ".harness" / "events.jsonl") in compact
     assert str(tmp_path / ".harness" / "state.yaml") not in compact
     assert "hint:" not in text
@@ -1344,7 +1468,7 @@ def test_rich_guided_narrow_output_drops_hints_and_wraps_paths(tmp_path: Path) -
     renderer.render_plan(plan)
 
     text = buffer.getvalue()
-    compact = "".join(line.strip() for line in text.splitlines())
+    compact = "".join(line.lstrip("│|").strip() for line in text.splitlines())
     assert str(plan.file_actions[0].path) in compact
     assert "will be written during apply" not in text
     assert "..." not in text
