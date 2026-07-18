@@ -81,6 +81,9 @@ _STOP_OURS_MARKER = "--agent claude-code --event stop"
 # Per-hook timeout (seconds) for the Stop authoring-check command; matches the
 # PreToolUse/SessionStart budget shape and is the OUTER bound the inner check must beat.
 _STOP_TIMEOUT = 10
+# A crash can leave the O_EXCL lock empty or partially written. Refuse such
+# locks while fresh; only reclaim after this conservative grace period.
+_CORRUPT_LOCK_STALE_SECONDS = 5 * 60
 
 
 class StaleSettingsPlanError(RuntimeError):
@@ -451,7 +454,22 @@ def _acquire_settings_lock(lock_path: Path) -> None:
             owner_bytes = _read_lock_owner(lock_path)
             if owner_bytes is None:
                 continue
-            owner_pid = _parse_lock_owner_pid(lock_path, owner_bytes)
+            try:
+                owner_pid = _parse_lock_owner_pid(lock_path, owner_bytes)
+            except SettingsUpdateInProgressError:
+                try:
+                    corrupt_lock_is_stale = _corrupt_lock_is_stale(lock_path)
+                except FileNotFoundError:
+                    continue
+                if not corrupt_lock_is_stale:
+                    raise
+                try:
+                    if lock_path.read_bytes() != owner_bytes:
+                        continue
+                except FileNotFoundError:
+                    continue
+                lock_path.unlink(missing_ok=True)
+                continue
             try:
                 owner_alive = _process_is_alive(owner_pid)
             except OSError as error:
@@ -520,6 +538,11 @@ def _parse_lock_owner_pid(lock_path: Path, owner_bytes: bytes) -> int:
             "cannot verify its owner because the lock PID is invalid"
         )
     return pid
+
+
+def _corrupt_lock_is_stale(lock_path: Path) -> bool:
+    age_ns = time.time_ns() - lock_path.stat().st_mtime_ns
+    return age_ns >= _CORRUPT_LOCK_STALE_SECONDS * 1_000_000_000
 
 
 def _process_is_alive(pid: int) -> bool:

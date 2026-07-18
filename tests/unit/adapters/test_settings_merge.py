@@ -11,6 +11,7 @@ from __future__ import annotations
 import glob
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -693,6 +694,39 @@ def test_corrupt_lock_is_refused_conservatively(tmp_path: Path) -> None:
 
     assert path.read_bytes() == original
     assert lock.exists()
+
+
+@pytest.mark.parametrize("lock_bytes", [b"", b'{"pid":'])
+def test_old_corrupt_lock_is_reclaimed_without_settings_mutation(
+    tmp_path: Path,
+    lock_bytes: bytes,
+) -> None:
+    path = tmp_path / "settings.json"
+    seed_plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    path.write_bytes(seed_plan.desired_bytes)
+    current_plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    assert current_plan.changed is False
+    original = path.read_bytes()
+    lock = path.with_name(f"{path.name}.super-harness.lock")
+    lock.write_bytes(lock_bytes)
+    old = time.time() - settings_merge_module._CORRUPT_LOCK_STALE_SECONDS - 1
+    os.utime(lock, (old, old))
+
+    apply_settings_merge_plan(current_plan)
+
+    assert path.read_bytes() == original
+    assert not lock.exists()
+    assert list(tmp_path.glob("*.super-harness-backup.*")) == []
 
 
 def test_symlink_settings_are_rejected_for_plan_and_uninstall(tmp_path: Path) -> None:
