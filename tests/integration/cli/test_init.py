@@ -44,6 +44,7 @@ class _ScriptedInitUI:
         self.events: list[Any] = []
         self.outcome: Any = None
         self.cancelled_rendered = False
+        self.already_initialized_path: Path | None = None
 
     def collect_github_setup(self, request: Any, _preflight: Any) -> GitHubDecision:
         return GitHubDecision.CREATE if request.setup_github else GitHubDecision.SKIP
@@ -68,6 +69,9 @@ class _ScriptedInitUI:
 
     def render_outcome(self, result: Any) -> None:
         self.outcome = result
+
+    def render_already_initialized(self, path: Path) -> None:
+        self.already_initialized_path = path
 
 
 class _GuidedAnswers:
@@ -724,9 +728,78 @@ def test_init_idempotent_without_force(tmp_path: Path):
     runner.invoke(main, ["--workspace", str(tmp_path), "init"])
     r2 = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
     assert r2.exit_code == 3  # EXIT_NO_CONFIG-style for already-init
-    # I-3: verify the --force hint reaches stderr (Click 8.4 exposes r.stderr
-    # directly on the Result; CliRunner no longer takes mix_stderr).
-    assert "Hint: Pass `--force` to overwrite the existing directory." in r2.stderr
+    # Status is the primary recovery; force is explicitly a review/reconfigure path.
+    assert "Hint: Run `super-harness status`" in r2.stderr
+    assert "Use `super-harness init --force` to review and reconfigure it." in r2.stderr
+
+
+def test_init_guided_existing_harness_uses_cohesive_status_first_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = CliRunner()
+    first = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert first.exit_code == 0, first.output
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, True, 100)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.create_init_ui",
+        lambda *_a, **_kw: InteractiveInitUI(
+            prompt_adapter=_GuidedAnswers(checkboxes=[], selects=[]),
+            unicode=True,
+            color=False,
+            width=100,
+        ),
+    )
+
+    repeated = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert repeated.exit_code == 3
+    assert repeated.output.count("Already initialized") == 1
+    assert "Next: super-harness status" in repeated.output
+    assert "Review/reconfigure: super-harness init --force" in repeated.output
+    assert "Error: super-harness init" not in repeated.output
+
+
+def test_init_guided_success_has_one_completion_without_legacy_final_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, True, 100)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.create_init_ui",
+        lambda *_a, **_kw: InteractiveInitUI(
+            prompt_adapter=_GuidedAnswers(checkboxes=[()], selects=["confirm"]),
+            unicode=True,
+            color=False,
+            width=100,
+        ),
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(request, executable_lookup=lambda _name: None),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--no-agent"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count("outcome: Setup complete in ") == 1
+    assert "super-harness initialized at" not in result.output
+
+
+def test_init_non_guided_success_preserves_legacy_final_line(tmp_path: Path) -> None:
+    result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.count(f"super-harness initialized at {tmp_path / '.harness'}") == 1
 
 
 def test_init_force_overwrites(tmp_path: Path):

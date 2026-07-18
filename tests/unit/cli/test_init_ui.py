@@ -1650,8 +1650,70 @@ def test_guided_outcome_includes_the_next_or_recovery_command(
         message=message,
         next_command=next_command,
         recovery_command=recovery_command,
+        elapsed_ms=0,
     )
 
     ui.render_outcome(result)
 
     assert renderer.stages[-1][3] == expected_secondary
+
+
+@pytest.mark.parametrize(
+    ("success", "message", "elapsed_ms", "expected_detail"),
+    [
+        (True, None, 152, "Setup complete in 152ms"),
+        (True, None, 1_200, "Setup complete in 1.2s"),
+        (False, "Setup failed", 1_200, "Setup failed after 1.2s"),
+    ],
+)
+def test_guided_outcome_formats_truthful_elapsed_time(
+    success: bool,
+    message: str | None,
+    elapsed_ms: int,
+    expected_detail: str,
+) -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+    result = SimpleNamespace(
+        success=success,
+        message=message,
+        next_command="super-harness status" if success else None,
+        recovery_command=None if success else "super-harness init --force",
+        elapsed_ms=elapsed_ms,
+    )
+
+    ui.render_outcome(result)
+
+    assert renderer.stages == [
+        (
+            RailStage.OUTCOME,
+            RailState.COMPLETED if success else RailState.FAILED,
+            expected_detail,
+            (
+                "Next: super-harness status"
+                if success
+                else "Recovery: super-harness init --force"
+            ),
+        )
+    ]
+
+
+def test_guided_already_initialized_is_one_status_first_recovery_block(
+    tmp_path: Path,
+) -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+
+    ui.render_already_initialized(tmp_path / ".harness")
+
+    assert renderer.stages == [
+        (
+            RailStage.OUTCOME,
+            RailState.COMPLETED,
+            "Already initialized",
+            (
+                "Next: super-harness status; "
+                "Review/reconfigure: super-harness init --force"
+            ),
+        )
+    ]

@@ -578,25 +578,30 @@ def init_cmd(
         quiet=quiet,
         json_output=json_output,
     )
-    preflight = inspect_workspace(request)
-    harness = root / ".harness"
-    if preflight.harness_state is not HarnessState.ABSENT and not force:
-        click.echo(
-            format_error(
-                subcommand="init",
-                message=f".harness/ already exists at {harness}",
-                hint="Pass `--force` to overwrite the existing directory.",
-            ),
-            err=True,
-        )
-        ctx.exit(EXIT_NO_CONFIG)
-
     ui = create_init_ui(
         capabilities,
         input_fn=input,
         output_fn=click.echo,
         quiet=quiet or json_output,
     )
+    preflight = inspect_workspace(request)
+    harness = root / ".harness"
+    if preflight.harness_state is not HarnessState.ABSENT and not force:
+        if capabilities.mode is InteractionMode.GUIDED:
+            ui.render_already_initialized(harness)
+        else:
+            click.echo(
+                format_error(
+                    subcommand="init",
+                    message=f".harness/ already exists at {harness}",
+                    hint=(
+                        "Run `super-harness status` to inspect the existing setup. "
+                        "Use `super-harness init --force` to review and reconfigure it."
+                    ),
+                ),
+                err=True,
+            )
+        ctx.exit(EXIT_NO_CONFIG)
 
     try:
         wizard = ui.prepare_plan(
@@ -648,7 +653,8 @@ def init_cmd(
         )
         ctx.exit(result.exit_code)
 
-    click.echo(f"super-harness initialized at {harness}")
+    if capabilities.mode is not InteractionMode.GUIDED:
+        click.echo(f"super-harness initialized at {harness}")
     ctx.exit(EXIT_OK)
 
 

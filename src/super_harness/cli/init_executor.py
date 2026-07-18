@@ -10,6 +10,7 @@ the sink.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -108,9 +109,11 @@ class InitExecutionResult:
     hint: str | None
     next_command: str | None
     recovery_command: str | None
+    elapsed_ms: int
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ledger", tuple(self.ledger))
+        object.__setattr__(self, "elapsed_ms", max(0, self.elapsed_ms))
 
 
 EventSink = Callable[[InitStepEvent], None]
@@ -135,10 +138,12 @@ class InitExecutor:
         *,
         success_next_command: str = "super-harness status",
         default_recovery_command: str = "super-harness init --force",
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._operations = operations
         self._success_next_command = success_next_command
         self._default_recovery_command = default_recovery_command
+        self._monotonic = monotonic
 
     def apply(
         self,
@@ -147,6 +152,7 @@ class InitExecutor:
     ) -> InitExecutionResult:
         """Apply active operations and return the authoritative partial ledger."""
 
+        started_at = self._monotonic()
         ledger: list[InitStepEvent] = []
         for step_id, operation in self._operations.ordered():
             if step_id == "github" and plan.github_decision is GitHubDecision.SKIP:
@@ -176,6 +182,7 @@ class InitExecutor:
                     hint="Completed steps were kept; correct the issue before retrying.",
                     next_command=None,
                     recovery_command=self._default_recovery_command,
+                    elapsed_ms=self._elapsed_ms(started_at),
                 )
             except InitOperationError as error:
                 detail = str(error)
@@ -194,6 +201,7 @@ class InitExecutor:
                     hint=error.hint,
                     next_command=None,
                     recovery_command=(error.recovery_command or self._default_recovery_command),
+                    elapsed_ms=self._elapsed_ms(started_at),
                 )
             except Exception:
                 detail = f"Unexpected failure while running {step_id}."
@@ -212,6 +220,7 @@ class InitExecutor:
                     hint="Inspect the named operation, correct the issue, and retry.",
                     next_command=None,
                     recovery_command=self._default_recovery_command,
+                    elapsed_ms=self._elapsed_ms(started_at),
                 )
 
             state = StepState.WARNED if outcome.warned else StepState.SUCCEEDED
@@ -231,7 +240,11 @@ class InitExecutor:
             hint=None,
             next_command=self._success_next_command,
             recovery_command=None,
+            elapsed_ms=self._elapsed_ms(started_at),
         )
+
+    def _elapsed_ms(self, started_at: float) -> int:
+        return max(0, round((self._monotonic() - started_at) * 1_000))
 
     @staticmethod
     def _emit(

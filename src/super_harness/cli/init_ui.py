@@ -185,6 +185,16 @@ class ExecutionResultLike(Protocol):
     @property
     def recovery_command(self) -> str | None: ...
 
+    @property
+    def elapsed_ms(self) -> int: ...
+
+
+def _format_elapsed(elapsed_ms: int) -> str:
+    normalized = max(0, elapsed_ms)
+    if normalized < 1_000:
+        return f"{normalized}ms"
+    return f"{normalized / 1_000:.1f}s"
+
 
 @dataclass(frozen=True)
 class _Option:
@@ -484,7 +494,7 @@ class RichGuidedRenderer:
             f"{_RAIL_GLYPHS[self._unicode][state]}  {stage.value}: {detail}",
             style=_RAIL_STYLES[state],
         )
-        if secondary is not None and self._width >= _NARROW_WIDTH:
+        if secondary is not None:
             self._print(f"{'│' if self._unicode else '|'}  {secondary}", style="dim")
 
     def render_plan(self, plan: InitPlan) -> None:
@@ -940,6 +950,18 @@ class InteractiveInitUI:
     def render_cancelled(self) -> None:
         self._render_cancelled()
 
+    def render_already_initialized(self, harness: object) -> None:
+        del harness
+        self._renderer.render_stage(
+            RailStage.OUTCOME,
+            RailState.COMPLETED,
+            "Already initialized",
+            secondary=(
+                "Next: super-harness status; "
+                "Review/reconfigure: super-harness init --force"
+            ),
+        )
+
     def render_plan(self, plan: InitPlan) -> None:
         self._renderer.render_plan(plan)
 
@@ -951,7 +973,12 @@ class InteractiveInitUI:
 
     def render_outcome(self, result: ExecutionResultLike) -> None:
         state = RailState.COMPLETED if result.success else RailState.FAILED
-        detail = "Setup complete" if result.success else (result.message or "Setup failed")
+        elapsed = _format_elapsed(result.elapsed_ms)
+        detail = (
+            f"Setup complete in {elapsed}"
+            if result.success
+            else f"{result.message or 'Setup failed'} after {elapsed}"
+        )
         command = result.next_command if result.success else result.recovery_command
         command_label = "Next" if result.success else "Recovery"
         self._renderer.render_stage(
@@ -1044,6 +1071,12 @@ class _PlainInitUI:
 
     def render_cancelled(self) -> None:
         self._output("Setup cancelled")
+
+    def render_already_initialized(self, harness: object) -> None:
+        del harness
+        self._output("Already initialized")
+        self._output("Next: super-harness status")
+        self._output("Review/reconfigure: super-harness init --force")
 
     def render_outcome(self, result: ExecutionResultLike) -> None:
         command = result.next_command if result.success else result.recovery_command

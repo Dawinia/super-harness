@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, fields, replace
 
 import pytest
 
@@ -88,6 +88,52 @@ def test_success_emits_started_then_succeeded_in_stable_order() -> None:
     assert all(seen is recorded for seen, recorded in zip(observed, result.ledger, strict=True))
     assert result.next_command == "super-harness status"
     assert result.recovery_command is None
+
+
+def test_success_records_elapsed_milliseconds_from_injected_monotonic_clock() -> None:
+    ticks = iter((10.0, 10.152))
+
+    result = InitExecutor(_operations([]), monotonic=lambda: next(ticks)).apply(
+        _plan(github=False)
+    )
+
+    assert result.elapsed_ms == 152
+
+
+@pytest.mark.parametrize("failure_kind", ("domain", "unexpected", "interrupt"))
+def test_every_failure_exit_records_elapsed_milliseconds(failure_kind: str) -> None:
+    def fail(_plan: InitPlan) -> InitOperationResult:
+        if failure_kind == "domain":
+            raise InitOperationError("failed", exit_code=4)
+        if failure_kind == "interrupt":
+            raise KeyboardInterrupt
+        raise RuntimeError("failed")
+
+    ticks = iter((20.0, 20.250))
+    result = InitExecutor(
+        _operations([], {"scaffold": fail}),
+        monotonic=lambda: next(ticks),
+    ).apply(_plan())
+
+    assert result.elapsed_ms == 250
+
+
+def test_elapsed_milliseconds_never_regress_when_injected_clock_moves_backwards() -> None:
+    ticks = iter((30.0, 29.0))
+
+    result = InitExecutor(_operations([]), monotonic=lambda: next(ticks)).apply(
+        _plan(github=False)
+    )
+
+    assert result.elapsed_ms == 0
+
+
+def test_execution_result_normalizes_negative_elapsed_milliseconds() -> None:
+    result = InitExecutor(_operations([])).apply(_plan(github=False))
+
+    normalized = replace(result, elapsed_ms=-1)
+
+    assert normalized.elapsed_ms == 0
 
 
 def test_inactive_github_step_is_absent_from_calls_and_ledger() -> None:
