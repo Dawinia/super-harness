@@ -662,6 +662,28 @@ def test_unselected_unreadable_integration_config_is_captured(
     assert plan.integrations == ("codex",)
 
 
+def test_unselected_symlink_integration_config_does_not_block_other_plan(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "shared-settings.json"
+    target.write_text("{}\n")
+    link = tmp_path / ".claude" / "settings.local.json"
+    link.parent.mkdir()
+    try:
+        link.symlink_to(target)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+    request = _request(tmp_path, integrations=("codex",))
+
+    preflight = inspect_workspace(request, executable_lookup=_lookup())
+    plan = build_init_plan(request, preflight, InitChoices())
+
+    assert "symlink" in preflight.integration_plan_errors["claude-code"]
+    assert plan.integrations == ("codex",)
+    assert link.is_symlink()
+    assert target.read_text() == "{}\n"
+
+
 def test_no_model_default_is_invented(tmp_path: Path) -> None:
     request = _request(tmp_path, mode=InteractionMode.GUIDED)
     preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))

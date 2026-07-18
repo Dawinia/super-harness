@@ -23,6 +23,7 @@ from super_harness.adapters.agent._settings_merge import (
     merge_session_start_hook,
     merge_stop_hook,
     plan_settings_merge,
+    restore_or_remove_managed_hooks,
 )
 
 _COMMAND = "/abs/bin/super-harness-hook --agent claude-code"
@@ -591,3 +592,132 @@ def test_concurrent_settings_apply_fails_clearly_without_overwrite(
     assert len(backups) == 1
     assert backups[0].read_bytes() == original
     assert not path.with_name(f"{path.name}.super-harness.lock").exists()
+
+
+def test_concurrent_uninstall_cannot_race_install_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "settings.json"
+    original = b'{"theme":"dark"}\n'
+    path.write_bytes(original)
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    real_replace = os.replace
+    uninstall_errors: list[str] = []
+
+    def interleaved_replace(source: str | bytes, target: str | bytes) -> None:
+        with pytest.raises(RuntimeError, match="another settings update is in progress") as exc:
+            restore_or_remove_managed_hooks(
+                path,
+                pre_tool_use_marker="--agent claude-code",
+                stop_marker="--agent claude-code --event stop",
+            )
+        uninstall_errors.append(str(exc.value))
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", interleaved_replace)
+
+    apply_settings_merge_plan(plan)
+
+    assert uninstall_errors
+    assert path.read_bytes() == plan.desired_bytes
+
+
+def test_dead_owner_lock_is_reclaimed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "settings.json"
+    path.write_bytes(b'{"theme":"dark"}\n')
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    lock = path.with_name(f"{path.name}.super-harness.lock")
+    lock.write_text('{"pid":424242}\n')
+    monkeypatch.setattr(
+        settings_merge_module, "_process_is_alive", lambda _pid: False, raising=False
+    )
+
+    apply_settings_merge_plan(plan)
+
+    assert path.read_bytes() == plan.desired_bytes
+    assert not lock.exists()
+
+
+def test_live_owner_lock_is_refused_and_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "settings.json"
+    original = b'{"theme":"dark"}\n'
+    path.write_bytes(original)
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    lock = path.with_name(f"{path.name}.super-harness.lock")
+    lock_bytes = b'{"pid":12345}\n'
+    lock.write_bytes(lock_bytes)
+    monkeypatch.setattr(
+        settings_merge_module, "_process_is_alive", lambda _pid: True, raising=False
+    )
+
+    with pytest.raises(RuntimeError, match="another settings update is in progress"):
+        apply_settings_merge_plan(plan)
+
+    assert path.read_bytes() == original
+    assert lock.read_bytes() == lock_bytes
+    assert list(tmp_path.glob("*.super-harness-backup.*")) == []
+
+
+def test_corrupt_lock_is_refused_conservatively(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    original = b'{"theme":"dark"}\n'
+    path.write_bytes(original)
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    lock = path.with_name(f"{path.name}.super-harness.lock")
+    lock.write_text("not-owner-json")
+
+    with pytest.raises(RuntimeError, match="cannot verify its owner"):
+        apply_settings_merge_plan(plan)
+
+    assert path.read_bytes() == original
+    assert lock.exists()
+
+
+def test_symlink_settings_are_rejected_for_plan_and_uninstall(tmp_path: Path) -> None:
+    target = tmp_path / "real-settings.json"
+    original = b'{"hooks":{}}\n'
+    target.write_bytes(original)
+    link = tmp_path / "settings.json"
+    try:
+        link.symlink_to(target)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    with pytest.raises(ValueError, match="symlink"):
+        plan_settings_merge(
+            link,
+            pre_tool_use_command="/bin/hook --agent claude-code",
+            session_start_command="/bin/super-harness change resume",
+            stop_command="/bin/hook --agent claude-code --event stop",
+        )
+    with pytest.raises(ValueError, match="symlink"):
+        restore_or_remove_managed_hooks(
+            link,
+            pre_tool_use_marker="--agent claude-code",
+            stop_marker="--agent claude-code --event stop",
+        )
+
+    assert link.is_symlink()
+    assert target.read_bytes() == original
