@@ -232,7 +232,7 @@ super-harness doc check
 
 Expected: both exit zero.
 
-- [ ] **Step 3: Run formatting, typing, focused tests, and harness verification**
+- [x] **Step 3: Run formatting, typing, focused tests, and harness verification**
 
 Run:
 
@@ -254,8 +254,9 @@ Expected: all commands exit zero and `super-harness verify` reports zero failed 
   `ece0ccd`.
 - Timed outcome, repeat-init recovery, and single-frame closure: `9451050`,
   `5840d5d`, `49e96b3`.
-- Documentation and final lifecycle/code review are intentionally not recorded as
-  complete until their checks and receipts finish.
+- User documentation and the verified transcript: `58c07a4`.
+- Scoped Ruff formatting: `e38acd7`.
+- Final lifecycle/code review remains open until its receipts finish.
 
 Verification on 2026-07-19:
 
@@ -264,9 +265,9 @@ Verification on 2026-07-19:
 - `ruff check src/super_harness tests`: clean.
 - `mypy src/super_harness`: clean (118 source files).
 - Focused adapter/init suite including the Windows entrypoint: 292 passed,
-  1 skipped.
+  1 skipped before the formatting-only commit; the exact scoped suite passed
+  again with 287 tests after formatting.
+- Full repository suite: 2066 passed, 1 skipped.
 - `super-harness verify`: passed (5 checks, 0 failed).
 - `git diff --check`: clean.
-- `ruff format --check ...`: pending; it reports 13 implementation/test files
-  require formatting, outside this documentation-only task. Task 4 Step 3 and
-  lifecycle/code review therefore remain open.
+- `ruff format --check ...`: clean (18 scoped Python files already formatted).
