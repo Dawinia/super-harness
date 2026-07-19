@@ -256,6 +256,8 @@ Expected: all commands exit zero and `super-harness verify` reports zero failed 
   `5840d5d`, `49e96b3`.
 - User documentation and the verified transcript: `58c07a4`.
 - Scoped Ruff formatting: `e38acd7`.
+- Code-review fixes for explicit deletion, settings-path ancestry safety, and
+  line-mode reviewer-model filtering: `40359d8`, `b8cfcde`.
 - Final lifecycle/code review remains open until its receipts finish.
 
 Verification on 2026-07-19:
