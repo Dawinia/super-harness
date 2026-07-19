@@ -181,8 +181,9 @@ immediately when stdin is not a TTY):
    `adapters.yaml` is created only when an integration is selected. Explicit
    selected review models are written to the gitignored, user-editable
    `review-profiles.local.yaml`. Selecting no producer creates a fully usable
-   human-only review configuration. Init never installs a third-party agent or
-   producer binary.
+   human-only review configuration and explicitly removes an existing local
+   producer profile after the reviewed plan shows that deletion. Init never
+   installs a third-party agent or producer binary.
 2. Writes `AGENTS.md` (or extends an existing one) with a `super-harness`
    section your AI agent will read.
    Selected integrations install their existing local gate hooks as one atomic

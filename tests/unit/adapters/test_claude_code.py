@@ -511,3 +511,31 @@ def test_fresh_install_uninstall_removes_managed_only_file(
     assert path.exists()
     adapter.on_uninstall(tmp_path)
     assert not path.exists()
+
+
+def test_claude_symlinked_config_directory_is_rejected_without_external_mutation(
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "external-claude"
+    external.mkdir()
+    settings = external / "settings.local.json"
+    original = b'{"theme":"keep"}\n'
+    settings.write_bytes(original)
+    link = tmp_path / ".claude"
+    try:
+        link.symlink_to(external, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    adapter = ClaudeCodeAdapter()
+    with pytest.raises(ValueError, match=r"\.claude.*symlink"):
+        adapter.plan_hook_install(
+            tmp_path,
+            hook_executable="/abs/super-harness-hook",
+            cli_executable="/abs/super-harness",
+        )
+    with pytest.raises(ValueError, match=r"\.claude.*symlink"):
+        adapter.on_uninstall(tmp_path)
+
+    assert settings.read_bytes() == original
+    assert sorted(path.name for path in external.iterdir()) == ["settings.local.json"]

@@ -398,6 +398,7 @@ _RAIL_GLYPHS = {
 _FILE_ACTION_HINTS = {
     FileAction.CREATE: "will be written during apply",
     FileAction.UPDATE: "will be written during apply",
+    FileAction.DELETE: "will be removed during apply",
     FileAction.PRESERVE: "will be left unchanged",
     FileAction.SKIP: "not part of this run",
 }
@@ -410,12 +411,14 @@ _EVENT_GLYPHS = {
 _FILE_ACTION_ORDER = (
     FileAction.UPDATE,
     FileAction.CREATE,
+    FileAction.DELETE,
     FileAction.PRESERVE,
     FileAction.SKIP,
 )
 _FILE_ACTION_LABELS = {
     FileAction.UPDATE: "Update",
     FileAction.CREATE: "Create",
+    FileAction.DELETE: "Delete",
     FileAction.PRESERVE: "Preserve",
     FileAction.SKIP: "Skip",
 }
@@ -801,7 +804,16 @@ class InteractiveInitUI:
         producers: tuple[str, ...] | None,
         initial: InitChoices,
     ) -> Mapping[str, str] | None:
-        models = dict(initial.review_models)
+        selected_sources = {
+            option.source
+            for option in _REVIEW_PRODUCERS
+            if option.value in (request.review_producers or producers or ())
+        }
+        models = {
+            source: model
+            for source, model in initial.review_models.items()
+            if source in selected_sources
+        }
         models.update(request.review_models)
         known = dict(models)
         options = {option.value: option for option in _REVIEW_PRODUCERS}

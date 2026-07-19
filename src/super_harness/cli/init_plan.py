@@ -54,6 +54,7 @@ class FileAction(str, Enum):
 
     CREATE = "create"
     UPDATE = "update"
+    DELETE = "delete"
     PRESERVE = "preserve"
     SKIP = "skip"
 
@@ -678,7 +679,7 @@ def _review_file_actions(
     )
     if profile is None:
         profile_action = (
-            FileAction.UPDATE
+            FileAction.DELETE
             if profile_path.as_posix() in preflight.existing_file_bytes
             else FileAction.SKIP
         )

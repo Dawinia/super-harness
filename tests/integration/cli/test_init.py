@@ -11,6 +11,7 @@ from click.testing import CliRunner
 from super_harness.adapters.framework.plain import PlainAdapter
 from super_harness.cli import main
 from super_harness.cli.init_plan import (
+    FileAction,
     GitHubDecision,
     InitChoices,
     InteractionMode,
@@ -776,6 +777,75 @@ def test_init_force_guided_edits_valid_persisted_review_configuration(
     assert renderer.plans[-1].review_write.value == "update"
     assert renderer.plans[-1].review_producers == ("codex-cli",)
     assert dict(renderer.plans[-1].review_models) == {"codex": "gpt-review"}
+
+
+def test_init_force_guided_human_only_review_applies_frozen_profile_delete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/bin/{name}")
+    first = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(tmp_path),
+            "init",
+            "--review-producer",
+            "codex-cli",
+            "--review-model",
+            "codex=gpt-review",
+        ],
+    )
+    assert first.exit_code == 0, first.output
+    profile = tmp_path / ".harness" / "review-profiles.local.yaml"
+    assert profile.exists()
+
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, False, 80)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    renderer = _PlanCaptureRenderer()
+    ui = InteractiveInitUI(
+        prompt_adapter=_GuidedAnswers(
+            checkboxes=[(), ()],
+            selects=["skip", "confirm"],
+        ),
+        renderer=renderer,
+    )
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: ui)
+
+    forced = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
+
+    assert forced.exit_code == 0, forced.output
+    action = next(
+        item
+        for item in renderer.plans[-1].file_actions
+        if item.path.as_posix() == ".harness/review-profiles.local.yaml"
+    )
+    assert action.action is FileAction.DELETE
+    assert action.content is None
+    assert not profile.exists()
+
+    second_renderer = _PlanCaptureRenderer()
+    second_ui = InteractiveInitUI(
+        prompt_adapter=_GuidedAnswers(
+            checkboxes=[(), ()],
+            selects=["skip", "confirm"],
+        ),
+        renderer=second_renderer,
+    )
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: second_ui)
+
+    repeated = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
+
+    assert repeated.exit_code == 0, repeated.output
+    repeated_action = next(
+        item
+        for item in second_renderer.plans[-1].file_actions
+        if item.path.as_posix() == ".harness/review-profiles.local.yaml"
+    )
+    assert repeated_action.action is FileAction.SKIP
+    assert not profile.exists()
 
 
 def test_init_scaffolds_derived_docs_skeleton(tmp_path: Path):

@@ -99,9 +99,10 @@ does not report remain unknown and do not block review.
   PATH update changed an input after review. Rerun init or `adapter install
   codex`; do not copy the old reviewed plan forward.
 - **Install reports an update already in progress or an unsafe symlink** — let
-  the other settings update finish, or replace the symlink with a regular
-  workspace-local file, then retry. Stale owner locks are reclaimed
-  automatically.
+  the other settings update finish, or replace the symlinked settings file or
+  parent directory with a regular workspace-local path, then retry. Planning,
+  apply, and uninstall reject symlinks from the workspace root through
+  `.codex/hooks.json`. Stale owner locks are reclaimed automatically.
 
 ## Uninstall
 

@@ -320,6 +320,41 @@ def test_noninteractive_complete_explicit_pair_updates_and_ignores_persisted_val
     assert b"old-model" not in actions["review-profiles.local.yaml"].content
 
 
+def test_explicit_human_only_review_deletes_existing_local_profile(tmp_path: Path) -> None:
+    _write_review_config(tmp_path)
+    request = _request(
+        tmp_path,
+        force=True,
+        producers=(),
+        models={},
+        review_flags_explicit=True,
+    )
+
+    preflight = inspect_workspace(request, executable_lookup=_lookup())
+    plan = build_init_plan(request, preflight, InitChoices())
+
+    actions = _review_actions(plan)
+    assert plan.review_producers == ()
+    assert actions["review-profiles.local.yaml"].action is FileAction.DELETE
+    assert actions["review-profiles.local.yaml"].content is None
+
+
+def test_explicit_human_only_review_skips_missing_local_profile(tmp_path: Path) -> None:
+    request = _request(
+        tmp_path,
+        producers=(),
+        models={},
+        review_flags_explicit=True,
+    )
+
+    preflight = inspect_workspace(request, executable_lookup=_lookup())
+    plan = build_init_plan(request, preflight, InitChoices())
+
+    actions = _review_actions(plan)
+    assert actions["review-profiles.local.yaml"].action is FileAction.SKIP
+    assert actions["review-profiles.local.yaml"].content is None
+
+
 def test_interactive_force_edit_uses_persisted_pairs_as_defaults_and_choices_override(
     tmp_path: Path,
 ) -> None:
@@ -686,6 +721,41 @@ def test_unselected_symlink_integration_config_does_not_block_other_plan(
     assert target.read_text() == "{}\n"
 
 
+@pytest.mark.parametrize(
+    ("unsafe_integration", "safe_integration", "directory"),
+    [
+        ("codex", "claude-code", ".codex"),
+        ("claude-code", "codex", ".claude"),
+    ],
+)
+def test_symlinked_integration_directory_only_blocks_selected_integration(
+    tmp_path: Path,
+    unsafe_integration: str,
+    safe_integration: str,
+    directory: str,
+) -> None:
+    external = tmp_path / "external-settings"
+    external.mkdir()
+    link = tmp_path / directory
+    try:
+        link.symlink_to(external, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    unsafe_request = _request(tmp_path, integrations=(unsafe_integration,))
+    unsafe_preflight = inspect_workspace(unsafe_request, executable_lookup=_lookup())
+    with pytest.raises(InitPlanValidationError, match=rf"{unsafe_integration}.*symlink"):
+        build_init_plan(unsafe_request, unsafe_preflight, InitChoices())
+
+    safe_request = _request(tmp_path, integrations=(safe_integration,))
+    safe_preflight = inspect_workspace(safe_request, executable_lookup=_lookup())
+    safe_plan = build_init_plan(safe_request, safe_preflight, InitChoices())
+
+    assert "symlink" in safe_preflight.integration_plan_errors[unsafe_integration]
+    assert safe_plan.integrations == (safe_integration,)
+    assert list(external.iterdir()) == []
+
+
 def test_no_model_default_is_invented(tmp_path: Path) -> None:
     request = _request(tmp_path, mode=InteractionMode.GUIDED)
     preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
@@ -734,6 +804,7 @@ def test_closed_state_enums_and_forbidden_ui_lifecycle_imports() -> None:
     assert set(FileAction) == {
         FileAction.CREATE,
         FileAction.UPDATE,
+        FileAction.DELETE,
         FileAction.PRESERVE,
         FileAction.SKIP,
     }

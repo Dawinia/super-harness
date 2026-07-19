@@ -774,6 +774,7 @@ def test_plan_hints_distinguish_writes_from_preserve_and_skip(tmp_path: Path) ->
         _plan(tmp_path),
         file_actions=(
             PlannedFileAction(Path("create.txt"), FileAction.CREATE),
+            PlannedFileAction(Path("delete.txt"), FileAction.DELETE),
             PlannedFileAction(Path("preserve.txt"), FileAction.PRESERVE),
             PlannedFileAction(Path("skip.txt"), FileAction.SKIP),
         ),
@@ -789,6 +790,7 @@ def test_plan_hints_distinguish_writes_from_preserve_and_skip(tmp_path: Path) ->
 
     text = "\n".join(output)
     assert "File create: create.txt\n  hint: will be written during apply" in text
+    assert "File delete: delete.txt\n  hint: will be removed during apply" in text
     assert "File preserve: preserve.txt\n  hint: will be left unchanged" in text
     assert "File skip: skip.txt\n  hint: not part of this run" in text
 
@@ -1456,6 +1458,10 @@ def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -
         file_actions=(
             PlannedFileAction(tmp_path / ".harness" / "state.yaml", FileAction.UPDATE),
             PlannedFileAction(tmp_path / ".harness" / "sensors.yaml", FileAction.UPDATE),
+            PlannedFileAction(
+                tmp_path / ".harness" / "review-profiles.local.yaml",
+                FileAction.DELETE,
+            ),
             PlannedFileAction(tmp_path / "AGENTS.md", FileAction.UPDATE),
             PlannedFileAction(tmp_path / ".codex" / "hooks.json", FileAction.UPDATE),
             PlannedFileAction(
@@ -1487,6 +1493,7 @@ def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -
     assert "Files" in text
     assert "Update    4 files" in text
     assert "Create    1 file" in text
+    assert "Delete    1 file" in text
     assert "Preserve  1 file" in text
     assert "Skip      1 file" in text
     assert "Back up   2 settings files" in text

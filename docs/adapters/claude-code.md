@@ -168,9 +168,10 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   PATH update changed an input after review. Rerun init or `adapter install
   claude-code`; the rejected transaction did not create a backup or write.
 - **Install reports an update already in progress or an unsafe symlink.** Let
-  the other settings update finish, or replace the symlink with a regular
-  workspace-local file, then retry. Stale owner locks are reclaimed
-  automatically.
+  the other settings update finish, or replace the symlinked settings file or
+  parent directory with a regular workspace-local path, then retry. Planning,
+  apply, and uninstall reject symlinks from the workspace root through
+  `.claude/settings.local.json`. Stale owner locks are reclaimed automatically.
 
 ## Uninstall
 

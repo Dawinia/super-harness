@@ -786,3 +786,31 @@ def test_symlink_settings_are_rejected_for_plan_and_uninstall(tmp_path: Path) ->
 
     assert link.is_symlink()
     assert target.read_bytes() == original
+
+
+def test_symlinked_settings_parent_is_rejected_again_at_apply(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    settings_dir = workspace / ".codex"
+    settings_dir.mkdir(parents=True)
+    path = settings_dir / "hooks.json"
+    plan = plan_settings_merge(
+        path,
+        workspace_root=workspace,
+        pre_tool_use_command="/bin/hook --agent codex",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent codex --event stop",
+    )
+    settings_dir.rmdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    try:
+        settings_dir.symlink_to(external, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    with pytest.raises(ValueError, match=r"\.codex.*symlink"):
+        apply_settings_merge_plan(plan)
+
+    assert list(external.iterdir()) == []

@@ -105,14 +105,18 @@ class SettingsMergePlan:
     desired_bytes: bytes
     changed: bool
     backup_required: bool
+    workspace_root: Path | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "path", Path(self.path))
+        if self.workspace_root is not None:
+            object.__setattr__(self, "workspace_root", Path(self.workspace_root))
 
 
 def plan_settings_merge(
     settings_path: Path,
     *,
+    workspace_root: Path | None = None,
     pre_tool_use_command: str,
     session_start_command: str,
     stop_command: str,
@@ -122,7 +126,7 @@ def plan_settings_merge(
     stop_marker: str = _STOP_OURS_MARKER,
 ) -> SettingsMergePlan:
     """Purely compute the complete three-hook settings transaction."""
-    _reject_symlink_settings(settings_path)
+    _reject_symlink_settings(settings_path, workspace_root=workspace_root)
     original_bytes = settings_path.read_bytes() if settings_path.exists() else None
     original = (
         _parse_settings_bytes(settings_path, original_bytes) if original_bytes is not None else {}
@@ -152,13 +156,15 @@ def plan_settings_merge(
         desired_bytes=desired_bytes,
         changed=changed,
         backup_required=changed and original_bytes is not None,
+        workspace_root=workspace_root,
     )
 
 
 def apply_settings_merge_plan(plan: SettingsMergePlan) -> None:
     """Apply a reviewed plan under an exclusive sibling lock and atomic replace."""
-    with _settings_lock(plan.path):
-        _reject_symlink_settings(plan.path)
+    _reject_symlink_settings(plan.path, workspace_root=plan.workspace_root)
+    with _settings_lock(plan.path, workspace_root=plan.workspace_root):
+        _reject_symlink_settings(plan.path, workspace_root=plan.workspace_root)
         current = plan.path.read_bytes() if plan.path.exists() else None
         if current != plan.original_bytes:
             raise StaleSettingsPlanError(
@@ -177,13 +183,14 @@ def restore_or_remove_managed_hooks(
     pre_tool_use_marker: str,
     session_start_marker: str = _SESSION_OURS_MARKER,
     stop_marker: str,
+    workspace_root: Path | None = None,
 ) -> None:
     """Restore the pristine backup, or remove only marker-owned hook entries."""
-    _reject_symlink_settings(settings_path)
+    _reject_symlink_settings(settings_path, workspace_root=workspace_root)
     if not settings_path.parent.exists():
         return
-    with _settings_lock(settings_path):
-        _reject_symlink_settings(settings_path)
+    with _settings_lock(settings_path, workspace_root=workspace_root):
+        _reject_symlink_settings(settings_path, workspace_root=workspace_root)
         backups = sorted(
             settings_path.parent.glob(f"{settings_path.name}.super-harness-backup.*"),
             key=_backup_sort_key,
@@ -428,8 +435,14 @@ def _write_backup_bytes(settings_path: Path, content: bytes) -> Path:
 
 
 @contextmanager
-def _settings_lock(settings_path: Path) -> Iterator[None]:
+def _settings_lock(
+    settings_path: Path,
+    *,
+    workspace_root: Path | None = None,
+) -> Iterator[None]:
+    _reject_symlink_settings(settings_path, workspace_root=workspace_root)
     settings_path.parent.mkdir(parents=True, exist_ok=True)
+    _reject_symlink_settings(settings_path, workspace_root=workspace_root)
     lock_path = settings_path.with_name(f"{settings_path.name}.super-harness.lock")
     _acquire_settings_lock(lock_path)
     try:
@@ -604,12 +617,31 @@ def _atomic_replace_bytes(settings_path: Path, content: bytes) -> None:
             temp_path.unlink(missing_ok=True)
 
 
-def _reject_symlink_settings(settings_path: Path) -> None:
-    if settings_path.is_symlink():
+def _reject_symlink_settings(
+    settings_path: Path,
+    *,
+    workspace_root: Path | None = None,
+) -> None:
+    path = settings_path.absolute()
+    root = path.parent if workspace_root is None else workspace_root.absolute()
+    try:
+        relative = path.relative_to(root)
+    except ValueError as error:
         raise UnsafeSettingsPathError(
-            f"{settings_path} is a symlink; replace it with a regular per-workspace "
-            "settings file before configuring super-harness hooks"
-        )
+            f"{settings_path} is outside workspace {root}; choose a per-workspace settings path"
+        ) from error
+
+    current = root
+    candidates = [current]
+    for part in relative.parts:
+        current /= part
+        candidates.append(current)
+    for candidate in candidates:
+        if candidate.is_symlink():
+            raise UnsafeSettingsPathError(
+                f"{candidate} is a symlink in settings path {settings_path}; replace it with "
+                "a regular per-workspace path before configuring super-harness hooks"
+            )
 
 
 def _write_temp_bytes(fd: int, content: bytes) -> None:

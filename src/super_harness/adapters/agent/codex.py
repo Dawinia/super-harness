@@ -164,6 +164,7 @@ class CodexAdapter(AgentAdapter):
     ) -> SettingsMergePlan:
         return plan_settings_merge(
             workspace / ".codex" / "hooks.json",
+            workspace_root=workspace,
             pre_tool_use_command=f"{hook_executable} --agent codex",
             session_start_command=f"{cli_executable} change resume",
             stop_command=f"{hook_executable} --agent codex --event stop",
@@ -211,4 +212,5 @@ class CodexAdapter(AgentAdapter):
             hooks_path,
             pre_tool_use_marker=_CODEX_MARKER,
             stop_marker=_CODEX_STOP_MARKER,
+            workspace_root=workspace,
         )

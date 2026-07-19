@@ -201,6 +201,7 @@ class ClaudeCodeAdapter(AgentAdapter):
     ) -> SettingsMergePlan:
         return plan_settings_merge(
             workspace / ".claude" / "settings.local.json",
+            workspace_root=workspace,
             pre_tool_use_command=f"{hook_executable} --agent claude-code",
             session_start_command=f"{cli_executable} change resume",
             stop_command=f"{hook_executable} --agent claude-code --event stop",
@@ -263,4 +264,5 @@ class ClaudeCodeAdapter(AgentAdapter):
             settings_path,
             pre_tool_use_marker="--agent claude-code",
             stop_marker="--agent claude-code --event stop",
+            workspace_root=workspace,
         )

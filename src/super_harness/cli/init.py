@@ -37,6 +37,7 @@ from super_harness.cli.init_github import (
     resolve_github_plan,
 )
 from super_harness.cli.init_plan import (
+    FileAction,
     GithubFileDecision,
     HarnessState,
     InitPlan,
@@ -366,9 +367,22 @@ def build_init_operations(
     def review_config(plan: InitPlan) -> InitOperationResult:
         if plan.review_write is ReviewWrite.PRESERVE:
             return InitOperationResult("Preserved existing review configuration.")
-        models = tuple(f"{source}={model}" for source, model in plan.review_models.items())
         try:
-            _configure_review_producers(root, plan.review_producers, models)
+            review_paths = {
+                ".harness/review-governance.yaml",
+                ".harness/review-profiles.local.yaml",
+            }
+            for action in plan.file_actions:
+                if action.path.as_posix() not in review_paths:
+                    continue
+                path = root / action.path
+                if action.action in {FileAction.CREATE, FileAction.UPDATE}:
+                    if action.content is None:
+                        raise ValueError(f"reviewed write for {action.path} has no content")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(action.content)
+                elif action.action is FileAction.DELETE:
+                    path.unlink(missing_ok=True)
         except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as error:
             raise InitOperationError(
                 f"could not configure review producers: {error}",
