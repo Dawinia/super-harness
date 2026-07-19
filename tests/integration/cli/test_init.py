@@ -411,9 +411,7 @@ def test_init_line_mode_uses_per_option_prompts_without_comma_parser(
         lambda request: inspect_workspace(
             request,
             executable_lookup=lambda name: (
-                f"/abs/{name}"
-                if name in {"super-harness-hook", "super-harness"}
-                else None
+                f"/abs/{name}" if name in {"super-harness-hook", "super-harness"} else None
             ),
         ),
     )
@@ -471,9 +469,7 @@ def test_init_guided_back_applies_the_revised_plan(
         lambda request: inspect_workspace(
             request,
             executable_lookup=lambda name: (
-                f"/abs/{name}"
-                if name in {"super-harness-hook", "super-harness"}
-                else None
+                f"/abs/{name}" if name in {"super-harness-hook", "super-harness"} else None
             ),
         ),
     )

@@ -987,8 +987,7 @@ class InteractiveInitUI:
             RailState.COMPLETED,
             "Already initialized",
             secondary=(
-                "Next: super-harness status; "
-                "Review/reconfigure: super-harness init --force"
+                "Next: super-harness status; Review/reconfigure: super-harness init --force"
             ),
         )
 

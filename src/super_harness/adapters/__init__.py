@@ -85,13 +85,9 @@ class AgentAdapter(ABC):
         if inspect.isabstract(cls):
             return
         if not cls.name:
-            raise TypeError(
-                f"{cls.__name__} must define a non-empty `name` class attribute"
-            )
+            raise TypeError(f"{cls.__name__} must define a non-empty `name` class attribute")
         if not cls.version or cls.version == "0.0.0":
-            raise TypeError(
-                f"{cls.__name__} must define `version` (not the default '0.0.0')"
-            )
+            raise TypeError(f"{cls.__name__} must define `version` (not the default '0.0.0')")
 
     @abstractmethod
     def detect(self, workspace: Path) -> bool:
@@ -222,13 +218,9 @@ class FrameworkAdapter(ABC):
         if inspect.isabstract(cls):
             return
         if not cls.name:
-            raise TypeError(
-                f"{cls.__name__} must define a non-empty `name` class attribute"
-            )
+            raise TypeError(f"{cls.__name__} must define a non-empty `name` class attribute")
         if not cls.version or cls.version == "0.0.0":
-            raise TypeError(
-                f"{cls.__name__} must define `version` (not the default '0.0.0')"
-            )
+            raise TypeError(f"{cls.__name__} must define `version` (not the default '0.0.0')")
 
     @abstractmethod
     def detect(self, workspace: Path) -> bool:

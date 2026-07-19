@@ -83,9 +83,7 @@ def test_pre_existing_file_merges_and_backs_up(tmp_path: Path) -> None:
                     ],
                 }
             ],
-            "PostToolUse": [
-                {"matcher": "Write", "hooks": [{"type": "command", "command": "x"}]}
-            ],
+            "PostToolUse": [{"matcher": "Write", "hooks": [{"type": "command", "command": "x"}]}],
         },
     }
     settings_path.write_text(json.dumps(original, indent=2))
@@ -414,18 +412,36 @@ def test_codex_marker_does_not_strip_claude_pre_tool_use(tmp_path):
 
     p = tmp_path / "hooks.json"
     # Pre-seed a claude-code entry (foreign marker).
-    p.write_text(json.dumps({"hooks": {"PreToolUse": [
-        {"matcher": "Edit", "hooks": [
-            {"type": "command", "command": "/x super-harness-hook --agent claude-code"}]}
-    ]}}))
-    merge_pre_tool_use_hook(
-        p, command="/abs/h --agent codex",
-        matcher="^(apply_patch|Edit|Write)$", marker="--agent codex",
+    p.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Edit",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/x super-harness-hook --agent claude-code",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        )
     )
-    cmds = [h["command"] for e in json.loads(p.read_text())["hooks"]["PreToolUse"]
-            for h in e["hooks"]]
+    merge_pre_tool_use_hook(
+        p,
+        command="/abs/h --agent codex",
+        matcher="^(apply_patch|Edit|Write)$",
+        marker="--agent codex",
+    )
+    cmds = [
+        h["command"] for e in json.loads(p.read_text())["hooks"]["PreToolUse"] for h in e["hooks"]
+    ]
     assert any("--agent claude-code" in c for c in cmds)  # foreign preserved
-    assert any("--agent codex" in c for c in cmds)        # ours added
+    assert any("--agent codex" in c for c in cmds)  # ours added
 
 
 def test_merge_stop_adds_entry(tmp_path):
@@ -439,8 +455,17 @@ def test_merge_stop_adds_entry(tmp_path):
 
 def test_merge_stop_preserves_existing_hooks(tmp_path):
     hooks = tmp_path / "settings.json"
-    hooks.write_text(json.dumps({"hooks": {"PreToolUse": [
-        {"matcher": "Edit", "hooks": [{"type": "command", "command": "keepme"}]}]}}))
+    hooks.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {"matcher": "Edit", "hooks": [{"type": "command", "command": "keepme"}]}
+                    ]
+                }
+            }
+        )
+    )
     merge_stop_hook(hooks, command="/abs/super-harness-hook --agent claude-code --event stop")
     data = json.loads(hooks.read_text())
     assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "keepme"
@@ -461,8 +486,15 @@ def test_merge_stop_preserves_unrelated_stop_hook(tmp_path):
     # tool) must NOT be stripped — our marker is the full "--agent claude-code
     # --event stop" flag-pair, not the bare "--event stop".
     hooks = tmp_path / "settings.json"
-    hooks.write_text(json.dumps({"hooks": {"Stop": [
-        {"hooks": [{"type": "command", "command": "othertool --event stop"}]}]}}))
+    hooks.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [{"hooks": [{"type": "command", "command": "othertool --event stop"}]}]
+                }
+            }
+        )
+    )
     merge_stop_hook(hooks, command="/abs/super-harness-hook --agent claude-code --event stop")
     entries = json.loads(hooks.read_text())["hooks"]["Stop"]
     cmds = [h["command"] for e in entries for h in e["hooks"]]
@@ -528,6 +560,7 @@ def test_settings_plan_atomic_failure_leaves_target_exact(
         stop_command="/bin/hook --agent claude-code --event stop",
     )
     if failure_stage == "temp-write":
+
         def partial_temp_write(fd: int, _data: bytes) -> None:
             os.write(fd, b"partial-temp")
             raise OSError("simulated temp write failure")
@@ -542,9 +575,7 @@ def test_settings_plan_atomic_failure_leaves_target_exact(
         monkeypatch.setattr(
             os,
             "replace",
-            lambda _source, _target: (_ for _ in ()).throw(
-                OSError("simulated replace failure")
-            ),
+            lambda _source, _target: (_ for _ in ()).throw(OSError("simulated replace failure")),
         )
 
     with pytest.raises(OSError, match=f"simulated {failure_stage.replace('-', ' ')} failure"):

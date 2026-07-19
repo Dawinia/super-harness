@@ -57,6 +57,7 @@ def _session_commands(settings: dict[str, object]) -> list[str]:
             out.append(hook["command"])
     return out
 
+
 _CANONICAL_CAPABILITY_KEYS = {
     "pre_tool_use_hook",
     "post_tool_use_hook",
@@ -164,9 +165,7 @@ def test_install_hooks_missing_cli_binary_raises_before_write(
     assert not (tmp_path / ".claude" / "settings.local.json").exists()
 
 
-def test_install_hooks_idempotent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_install_hooks_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "super_harness.adapters.agent.claude_code.shutil.which",
         _which_both,
@@ -249,9 +248,7 @@ def test_inject_context_returns_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
         captured["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="# change my-slug\n", stderr="")
 
-    monkeypatch.setattr(
-        "super_harness.adapters.agent.claude_code.subprocess.run", fake_run
-    )
+    monkeypatch.setattr("super_harness.adapters.agent.claude_code.subprocess.run", fake_run)
     out = ClaudeCodeAdapter().inject_context("my-slug")
     assert out == "# change my-slug\n"
     assert captured["cmd"] == [
@@ -269,9 +266,7 @@ def test_inject_context_empty_result_returns_empty_string(
         # Non-zero exit + empty stdout (e.g. unknown slug) must not crash.
         return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="boom")
 
-    monkeypatch.setattr(
-        "super_harness.adapters.agent.claude_code.subprocess.run", fake_run
-    )
+    monkeypatch.setattr("super_harness.adapters.agent.claude_code.subprocess.run", fake_run)
     assert ClaudeCodeAdapter().inject_context("nope") == ""
 
 
@@ -335,12 +330,10 @@ def test_on_uninstall_restores_earliest_pristine_backup(tmp_path: Path) -> None:
     pristine = {"model": "claude-opus", "hooks": {}}
     # ts=100: pristine (1st merge's backup). ts=200: pristine + our PreToolUse
     # (2nd merge's backup). The earliest (100) must win.
-    settings_path.with_name(
-        "settings.local.json.super-harness-backup.100"
-    ).write_text(json.dumps(pristine))
-    settings_path.with_name(
-        "settings.local.json.super-harness-backup.200"
-    ).write_text(
+    settings_path.with_name("settings.local.json.super-harness-backup.100").write_text(
+        json.dumps(pristine)
+    )
+    settings_path.with_name("settings.local.json.super-harness-backup.200").write_text(
         json.dumps(
             {
                 "model": "claude-opus",
@@ -416,18 +409,26 @@ def test_agents_md_subsection_does_not_teach_kill_switch():
 
 # --- authoring-time Stop feedback (2026-07-01) ---
 
+
 def _stop_verdict():
     from super_harness.core.authoring_check import Verdict, Violation
-    return Verdict(violations=[Violation(
-        "d-core-is-base",
-        "core is not allowed to import super_harness.sensors",
-        "docs/decisions/d-core-is-base.md")])
+
+    return Verdict(
+        violations=[
+            Violation(
+                "d-core-is-base",
+                "core is not allowed to import super_harness.sensors",
+                "docs/decisions/d-core-is-base.md",
+            )
+        ]
+    )
 
 
 def test_claude_format_stop_feedback_blocks_with_reason():
     import json
 
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
     out = ClaudeCodeAdapter().format_stop_feedback(_stop_verdict())
     obj = json.loads(out)
     assert obj["decision"] == "block"
@@ -439,6 +440,7 @@ def test_claude_format_stop_feedback_blocks_with_reason():
 def test_claude_format_stop_feedback_clean_is_empty():
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
     from super_harness.core.authoring_check import Verdict
+
     assert ClaudeCodeAdapter().format_stop_feedback(Verdict(violations=[])) == ""
 
 
@@ -454,6 +456,7 @@ def _install_into(tmp_path, monkeypatch, pre_existing):
 
     import super_harness.adapters.agent.claude_code as cc
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
     monkeypatch.setattr(cc.shutil, "which", lambda n: f"/abs/{n}")
     (tmp_path / ".claude").mkdir()
     f = tmp_path / ".claude" / "settings.local.json"
@@ -465,6 +468,7 @@ def _install_into(tmp_path, monkeypatch, pre_existing):
 
 def test_install_registers_stop(tmp_path, monkeypatch):
     import json
+
     f = _install_into(tmp_path, monkeypatch, pre_existing=None)
     events = json.loads(f.read_text())["hooks"]
     assert "Stop" in events and "PreToolUse" in events
@@ -475,6 +479,7 @@ def test_uninstall_round_trip_removes_stop(tmp_path, monkeypatch):
     import json
 
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
     pristine = {"model": "x", "permissions": {}}
     f = _install_into(tmp_path, monkeypatch, pre_existing=pristine)
     assert "Stop" in json.loads(f.read_text())["hooks"]
@@ -488,6 +493,7 @@ def test_stop_advisory_has_no_self_authorized_bypass():
     import json
 
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
     reason = json.loads(ClaudeCodeAdapter().format_stop_feedback(_stop_verdict()))["reason"]
     low = reason.lower()
     assert "deliberate, disclosed exception, proceed" not in low

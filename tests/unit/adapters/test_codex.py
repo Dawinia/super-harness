@@ -86,12 +86,13 @@ def test_agents_md_subsection_does_not_teach_kill_switch():
 
 def test_codex_capabilities():
     caps = CodexAdapter().capabilities
-    assert caps["post_tool_use_hook"] is True       # spike-verified (fires under codex exec)
-    assert caps["turn_end_feedback_hook"] is True    # cut-2 Stop delivery
+    assert caps["post_tool_use_hook"] is True  # spike-verified (fires under codex exec)
+    assert caps["turn_end_feedback_hook"] is True  # cut-2 Stop delivery
 
 
 def test_codex_stop_should_check_and_feedback_delegate():
     from super_harness.core.authoring_check import Verdict, Violation
+
     a = CodexAdapter()
     assert a.stop_should_check({"stop_hook_active": True}) is False
     assert a.stop_should_check({"stop_hook_active": False}) is True
@@ -180,11 +181,25 @@ def test_codex_fresh_install_uninstall_removes_managed_only_file(tmp_path, monke
 def test_codex_uninstall_without_backup_strips_only_managed_markers(tmp_path):
     path = tmp_path / ".codex" / "hooks.json"
     path.parent.mkdir()
-    path.write_text(json.dumps({"theme": "dark", "hooks": {"Stop": [
-        {"hooks": [{"type": "command", "command": "keep-me"}]},
-        {"hooks": [{"type": "command", "command": "/h --agent codex --event stop"}]},
-    ]}}))
+    path.write_text(
+        json.dumps(
+            {
+                "theme": "dark",
+                "hooks": {
+                    "Stop": [
+                        {"hooks": [{"type": "command", "command": "keep-me"}]},
+                        {
+                            "hooks": [
+                                {"type": "command", "command": "/h --agent codex --event stop"}
+                            ]
+                        },
+                    ]
+                },
+            }
+        )
+    )
     CodexAdapter().on_uninstall(tmp_path)
-    assert json.loads(path.read_text()) == {"theme": "dark", "hooks": {"Stop": [
-        {"hooks": [{"type": "command", "command": "keep-me"}]}
-    ]}}
+    assert json.loads(path.read_text()) == {
+        "theme": "dark",
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "keep-me"}]}]},
+    }

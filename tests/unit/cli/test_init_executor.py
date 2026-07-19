@@ -93,9 +93,7 @@ def test_success_emits_started_then_succeeded_in_stable_order() -> None:
 def test_success_records_elapsed_milliseconds_from_injected_monotonic_clock() -> None:
     ticks = iter((10.0, 10.152))
 
-    result = InitExecutor(_operations([]), monotonic=lambda: next(ticks)).apply(
-        _plan(github=False)
-    )
+    result = InitExecutor(_operations([]), monotonic=lambda: next(ticks)).apply(_plan(github=False))
 
     assert result.elapsed_ms == 152
 
@@ -121,9 +119,7 @@ def test_every_failure_exit_records_elapsed_milliseconds(failure_kind: str) -> N
 def test_elapsed_milliseconds_never_regress_when_injected_clock_moves_backwards() -> None:
     ticks = iter((30.0, 29.0))
 
-    result = InitExecutor(_operations([]), monotonic=lambda: next(ticks)).apply(
-        _plan(github=False)
-    )
+    result = InitExecutor(_operations([]), monotonic=lambda: next(ticks)).apply(_plan(github=False))
 
     assert result.elapsed_ms == 0
 

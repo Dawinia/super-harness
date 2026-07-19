@@ -30,6 +30,7 @@ it is FAIL-LOUD: if the binaries are not on PATH the resolving assertions below
 FAIL with an actionable message rather than silently skipping (a false-green
 risk for this ship guard) — run pytest with ``.venv/bin`` on PATH.
 """
+
 from __future__ import annotations
 
 import json
@@ -62,10 +63,9 @@ def _expected_session_start() -> str:
     assertion fails with an actionable message instead of skipping.
     """
     cli_bin = shutil.which("super-harness")
-    assert cli_bin is not None, (
-        "super-harness not on PATH — run pytest with `.venv/bin` on PATH"
-    )
+    assert cli_bin is not None, "super-harness not on PATH — run pytest with `.venv/bin` on PATH"
     return f"{cli_bin} change resume"
+
 
 # AGENTS.md markers (must match engineering/agents_md + the adapter block).
 _NO_AGENT_ANCHOR = "<!-- super-harness no-agent-adapter-installed -->"
@@ -82,9 +82,7 @@ _USER_SETTINGS = {
         "PreToolUse": [
             {
                 "matcher": "Bash",
-                "hooks": [
-                    {"type": "command", "command": _USER_HOOK_COMMAND, "timeout": 5}
-                ],
+                "hooks": [{"type": "command", "command": _USER_HOOK_COMMAND, "timeout": 5}],
             }
         ]
     },
@@ -130,9 +128,7 @@ def _init(ws: Path):
 
 
 def _install(ws: Path):
-    return CliRunner().invoke(
-        main, ["--workspace", str(ws), "adapter", "install", "claude-code"]
-    )
+    return CliRunner().invoke(main, ["--workspace", str(ws), "adapter", "install", "claude-code"])
 
 
 def _uninstall(ws: Path):

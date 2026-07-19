@@ -1725,11 +1725,7 @@ def test_guided_outcome_formats_truthful_elapsed_time(
             RailStage.OUTCOME,
             RailState.COMPLETED if success else RailState.FAILED,
             expected_detail,
-            (
-                "Next: super-harness status"
-                if success
-                else "Recovery: super-harness init --force"
-            ),
+            ("Next: super-harness status" if success else "Recovery: super-harness init --force"),
         )
     ]
 
@@ -1747,10 +1743,7 @@ def test_guided_already_initialized_is_one_status_first_recovery_block(
             RailStage.OUTCOME,
             RailState.COMPLETED,
             "Already initialized",
-            (
-                "Next: super-harness status; "
-                "Review/reconfigure: super-harness init --force"
-            ),
+            ("Next: super-harness status; Review/reconfigure: super-harness init --force"),
         )
     ]
 

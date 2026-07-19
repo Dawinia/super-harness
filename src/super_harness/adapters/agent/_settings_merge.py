@@ -125,9 +125,7 @@ def plan_settings_merge(
     _reject_symlink_settings(settings_path)
     original_bytes = settings_path.read_bytes() if settings_path.exists() else None
     original = (
-        _parse_settings_bytes(settings_path, original_bytes)
-        if original_bytes is not None
-        else {}
+        _parse_settings_bytes(settings_path, original_bytes) if original_bytes is not None else {}
     )
     settings = copy.deepcopy(original)
     hooks = _ensure_hooks_dict(settings)
@@ -146,9 +144,7 @@ def plan_settings_merge(
 
     changed = settings != original
     desired_bytes = (
-        json.dumps(settings, indent=2).encode("utf-8") + b"\n"
-        if changed
-        else original_bytes or b""
+        json.dumps(settings, indent=2).encode("utf-8") + b"\n" if changed else original_bytes or b""
     )
     return SettingsMergePlan(
         path=settings_path,
@@ -189,9 +185,7 @@ def restore_or_remove_managed_hooks(
     with _settings_lock(settings_path):
         _reject_symlink_settings(settings_path)
         backups = sorted(
-            settings_path.parent.glob(
-                f"{settings_path.name}.super-harness-backup.*"
-            ),
+            settings_path.parent.glob(f"{settings_path.name}.super-harness-backup.*"),
             key=_backup_sort_key,
         )
         if backups:
@@ -410,9 +404,7 @@ def _write_backup(settings_path: Path) -> None:
 def _write_backup_bytes(settings_path: Path, content: bytes) -> Path:
     stamp = time.time_ns()
     while True:
-        backup = settings_path.with_name(
-            f"{settings_path.name}.super-harness-backup.{stamp}"
-        )
+        backup = settings_path.with_name(f"{settings_path.name}.super-harness-backup.{stamp}")
         try:
             fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         except FileExistsError:
@@ -490,10 +482,13 @@ def _acquire_settings_lock(lock_path: Path) -> None:
             lock_path.unlink(missing_ok=True)
             continue
 
-        owner = json.dumps(
-            {"pid": os.getpid(), "created_ns": time.time_ns()},
-            separators=(",", ":"),
-        ).encode("ascii") + b"\n"
+        owner = (
+            json.dumps(
+                {"pid": os.getpid(), "created_ns": time.time_ns()},
+                separators=(",", ":"),
+            ).encode("ascii")
+            + b"\n"
+        )
         try:
             _write_fd_bytes(fd, owner)
         except BaseException:

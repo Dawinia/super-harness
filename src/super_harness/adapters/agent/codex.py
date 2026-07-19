@@ -11,6 +11,7 @@ them — the gate is INACTIVE until then. See design 2026-06-25 §4.3.
 
 API stability: experimental (v0.1).
 """
+
 from __future__ import annotations
 
 import shutil
@@ -174,7 +175,9 @@ class CodexAdapter(AgentAdapter):
     def inject_context(self, change_id: str) -> str:
         result = subprocess.run(
             [_CLI_BINARY, "change", "resume", change_id],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         return result.stdout or ""
 

@@ -412,8 +412,7 @@ def inspect_workspace(
         }
     }
     management_available = all(
-        executable_paths[name] is not None
-        for name in ("super-harness-hook", "super-harness")
+        executable_paths[name] is not None for name in ("super-harness-hook", "super-harness")
     )
     available_integrations = frozenset(_INTEGRATIONS) if management_available else frozenset()
     available_producers = frozenset(
@@ -424,8 +423,7 @@ def inspect_workspace(
     detected_integrations = tuple(
         name
         for name, definition in _INTEGRATIONS.items()
-        if name in available_integrations
-        and executable_paths[definition.executable] is not None
+        if name in available_integrations and executable_paths[definition.executable] is not None
     )
     detected_producers = tuple(name for name in _REVIEW_PRODUCERS if name in available_producers)
 
@@ -458,6 +456,7 @@ def inspect_workspace(
     integration_plans: dict[str, AgentIntegrationPlan] = {}
     integration_plan_errors: dict[str, str] = {}
     if management_available:
+
         def frozen_lookup(executable: str) -> str | None:
             return executable_paths.get(executable)
 
@@ -731,8 +730,7 @@ def build_init_plan(
     missing_plans = [
         name
         for name in integrations
-        if preflight.integration_plans_captured
-        and name not in preflight.integration_plans
+        if preflight.integration_plans_captured and name not in preflight.integration_plans
     ]
     if missing_plans:
         raise InitPlanValidationError(
@@ -794,9 +792,7 @@ def build_init_plan(
                     if settings.changed
                     else FileAction.PRESERVE
                 )
-                actions.append(
-                    PlannedFileAction(definition.path, action, settings.desired_bytes)
-                )
+                actions.append(PlannedFileAction(definition.path, action, settings.desired_bytes))
         else:
             actions.append(PlannedFileAction(definition.path, FileAction.SKIP))
 

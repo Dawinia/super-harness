@@ -582,7 +582,9 @@ def test_plan_freezes_selected_integration_transactions_and_truthful_backups(
         inspect_workspace(
             _request(tmp_path, integrations=("claude-code",)),
             executable_lookup=lookup,
-        ).integration_plans["claude-code"].settings.desired_bytes
+        )
+        .integration_plans["claude-code"]
+        .settings.desired_bytes
     )
 
     request = _request(tmp_path, integrations=("codex", "claude-code"))
