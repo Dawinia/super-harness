@@ -26,6 +26,7 @@ from super_harness.cli.init_plan import (
     InteractionMode,
     PlannedFileAction,
     ReviewWrite,
+    build_init_plan,
 )
 from super_harness.cli.init_ui import (
     ChoiceCollectionDecision,
@@ -388,6 +389,36 @@ def test_line_auto_selects_the_only_configured_model(tmp_path: Path) -> None:
     assert dict(result.choices.review_models) == {"codex": "gpt-5-codex"}
     assert all(not prompt.startswith("Model") for prompt in prompts)
     assert "Codex CLI reviewer model: gpt-5-codex (Codex CLI config)." in output
+
+
+def test_line_force_deselecting_persisted_reviewer_clears_model_and_plans_delete(
+    tmp_path: Path,
+) -> None:
+    profile_path = ".harness/review-profiles.local.yaml"
+    preflight = replace(
+        _preflight(detected_integrations=(), available_integrations=frozenset()),
+        harness_state=HarnessState.INITIALIZED,
+        existing_file_bytes={
+            ".harness/review-governance.yaml": b"existing governance\n",
+            profile_path: b"existing profile\n",
+        },
+        persisted_review_producers=("codex-cli",),
+        persisted_review_models={"codex": "gpt-persisted"},
+    )
+    request = replace(_request(tmp_path), force=True, no_agent=True)
+    read, prompts = _sequence_input(["n"])
+    ui = LineInitUI(input_fn=read, output_fn=lambda _: None, unicode=False, width=80)
+
+    result = ui.collect(request, preflight)
+
+    assert result.choices.review_producers == ()
+    assert dict(result.choices.review_models) == {}
+    assert prompts == ["Select Codex CLI review producer? [Y/n] "]
+    plan = build_init_plan(request, preflight, result.choices)
+    profile_action = next(
+        action for action in plan.file_actions if action.path.as_posix() == profile_path
+    )
+    assert profile_action.action is FileAction.DELETE
 
 
 def test_line_selects_configured_model_by_number_without_accepting_raw_text(

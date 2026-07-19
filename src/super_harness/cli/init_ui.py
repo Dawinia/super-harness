@@ -1307,7 +1307,14 @@ class LineInitUI(_PlainInitUI):
         producers = (
             request.review_producers if request.review_producers else selected_producers or ()
         )
-        entered_models = dict(initial.review_models)
+        selected_sources = {
+            option.source for option in _REVIEW_PRODUCERS if option.value in producers
+        }
+        entered_models = {
+            source: model
+            for source, model in initial.review_models.items()
+            if source in selected_sources
+        }
         entered_models.update(request.review_models)
         known_models = dict(entered_models)
         options = {option.value: option for option in _REVIEW_PRODUCERS}
