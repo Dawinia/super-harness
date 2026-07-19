@@ -616,6 +616,9 @@ def init_cmd(
             ),
         )
     except KeyboardInterrupt as error:
+        if capabilities.mode is InteractionMode.GUIDED:
+            ui.render_interrupted()
+            ctx.exit(EXIT_GENERIC)
         raise click.Abort() from error
     except InitPlanValidationError as error:
         message = str(error)

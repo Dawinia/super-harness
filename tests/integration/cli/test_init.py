@@ -79,6 +79,9 @@ class _ScriptedInitUI:
         self.cancelled_rendered = True
         print("Setup cancelled")
 
+    def render_interrupted(self) -> None:
+        print("Setup interrupted")
+
     def on_step(self, event: Any) -> None:
         self.events.append(event)
 
@@ -93,7 +96,7 @@ class _GuidedAnswers:
     def __init__(
         self,
         *,
-        checkboxes: list[tuple[str, ...] | None],
+        checkboxes: list[tuple[str, ...] | None | BaseException],
         selects: list[str | None],
         texts: list[str] | None = None,
         before_review: Callable[[], None] | None = None,
@@ -105,7 +108,10 @@ class _GuidedAnswers:
         self.text_calls: list[str] = []
 
     def checkbox(self, _message: str, _choices: Any) -> tuple[str, ...] | None:
-        return next(self.checkboxes)
+        answer = next(self.checkboxes)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
 
     def select(
         self,
@@ -327,6 +333,45 @@ def test_init_keyboard_interrupt_before_apply_exits_one_without_writes(
     result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
 
     assert result.exit_code == 1
+    assert "Aborted!" in result.output
+    _assert_init_owned_paths_absent(tmp_path)
+
+
+def test_init_guided_prompt_interrupt_stays_inside_the_single_frame(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, True, 100)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.create_init_ui",
+        lambda *_a, **_kw: InteractiveInitUI(
+            prompt_adapter=_GuidedAnswers(
+                checkboxes=[KeyboardInterrupt()],
+                selects=[],
+            ),
+            unicode=True,
+            color=False,
+            width=100,
+        ),
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=lambda name: (
+                f"/abs/{name}" if name in {"super-harness-hook", "super-harness"} else None
+            ),
+        ),
+    )
+
+    result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+
+    assert result.exit_code == 1, result.output
+    assert "Aborted!" not in result.output
+    _assert_single_guided_frame(result.output, "outcome: Setup interrupted")
     _assert_init_owned_paths_absent(tmp_path)
 
 

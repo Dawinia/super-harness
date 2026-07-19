@@ -976,6 +976,10 @@ class InteractiveInitUI:
     def render_cancelled(self) -> None:
         self._render_cancelled()
 
+    def render_interrupted(self) -> None:
+        self._renderer.render_stage(RailStage.APPLY, RailState.PENDING, "No writes started")
+        self._renderer.render_stage(RailStage.OUTCOME, RailState.FAILED, "Setup interrupted")
+
     def render_already_initialized(self, harness: object) -> None:
         del harness
         self._renderer.render_stage(
@@ -1103,6 +1107,9 @@ class _PlainInitUI:
 
     def render_cancelled(self) -> None:
         self._output("Setup cancelled")
+
+    def render_interrupted(self) -> None:
+        self._output("Setup interrupted")
 
     def render_already_initialized(self, harness: object) -> None:
         del harness

@@ -1753,3 +1753,15 @@ def test_guided_already_initialized_is_one_status_first_recovery_block(
             ),
         )
     ]
+
+
+def test_guided_prompt_interruption_renders_a_terminal_outcome() -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+
+    ui.render_interrupted()
+
+    assert renderer.stages == [
+        (RailStage.APPLY, RailState.PENDING, "No writes started", None),
+        (RailStage.OUTCOME, RailState.FAILED, "Setup interrupted", None),
+    ]
