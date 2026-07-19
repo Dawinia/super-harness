@@ -24,7 +24,26 @@ authoring-conformance advisory.
 super-harness adapter install codex
 ```
 
-This writes the hooks into `.codex/hooks.json`.
+This writes all three hooks into `.codex/hooks.json` as one settings
+transaction. Before the first write, super-harness freezes the original and
+desired bytes plus the resolved `super-harness-hook` and `super-harness`
+executable paths. Apply revalidates those inputs; settings or PATH drift stops
+the install before a backup or write and asks you to review again.
+
+Backup behavior reflects the final transaction, not each hook:
+
+- A fresh `.codex/hooks.json` creates no backup.
+- A changed existing file creates exactly one sibling
+  `hooks.json.super-harness-backup.<time_ns>` containing the exact original
+  bytes.
+- An already-current file is not rewritten and creates no backup.
+
+Writes and uninstall use the same exclusive sibling lock and atomic replace.
+A concurrent live writer is refused; a lock whose owner process is no longer
+alive is reclaimed, while a fresh corrupt lock is left alone until it is old
+enough to be safely treated as stale. Symlinked settings files are refused so a
+replace cannot unexpectedly modify or detach a linked target. These paths use
+stdlib platform checks, including native Windows process-liveness handling.
 
 > **Required trust step.** After `adapter install codex` the gate is **INACTIVE**
 > until you run `/hooks` in Codex and trust the super-harness hook. Codex skips
@@ -76,6 +95,27 @@ does not report remain unknown and do not block review.
   trusted.
 - **`.codex/hooks.json` shows up in `git status`** — run `super-harness sync
   --gitignore`.
+- **Install says the settings or executable plan is stale** — another process or
+  PATH update changed an input after review. Rerun init or `adapter install
+  codex`; do not copy the old reviewed plan forward.
+- **Install reports an update already in progress or an unsafe symlink** — let
+  the other settings update finish, or replace the symlink with a regular
+  workspace-local file, then retry. Stale owner locks are reclaimed
+  automatically.
+
+## Uninstall
+
+```bash
+super-harness adapter uninstall codex
+```
+
+Uninstall uses the same lock and atomic-write path as install. If a pristine
+pre-install backup exists, it restores the earliest one. If installation began
+with no settings file and therefore made no backup, uninstall removes only the
+marker-owned PreToolUse, SessionStart, and Stop hooks. Unrelated settings and
+hooks are preserved, empty hook scaffolding is pruned, and the settings file is
+removed only when nothing user-owned remains. The `.codex/` directory itself is
+not deleted.
 
 ## See also
 

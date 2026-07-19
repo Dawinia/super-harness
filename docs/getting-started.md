@@ -65,19 +65,22 @@ The guided setup has five stages:
    models already configured in the relevant CLI, and resolves existing-file
    conflicts.
 3. **Review before writes** shows the selected integrations, producers, models,
-   GitHub choice, and every planned create/update/preserve action. In an
-   interactive mode, the workspace is unchanged until this plan is accepted.
+   GitHub choice, grouped create/update/preserve actions, and any local settings
+   files that will receive a backup. In an interactive mode, the workspace is
+   unchanged until this plan is accepted.
 4. **Apply** performs the named operations. Fast writes become completed rows;
    genuinely long or external operations may show activity, but the wizard does
    not invent percentages.
-5. **Outcome** reports a completed-step ledger and one next command on success.
+5. **Outcome** reports the real elapsed time and one next command on success.
    On partial failure, the ledger keeps completed writes visible, names the
    failed step and exit code, and gives a recovery command such as
    `super-harness init --force` after the named problem is corrected; it does not
    attempt a broad rollback of user-owned files.
 
 On a full interactive terminal, use the arrow keys to move, Space to toggle a
-choice, and Enter to accept it. At the final review, **Back** returns to
+choice, and Enter to accept it. The filled or empty indicator shows whether an
+option is selected; with color enabled, only the selected indicator turns green
+so labels remain easy to scan. At the final review, **Back** returns to
 configuration. **Ctrl+C** interrupts setup. Detected integrations and producers
 are preselected and labeled `detected · recommended` on a fresh init. An
 unavailable coding integration remains selectable but is not preselected; an
@@ -103,27 +106,47 @@ will reflect your machine):
 
 ```text
 $ super-harness init --setup-github
-┌  super-harness init
-│
-◆  Preflight
-│  Workspace  /work/my-project
-│
-◆  Configuration
-│  Coding agent  Codex (detected · recommended)
-│  Review source codex-cli · model gpt-5.2-codex (Codex CLI config)
-│
-◇  Review before writes
-│  Create  .harness/
-│  Update  AGENTS.md
-│  GitHub  enabled
-│  Apply this plan? Yes
-│
-●  Apply
-│  Created  .harness/
-│  Updated  AGENTS.md
-│
-└  Ready. Run super-harness change start <slug>
+┌ super-harness init
+●  preflight: Inspected /work/my-project
+│  Detection is read-only
+◆  configuration: Choose integrations and reviews
+◆ Integrations  (↑/↓ move · space select · enter confirm)
+› ● Codex  detected · recommended
+  ○ Claude Code  not detected
+◆ Automated reviewers  (↑/↓ move · space select · enter confirm)
+› ● Codex reviewer — runs via Codex CLI  gpt-5.2-codex
+●  configuration: Configuration collected
+◆  review: Review planned setup
+│  Integrations
+│    Codex
+│  Automated reviewers
+│    Codex  gpt-5.2-codex
+│  GitHub
+│    Ensure workflow and PR template
+│  Files
+│    Create    14 files
+◆ Apply this plan?  Confirm and continue
+●  review: Plan confirmed
+◆  apply: Applying setup
+✓  Harness configuration ready
+✓  Configured integrations: codex.
+●  outcome: Setup complete in 152ms
+│  Next: super-harness status
+└
 ```
+
+If the reviewed plan will change an existing `.codex/hooks.json` or
+`.claude/settings.local.json`, the **Files** group includes a **Back up** row
+with that path.
+The adapter transaction is frozen at review time: the original settings bytes,
+desired bytes, and resolved `super-harness` executable paths are checked again
+immediately before apply. If any of them changed, init stops before backing up or
+writing and asks you to rerun configuration and review.
+
+Running `super-harness init` again without `--force` keeps the recovery message
+inside the same frame: run `super-harness status` first to inspect the current
+setup. Use `super-harness init --force` only when you want to review and apply a
+reconfiguration; it does not silently overwrite the existing setup.
 
 TTY input with redirected output, `TERM=dumb`, or another cursor-limited
 terminal uses the same stages in deterministic plain text. It asks exactly one
@@ -139,12 +162,15 @@ the scriptable behavior: it does not prompt or read user CLI configuration and
 applies immediately from explicit flags and existing workspace defaults, so CI
 and redirected scripts do not need `--yes`.
 
-The installed `init` entrypoint supports native Windows (including Windows
-Terminal and PowerShell), macOS, Linux, and WSL. This compatibility statement
-is specifically for `super-harness init`; it does not claim that every
-lifecycle, observer, or daemon command runs natively on Windows. The Unix
-package-install commands in [Install the CLI](#1-install-the-cli) are examples
-for that shell environment, not the boundary of `init` runtime support.
+The installed `init` entrypoint is designed for native Windows (including
+Windows Terminal and PowerShell), macOS, Linux, and WSL. Its ASCII fallback,
+Windows entrypoint, and stdlib settings-lock/liveness paths have automated test
+coverage. A real Windows TTY session has not yet been manually verified, so
+report terminal-specific rendering or key-handling differences if you encounter
+them. This boundary is specifically for `super-harness init`; it does not claim
+that every lifecycle, observer, or daemon command runs natively on Windows. The
+Unix package-install commands in [Install the CLI](#1-install-the-cli) are
+examples for that shell environment, not the boundary of `init` runtime support.
 
 What `init --setup-github` applies after interactive confirmation (or
 immediately when stdin is not a TTY):
@@ -159,8 +185,11 @@ immediately when stdin is not a TTY):
    producer binary.
 2. Writes `AGENTS.md` (or extends an existing one) with a `super-harness`
    section your AI agent will read.
-   Selected integrations install their existing local gate hooks. Pass
-   `--no-agent` to skip integration configuration.
+   Selected integrations install their existing local gate hooks as one atomic
+   settings transaction. A fresh local settings file creates no backup; changing
+   an existing file creates exactly one sibling backup containing its original
+   bytes; an unchanged reinstall neither writes nor backs up. Pass `--no-agent`
+   to skip integration configuration.
 3. Writes `.github/workflows/super-harness.yml` — the 7-job CI workflow
    (pr-decorate / pr-validate / verification / attest-verify / decision-check /
    doc-check / on-merge).

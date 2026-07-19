@@ -82,11 +82,11 @@ This follow-up retains the approved five-stage wizard and changes only its prese
 - Test: `tests/unit/cli/test_init_plan.py`
 - Test: `tests/integration/cli/test_init.py`
 
-- [ ] **Step 1: Add failing atomic-backup and uninstall tests**
+- [x] **Step 1: Add failing atomic-backup and uninstall tests**
 
 Add tests proving that installing all three hooks into an absent settings file creates no `*.super-harness-backup.*` files, installing into a user-owned settings file creates exactly one backup containing the exact original bytes, and an idempotent reinstall creates no additional backup. Add install/uninstall round trips for both agents: a pre-existing file restores exact original bytes, while a fresh file with only managed hooks is removed and a fresh file with unrelated content retains that content after the managed hooks are stripped. Add an init integration regression asserting a fresh guided-equivalent apply creates the 14 planned files and zero backup files.
 
-- [ ] **Step 2: Run the atomic-backup tests and confirm RED**
+- [x] **Step 2: Run the atomic-backup tests and confirm RED**
 
 Run:
 
@@ -96,19 +96,19 @@ pytest -q tests/unit/adapters/test_install.py tests/unit/adapters/test_settings_
 
 Expected: the fresh and changed-config assertions fail because each adapter currently performs three independent writes and leaves two intermediate backups.
 
-- [ ] **Step 3: Implement one frozen settings transaction**
+- [x] **Step 3: Implement one frozen settings transaction**
 
 Refactor the existing event-specific mutations behind a pure transformation that returns an immutable settings plan containing the settings path, original bytes, desired bytes, `changed`, and `backup_required`. Expose a batch planner with explicit pre-tool, session-start, and stop commands/markers, plus an apply function that first compares the current raw bytes with the frozen original bytes, then calls `_write_backup` once only when the original file existed and the final mapping differs, and writes once. A byte mismatch raises a specific stale-plan error before backup or write. Keep the existing single-event public functions behavior-compatible for their callers and tests.
 
-- [ ] **Step 4: Route preflight, install, and uninstall through the shared transformation**
+- [x] **Step 4: Route preflight, install, and uninstall through the shared transformation**
 
 Add a non-mutating `plan_hook_install` method to the agent-adapter boundary with a default `None` result for adapters that do not manage a local settings file. Codex and Claude Code implement it with the shared batch planner and injectable executable lookup. `adapters.install` wraps that settings plan plus the exact resolved `super-harness-hook` and `super-harness` paths in an immutable integration transaction. Apply accepts the frozen transaction, verifies both executable lookups still resolve to the recorded paths, and delegates its settings plan without recomputing commands or desired bytes. Replace the three sequential merge calls in both adapters with this planned apply while preserving exact markers/matchers, rollback to the pre-install snapshot on any exception, and installed-detail text. When no pristine backup exists, uninstall invokes marker-only removal; it prunes empty event lists and the empty `hooks` mapping, deleting the file only when the resulting top-level mapping is empty.
 
-- [ ] **Step 5: Record planned backups**
+- [x] **Step 5: Record planned backups**
 
 Add immutable integration transactions to `InitPreflight` and `InitPlan`, plus `backup_paths: tuple[Path, ...] = ()` derived from those selected transactions. `inspect_workspace` obtains transactions with the injected executable lookup; `build_init_plan` freezes the selected subset; and the executor passes each exact transaction to `install_agent_integration`. Include a drift regression that mutates settings bytes after review and another that changes executable lookup results: both must fail before creating a backup or modifying settings. A fresh plan and an already-current force plan have no backup paths; a force plan that will actually change existing `.codex/hooks.json` or `.claude/settings.local.json` lists those paths in stable integration order.
 
-- [ ] **Step 6: Run focused tests and confirm GREEN**
+- [x] **Step 6: Run focused tests and confirm GREEN**
 
 Run:
 
@@ -125,7 +125,7 @@ Expected: all selected tests pass; fresh installs have no backups and uninstall 
 - Modify: `src/super_harness/cli/init_ui.py`
 - Test: `tests/unit/cli/test_init_ui.py`
 
-- [ ] **Step 1: Add failing prompt-style and rail tests**
+- [x] **Step 1: Add failing prompt-style and rail tests**
 
 Add tests that inspect Questionary calls and rendered text to require:
 
@@ -137,7 +137,7 @@ Add tests that inspect Questionary calls and rendered text to require:
 
 The tests must assert that selected indicators use the `selected` green token while choice labels use a neutral token, no reverse/background style exists, prompt titles are `Integrations`, `Automated reviewers`, and `GitHub setup`, the review uses only `│` rail prefixes, and backup paths appear under a compact `Local backups` group.
 
-- [ ] **Step 2: Run the UI tests and confirm RED**
+- [x] **Step 2: Run the UI tests and confirm RED**
 
 Run:
 
@@ -147,15 +147,15 @@ pytest -q tests/unit/cli/test_init_ui.py -k 'questionary or prompt or rich_guide
 
 Expected: failures show whole selected rows are green, long prompt titles remain, review uses bare `|`, and the renderer has no opening/closing frame or backup group.
 
-- [ ] **Step 3: Implement the shared prompt vocabulary**
+- [x] **Step 3: Implement the shared prompt vocabulary**
 
 Build Questionary choices with formatted neutral title tokens, style only the selected indicator green, dim unselected indicators/instructions when color is enabled, and pass `qmark="◆"`, `pointer="›"`, and compact explicit instructions. Wrap each `unsafe_ask()` in a narrowly scoped environment guard that sets `PROMPT_TOOLKIT_NO_CPR=1` and restores the caller's prior value afterward.
 
-- [ ] **Step 4: Implement the continuous Rich frame and compact review**
+- [x] **Step 4: Implement the continuous Rich frame and compact review**
 
 Open the renderer once, use the Unicode/ASCII rail consistently for stages and plan rows, shorten prompt titles without removing role descriptions from choices, group file actions, render planned local backups explicitly, and close the rail exactly once on success, cancellation, reinitialization, or failure.
 
-- [ ] **Step 5: Run UI tests and confirm GREEN**
+- [x] **Step 5: Run UI tests and confirm GREEN**
 
 Run:
 
@@ -176,11 +176,11 @@ Expected: all UI tests pass in Unicode, ASCII, color, no-color, wide, and narrow
 - Test: `tests/unit/cli/test_init_ui.py`
 - Test: `tests/integration/cli/test_init.py`
 
-- [ ] **Step 1: Add failing duration, completion, and reinitialization tests**
+- [x] **Step 1: Add failing duration, completion, and reinitialization tests**
 
 Inject a deterministic monotonic clock into `InitExecutor` and assert the result records real elapsed milliseconds. Add guided integration assertions for one framed completion with elapsed time and no duplicate `super-harness initialized at` line. Add repeat-init tests requiring framed `Already initialized`, `super-harness status`, and a secondary `super-harness init --force` recovery action; retain deterministic legacy error formatting outside guided mode.
 
-- [ ] **Step 2: Run the focused tests and confirm RED**
+- [x] **Step 2: Run the focused tests and confirm RED**
 
 Run:
 
@@ -190,15 +190,15 @@ pytest -q tests/unit/cli/test_init_executor.py tests/unit/cli/test_init_ui.py te
 
 Expected: failures show no duration field, duplicate guided completion, and the old overwrite-only force hint.
 
-- [ ] **Step 3: Measure apply duration and render one outcome**
+- [x] **Step 3: Measure apply duration and render one outcome**
 
 Measure around the executor's complete ordered apply sequence using an injected monotonic callable. Store non-negative `elapsed_ms` on the immutable result. Render it only as truthful elapsed feedback (`152ms`, `1.2s`) and suppress the legacy final line only in guided mode; preserve line/non-interactive output contracts.
 
-- [ ] **Step 4: Keep repeat init inside the selected UI backend**
+- [x] **Step 4: Keep repeat init inside the selected UI backend**
 
 Create the UI before the existing-harness guard. Let guided mode render and close a concise framed recovery result; let line/non-interactive modes use `format_error` with the revised status-first hint. `--force` continues into normal configuration/review rather than overwriting silently.
 
-- [ ] **Step 5: Run focused and compatibility tests**
+- [x] **Step 5: Run focused and compatibility tests**
 
 Run:
 
@@ -217,11 +217,11 @@ Expected: all pass with guided and legacy behavior separated explicitly.
 - Modify: `docs/adapters/claude-code.md`
 - Modify: `docs/plans/2026-07-18-init-wizard-cohesion.md`
 
-- [ ] **Step 1: Update the representative guided transcript**
+- [x] **Step 1: Update the representative guided transcript**
 
 Document the single framed session, icon-only selection emphasis, compact review groups, disclosed local backups, one timed outcome, and status-first reinitialization guidance. Update both agent-adapter pages to describe one backup for a changed existing config, zero backup for a fresh/idempotent install, stale-plan rejection, earliest-backup restoration, and marker-only cleanup when no backup exists. Do not claim package-wide Windows support beyond the existing `init` boundary.
 
-- [ ] **Step 2: Run decision and documentation checks**
+- [x] **Step 2: Run decision and documentation checks**
 
 Run:
 
@@ -245,3 +245,28 @@ super-harness verify
 ```
 
 Expected: all commands exit zero and `super-harness verify` reports zero failed checks.
+
+## Implementation record
+
+- Atomic settings planning, apply, rollback, locking, symlink refusal, and stale
+  lock recovery: `5c46354`, `d8ef131`, `fff2ce7`, `77dfd11`, `0e8235f`.
+- Shared Questionary/Rich presentation and follow-up hardening: `91b067f`,
+  `ece0ccd`.
+- Timed outcome, repeat-init recovery, and single-frame closure: `9451050`,
+  `5840d5d`, `49e96b3`.
+- Documentation and final lifecycle/code review are intentionally not recorded as
+  complete until their checks and receipts finish.
+
+Verification on 2026-07-19:
+
+- `super-harness decision check --changed`: clean.
+- `super-harness doc check`: clean.
+- `ruff check src/super_harness tests`: clean.
+- `mypy src/super_harness`: clean (118 source files).
+- Focused adapter/init suite including the Windows entrypoint: 292 passed,
+  1 skipped.
+- `super-harness verify`: passed (5 checks, 0 failed).
+- `git diff --check`: clean.
+- `ruff format --check ...`: pending; it reports 13 implementation/test files
+  require formatting, outside this documentation-only task. Task 4 Step 3 and
+  lifecycle/code review therefore remain open.
