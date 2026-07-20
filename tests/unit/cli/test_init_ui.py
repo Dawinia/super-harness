@@ -1177,7 +1177,7 @@ def test_guided_answer_summary_waits_for_github_resolution(tmp_path: Path) -> No
     )
 
     def resolve_github() -> Any:
-        assert renderer.answers == []
+        assert renderer.answers == [("Workspace", str(tmp_path))]
         return SimpleNamespace(
             root=tmp_path,
             pr_template=SimpleNamespace(
@@ -1195,6 +1195,7 @@ def test_guided_answer_summary_waits_for_github_resolution(tmp_path: Path) -> No
     ui.prepare_plan(request, preflight, github_resolver=resolve_github)
 
     assert renderer.answers == [
+        ("Workspace", str(tmp_path)),
         ("Integrations", "(none)"),
         ("Automated reviewers", "(none)"),
         ("GitHub", "Workflow and PR template"),
@@ -1235,6 +1236,7 @@ def test_guided_answer_summary_renders_explicit_cli_values_once(tmp_path: Path) 
     assert result.decision is WizardDecision.CONFIRM
     assert prompts.calls == []
     assert renderer.answers == [
+        ("Workspace", str(tmp_path)),
         ("Integrations", "Codex, Claude Code"),
         (
             "Automated reviewers",
@@ -1261,6 +1263,7 @@ def test_guided_answer_summary_reports_empty_and_skipped_choices(tmp_path: Path)
 
     assert result.decision is WizardDecision.CONFIRM
     assert renderer.answers == [
+        ("Workspace", str(tmp_path)),
         ("Integrations", "(none)"),
         ("Automated reviewers", "(none)"),
         ("GitHub", "Skipped"),
@@ -1493,10 +1496,10 @@ def test_guided_answer_summary_leaves_current_marker_to_active_prompt(tmp_path: 
 
     ui.run(_request(tmp_path), _preflight())
 
-    completed = [stage for stage, state, _, _ in renderer.stages if state is RailState.COMPLETED]
-    visible = {stage for stage, _, _, _ in renderer.stages}
-    assert completed == [RailStage.PREFLIGHT]
-    assert visible == {RailStage.PREFLIGHT}
+    # The workspace is now a completed ◇ answer, not a stage; the renderer emits no
+    # active/current marker (the ◆ active frame belongs to Questionary).
+    assert ("Workspace", str(tmp_path)) in renderer.answers
+    assert all(state is RailState.COMPLETED for _, state, _, _ in renderer.stages)
 
 
 def test_rich_guided_answer_summary_owns_completed_lines() -> None:
@@ -1526,12 +1529,13 @@ def test_rich_guided_answer_summary_owns_completed_lines() -> None:
 
 
 @pytest.mark.parametrize(
-    ("unicode", "glyph"),
-    [(True, "◇"), (False, "|")],
+    ("unicode", "glyph", "bar"),
+    [(True, "◇", "│"), (False, "o", "|")],
 )
-def test_rich_guided_answer_summary_indents_narrow_continuations(
+def test_rich_guided_answer_summary_wraps_continuations_on_the_spine(
     unicode: bool,
     glyph: str,
+    bar: str,
 ) -> None:
     width = 30
     buffer = StringIO()
@@ -1545,21 +1549,21 @@ def test_rich_guided_answer_summary_indents_narrow_continuations(
     renderer.render_answer("Integrations", "Codex, Claude Code, 编辑器")
 
     lines = buffer.getvalue().splitlines()
-    prefix = f"{glyph}  Integrations  "
-    indent = " " * Text(prefix).cell_len
     assert len(lines) > 1
-    assert lines[0].startswith(prefix)
-    assert all(line.startswith(indent) for line in lines[1:])
+    assert lines[0].startswith(f"{glyph}  Integrations  ")
+    # Continuations hang on the spine, not under the label.
+    assert all(line.startswith(f"{bar}  ") for line in lines[1:])
     assert all(Text(line).cell_len <= width for line in lines)
 
 
 @pytest.mark.parametrize(
-    ("unicode", "glyph", "width"),
-    [(True, "◇", 24), (False, "|", 23)],
+    ("unicode", "glyph", "bar", "width"),
+    [(True, "◇", "│", 24), (False, "o", "|", 23)],
 )
-def test_rich_guided_answer_summary_falls_back_when_prefix_fills_width(
+def test_rich_guided_answer_summary_wraps_label_and_value_on_the_spine(
     unicode: bool,
     glyph: str,
+    bar: str,
     width: int,
 ) -> None:
     buffer = StringIO()
@@ -1574,11 +1578,12 @@ def test_rich_guided_answer_summary_falls_back_when_prefix_fills_width(
     renderer.render_answer("Automated reviewers", value)
 
     lines = buffer.getvalue().splitlines()
-    assert lines[0] == f"{glyph}  Automated reviewers"
+    assert lines[0].rstrip() == f"{glyph}  Automated reviewers"
     assert all(line.strip() for line in lines)
     assert all(Text(line).cell_len <= width for line in lines)
-    assert all(line.startswith("   ") for line in lines[1:])
-    assert " ".join(line.strip() for line in lines[1:]) == value
+    assert all(line.startswith(f"{bar}  ") for line in lines[1:])
+    recon = " ".join(" ".join(line.lstrip(f"{glyph}{bar} ").split()) for line in lines)
+    assert recon == f"Automated reviewers {value}"
 
 
 def test_guided_answer_renderer_is_an_optional_runtime_capability() -> None:
@@ -1604,16 +1609,19 @@ def test_rich_guided_glyphs_are_independent_of_color() -> None:
         width=80,
     )
 
-    unicode_renderer.render_stage(RailStage.PREFLIGHT, RailState.CURRENT, "Inspecting")
-    ascii_renderer.render_stage(RailStage.PREFLIGHT, RailState.CURRENT, "Inspecting")
-    ascii_renderer.render_stage(RailStage.APPLY, RailState.COMPLETED, "Applied")
+    # The renderer's v2 glyph set is chosen by the unicode flag, independent of
+    # color: completed ◇/o, warning ▲/!, failure ✗/x — de-jargoned, on the spine.
+    unicode_renderer.render_answer("Workspace", "/work/proj")
+    ascii_renderer.render_answer("Workspace", "/work/proj")
+    ascii_renderer.render_validation("bad answer")
     ascii_renderer.render_stage(RailStage.OUTCOME, RailState.FAILED, "Failed")
 
-    assert "◆  preflight: Inspecting" in unicode_buffer.getvalue()
+    assert "◇  Workspace  /work/proj" in unicode_buffer.getvalue()
     ascii_text = ascii_buffer.getvalue()
-    assert "+  preflight: Inspecting" in ascii_text
-    assert "*  apply: Applied" in ascii_text
-    assert "x  outcome: Failed" in ascii_text
+    assert "o  Workspace  /work/proj" in ascii_text
+    assert "!  bad answer" in ascii_text
+    assert "x  Failed" in ascii_text
+    assert "preflight:" not in ascii_text
 
 
 def _guided_review_plan(tmp_path: Path) -> InitPlan:
@@ -1846,19 +1854,35 @@ def test_representative_guided_transcript_stays_within_progressive_disclosure_bu
     assert baseline_lines and all(line.strip() for line in baseline_lines)
     assert current_lines and all(line.strip() for line in current_lines)
     assert len(baseline_lines) == 37
-    assert len(current_lines) == 18, transcript
+    assert len(current_lines) == 21, transcript
     reduction = 1 - (len(current_lines) / len(baseline_lines))
     assert 0.40 <= reduction <= 0.60, (
         f"expected a 40%-60% reduction; baseline={len(baseline_lines)}, "
         f"current={len(current_lines)}, reduction={reduction:.1%}"
     )
 
+    # Spine invariant: every persistent line is a corner, a bare-│ separator, or a
+    # content line prefixed by a v2 glyph or the spine followed by two spaces.
+    content_prefixes = ("◇  ", "▲  ", "✗  ", "…  ", "│  ")
+    for line in current_lines:
+        if line.startswith("┌") or line.startswith("└") or line == "│":
+            continue
+        assert line.startswith(content_prefixes), repr(line)
+    # Group spacing: the run of apply outcomes has no internal separators.
+    outcome_run = "◇  Harness configuration\n◇  Agent integrations\n◇  Repository guidance"
+    assert outcome_run in transcript
+    # De-jargon: no internal state-machine vocabulary leaks into the transcript.
+    for jargon in ("preflight:", "Detection is read-only", "Review changes"):
+        assert jargon not in transcript
+    assert "\nFiles\n" not in transcript and "  Files\n" not in transcript
+
+    assert "◇  Workspace  /work/my-project" in transcript
     assert "◇  Integrations  Codex, Claude Code" in transcript
     assert "◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])" in transcript
     assert "◇  GitHub  Workflow and PR template" in transcript
-    assert "11 files" in transcript
-    assert ".harness configuration (9 files)" in transcript
-    assert "5 unchanged files hidden · use --verbose to inspect" in transcript
+    assert "◇  Plan  11 files to write" in transcript
+    assert "│  .harness ×9 · AGENTS.md · .gitignore" in transcript  # noqa: RUF001 - glyphs
+    assert "│  5 unchanged hidden — --verbose to see them" in transcript
     assert "Preserve" not in transcript
     assert str(workspace / ".codex" / "hooks.json") not in transcript
     for group in ("Harness configuration", "Agent integrations", "Repository guidance"):
@@ -1887,34 +1911,24 @@ def test_rich_guided_review_hides_unchanged_and_backup_detail_by_default(
 
     text = buffer.getvalue()
     lines = text.splitlines()
-    compact = "".join(line.lstrip("│|").strip() for line in text.splitlines())
     assert lines[0] == "┌ super-harness init"
-    assert all(line.startswith("│") for line in lines[1:-1])
     assert lines[-1] == "└"
     assert text.count("└") == 1
-    assert lines[1] == "│  Review changes"
-    assert "Integrations" not in text
-    assert "Automated reviewers" not in text
-    assert "GitHub" not in text
-    assert "Ensure workflow and PR template" not in text
-    assert "Files" in text
-    assert "Update    4 files" in text
-    assert "Create    1 file" in text
-    assert "Delete    1 file" in text
-    assert "Preserve" not in text
-    assert "Skip" not in text
-    assert "Back up" not in text
-    assert "2 unchanged files hidden · use --verbose to inspect" in text
-    assert text.count("unchanged files hidden") == 1
-    assert ".harness configuration (2 files)" in text
-    assert str(tmp_path / "AGENTS.md") in compact
-    assert str(tmp_path / ".codex" / "hooks.json") in compact
-    assert str(tmp_path / ".claude" / "settings.local.json") not in compact
-    assert str(tmp_path / ".harness" / "events.jsonl") not in compact
-    assert str(tmp_path / ".harness" / "state.yaml") not in compact
-    assert "hint:" not in text
+    # Spine invariant: interior lines are a bare separator or hang on the spine.
+    for line in lines[1:-1]:
+        assert line == "│" or line.startswith(("◇  ", "│  ")), repr(line)
+    # Flattened: one Plan header, inlined mutation names, one hidden-count line.
+    assert "◇  Plan  6 files to write" in text
+    assert "│  .harness ×3 · AGENTS.md · hooks.json · super-harness.yml" in text  # noqa: RUF001
+    assert "│  2 unchanged hidden — --verbose to see them" in text
+    assert text.count("unchanged hidden") == 1
+    # No v1 structural labels, per-action tree, or hints in the default review.
+    for absent in ("Review changes", "Files", "Preserve", "Skip", "Back up", "hint:"):
+        assert absent not in text
     assert "will be written during apply" not in text
-    assert "File update:" not in text
+    # Default review inlines mutation basenames, not full paths or unchanged files.
+    assert str(tmp_path / "AGENTS.md") not in text
+    assert str(tmp_path / ".harness" / "events.jsonl") not in text
 
 
 def test_rich_guided_verbose_review_restores_exact_action_and_backup_paths(
@@ -1934,20 +1948,15 @@ def test_rich_guided_verbose_review_restores_exact_action_and_backup_paths(
 
     text = buffer.getvalue()
     compact = "".join(line.lstrip("│|").strip() for line in text.splitlines())
-    assert "Review changes" in text
-    assert "Integrations" in text
-    assert "Codex" in text
-    assert "Claude Code" in text
-    assert "Automated reviewers" in text
-    assert "Codex  gpt-5.6-sol" in text
-    assert "Claude  opus[1m]" in text
-    assert "GitHub" in text
-    assert "Ensure workflow and PR template" in text
-    assert "Preserve  1 file" in text
-    assert "Skip      1 file" in text
-    assert "Back up   2 settings files" in text
-    assert "unchanged files hidden" not in text
-    assert ".harness configuration" not in text
+    # Verbose keeps the same spine + Plan header, and adds per-action full paths and
+    # the backup row; it does not re-show integrations/reviewers/GitHub (those are
+    # answers) or collapse .harness.
+    assert "◇  Plan  6 files to write" in text
+    for label in ("Update", "Create", "Delete", "Preserve", "Skip", "Back up"):
+        assert f"│  {label:<9} " in text
+    assert "unchanged hidden" not in text
+    assert ".harness ×" not in text  # noqa: RUF001 - glyphs
+    assert "Review changes" not in text
     for action in plan.file_actions:
         assert str(action.path) in compact
     for path in plan.backup_paths:
@@ -1996,10 +2005,11 @@ def test_rich_guided_narrow_output_drops_hints_and_wraps_paths(tmp_path: Path) -
 
     text = buffer.getvalue()
     compact = "".join(line.lstrip("│|").strip() for line in text.splitlines())
-    assert str(plan.file_actions[0].path) in compact
+    # The default inline review shows basenames (verbose shows full paths).
+    assert plan.file_actions[0].path.name in compact
     assert "will be written during apply" not in text
     assert "..." not in text
-    assert len(text.splitlines()) > len(plan.file_actions)
+    assert all(Text(line).cell_len <= 24 for line in text.splitlines())
 
 
 def test_rich_guided_ascii_review_hides_unchanged_with_ascii_separator(
@@ -2025,9 +2035,9 @@ def test_rich_guided_ascii_review_hides_unchanged_with_ascii_separator(
     renderer.render_plan(plan)
 
     text = byte_buffer.getvalue().decode("ascii")
-    content = " ".join(line.lstrip("|+ ").strip() for line in text.splitlines())
+    content = " ".join(line.lstrip("|+o ").strip() for line in text.splitlines())
     assert text.isascii()
-    assert "2 unchanged files hidden - use --verbose to inspect" in content
+    assert "2 unchanged hidden -- --verbose to see them" in content
     assert "preserved.txt" not in text
     assert "skipped.txt" not in text
 
@@ -2055,16 +2065,17 @@ def test_rich_guided_strict_ascii_escapes_cjk_windows_action_and_keeps_hidden_ro
 
     text = byte_buffer.getvalue().decode("ascii")
     lines = text.splitlines()
-    escaped_path = str(windows_path).encode("ascii", "backslashreplace").decode("ascii")
-    compact = "".join(line.lstrip("|+ ").strip() for line in lines)
+    escaped_name = str(windows_path.name).encode("ascii", "backslashreplace").decode("ascii")
+    compact = "".join(line.lstrip("|+o ").strip() for line in lines)
     assert text.isascii()
     assert lines[0] == "+ super-harness init"
     assert lines[-1] == "+"
-    assert all(line.startswith("|") for line in lines[1:-1])
-    assert escaped_path in compact
-    assert "Create" in text
-    assert "2 unchanged files hidden - use --verbose to inspect" in " ".join(
-        line.lstrip("|+ ").strip() for line in lines
+    # Interior lines are a bare rail or hang on the rail with a glyph/rail prefix.
+    assert all(line == "|" or line.startswith(("o  ", "|  ")) for line in lines[1:-1])
+    # The default inline review shows the escaped basename, not the full path.
+    assert escaped_name in compact
+    assert "2 unchanged hidden -- --verbose to see them" in " ".join(
+        line.lstrip("|+o ").strip() for line in lines
     )
     assert "preserved.txt" not in text
     assert "skipped.txt" not in text
@@ -2091,8 +2102,9 @@ def test_rich_guided_cjk_windows_path_wraps_inside_every_review_rail_line(
     lines = buffer.getvalue().splitlines()
     assert lines[0] == "┌ super-harness init"
     assert lines[-1] == "└"
-    assert all(line.startswith("│") for line in lines[1:-1])
-    assert str(windows_path) in "".join(line.lstrip("│").strip() for line in lines)
+    assert all(line == "│" or line.startswith(("◇  ", "│  ")) for line in lines[1:-1])
+    # The default inline review shows the basename, wrapped on the spine.
+    assert windows_path.name in "".join(line.lstrip("│").strip() for line in lines)
 
 
 def test_guided_step_rendering_accepts_plain_structural_event() -> None:
@@ -2204,7 +2216,8 @@ def test_rich_guided_apply_keeps_github_warning_actionable() -> None:
     )
 
     text = buffer.getvalue()
-    compact = " ".join(text.split())
+    # Drop the spine continuation chars so a wrapped phrase reads contiguously.
+    compact = " ".join(text.replace("│", " ").split())
     assert "▲  GitHub setup" in text
     assert "Settings -> General -> Pull Requests" in compact
     assert "github:" not in text
@@ -2263,7 +2276,9 @@ def test_rich_guided_narrow_apply_and_failure_wrap_without_color_dependency(
     failure_index = next(
         i for i, line in enumerate(plain_lines) if "Agent integrations:" in line
     )
-    assert plain_lines[failure_index + 1].startswith("   ")
+    # The failure detail wraps onto the spine, not under the glyph.
+    bar = "│" if unicode else "|"
+    assert plain_lines[failure_index + 1].startswith(f"{bar}  ")
     close_index = next(
         i
         for i, line in enumerate(plain_lines)

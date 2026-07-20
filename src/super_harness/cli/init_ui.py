@@ -407,10 +407,16 @@ class GuidedAnswerRenderAdapter(Protocol):
     def render_answer(self, label: str, value: str) -> None: ...
 
 
-_RAIL_GLYPHS = {
-    True: dict(zip(RailState, ("◇", "◆", "●", "✗"), strict=True)),
-    False: dict(zip(RailState, ("|", "+", "*", "x"), strict=True)),
-}
+# v2 renderer glyph set — the ONLY glyphs RichGuidedRenderer emits, all on the
+# spine. Live-frame glyphs (◆ ● ○) belong to Questionary's transient prompt chrome
+# and are never composed here (see the design doc's v2 glyph-grammar section).
+_SPINE_CHAR = {True: "│", False: "|"}
+_CORNER_OPEN = {True: "┌", False: "+"}
+_CORNER_CLOSE = {True: "└", False: "+"}
+_GLYPH_COMPLETED = {True: "◇", False: "o"}
+_GLYPH_WARNING = {True: "▲", False: "!"}
+_GLYPH_FAILED = {True: "✗", False: "x"}
+_GLYPH_STARTED = {True: "…", False: "~"}
 
 _FILE_ACTION_HINTS = {
     FileAction.CREATE: "will be written during apply",
@@ -418,11 +424,6 @@ _FILE_ACTION_HINTS = {
     FileAction.DELETE: "will be removed during apply",
     FileAction.PRESERVE: "will be left unchanged",
     FileAction.SKIP: "not part of this run",
-}
-_RAIL_STYLES = dict(zip(RailState, ("dim", "cyan", "green", "red"), strict=True))
-_EVENT_GLYPHS = {
-    True: dict(zip(StepRenderState, ("…", "◇", "▲", "✗", "✗"), strict=True)),
-    False: dict(zip(StepRenderState, ("+", "o", "!", "x", "x"), strict=True)),
 }
 
 _FILE_ACTION_ORDER = (
@@ -478,7 +479,16 @@ def _file_action_display_rows(
 
 
 class RichGuidedRenderer:
-    """Single-column Rich renderer that never acquires live terminal ownership."""
+    """Single-column clack-style renderer: one continuous spine from ``┌`` to ``└``.
+
+    Every persistent line is either a corner (``┌``/``└``), a bare spine separator
+    ``│`` between logical groups, or a content line prefixed by a state glyph or the
+    spine followed by two spaces. The renderer emits only the v2 glyph set
+    (``┌ └ │ ◇ ▲ ✗`` and, verbose-only, ``…``); the live ``◆``/``●``/``○`` frames
+    belong to Questionary and are never composed here.
+    """
+
+    _WRITE_ACTIONS = (FileAction.UPDATE, FileAction.CREATE, FileAction.DELETE)
 
     def __init__(
         self,
@@ -499,29 +509,48 @@ class RichGuidedRenderer:
         self._session_open = False
         self._session_closed = False
         self._terminal_result: tuple[RailState, str, str | None] | None = None
+        # Spine state machine: whether any content has been emitted since the opener,
+        # whether the last line was already a separator (avoid doubles), and whether
+        # the last content line was an apply outcome (its run shares one group).
+        self._content_started = False
+        self._last_was_separator = False
+        self._last_was_outcome = False
+
+    @property
+    def _bar(self) -> str:
+        return _SPINE_CHAR[self._unicode]
 
     def open_session(self) -> None:
         if self._session_open or self._session_closed:
             return
         self._session_open = True
-        self._print(f"{'┌' if self._unicode else '+'} super-harness init")
+        self._print(f"{_CORNER_OPEN[self._unicode]} super-harness init")
+        # The opener counts as prior content so the first group is preceded by a
+        # separator ("the opener is followed by one separator").
+        self._content_started = True
+        self._last_was_separator = False
 
     def close_session(self) -> None:
         if not self._session_open or self._session_closed:
             return
+        corner = _CORNER_CLOSE[self._unicode]
         if self._terminal_result is None:
-            self._print("└" if self._unicode else "+")
+            self._print(corner)
         else:
             state, detail, secondary = self._terminal_result
             separator = "·" if self._unicode else "-"
             content = detail if secondary is None else f"{detail} {separator} {secondary}"
-            self._print_prefixed(
-                f"{'└' if self._unicode else '+'} ",
+            self._group_break()
+            self._emit_wrapped(
+                f"{corner} ",
+                None,
                 content,
                 style="green" if state is RailState.COMPLETED else "red",
             )
         self._session_open = False
         self._session_closed = True
+
+    # --- spine primitives -------------------------------------------------------
 
     def _print(self, value: str, *, style: str | None = None) -> None:
         value = self._output_safe(value)
@@ -543,44 +572,58 @@ class RichGuidedRenderer:
             return value
         return value
 
-    def _print_prefixed(
+    def _separator(self) -> None:
+        """Emit one bare spine line (no trailing whitespace) between groups."""
+        self._print(self._bar)
+        self._last_was_separator = True
+
+    def _group_break(self) -> None:
+        """Insert a separator before a new logical group, avoiding leading/double."""
+        if self._content_started and not self._last_was_separator:
+            self._separator()
+
+    def _emit_wrapped(
         self,
-        prefix: str,
-        value: str,
+        first_prefix: str,
+        cont_prefix: str | None,
+        text: str,
         *,
         style: str | None = None,
     ) -> None:
-        prefix = self._output_safe(prefix)
-        value = self._output_safe(value)
-        prefix_width = Text(prefix).cell_len
-        wrapped = Text(value).wrap(
+        """Emit a content line, wrapping onto ``cont_prefix`` (the spine) if given.
+
+        ``cont_prefix=None`` aligns continuations under the first prefix with spaces
+        (used only by the ``└`` closer, which has no spine after it).
+        """
+        first_prefix = self._output_safe(first_prefix)
+        text = self._output_safe(text)
+        prefix_width = Text(first_prefix).cell_len
+        if cont_prefix is None:
+            cont = " " * prefix_width
+        else:
+            cont = self._output_safe(cont_prefix)
+        wrapped = Text(text).wrap(
             self._console,
             max(1, self._width - prefix_width),
             overflow="fold",
         ) or [Text()]
         for index, line in enumerate(wrapped):
-            leading = prefix if index == 0 else " " * prefix_width
+            leading = first_prefix if index == 0 else cont
             self._print(f"{leading}{line}", style=style)
+        self._content_started = True
+        self._last_was_separator = False
 
-    def _print_review_row(
-        self,
-        rail: str,
-        value: str,
-        *,
-        style: str | None = None,
-    ) -> None:
-        rail = self._output_safe(rail)
-        value = self._output_safe(value)
-        leading_spaces = len(value) - len(value.lstrip(" "))
-        available = max(1, self._width - Text(rail).cell_len - 2)
-        indent = min(leading_spaces, max(0, available - 1))
-        wrapped = Text(value.lstrip(" ")).wrap(
-            self._console,
-            max(1, available - indent),
-            overflow="fold",
-        ) or [Text()]
-        for line in wrapped:
-            self._print(f"{rail}  {' ' * indent}{line}", style=style)
+    def _content(self, glyph: str, text: str, *, style: str | None = None) -> None:
+        """A glyph-led content line whose wraps hang on the spine."""
+        bar = self._bar
+        self._emit_wrapped(f"{glyph}  ", f"{bar}  ", text, style=style)
+
+    def _spine(self, text: str, *, style: str | None = None) -> None:
+        """A spine-led content line (review/warning detail)."""
+        bar = self._bar
+        self._emit_wrapped(f"{bar}  ", f"{bar}  ", text, style=style)
+
+    # --- public render surface --------------------------------------------------
 
     def render_stage(
         self,
@@ -590,127 +633,106 @@ class RichGuidedRenderer:
         *,
         secondary: str | None = None,
     ) -> None:
-        self._print(
-            f"{_RAIL_GLYPHS[self._unicode][state]}  {stage.value}: {detail}",
-            style=_RAIL_STYLES[state],
-        )
+        # Kept for the GuidedRenderAdapter protocol. The guided flow now renders the
+        # workspace via render_answer; this stays on-spine and de-jargoned (no
+        # ``stage.value:`` prefix) for any direct caller. The renderer emits only its
+        # v2 glyph set, so a failed stage uses ✗ and everything else the ◇ completed
+        # glyph (there is no renderer "active" glyph — that frame is Questionary's).
+        self._group_break()
+        if state is RailState.FAILED:
+            glyph, style = _GLYPH_FAILED[self._unicode], "red"
+        else:
+            glyph, style = _GLYPH_COMPLETED[self._unicode], "green"
+        self._content(glyph, detail, style=style)
+        self._last_was_outcome = False
         if secondary is not None:
-            self._print(f"{'│' if self._unicode else '|'}  {secondary}", style="dim")
+            self._spine(secondary, style="dim")
 
     def render_answer(self, label: str, value: str) -> None:
-        glyph = self._output_safe(_RAIL_GLYPHS[self._unicode][RailState.PENDING])
-        label = self._output_safe(label)
-        value = self._output_safe(value)
-        heading = f"{glyph}  {label}"
-        prefix = f"{heading}  "
-        prefix_width = Text(prefix).cell_len
-        if prefix_width >= self._width:
-            self._print(heading, style="dim")
-            indent = " " * min(3, max(0, self._width - 1))
-            wrapped_value = Text(value).wrap(
-                self._console,
-                max(1, self._width - Text(indent).cell_len),
-                overflow="fold",
-            )
-            for line in wrapped_value:
-                self._print(f"{indent}{line}", style="dim")
-            return
-        wrapped = Text(value).wrap(
-            self._console,
-            max(1, self._width - prefix_width),
-            overflow="fold",
-        ) or [Text()]
-        for index, line in enumerate(wrapped):
-            leading = prefix if index == 0 else " " * prefix_width
-            self._print(f"{leading}{line}", style="dim")
+        self._group_break()
+        glyph = _GLYPH_COMPLETED[self._unicode]
+        self._content(glyph, f"{label}  {value}", style="green")
+        self._last_was_outcome = False
 
     def render_plan(self, plan: InitPlan) -> None:
         owns_session = not self._session_open
         if owns_session:
             self.open_session()
-        rail = "│" if self._unicode else "|"
-        self._print_review_row(rail, "Review changes")
+        self._group_break()
+        glyph = _GLYPH_COMPLETED[self._unicode]
+        writes = sum(item.action in self._WRITE_ACTIONS for item in plan.file_actions)
+        noun = "file" if writes == 1 else "files"
+        self._content(glyph, f"Plan  {writes} {noun} to write", style="green")
+        self._last_was_outcome = False
+
         if self._verbose:
-            integration_labels = {option.value: option.label for option in _INTEGRATIONS}
-            self._print_review_row(rail, "Integrations")
-            if plan.integrations:
-                for integration in plan.integrations:
-                    self._print_review_row(
-                        rail, f"  {integration_labels.get(integration, integration)}"
-                    )
-            else:
-                self._print_review_row(rail, "  (none)")
-
-            self._print_review_row(rail, "Automated reviewers")
-            if plan.review_models:
-                for source, model in plan.review_models.items():
-                    self._print_review_row(rail, f"  {source.title()}  {model}")
-            else:
-                self._print_review_row(rail, "  Human review only")
-
-            self._print_review_row(rail, "GitHub")
-            github = (
-                "Ensure workflow and PR template"
-                if plan.github_decision is GitHubDecision.CREATE
-                else "Skip GitHub setup"
+            self._render_plan_verbose(plan)
+        else:
+            inline = self._inline_mutation_paths(plan)
+            if inline:
+                self._spine(inline)
+            hidden = sum(
+                item.action in {FileAction.PRESERVE, FileAction.SKIP}
+                for item in plan.file_actions
             )
-            self._print_review_row(rail, f"  {github}")
-
-        self._print_review_row(rail, "Files")
-        visible_actions = (
-            _FILE_ACTION_ORDER
-            if self._verbose
-            else (FileAction.UPDATE, FileAction.CREATE, FileAction.DELETE)
-        )
-        for action in visible_actions:
-            count = sum(item.action is action for item in plan.file_actions)
-            if count == 0:
-                continue
-            noun = "file" if count == 1 else "files"
-            self._print_review_row(rail, f"  {_FILE_ACTION_LABELS[action]:<9} {count} {noun}")
-            for row in _file_action_display_rows(
-                plan,
-                action,
-                collapse_harness=not self._verbose,
-            ):
-                self._print_review_row(rail, f"    {row}")
-        if self._verbose and plan.backup_paths:
-            noun = "settings file" if len(plan.backup_paths) == 1 else "settings files"
-            self._print_review_row(rail, f"  {'Back up':<9} {len(plan.backup_paths)} {noun}")
-            for path in plan.backup_paths:
-                self._print_review_row(rail, f"    {path}")
-        if not self._verbose:
-            hidden_count = sum(
-                item.action in {FileAction.PRESERVE, FileAction.SKIP} for item in plan.file_actions
-            )
-            if hidden_count:
-                noun = "file" if hidden_count == 1 else "files"
-                separator = "·" if self._unicode else "-"
-                self._print_review_row(
-                    rail,
-                    f"  {hidden_count} unchanged {noun} hidden "
-                    f"{separator} use --verbose to inspect",
+            if hidden:
+                dash = "—" if self._unicode else "--"
+                self._spine(
+                    f"{hidden} unchanged hidden {dash} --verbose to see them",
                     style="dim",
                 )
         if owns_session:
             self.close_session()
 
+    def _inline_mutation_paths(self, plan: InitPlan) -> str:
+        writes = [item for item in plan.file_actions if item.action in self._WRITE_ACTIONS]
+        harness = [item for item in writes if ".harness" in item.path.parts]
+        others = [item for item in writes if ".harness" not in item.path.parts]
+        times = "×" if self._unicode else "x"  # noqa: RUF001 - intentional count glyph
+        parts: list[str] = []
+        if len(harness) > 1:
+            parts.append(f".harness {times}{len(harness)}")
+        elif harness:
+            parts.append(harness[0].path.name)
+        parts.extend(item.path.name for item in others)
+        sep = " · " if self._unicode else " - "
+        return sep.join(parts)
+
+    def _render_plan_verbose(self, plan: InitPlan) -> None:
+        sep = " · " if self._unicode else " - "
+        for action in _FILE_ACTION_ORDER:
+            count = sum(item.action is action for item in plan.file_actions)
+            if count == 0:
+                continue
+            rows = _file_action_display_rows(plan, action, collapse_harness=False)
+            self._spine(f"{_FILE_ACTION_LABELS[action]:<9} " + sep.join(rows))
+        if plan.backup_paths:
+            self._spine("Back up   " + sep.join(str(path) for path in plan.backup_paths))
+
     def render_validation(self, message: str) -> None:
-        self._print(f"{'!' if self._unicode else 'x'}  {message}", style="yellow")
+        self._group_break()
+        self._content(_GLYPH_WARNING[self._unicode], message, style="yellow")
+        self._last_was_outcome = False
 
     def render_event(self, event: StepEventLike) -> None:
         state = event.state.value if isinstance(event.state, Enum) else str(event.state)
-        glyphs = {key.value: value for key, value in _EVENT_GLYPHS[self._unicode].items()}
         label = _PUBLIC_STEP_LABELS.get(event.step_id, "Setup")
         if self._verbose and state in {
             StepRenderState.STARTED.value,
             StepRenderState.SUCCEEDED.value,
         }:
-            self._print_prefixed(
-                f"{glyphs[state]}  ",
+            glyph = (
+                _GLYPH_STARTED[self._unicode]
+                if state == StepRenderState.STARTED.value
+                else _GLYPH_COMPLETED[self._unicode]
+            )
+            self._group_break()
+            self._content(
+                glyph,
                 f"{label}: {event.detail}",
                 style="dim" if state == StepRenderState.STARTED.value else "green",
             )
+            self._last_was_outcome = False
             return
         if state == StepRenderState.STARTED.value:
             return
@@ -722,14 +744,20 @@ class RichGuidedRenderer:
                 and members <= self._succeeded_steps
                 and label not in self._rendered_outcomes
             ):
-                self._print_prefixed(f"{glyphs[state]}  ", label, style="green")
+                # Consecutive outcomes share one group (no separator between them).
+                if not self._last_was_outcome:
+                    self._group_break()
+                self._content(_GLYPH_COMPLETED[self._unicode], label, style="green")
+                self._last_was_outcome = True
                 self._rendered_outcomes.add(label)
             return
-        self._print_prefixed(
-            f"{glyphs.get(state, '|')}  ",
-            f"{label}: {event.detail}",
-            style="yellow" if state == StepRenderState.WARNED.value else "red",
-        )
+        # Warning or failure: its own group, actionable detail on the spine.
+        self._group_break()
+        if state == StepRenderState.WARNED.value:
+            self._content(_GLYPH_WARNING[self._unicode], f"{label}: {event.detail}", style="yellow")
+        else:
+            self._content(_GLYPH_FAILED[self._unicode], f"{label}: {event.detail}", style="red")
+        self._last_was_outcome = False
 
     def render_result(
         self,
@@ -1120,12 +1148,14 @@ class InteractiveInitUI:
         initial_choices: InitChoices | None = None,
         github_resolver: GithubResolver | None = None,
     ) -> WizardResult:
-        self._renderer.render_stage(
-            RailStage.PREFLIGHT,
-            RailState.COMPLETED,
-            f"Inspected {request.workspace}",
-            secondary="Detection is read-only",
-        )
+        if isinstance(self._renderer, GuidedAnswerRenderAdapter):
+            self._renderer.render_answer("Workspace", str(request.workspace))
+        else:
+            self._renderer.render_stage(
+                RailStage.PREFLIGHT,
+                RailState.COMPLETED,
+                f"Workspace  {request.workspace}",
+            )
         choices = initial_choices
         effective_assume_yes = request.assume_yes if assume_yes is None else assume_yes
         while True:

@@ -777,7 +777,8 @@ def test_init_guided_compacts_github_apply_warning(
         ["--workspace", str(tmp_path), "init", "--no-agent"],
     )
 
-    compact = " ".join(result.output.split())
+    # Drop spine continuation chars so a wrapped phrase reads contiguously.
+    compact = " ".join(result.output.replace("│", " ").split())
     assert result.exit_code == 0, result.output
     assert "Applying setup" not in compact
     assert "GitHub setup" in compact

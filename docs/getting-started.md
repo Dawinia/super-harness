@@ -107,37 +107,46 @@ will reflect your machine):
 ```text
 $ super-harness init --setup-github
 ┌ super-harness init
-●  preflight: Inspected /work/my-project
-│  Detection is read-only
+│
+◇  Workspace  /work/my-project
+│
 ◇  Integrations  Codex, Claude Code
+│
 ◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])
+│
 ◇  GitHub  Workflow and PR template
-│  Review changes
-│  Files
-│    Update    11 files
-│      .harness configuration (9 files)
-│      /work/my-project/AGENTS.md
-│      /work/my-project/.gitignore
-│    5 unchanged files hidden · use --verbose to inspect
+│
+◇  Plan  11 files to write
+│  .harness ×9 · AGENTS.md · .gitignore
+│  5 unchanged hidden — --verbose to see them
+│
 ◇  Harness configuration
 ◇  Agent integrations
 ◇  Repository guidance
-▲  GitHub setup: GitHub repository settings need manual confirmation.
-│  Settings -> General -> Pull Requests.
+│
+▲  GitHub setup: GitHub repository settings need manual confirmation. Settings -> General -> Pull Requests.
+│
 └ Setup complete in 3.1s · Next: super-harness status
 ```
 
-The default guided review shows only creates, updates, and deletes. Preserved
-and skipped files are summarized as hidden unchanged detail, and successful
-apply steps are grouped by user-visible outcome. Run
-`super-harness --verbose init` to expand exact preserved/skipped and backup paths
-in the review and show per-operation apply diagnostics. Verbose mode changes
-only rendering; it does not change the reviewed plan or writes.
+The session reads as one continuous clack-style flow: a single spine (`│`) runs
+from the `┌` opener to the `└` result, one blank spine line separates each group,
+and every completed answer or outcome collapses to a single `◇` line. While you
+answer a question, Questionary draws its own live prompt frame (a `◆` question with
+a `›` pointer); that frame is erased once you answer, leaving only the `◇` summary
+on the spine.
+
+The default guided review is a single `◇ Plan  N files to write` header with the
+changed files inlined and one hidden-count line. Preserved and skipped files are
+summarized as hidden unchanged detail, and successful apply steps are grouped by
+user-visible outcome. Run `super-harness --verbose init` to expand exact
+preserved/skipped and backup paths (as `Update`/`Create`/`Delete`/`Preserve`/`Skip`
+and `Back up` rows on the spine) and show per-operation apply diagnostics. Verbose
+mode changes only rendering; it does not change the reviewed plan or writes.
 
 In the verbose review, if the plan will change an existing `.codex/hooks.json`
-or `.claude/settings.local.json`, the **Files** group includes a **Back up** row
-with that path. The default review leaves that unchanged diagnostic detail
-collapsed.
+or `.claude/settings.local.json`, a **Back up** row lists that path. The default
+review leaves that unchanged diagnostic detail collapsed.
 The adapter transaction is frozen at review time: the original settings bytes,
 desired bytes, and resolved `super-harness` executable paths are checked again
 immediately before apply. If any of them changed, init stops before backing up or
