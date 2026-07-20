@@ -273,23 +273,37 @@ Two disjoint sets. Only the first is renderer output governed by the spine
 invariant, ASCII-mapped, and asserted by tests. The second is Questionary's own
 live chrome, listed only so the illustrative live frames are unambiguous.
 
-**Renderer (persistent) glyphs — authoritative, ASCII-mapped, tested:**
+**Renderer (persistent) glyphs — the exact set the v2 renderer emits:**
 
 - `┌` / `└` — session open / close corners (only these two omit the spine prefix).
+  The `└` closer also carries the single terminal result line — success, cancel, or
+  failure — distinguished by text and color, exactly as the current code does. There
+  is no separate cancellation glyph.
 - `│` — the permanent spine and the bare group separator. It no longer doubles as
   content indentation; file details hang directly on the spine.
-- `◇` — a completed answer or a completed apply outcome (green).
+- `◇` — a completed answer, a completed apply outcome, or the workspace line
+  (green).
 - `▲` — a warning that needs attention (yellow).
-- `✗` — a failed step (red).
-- `■` — a cancellation.
+- `✗` — a failed apply step (red).
+- `…` — an in-progress apply step, **verbose only** (the `_EVENT_GLYPHS` started
+  glyph).
 
-The renderer's ASCII fallback for this set is defined by the existing
-`_RAIL_GLYPHS` / `_EVENT_GLYPHS` tables in `init_ui.py` (v2 does not change the
-character choices — it only stops the renderer from ever emitting the live-frame
-glyphs). The fallback preserves the hierarchy and spine invariant; color reinforces
-state but never carries it alone. **The renderer never emits `◆`, `●`, or `○`**, so
-those are absent from the renderer grammar and its ASCII tables, and no portability
-test asserts them.
+**Table reconciliation (the actual code delta).** The current `_RAIL_GLYPHS` table
+maps `RailState.CURRENT → ◆` and `RailState.COMPLETED → ●`, and today `render_stage`
+emits the `●` (COMPLETED) glyph for the preflight line — that is exactly why the v1
+transcript shows `●  preflight:`. v2 must therefore **reconcile these tables** so the
+renderer emits only the set above: the workspace becomes a `◇` completed answer (not
+the `●` stage glyph), completed answers/outcomes are `◇` throughout, and the renderer
+stops emitting `◆`/`●`. Whether the unused `◆`/`●` entries are removed from
+`_RAIL_GLYPHS` or simply left unreferenced, **the invariant is that no glyph the
+renderer emits falls outside the set above**, and the ASCII fallback entries in
+`_RAIL_GLYPHS`/`_EVENT_GLYPHS` for the emitted glyphs preserve the hierarchy. This
+reconciliation is an explicit step in plan Task V2.2. (Resolves plan-review CODX-009
+round-6 / CLR-009: the doc no longer claims the tables already match, and names the
+required table delta.)
+
+**The renderer never emits `◆`, `●`, or `○`** after this reconciliation, so those are
+absent from the emitted renderer grammar and no portability test asserts them.
 
 **Questionary (live, transient) glyphs — out of scope, not renderer output:**
 
@@ -373,9 +387,10 @@ command:
 │  Fix the error above, then: super-harness init --force
 ```
 
-Cancellation before any write ends in one line: `■  Cancelled — nothing was
-written`. Repeat-init renders the existing status/force guidance inside one
-compact `▲ Already initialized` block.
+Cancellation before any write ends on the closer line:
+`└  Cancelled — nothing was written` (the terminal result carried by `└`, as the
+code already does — no separate cancel glyph). Repeat-init renders the existing
+status/force guidance inside one compact `▲ Already initialized` block.
 
 ## Verbose interaction contract (v2)
 

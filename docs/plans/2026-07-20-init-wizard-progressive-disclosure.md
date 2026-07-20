@@ -274,6 +274,14 @@ the v1 tasks are done, the v2 task below is the active work.)
   *content* lines only — the bare-`│` separator is a first-class helper output, not
   a violation (this is what lets V2.2 satisfy the V2.1 invariant; resolves
   plan-review CODX-005 / CLR-006).
+- [ ] Reconcile the glyph tables to the v2 renderer set. Today `_RAIL_GLYPHS` maps
+  `RailState.CURRENT → ◆` and `RailState.COMPLETED → ●`, and `render_stage` emits
+  the `●` COMPLETED glyph for the preflight line. Change the renderer so it emits
+  only `┌ └ │ ◇ ▲ ✗` (+ the `…` started `_EVENT_GLYPHS` glyph in verbose): completed
+  answers/outcomes and the workspace all render `◇`, and the renderer stops emitting
+  `◆`/`●`. Ensure the ASCII fallback entries for the emitted glyphs stay coherent
+  (resolves plan-review CODX-009 / CLR-009). Add a test asserting the persistent
+  transcript emits no glyph outside this set.
 - [ ] Emit the former preflight stage as a `◇ Workspace <path>` answer; drop the
   `Detection is read-only` secondary line.
 - [ ] Collapse the default review to a single `◇ Plan  N files to write` header
@@ -281,8 +289,9 @@ the v1 tasks are done, the v2 task below is the active work.)
   one-line hidden-count disclosure; wrap inlined names on the spine when they
   exceed width. Remove the `Review changes` and `Files` labels and the extra
   indentation levels.
-- [ ] Keep apply outcomes, the `▲` warning block, `✗` failure + recovery line,
-  `■` cancel, and the `└` result on the spine with the group-spacing rule.
+- [ ] Keep apply outcomes, the `▲` warning block, and the `✗` failure + recovery
+  line on the spine; render the terminal result (success, cancel, or failure) on the
+  `└` closer line as today (no separate cancel glyph), with the group-spacing rule.
 - [ ] Confirm GREEN.
 
 ### Task V2.3: Update verbose, portability, and doc evidence
