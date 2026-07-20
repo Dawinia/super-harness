@@ -257,7 +257,7 @@ the v1 tasks are done, the v2 task below is the active work.)
 
 ### Task V2.1: Lock the spine invariant and de-jargoned grammar with tests
 
-- [x] Add failing tests asserting, on the representative default *persistent*
+- [ ] Add failing tests asserting, on the representative default *persistent*
   guided transcript (live Questionary prompt frames are erased and out of scope):
   - every non-blank line is one of: the `┌`/`└` corners; a bare spine separator
     `│` with no trailing whitespace; or a content line whose first two cells are a
@@ -268,24 +268,24 @@ the v1 tasks are done, the v2 task below is the active work.)
   - the transcript contains no `preflight:`, no `Detection is read-only`, and no
     standalone `Review changes` or `Files` label;
   - the workspace appears as a plain `◇ Workspace <path>` answer line.
-- [x] Add failing tests that assert the same spine invariant and glyph set over the
+- [ ] Add failing tests that assert the same spine invariant and glyph set over the
   **non-happy** persistent paths too, so no uncovered renderer method can violate
   the grammar: a validation/invalid-answer transcript (`render_validation`), an
   apply-failure transcript (`render_event` FAILED + recovery line), a cancel
   transcript, and an already-initialized transcript. Assert none emits `!` or any
   glyph outside `┌ └ │ ◇ ▲ ✗` (+ `…` verbose).
-- [x] Confirm RED.
+- [ ] Confirm RED.
 
 ### Task V2.2: Reflow `RichGuidedRenderer` onto the spine
 
-- [x] Route every guided line through one spine-prefixing helper with exactly three
+- [ ] Route every guided line through one spine-prefixing helper with exactly three
   emission modes: a **content** line prefixed `glyph+"  "`, a **content** line
   prefixed `"│  "`, and a **bare-`│` separator** line (no trailing whitespace).
   Centralize the one-separator-between-groups rule. The prohibition is on bare
   *content* lines only — the bare-`│` separator is a first-class helper output, not
   a violation (this is what lets V2.2 satisfy the V2.1 invariant; resolves
   plan-review CODX-005 / CLR-006).
-- [x] Reconcile the glyph tables to the v2 renderer set. Today `_RAIL_GLYPHS` maps
+- [ ] Reconcile the glyph tables to the v2 renderer set. Today `_RAIL_GLYPHS` maps
   `RailState.CURRENT → ◆` and `RailState.COMPLETED → ●`, and `render_stage` emits
   the `●` COMPLETED glyph for the preflight line. Change the renderer so it emits
   only `┌ └ │ ◇ ▲ ✗` (+ the `…` started `_EVENT_GLYPHS` glyph in verbose): completed
@@ -293,38 +293,38 @@ the v1 tasks are done, the v2 task below is the active work.)
   `◆`/`●`. Ensure the ASCII fallback entries for the emitted glyphs stay coherent
   (resolves plan-review CODX-009 / CLR-009). Add a test asserting the persistent
   transcript emits no glyph outside this set.
-- [x] Emit the former preflight stage as a `◇ Workspace <path>` answer; drop the
+- [ ] Emit the former preflight stage as a `◇ Workspace <path>` answer; drop the
   `Detection is read-only` secondary line.
-- [x] Collapse the default review to a single `◇ Plan  N files to write` header
+- [ ] Collapse the default review to a single `◇ Plan  N files to write` header
   with changed paths inlined on one spine line separated by ` · `, keeping the
   one-line hidden-count disclosure; wrap inlined names on the spine when they
   exceed width. Remove the `Review changes` and `Files` labels and the extra
   indentation levels.
-- [x] Bring `render_validation` onto the spine: replace its `!` glyph with the
+- [ ] Bring `render_validation` onto the spine: replace its `!` glyph with the
   in-set `▲` caution on a spine content line (resolves plan-review CODX-010 /
   CLR-010). Confirm no renderer method (`render_stage`, `render_answer`,
   `render_plan`, `render_event`, `render_validation`, `render_result`/
   `close_session`) emits off-spine or off-set output.
-- [x] Keep apply outcomes, the `▲` warning block, and the `✗` failure + recovery
+- [ ] Keep apply outcomes, the `▲` warning block, and the `✗` failure + recovery
   line on the spine; render the terminal result on the `└` closer line as today.
   Keep the existing result/next/cancel wording (`Setup complete in …` /
   `Next: super-harness status` / `Setup cancelled` / `Setup failed after …`) so
   `InteractiveInitUI._render_cancelled` and the result text are unchanged and the
   change stays inside the presentation scope (resolves plan-review CODX-011 /
   CLR-011).
-- [x] Confirm GREEN.
+- [ ] Confirm GREEN.
 
 ### Task V2.3: Update verbose, portability, and doc evidence
 
-- [x] Verbose review adds preserved/skipped and backup rows on the spine under the
+- [ ] Verbose review adds preserved/skipped and backup rows on the spine under the
   `◇ Plan` header without changing plan/executor/writes; assert same-plan/same-calls
   parity between default and verbose still holds.
-- [x] Refresh ASCII, no-color, and narrow-width snapshots to the spine grammar;
+- [ ] Refresh ASCII, no-color, and narrow-width snapshots to the spine grammar;
   confirm the ASCII map and on-spine wrapping preserve hierarchy and never truncate
   paths.
-- [x] Confirm the representative default transcript still meets the 40–60%
+- [ ] Confirm the representative default transcript still meets the 40–60%
   line-budget test versus the checked-in baseline.
-- [x] Replace the representative transcript in `docs/getting-started.md` with the v2
+- [ ] Replace the representative transcript in `docs/getting-started.md` with the v2
   capture.
 
 ### Task V2.4: Manual acceptance (non-gating)
@@ -336,61 +336,16 @@ product's installer and cannot be automated here). Marking Tasks V2.1–V2.3 com
 does **not** imply this was done; this task tracks it explicitly so it cannot be
 silently skipped. (Resolves plan-review CODX-002 round-5 / CLR-008.)
 
-- [x] Initialize the same fixture repo with CodeGraph's installer and with
+- [ ] Initialize the same fixture repo with CodeGraph's installer and with
   `super-harness init`, side by side.
-- [x] Compare visual hierarchy, answer recall, review scan time, and absence of
+- [ ] Compare visual hierarchy, answer recall, review scan time, and absence of
   debug-style narration; record the observation (pass/fail + notes) in the
   acceptance-evidence block below. A negative result reopens V2.2, not the gate.
 
-### v2 acceptance evidence (GREEN)
+### v2 acceptance evidence (to be filled after GREEN)
 
-Tasks V2.1–V2.4 are complete; `pytest tests/`, `ruff check`, and `mypy` on
-`init_ui.py` are green.
-
-Representative default guided transcript (re-rendered via the same test helper):
-
-| Profile | Nonblank lines | Evidence |
-| --- | ---: | --- |
-| 120-column Unicode/color | 21 | ANSI present; 43.2% fewer than the 37-line baseline (within the 40–60% budget); continuous spine, concrete answers, one `◇ Plan` review header, grouped apply, warning, and result |
-| 44-column `NO_COLOR`/ASCII | 26 | ASCII-only; wraps hang on the `\|` spine and never truncate; hierarchy preserved |
-
-The 44-column ASCII capture:
-
-```text
-+ super-harness init
-|
-o  Workspace  /work/my-project
-|
-o  Integrations  Codex, Claude Code
-|
-o  Automated reviewers  Codex (gpt-5.6-sol),
-|  Claude (opus[1m])
-|
-o  GitHub  Workflow and PR template
-|
-o  Plan  11 files to write
-|  .harness x9 - AGENTS.md - .gitignore
-|  5 unchanged hidden -- --verbose to see
-|  them
-|
-o  Harness configuration
-o  Agent integrations
-o  Repository guidance
-|
-!  GitHub setup: GitHub repository settings
-|  need manual confirmation. Settings ->
-|  General -> Pull Requests.
-|
-+ Setup complete in 3.1s - Next:
-  super-harness status
-```
-
-**Task V2.4 manual-acceptance observation (non-gating):** The v2 grammar was
-built to the clack / CodeGraph installer conventions studied for this change
-(continuous `│` spine from `┌` to `└`, one blank spine line between groups, every
-completed answer/outcome collapsed to a single `◇`, delta-only review). A literal
-side-by-side run against CodeGraph's own installer was **not** performed in this
-environment (it requires that separate product). Assessment against the intended
-qualities — visual hierarchy, answer recall, fast review scan, no debug narration —
-is **pass** on the rendered transcripts above. This remains a manual step, not a CI
-gate, per the design doc's v2 verification note.
+The same commands as the v1 evidence block above re-render the representative
+transcript; record the v2 wide/narrow nonblank-line counts and paste the v2 narrow
+ASCII capture here. Record the Task V2.4 manual-acceptance observation here as well.
+The CodeGraph parity comparison stays a manual step, not a CI gate, per the design
+doc's v2 verification note.
