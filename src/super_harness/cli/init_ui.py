@@ -380,6 +380,7 @@ class RailState(str, Enum):
 class GuidedRenderAdapter(Protocol):
     def open_session(self) -> None: ...
     def close_session(self) -> None: ...
+    def render_answer(self, label: str, value: str) -> None: ...
     def render_stage(
         self,
         stage: RailStage,
@@ -519,6 +520,12 @@ class RichGuidedRenderer:
         )
         if secondary is not None:
             self._print(f"{'│' if self._unicode else '|'}  {secondary}", style="dim")
+
+    def render_answer(self, label: str, value: str) -> None:
+        self._print(
+            f"{_RAIL_GLYPHS[self._unicode][RailState.PENDING]}  {label}  {value}",
+            style="dim",
+        )
 
     def render_plan(self, plan: InitPlan) -> None:
         owns_session = not self._session_open
@@ -912,7 +919,6 @@ class InteractiveInitUI:
         return ChoiceCollectionResult(ChoiceCollectionDecision.REVIEW, choices)
 
     def review(self, plan: InitPlan, *, assume_yes: bool = False) -> ReviewDecision:
-        self._renderer.render_stage(RailStage.REVIEW, RailState.CURRENT, "Review planned setup")
         self._renderer.render_plan(plan)
         if assume_yes:
             return ReviewDecision.CONFIRM
@@ -929,6 +935,38 @@ class InteractiveInitUI:
                 return ReviewDecision(answer)
             except ValueError:
                 self._renderer.render_validation("Choose confirm, back, or cancel.")
+
+    def _render_answers(self, plan: InitPlan) -> None:
+        render_answer = getattr(self._renderer, "render_answer", None)
+        if render_answer is None:
+            return
+        integration_labels = {option.value: option.label for option in _INTEGRATIONS}
+        integrations = ", ".join(
+            integration_labels.get(integration, integration)
+            for integration in plan.integrations
+        )
+        render_answer("Integrations", integrations or "(none)")
+
+        producers = {option.value: option for option in _REVIEW_PRODUCERS}
+        reviewer_answers: list[str] = []
+        for producer in plan.review_producers:
+            option = producers[producer]
+            if option.source is None:
+                continue
+            label = option.label.removesuffix(" CLI")
+            reviewer_answers.append(f"{label} ({plan.review_models[option.source]})")
+        render_answer(
+            "Automated reviewers",
+            ", ".join(reviewer_answers) or "(none)",
+        )
+        render_answer(
+            "GitHub",
+            (
+                "Workflow and PR template"
+                if plan.github_decision is GitHubDecision.CREATE
+                else "Skipped"
+            ),
+        )
 
     def prepare_plan(
         self,
@@ -952,18 +990,13 @@ class InteractiveInitUI:
             if collection.decision is ChoiceCollectionDecision.CANCEL:
                 return WizardResult.cancelled()
             choices, github_plan = _resolve_github_choices(collection.choices, github_resolver)
-            self._renderer.render_stage(
-                RailStage.CONFIGURATION,
-                RailState.COMPLETED,
-                "Configuration collected",
-            )
             plan = build_init_plan(request, preflight, choices)
+            self._render_answers(plan)
             decision = self.review(plan, assume_yes=effective_assume_yes)
             if decision is ReviewDecision.BACK:
                 continue
             if decision is ReviewDecision.CANCEL:
                 return WizardResult.cancelled()
-            self._renderer.render_stage(RailStage.REVIEW, RailState.COMPLETED, "Plan confirmed")
             return WizardResult.confirmed(plan, github_plan)
 
     def run(

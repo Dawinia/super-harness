@@ -945,6 +945,7 @@ class _FakeGuidedRenderer:
     def __init__(self) -> None:
         self.live_depth = 0
         self.stages: list[tuple[RailStage, RailState, str, str | None]] = []
+        self.answers: list[tuple[str, str]] = []
         self.plans: list[InitPlan] = []
         self.validations: list[str] = []
         self.events: list[Any] = []
@@ -969,6 +970,10 @@ class _FakeGuidedRenderer:
     def render_plan(self, plan: InitPlan) -> None:
         assert self.live_depth == 0
         self.plans.append(plan)
+
+    def render_answer(self, label: str, value: str) -> None:
+        assert self.live_depth == 0
+        self.answers.append((label, value))
 
     def render_validation(self, message: str) -> None:
         assert self.live_depth == 0
@@ -1145,7 +1150,7 @@ def test_guided_collects_github_after_integrations_and_reviewers(tmp_path: Path)
     assert result.choices.github_decision is GitHubDecision.CREATE
 
 
-def test_guided_completes_configuration_after_github_resolution(tmp_path: Path) -> None:
+def test_guided_answer_summary_waits_for_github_resolution(tmp_path: Path) -> None:
     prompts = _FakePromptAdapter(selects=["create", "confirm"])
     ui, renderer = _guided_ui(prompts)
     request = replace(_request(tmp_path), no_agent=True)
@@ -1156,10 +1161,7 @@ def test_guided_completes_configuration_after_github_resolution(tmp_path: Path) 
     )
 
     def resolve_github() -> Any:
-        assert not any(
-            stage is RailStage.CONFIGURATION and state is RailState.COMPLETED
-            for stage, state, _, _ in renderer.stages
-        )
+        assert renderer.answers == []
         return SimpleNamespace(
             root=tmp_path,
             pr_template=SimpleNamespace(
@@ -1176,17 +1178,81 @@ def test_guided_completes_configuration_after_github_resolution(tmp_path: Path) 
 
     ui.prepare_plan(request, preflight, github_resolver=resolve_github)
 
-    completed_index = next(
-        index
-        for index, (stage, state, _, _) in enumerate(renderer.stages)
-        if stage is RailStage.CONFIGURATION and state is RailState.COMPLETED
+    assert renderer.answers == [
+        ("Integrations", "(none)"),
+        ("Automated reviewers", "(none)"),
+        ("GitHub", "Workflow and PR template"),
+    ]
+    details = [detail for _, _, detail, _ in renderer.stages]
+    assert "Configuration collected" not in details
+    assert "Review planned setup" not in details
+    assert "Plan confirmed" not in details
+
+
+def test_guided_answer_summary_renders_explicit_cli_values_once(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter()
+    ui, renderer = _guided_ui(prompts)
+    request = replace(
+        _request(
+            tmp_path,
+            integrations=("codex", "claude-code"),
+            producers=("codex-cli", "claude-cli"),
+            models={"codex": "gpt-explicit", "claude": "opus-explicit"},
+        ),
+        setup_github=True,
     )
-    review_index = next(
-        index
-        for index, (stage, state, _, _) in enumerate(renderer.stages)
-        if stage is RailStage.REVIEW and state is RailState.CURRENT
+
+    result = ui.prepare_plan(
+        request,
+        _preflight(
+            available_integrations=frozenset({"codex", "claude-code"}),
+            detected_producers=("codex-cli", "claude-cli"),
+            available_producers=frozenset({"codex-cli", "claude-cli"}),
+            reviewer_model_candidates={
+                "codex": (
+                    ReviewerModelCandidate("codex", "gpt-explicit", "explicit", 0),
+                ),
+                "claude": (
+                    ReviewerModelCandidate("claude", "opus-explicit", "explicit", 0),
+                ),
+            },
+        ),
+        assume_yes=True,
     )
-    assert completed_index < review_index
+
+    assert result.decision is WizardDecision.CONFIRM
+    assert prompts.calls == []
+    assert renderer.answers == [
+        ("Integrations", "Codex, Claude Code"),
+        (
+            "Automated reviewers",
+            "Codex (gpt-explicit), Claude (opus-explicit)",
+        ),
+        ("GitHub", "Workflow and PR template"),
+    ]
+
+
+def test_guided_answer_summary_reports_empty_and_skipped_choices(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(checkboxes=[(), ()])
+    ui, renderer = _guided_ui(prompts)
+
+    result = ui.prepare_plan(
+        _request(tmp_path),
+        _preflight(
+            detected_integrations=(),
+            available_integrations=frozenset(),
+            detected_producers=(),
+            available_producers=frozenset({"codex-cli"}),
+        ),
+        assume_yes=True,
+    )
+
+    assert result.decision is WizardDecision.CONFIRM
+    assert renderer.answers == [
+        ("Integrations", "(none)"),
+        ("Automated reviewers", "(none)"),
+        ("GitHub", "Skipped"),
+    ]
 
 
 def test_guided_selects_from_multiple_configured_models(tmp_path: Path) -> None:
@@ -1405,7 +1471,7 @@ def test_guided_never_has_a_live_renderer_while_any_prompt_owns_input(
     assert len(prompts.checkbox_calls) + len(prompts.text_calls) + len(prompts.select_calls) == 3
 
 
-def test_guided_completed_rail_order_and_five_stage_visibility(tmp_path: Path) -> None:
+def test_guided_answer_summary_removes_redundant_lifecycle_stages(tmp_path: Path) -> None:
     prompts = _FakePromptAdapter(
         checkboxes=[("codex",), ("codex-cli",)],
         texts=["gpt-model"],
@@ -1417,8 +1483,34 @@ def test_guided_completed_rail_order_and_five_stage_visibility(tmp_path: Path) -
 
     completed = [stage for stage, state, _, _ in renderer.stages if state is RailState.COMPLETED]
     visible = {stage for stage, _, _, _ in renderer.stages}
-    assert completed == [RailStage.PREFLIGHT, RailStage.CONFIGURATION, RailStage.REVIEW]
-    assert visible == {RailStage.PREFLIGHT, RailStage.CONFIGURATION, RailStage.REVIEW}
+    assert completed == [RailStage.PREFLIGHT]
+    assert visible == {RailStage.PREFLIGHT, RailStage.CONFIGURATION}
+
+
+def test_rich_guided_answer_summary_owns_completed_lines() -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=120, color_system=None),
+        unicode=True,
+        color=False,
+        width=120,
+    )
+
+    renderer.render_answer("Integrations", "Codex, Claude Code")
+    renderer.render_answer(
+        "Automated reviewers",
+        "Codex (gpt-5.6-sol), Claude (opus[1m])",
+    )
+    renderer.render_answer("GitHub", "Workflow and PR template")
+
+    text = buffer.getvalue()
+    assert "◇  Integrations  Codex, Claude Code" in text
+    assert "◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])" in text
+    assert "◇  GitHub  Workflow and PR template" in text
+    assert "done (" not in text
+    assert "Configuration collected" not in text
+    assert "Review planned" not in text
+    assert "Plan confirmed" not in text
 
 
 def test_rich_guided_glyphs_are_independent_of_color() -> None:
