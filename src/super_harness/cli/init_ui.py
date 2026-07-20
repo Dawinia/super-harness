@@ -391,6 +391,13 @@ class GuidedRenderAdapter(Protocol):
     def render_plan(self, plan: InitPlan) -> None: ...
     def render_validation(self, message: str) -> None: ...
     def render_event(self, event: StepEventLike) -> None: ...
+    def render_result(
+        self,
+        state: RailState,
+        detail: str,
+        *,
+        secondary: str | None = None,
+    ) -> None: ...
 
 
 @runtime_checkable
@@ -414,8 +421,8 @@ _FILE_ACTION_HINTS = {
 }
 _RAIL_STYLES = dict(zip(RailState, ("dim", "cyan", "green", "red"), strict=True))
 _EVENT_GLYPHS = {
-    True: dict(zip(StepRenderState, ("…", "✓", "!", "✗", "!"), strict=True)),
-    False: dict(zip(StepRenderState, ("+", "*", "!", "x", "x"), strict=True)),
+    True: dict(zip(StepRenderState, ("…", "◇", "▲", "✗", "✗"), strict=True)),
+    False: dict(zip(StepRenderState, ("+", "o", "!", "x", "x"), strict=True)),
 }
 
 _FILE_ACTION_ORDER = (
@@ -433,13 +440,19 @@ _FILE_ACTION_LABELS = {
     FileAction.SKIP: "Skip",
 }
 _PUBLIC_STEP_LABELS = {
-    "scaffold": "Harness scaffolding",
+    "scaffold": "Harness configuration",
     "skeleton_config": "Harness configuration",
-    "review_config": "Review configuration",
+    "review_config": "Harness configuration",
     "agent_integrations": "Agent integrations",
-    "agents_md": "AGENTS.md",
-    "gitignore": ".gitignore",
+    "agents_md": "Repository guidance",
+    "gitignore": "Repository guidance",
     "github": "GitHub setup",
+}
+_PUBLIC_OUTCOME_MEMBERS = {
+    "Harness configuration": frozenset({"scaffold", "skeleton_config", "review_config"}),
+    "Agent integrations": frozenset({"agent_integrations"}),
+    "Repository guidance": frozenset({"agents_md", "gitignore"}),
+    "GitHub setup": frozenset({"github"}),
 }
 
 
@@ -481,9 +494,11 @@ class RichGuidedRenderer:
         self._width = max(1, width)
         self._verbose = verbose
         self._console = console or Console(color_system="auto" if color else None, width=width)
-        self._apply_started = False
+        self._succeeded_steps: set[str] = set()
+        self._rendered_outcomes: set[str] = set()
         self._session_open = False
         self._session_closed = False
+        self._terminal_result: tuple[RailState, str, str | None] | None = None
 
     def open_session(self) -> None:
         if self._session_open or self._session_closed:
@@ -494,7 +509,17 @@ class RichGuidedRenderer:
     def close_session(self) -> None:
         if not self._session_open or self._session_closed:
             return
-        self._print("└" if self._unicode else "+")
+        if self._terminal_result is None:
+            self._print("└" if self._unicode else "+")
+        else:
+            state, detail, secondary = self._terminal_result
+            separator = "·" if self._unicode else "-"
+            content = detail if secondary is None else f"{detail} {separator} {secondary}"
+            self._print_prefixed(
+                f"{'└' if self._unicode else '+'} ",
+                content,
+                style="green" if state is RailState.COMPLETED else "red",
+            )
         self._session_open = False
         self._session_closed = True
 
@@ -504,6 +529,23 @@ class RichGuidedRenderer:
             overflow="fold",
             crop=False,
         )
+
+    def _print_prefixed(
+        self,
+        prefix: str,
+        value: str,
+        *,
+        style: str | None = None,
+    ) -> None:
+        prefix_width = Text(prefix).cell_len
+        wrapped = Text(value).wrap(
+            self._console,
+            max(1, self._width - prefix_width),
+            overflow="fold",
+        ) or [Text()]
+        for index, line in enumerate(wrapped):
+            leading = prefix if index == 0 else " " * prefix_width
+            self._print(f"{leading}{line}", style=style)
 
     def _print_review_row(
         self,
@@ -618,8 +660,7 @@ class RichGuidedRenderer:
                 self._print_review_row(rail, f"    {path}")
         if not self._verbose:
             hidden_count = sum(
-                item.action in {FileAction.PRESERVE, FileAction.SKIP}
-                for item in plan.file_actions
+                item.action in {FileAction.PRESERVE, FileAction.SKIP} for item in plan.file_actions
             )
             if hidden_count:
                 noun = "file" if hidden_count == 1 else "files"
@@ -639,27 +680,48 @@ class RichGuidedRenderer:
     def render_event(self, event: StepEventLike) -> None:
         state = event.state.value if isinstance(event.state, Enum) else str(event.state)
         glyphs = {key.value: value for key, value in _EVENT_GLYPHS[self._unicode].items()}
-        if not self._apply_started:
-            self.render_stage(RailStage.APPLY, RailState.CURRENT, "Applying setup")
-            self._apply_started = True
+        label = _PUBLIC_STEP_LABELS.get(event.step_id, "Setup")
+        if self._verbose and state in {
+            StepRenderState.STARTED.value,
+            StepRenderState.SUCCEEDED.value,
+        }:
+            self._print_prefixed(
+                f"{glyphs[state]}  ",
+                f"{label}: {event.detail}",
+                style="dim" if state == StepRenderState.STARTED.value else "green",
+            )
+            return
         if state == StepRenderState.STARTED.value:
             return
         if state == StepRenderState.SUCCEEDED.value:
-            if event.step_id in {"scaffold", "skeleton_config", "agents_md"}:
-                return
-            detail = {
-                "review_config": "Harness configuration ready",
-                "gitignore": "AGENTS.md and .gitignore updated",
-            }.get(event.step_id, event.detail)
-            if event.step_id == "agent_integrations" and detail.startswith("No agent"):
-                return
-            self._print(f"{glyphs[state]}  {detail}", style="green")
+            self._succeeded_steps.add(event.step_id)
+            members = _PUBLIC_OUTCOME_MEMBERS.get(label)
+            if (
+                members is not None
+                and members <= self._succeeded_steps
+                and label not in self._rendered_outcomes
+            ):
+                self._print_prefixed(f"{glyphs[state]}  ", label, style="green")
+                self._rendered_outcomes.add(label)
             return
-        label = _PUBLIC_STEP_LABELS.get(event.step_id, "Setup")
-        self._print(
-            f"{glyphs.get(state, '|')}  {label}: {event.detail}",
+        self._print_prefixed(
+            f"{glyphs.get(state, '|')}  ",
+            f"{label}: {event.detail}",
             style="yellow" if state == StepRenderState.WARNED.value else "red",
         )
+
+    def render_result(
+        self,
+        state: RailState,
+        detail: str,
+        *,
+        secondary: str | None = None,
+    ) -> None:
+        if self._session_closed or self._terminal_result is not None:
+            return
+        if not self._session_open:
+            self.open_session()
+        self._terminal_result = (state, detail, secondary)
 
 
 class WizardDecision(str, Enum):
@@ -1006,8 +1068,7 @@ class InteractiveInitUI:
             return
         integration_labels = {option.value: option.label for option in _INTEGRATIONS}
         integrations = ", ".join(
-            integration_labels.get(integration, integration)
-            for integration in plan.integrations
+            integration_labels.get(integration, integration) for integration in plan.integrations
         )
         self._renderer.render_answer("Integrations", integrations or "(none)")
 
@@ -1082,20 +1143,17 @@ class InteractiveInitUI:
         return result
 
     def _render_cancelled(self) -> None:
-        self._renderer.render_stage(RailStage.APPLY, RailState.PENDING, "No writes started")
-        self._renderer.render_stage(RailStage.OUTCOME, RailState.COMPLETED, "Setup cancelled")
+        self._renderer.render_result(RailState.COMPLETED, "Setup cancelled")
 
     def render_cancelled(self) -> None:
         self._render_cancelled()
 
     def render_interrupted(self) -> None:
-        self._renderer.render_stage(RailStage.APPLY, RailState.PENDING, "No writes started")
-        self._renderer.render_stage(RailStage.OUTCOME, RailState.FAILED, "Setup interrupted")
+        self._renderer.render_result(RailState.FAILED, "Setup interrupted")
 
     def render_already_initialized(self, harness: object) -> None:
         del harness
-        self._renderer.render_stage(
-            RailStage.OUTCOME,
+        self._renderer.render_result(
             RailState.COMPLETED,
             "Already initialized",
             secondary=(
@@ -1116,14 +1174,11 @@ class InteractiveInitUI:
         state = RailState.COMPLETED if result.success else RailState.FAILED
         elapsed = _format_elapsed(result.elapsed_ms)
         detail = (
-            f"Setup complete in {elapsed}"
-            if result.success
-            else f"{result.message or 'Setup failed'} after {elapsed}"
+            f"Setup complete in {elapsed}" if result.success else f"Setup failed after {elapsed}"
         )
         command = result.next_command if result.success else result.recovery_command
         command_label = "Next" if result.success else "Recovery"
-        self._renderer.render_stage(
-            RailStage.OUTCOME,
+        self._renderer.render_result(
             state,
             detail,
             secondary=f"{command_label}: {command}" if command else None,

@@ -34,8 +34,13 @@ _FAKE_HOOK = "/usr/local/bin/super-harness-hook"
 def _assert_single_guided_frame(output: str, final_content: str) -> None:
     assert output.count("┌ super-harness init") == 1
     assert output.count("└") == 1
-    assert output.index("┌ super-harness init") < output.index(final_content)
-    assert output.index(final_content) < output.index("└")
+    lines = output.splitlines()
+    closing = [line for line in lines if line.startswith("└ ")]
+    assert len(closing) == 1
+    close_index = lines.index(closing[0])
+    closing_block = " ".join(line.strip() for line in lines[close_index:])
+    assert final_content in closing_block
+    assert all(line.startswith("  ") for line in lines[close_index + 1 :])
 
 
 def _assert_init_owned_paths_absent(root: Path) -> None:
@@ -181,6 +186,9 @@ class _PlanCaptureRenderer:
         return None
 
     def render_event(self, _event: Any) -> None:
+        return None
+
+    def render_result(self, *_args: Any, **_kwargs: Any) -> None:
         return None
 
 
@@ -348,9 +356,7 @@ def test_init_guided_verbose_changes_only_rendering_for_confirmed_plan(
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True)
     (home / ".claude").mkdir()
-    (home / ".codex" / "config.toml").write_text(
-        f'model = "gpt-review"\napi_key = "{secret}"\n'
-    )
+    (home / ".codex" / "config.toml").write_text(f'model = "gpt-review"\napi_key = "{secret}"\n')
     (home / ".claude" / "settings.json").write_text(
         json.dumps({"model": "claude-review", "apiKey": secret})
     )
@@ -364,9 +370,11 @@ def test_init_guided_verbose_changes_only_rendering_for_confirmed_plan(
         lambda request: inspect_workspace(
             request,
             executable_lookup=(
-                lambda name: f"/abs/bin/{name}"
-                if name in {"codex", "claude", "super-harness", "super-harness-hook"}
-                else None
+                lambda name: (
+                    f"/abs/bin/{name}"
+                    if name in {"codex", "claude", "super-harness", "super-harness-hook"}
+                    else None
+                )
             ),
             home=home,
         ),
@@ -437,6 +445,8 @@ def test_init_guided_verbose_changes_only_rendering_for_confirmed_plan(
     assert _snapshot_files(tmp_path) == before
     assert secret not in default.output
     assert secret not in verbose.output
+    assert "scaffold complete" not in default.output
+    assert "Harness configuration: scaffold complete" in verbose.output
 
 
 def test_init_guided_verbose_rejection_has_no_executor_calls_or_writes(
@@ -445,9 +455,7 @@ def test_init_guided_verbose_rejection_has_no_executor_calls_or_writes(
     secret = "token-secret-like-value-never-render"
     home = tmp_path / "home"
     (home / ".codex").mkdir(parents=True)
-    (home / ".codex" / "config.toml").write_text(
-        f'model = "gpt-review"\napi_key = "{secret}"\n'
-    )
+    (home / ".codex" / "config.toml").write_text(f'model = "gpt-review"\napi_key = "{secret}"\n')
     capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, True, 100)
     monkeypatch.setattr(
         "super_harness.cli.init.detect_runtime_terminal_capabilities",
@@ -580,7 +588,7 @@ def test_init_guided_prompt_interrupt_stays_inside_the_single_frame(
 
     assert result.exit_code == 1, result.output
     assert "Aborted!" not in result.output
-    _assert_single_guided_frame(result.output, "outcome: Setup interrupted")
+    _assert_single_guided_frame(result.output, "Setup interrupted")
     _assert_init_owned_paths_absent(tmp_path)
 
 
@@ -771,13 +779,16 @@ def test_init_guided_compacts_github_apply_warning(
 
     compact = " ".join(result.output.split())
     assert result.exit_code == 0, result.output
-    assert "◆ apply: Applying setup" in compact
+    assert "Applying setup" not in compact
     assert "GitHub setup" in compact
     assert "Settings -> General -> Pull Requests" in compact
     assert "gh CLI: ok" not in result.output
     assert "wrote .github" not in result.output
     assert "could not auto-enable repo merge settings" not in result.output
     assert "skeleton_config" not in result.output
+    assert result.output.count("Harness configuration") == 1
+    assert result.output.count("Agent integrations") == 1
+    assert result.output.count("Repository guidance") == 1
 
 
 def test_init_guided_uses_configured_reviewer_models_without_text_input(
@@ -1110,7 +1121,7 @@ def test_init_guided_existing_harness_uses_cohesive_status_first_recovery(
     assert "Next: super-harness status" in repeated.output
     assert "Review/reconfigure: super-harness init --force" in repeated.output
     assert "Error: super-harness init" not in repeated.output
-    _assert_single_guided_frame(repeated.output, "Review/reconfigure")
+    _assert_single_guided_frame(repeated.output, "Already initialized")
 
 
 def test_init_guided_success_has_one_completion_without_legacy_final_line(
@@ -1141,9 +1152,55 @@ def test_init_guided_success_has_one_completion_without_legacy_final_line(
     )
 
     assert result.exit_code == 0, result.output
-    assert result.output.count("outcome: Setup complete in ") == 1
+    assert result.output.count("Setup complete in ") == 1
+    assert "outcome:" not in result.output
+    assert "Applying setup" not in result.output
+    assert result.output.count("◇  Harness configuration") == 1
+    assert result.output.count("◇  Agent integrations") == 1
+    assert result.output.count("◇  Repository guidance") == 1
     assert "super-harness initialized at" not in result.output
-    _assert_single_guided_frame(result.output, "outcome: Setup complete in ")
+    _assert_single_guided_frame(result.output, "Setup complete in ")
+
+
+def test_init_guided_apply_failure_keeps_actionable_failure_and_one_recovery_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, True, 44)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.create_init_ui",
+        lambda *_a, **_kw: InteractiveInitUI(
+            prompt_adapter=_GuidedAnswers(checkboxes=[()], selects=["confirm"]),
+            unicode=True,
+            color=False,
+            width=44,
+        ),
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(request, executable_lookup=lambda _name: None),
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inject_gitignore_block",
+        lambda _path: (_ for _ in ()).throw(OSError("read-only repository guidance")),
+    )
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "init", "--no-agent"],
+    )
+
+    compact = " ".join(result.output.split())
+    assert result.exit_code == 1, result.output
+    assert "✗  Repository guidance:" in result.output
+    assert "failed to write .gitignore" in compact
+    assert result.output.count("Setup failed after ") == 1
+    assert "Recovery: super-harness init --force" in compact
+    assert "outcome:" not in result.output
+    _assert_single_guided_frame(result.output, "Setup failed after ")
 
 
 def test_init_guided_apply_interrupt_closes_frame_after_recovery(

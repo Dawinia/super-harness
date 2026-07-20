@@ -951,6 +951,7 @@ class _FakeGuidedRenderer:
         self.plans: list[InitPlan] = []
         self.validations: list[str] = []
         self.events: list[Any] = []
+        self.results: list[tuple[RailState, str, str | None]] = []
 
     def open_session(self) -> None:
         return None
@@ -984,6 +985,16 @@ class _FakeGuidedRenderer:
     def render_event(self, event: Any) -> None:
         assert self.live_depth == 0
         self.events.append(event)
+
+    def render_result(
+        self,
+        state: RailState,
+        detail: str,
+        *,
+        secondary: str | None = None,
+    ) -> None:
+        assert self.live_depth == 0
+        self.results.append((state, detail, secondary))
 
 
 class _FakePromptAdapter:
@@ -1211,12 +1222,8 @@ def test_guided_answer_summary_renders_explicit_cli_values_once(tmp_path: Path) 
             detected_producers=("codex-cli", "claude-cli"),
             available_producers=frozenset({"codex-cli", "claude-cli"}),
             reviewer_model_candidates={
-                "codex": (
-                    ReviewerModelCandidate("codex", "gpt-explicit", "explicit", 0),
-                ),
-                "claude": (
-                    ReviewerModelCandidate("claude", "opus-explicit", "explicit", 0),
-                ),
+                "codex": (ReviewerModelCandidate("codex", "gpt-explicit", "explicit", 0),),
+                "claude": (ReviewerModelCandidate("claude", "opus-explicit", "explicit", 0),),
             },
         ),
         assume_yes=True,
@@ -1735,7 +1742,7 @@ def test_rich_guided_verbose_review_restores_exact_action_and_backup_paths(
         assert str(path) in compact
 
 
-def test_rich_guided_explicit_session_keeps_review_open_until_final_outcome(
+def test_rich_guided_terminal_result_closes_session_once_without_empty_rail(
     tmp_path: Path,
 ) -> None:
     buffer = StringIO()
@@ -1749,8 +1756,7 @@ def test_rich_guided_explicit_session_keeps_review_open_until_final_outcome(
     renderer.open_session()
     renderer.render_plan(_plan(tmp_path))
     assert "└" not in buffer.getvalue()
-    renderer.render_stage(
-        RailStage.OUTCOME,
+    renderer.render_result(
         RailState.COMPLETED,
         "Setup complete in 152ms",
         secondary="Next: super-harness status",
@@ -1761,8 +1767,7 @@ def test_rich_guided_explicit_session_keeps_review_open_until_final_outcome(
     text = buffer.getvalue()
     assert text.count("┌ super-harness init") == 1
     assert text.count("└") == 1
-    assert text.index("┌ super-harness init") < text.index("Setup complete in 152ms")
-    assert text.index("Setup complete in 152ms") < text.index("└")
+    assert text.splitlines()[-1] == "└ Setup complete in 152ms · Next: super-harness status"
 
 
 def test_rich_guided_narrow_output_drops_hints_and_wraps_paths(tmp_path: Path) -> None:
@@ -1850,7 +1855,7 @@ def test_guided_step_rendering_accepts_plain_structural_event() -> None:
     assert renderer.events == [event]
 
 
-def test_rich_guided_apply_groups_successes_without_internal_step_ids() -> None:
+def test_rich_guided_apply_groups_successes_once_without_internal_chatter() -> None:
     buffer = StringIO()
     renderer = RichGuidedRenderer(
         console=Console(file=buffer, width=100, color_system=None),
@@ -1875,17 +1880,26 @@ def test_rich_guided_apply_groups_successes_without_internal_step_ids() -> None:
         StepRenderEvent("agents_md", StepRenderState.SUCCEEDED, "Updated AGENTS.md."),
         StepRenderEvent("gitignore", StepRenderState.SUCCEEDED, "Updated .gitignore."),
         StepRenderEvent("github", StepRenderState.SUCCEEDED, "GitHub files ensured."),
+        StepRenderEvent("review_config", StepRenderState.SUCCEEDED, "duplicate"),
+        StepRenderEvent("gitignore", StepRenderState.SUCCEEDED, "duplicate"),
+        StepRenderEvent("github", StepRenderState.SUCCEEDED, "duplicate"),
     )
 
     for event in events:
         renderer.render_event(event)
 
     text = buffer.getvalue()
-    assert text.count("apply: Applying setup") == 1
-    assert "Harness configuration ready" in text
-    assert "Codex and Claude Code integrations configured" in text
-    assert "AGENTS.md and .gitignore updated" in text
-    assert "GitHub files ensured" in text
+    assert "Applying setup" not in text
+    assert "started" not in text
+    assert text.count("◇  Harness configuration") == 1
+    assert text.count("◇  Agent integrations") == 1
+    assert text.count("◇  Repository guidance") == 1
+    assert text.count("◇  GitHub setup") == 1
+    assert "Harness configuration ready" not in text
+    assert "Codex and Claude Code integrations configured" not in text
+    assert "AGENTS.md and .gitignore updated" not in text
+    assert "GitHub files ensured" not in text
+    assert "duplicate" not in text
     for internal_id in (
         "scaffold:",
         "skeleton_config",
@@ -1896,6 +1910,29 @@ def test_rich_guided_apply_groups_successes_without_internal_step_ids() -> None:
         "github:",
     ):
         assert internal_id not in text
+
+
+def test_rich_guided_verbose_apply_retains_per_operation_diagnostics() -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=100, color_system=None),
+        unicode=True,
+        color=False,
+        width=100,
+        verbose=True,
+    )
+
+    renderer.render_event(
+        StepRenderEvent("scaffold", StepRenderState.STARTED, "Scaffolding .harness.")
+    )
+    renderer.render_event(
+        StepRenderEvent("scaffold", StepRenderState.SUCCEEDED, "Scaffolded .harness.")
+    )
+
+    text = buffer.getvalue()
+    assert "…  Harness configuration: Scaffolding .harness." in text
+    assert "◇  Harness configuration: Scaffolded .harness." in text
+    assert "✓" not in text
 
 
 def test_rich_guided_apply_keeps_github_warning_actionable() -> None:
@@ -1918,9 +1955,73 @@ def test_rich_guided_apply_keeps_github_warning_actionable() -> None:
 
     text = buffer.getvalue()
     compact = " ".join(text.split())
-    assert "GitHub setup" in text
+    assert "▲  GitHub setup" in text
     assert "Settings -> General -> Pull Requests" in compact
     assert "github:" not in text
+    assert "Applying setup" not in text
+
+
+@pytest.mark.parametrize(
+    ("unicode", "color", "success_glyph", "failure_glyph", "close_glyph"),
+    [
+        (True, False, "◇", "✗", "└"),
+        (False, False, "o", "x", "+"),
+        (False, True, "o", "x", "+"),
+    ],
+)
+def test_rich_guided_narrow_apply_and_failure_wrap_without_color_dependency(
+    unicode: bool,
+    color: bool,
+    success_glyph: str,
+    failure_glyph: str,
+    close_glyph: str,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(
+            file=buffer,
+            width=28,
+            color_system="standard" if color else None,
+        ),
+        unicode=unicode,
+        color=color,
+        width=28,
+    )
+    renderer.open_session()
+    for step_id in ("scaffold", "skeleton_config", "review_config"):
+        renderer.render_event(StepRenderEvent(step_id, StepRenderState.SUCCEEDED, "done"))
+    renderer.render_event(
+        StepRenderEvent(
+            "agent_integrations",
+            StepRenderState.FAILED,
+            "Settings changed after review; rerun init and inspect the refreshed plan.",
+        )
+    )
+    renderer.render_result(
+        RailState.FAILED,
+        "Setup failed after 1.2s",
+        secondary="Recovery: super-harness init --force",
+    )
+    renderer.close_session()
+
+    text = buffer.getvalue()
+    lines = text.splitlines()
+    assert f"{success_glyph}  Harness configuration" in text
+    assert f"{failure_glyph}  Agent integrations:" in text
+    assert all(Text.from_ansi(line).cell_len <= 28 for line in lines)
+    failure_index = next(i for i, line in enumerate(lines) if "Agent integrations:" in line)
+    assert lines[failure_index + 1].startswith("   ")
+    close_index = next(
+        i for i, line in enumerate(lines) if line.startswith(f"{close_glyph} Setup failed")
+    )
+    assert all(line.startswith("  ") for line in lines[close_index + 1 :])
+    assert "Recovery: super-harness init --force" in " ".join(
+        line.strip() for line in lines[close_index:]
+    )
+    if not color:
+        assert "\x1b[" not in text
+    if not unicode:
+        assert text.isascii()
 
 
 @pytest.mark.parametrize(
@@ -1955,7 +2056,8 @@ def test_guided_outcome_includes_the_next_or_recovery_command(
 
     ui.render_outcome(result)
 
-    assert renderer.stages[-1][3] == expected_secondary
+    assert renderer.results[-1][2] == expected_secondary
+    assert renderer.stages == []
 
 
 @pytest.mark.parametrize(
@@ -1984,9 +2086,8 @@ def test_guided_outcome_formats_truthful_elapsed_time(
 
     ui.render_outcome(result)
 
-    assert renderer.stages == [
+    assert renderer.results == [
         (
-            RailStage.OUTCOME,
             RailState.COMPLETED if success else RailState.FAILED,
             expected_detail,
             ("Next: super-harness status" if success else "Recovery: super-harness init --force"),
@@ -2002,9 +2103,8 @@ def test_guided_already_initialized_is_one_status_first_recovery_block(
 
     ui.render_already_initialized(tmp_path / ".harness")
 
-    assert renderer.stages == [
+    assert renderer.results == [
         (
-            RailStage.OUTCOME,
             RailState.COMPLETED,
             "Already initialized",
             ("Next: super-harness status; Review/reconfigure: super-harness init --force"),
@@ -2018,7 +2118,15 @@ def test_guided_prompt_interruption_renders_a_terminal_outcome() -> None:
 
     ui.render_interrupted()
 
-    assert renderer.stages == [
-        (RailStage.APPLY, RailState.PENDING, "No writes started", None),
-        (RailStage.OUTCOME, RailState.FAILED, "Setup interrupted", None),
-    ]
+    assert renderer.results == [(RailState.FAILED, "Setup interrupted", None)]
+    assert renderer.stages == []
+
+
+def test_guided_cancel_is_one_concise_terminal_result() -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+
+    ui.render_cancelled()
+
+    assert renderer.results == [(RailState.COMPLETED, "Setup cancelled", None)]
+    assert renderer.stages == []
