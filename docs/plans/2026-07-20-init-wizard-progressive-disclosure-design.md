@@ -267,21 +267,41 @@ warning). Consecutive same-kind result rows (the run of `◇` apply outcomes) ar
 **not** separated. The opener is followed by one separator; the closer is preceded
 by one separator.
 
-## Glyph grammar (unchanged vocabulary, disambiguated use)
+## Glyph grammar
+
+Two disjoint sets. Only the first is renderer output governed by the spine
+invariant, ASCII-mapped, and asserted by tests. The second is Questionary's own
+live chrome, listed only so the illustrative live frames are unambiguous.
+
+**Renderer (persistent) glyphs — authoritative, ASCII-mapped, tested:**
 
 - `┌` / `└` — session open / close corners (only these two omit the spine prefix).
-- `│` — the permanent spine and the blank group separator. It no longer doubles as
+- `│` — the permanent spine and the bare group separator. It no longer doubles as
   content indentation; file details hang directly on the spine.
 - `◇` — a completed answer or a completed apply outcome (green).
-- `◆` — the one active question or decision (cyan); questionary owns this while it
-  has input, then the block collapses to a single `◇` answer line.
 - `▲` — a warning that needs attention (yellow).
 - `✗` — a failed step (red).
 - `■` — a cancellation.
-- `●` / `○` — selected / unselected option inside an active `◆` block.
 
-ASCII fallback maps `┌│└◆◇▲✗●○■` → `+ | + * o ! x (*) ( ) x` with the hierarchy
-and spine invariant preserved. Color reinforces state but never carries it alone.
+The renderer's ASCII fallback for this set is defined by the existing
+`_RAIL_GLYPHS` / `_EVENT_GLYPHS` tables in `init_ui.py` (v2 does not change the
+character choices — it only stops the renderer from ever emitting the live-frame
+glyphs). The fallback preserves the hierarchy and spine invariant; color reinforces
+state but never carries it alone. **The renderer never emits `◆`, `●`, or `○`**, so
+those are absent from the renderer grammar and its ASCII tables, and no portability
+test asserts them.
+
+**Questionary (live, transient) glyphs — out of scope, not renderer output:**
+
+The active-prompt frame is drawn by the unchanged Questionary backend in its own
+style — a `?`/`◆`-style qmark, a `›` pointer for `select`, and its native checkbox
+marks for `checkbox` — and is erased on completion (`erase_when_done`). These
+glyphs are Questionary's, are off-spine by design, and are neither ASCII-mapped by
+the renderer nor asserted by the transcript/portability tests. The `◆ … / │ ● / ○`
+shapes in illustrative live frames elsewhere in this document are schematic
+placeholders for "Questionary's active frame here," not a claim about its exact
+characters. (Resolves plan-review CODX-001 round-5 / CLR-007: the glyph grammar and
+ASCII map no longer list live-frame glyphs as renderer output.)
 
 ## Default interaction contract (v2)
 

@@ -298,9 +298,25 @@ the v1 tasks are done, the v2 task below is the active work.)
 - [ ] Replace the representative transcript in `docs/getting-started.md` with the v2
   capture.
 
+### Task V2.4: Manual acceptance (non-gating)
+
+This is the actionable checkbox for the CodeGraph parity comparison. It is a
+**manual, non-gating** step — it must be performed and recorded before the change is
+considered done, but it is deliberately NOT a CI gate (it depends on a second
+product's installer and cannot be automated here). Marking Tasks V2.1–V2.3 complete
+does **not** imply this was done; this task tracks it explicitly so it cannot be
+silently skipped. (Resolves plan-review CODX-002 round-5 / CLR-008.)
+
+- [ ] Initialize the same fixture repo with CodeGraph's installer and with
+  `super-harness init`, side by side.
+- [ ] Compare visual hierarchy, answer recall, review scan time, and absence of
+  debug-style narration; record the observation (pass/fail + notes) in the
+  acceptance-evidence block below. A negative result reopens V2.2, not the gate.
+
 ### v2 acceptance evidence (to be filled after GREEN)
 
 The same commands as the v1 evidence block above re-render the representative
 transcript; record the v2 wide/narrow nonblank-line counts and paste the v2 narrow
-ASCII capture here. The CodeGraph parity comparison (CODX-001) stays a manual
-reviewer-checklist step, not a CI gate, per the design doc's v2 verification note.
+ASCII capture here. Record the Task V2.4 manual-acceptance observation here as well.
+The CodeGraph parity comparison stays a manual step, not a CI gate, per the design
+doc's v2 verification note.
