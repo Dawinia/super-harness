@@ -2310,9 +2310,10 @@ def test_rich_guided_narrow_apply_and_failure_wrap_without_color_dependency(
         for i, line in enumerate(plain_lines)
         if line.startswith(f"{close_glyph} Setup failed")
     )
-    assert all(line.startswith("  ") for line in plain_lines[close_index + 1 :])
+    # The wrapped terminal result hangs on the spine, satisfying the invariant.
+    assert all(line.startswith(f"{bar}  ") for line in plain_lines[close_index + 1 :])
     assert "Recovery: super-harness init --force" in " ".join(
-        line.strip() for line in plain_lines[close_index:]
+        line.lstrip(f"{close_glyph}{bar} ") for line in plain_lines[close_index:]
     )
     if not color:
         assert "\x1b[" not in text

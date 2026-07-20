@@ -541,9 +541,11 @@ class RichGuidedRenderer:
             separator = "·" if self._unicode else "-"
             content = detail if secondary is None else f"{detail} {separator} {secondary}"
             self._group_break()
+            # A long terminal result wraps onto the spine like every other content
+            # line, satisfying the spine invariant (no space-indented continuations).
             self._emit_wrapped(
                 f"{corner} ",
-                None,
+                f"{self._bar}  ",
                 content,
                 style="green" if state is RailState.COMPLETED else "red",
             )
@@ -587,28 +589,21 @@ class RichGuidedRenderer:
     def _emit_wrapped(
         self,
         first_prefix: str,
-        cont_prefix: str | None,
+        cont_prefix: str,
         text: str,
         *,
         style: str | None = None,
     ) -> None:
-        """Emit a content line, wrapping onto ``cont_prefix`` (the spine) if given.
-
-        ``cont_prefix=None`` aligns continuations under the first prefix with spaces
-        (used only by the ``└`` closer, which has no spine after it).
-        """
+        """Emit a content line, wrapping continuation lines onto ``cont_prefix`` so
+        wrapped text keeps hanging on the spine (every continuation uses ``│  ``)."""
         first_prefix = self._output_safe(first_prefix)
         text = self._output_safe(text)
-        prefix_width = Text(first_prefix).cell_len
-        if cont_prefix is None:
-            cont = " " * prefix_width
-        else:
-            cont = self._output_safe(cont_prefix)
-        wrapped = Text(text).wrap(
-            self._console,
-            max(1, self._width - prefix_width),
-            overflow="fold",
-        ) or [Text()]
+        cont = self._output_safe(cont_prefix)
+        # Wrap against the WIDER of the two prefixes so a continuation line (which
+        # uses ``cont``) can never exceed the width and get silently re-folded by the
+        # console into a prefix-less fragment.
+        budget = max(1, self._width - max(Text(first_prefix).cell_len, Text(cont).cell_len))
+        wrapped = Text(text).wrap(self._console, budget, overflow="fold") or [Text()]
         for index, line in enumerate(wrapped):
             leading = first_prefix if index == 0 else cont
             self._print(f"{leading}{line}", style=style)

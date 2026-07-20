@@ -38,9 +38,10 @@ def _assert_single_guided_frame(output: str, final_content: str) -> None:
     closing = [line for line in lines if line.startswith("└ ")]
     assert len(closing) == 1
     close_index = lines.index(closing[0])
-    closing_block = " ".join(line.strip() for line in lines[close_index:])
+    closing_block = " ".join(line.lstrip("│| ") for line in lines[close_index:])
     assert final_content in closing_block
-    assert all(line.startswith("  ") for line in lines[close_index + 1 :])
+    # A wrapped terminal result hangs its continuation on the spine.
+    assert all(line.startswith(("│  ", "|  ")) for line in lines[close_index + 1 :])
 
 
 def _assert_init_owned_paths_absent(root: Path) -> None:
@@ -1194,7 +1195,7 @@ def test_init_guided_apply_failure_keeps_actionable_failure_and_one_recovery_clo
         ["--workspace", str(tmp_path), "init", "--no-agent"],
     )
 
-    compact = " ".join(result.output.split())
+    compact = " ".join(result.output.replace("│", " ").split())
     assert result.exit_code == 1, result.output
     assert "✗  Repository guidance:" in result.output
     assert "failed to write .gitignore" in compact
