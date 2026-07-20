@@ -593,7 +593,7 @@ def test_questionary_prompt_adapter_propagates_keyboard_interrupt(
     assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "previous"
 
 
-def test_questionary_prompts_use_compact_native_chrome_and_restore_cpr_environment(
+def test_questionary_prompts_erase_completed_lines_with_native_chrome_and_cpr_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import questionary
@@ -628,13 +628,16 @@ def test_questionary_prompts_use_compact_native_chrome_and_restore_cpr_environme
     checkbox = calls[0][2]
     select = calls[1][2]
     text = calls[2][2]
+    assert checkbox["erase_when_done"] is True
     assert checkbox["qmark"] == "◆"
     assert checkbox["pointer"] == "›"  # noqa: RUF001 - intentional pointer glyph
     assert checkbox["instruction"] == "(↑/↓ move · space select · enter confirm)"
     assert checkbox["choices"][0].title == [("class:choice", "Codex")]
+    assert select["erase_when_done"] is True
     assert select["qmark"] == "◆"
     assert select["pointer"] == "›"  # noqa: RUF001 - intentional pointer glyph
     assert select["instruction"] == "(↑/↓ move · enter confirm)"
+    assert text["erase_when_done"] is True
     assert text["qmark"] == "◆"
     assert "PROMPT_TOOLKIT_NO_CPR" not in os.environ
 

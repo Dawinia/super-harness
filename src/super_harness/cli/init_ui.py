@@ -325,6 +325,7 @@ class QuestionaryPromptAdapter:
                 qmark=self._qmark,
                 pointer=self._pointer,
                 instruction=self._checkbox_instruction,
+                erase_when_done=True,
             )
             answer = question.unsafe_ask()
         return None if answer is None else tuple(cast(list[str], answer))
@@ -335,6 +336,7 @@ class QuestionaryPromptAdapter:
                 message,
                 default=default or "",
                 qmark=self._qmark,
+                erase_when_done=True,
             )
             answer = question.unsafe_ask()
         return None if answer is None else str(answer)
@@ -354,6 +356,7 @@ class QuestionaryPromptAdapter:
                 qmark=self._qmark,
                 pointer=self._pointer,
                 instruction=self._select_instruction,
+                erase_when_done=True,
             )
             answer = question.unsafe_ask()
         return None if answer is None else str(answer)
