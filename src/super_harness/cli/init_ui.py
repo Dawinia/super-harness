@@ -609,31 +609,33 @@ class RichGuidedRenderer:
         owns_session = not self._session_open
         if owns_session:
             self.open_session()
-        integration_labels = {option.value: option.label for option in _INTEGRATIONS}
         rail = "│" if self._unicode else "|"
-        self._print_review_row(rail, "Integrations")
-        if plan.integrations:
-            for integration in plan.integrations:
-                self._print_review_row(
-                    rail, f"  {integration_labels.get(integration, integration)}"
-                )
-        else:
-            self._print_review_row(rail, "  (none)")
+        self._print_review_row(rail, "Review changes")
+        if self._verbose:
+            integration_labels = {option.value: option.label for option in _INTEGRATIONS}
+            self._print_review_row(rail, "Integrations")
+            if plan.integrations:
+                for integration in plan.integrations:
+                    self._print_review_row(
+                        rail, f"  {integration_labels.get(integration, integration)}"
+                    )
+            else:
+                self._print_review_row(rail, "  (none)")
 
-        self._print_review_row(rail, "Automated reviewers")
-        if plan.review_models:
-            for source, model in plan.review_models.items():
-                self._print_review_row(rail, f"  {source.title()}  {model}")
-        else:
-            self._print_review_row(rail, "  Human review only")
+            self._print_review_row(rail, "Automated reviewers")
+            if plan.review_models:
+                for source, model in plan.review_models.items():
+                    self._print_review_row(rail, f"  {source.title()}  {model}")
+            else:
+                self._print_review_row(rail, "  Human review only")
 
-        self._print_review_row(rail, "GitHub")
-        github = (
-            "Ensure workflow and PR template"
-            if plan.github_decision is GitHubDecision.CREATE
-            else "Skip GitHub setup"
-        )
-        self._print_review_row(rail, f"  {github}")
+            self._print_review_row(rail, "GitHub")
+            github = (
+                "Ensure workflow and PR template"
+                if plan.github_decision is GitHubDecision.CREATE
+                else "Skip GitHub setup"
+            )
+            self._print_review_row(rail, f"  {github}")
 
         self._print_review_row(rail, "Files")
         visible_actions = (

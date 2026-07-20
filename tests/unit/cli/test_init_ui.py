@@ -1665,30 +1665,21 @@ def _guided_review_plan(tmp_path: Path) -> InitPlan:
     )
 
 
-# Frozen from the pre-progressive-disclosure renderer grammar at 6fcd6b3^ and
-# composed with the approved design's representative scenario. Workspace paths are
-# normalized, but the scenario is intentionally complete:
-# two integrations and reviewers, GitHub setup, eleven standard updates, five
-# unchanged local agent/GitHub files, one manual GitHub warning, and a successful
-# result. Every fixture line is nonblank so the transcript budget cannot be improved
-# by padding either side with empty lines.
-PRE_PROGRESSIVE_DISCLOSURE_REPRESENTATIVE_TRANSCRIPT = """\
+# Captured from 6fcd6b3 with the actual Questionary adapters inside a 120x80 tmux
+# pane (Unicode, no color). The scenario uses two integrations and reviewers,
+# GitHub setup, 11 UPDATE / 3 PRESERVE / 2 SKIP file actions, six successful
+# executor events, one GitHub warning, and a successful result. Workspace paths are
+# normalized. Every fixture line is nonblank so blank-line padding cannot improve
+# the transcript budget.
+PRE_PROGRESSIVE_DISCLOSURE_REPRESENTATIVE_TRANSCRIPT = (
+    """\
 ┌ super-harness init
 ●  preflight: Inspected /work/my-project
 │  Detection is read-only
 ◆  configuration: Choose integrations and reviews
-◆ Integrations  (↑/↓ move · space select · enter confirm)
-\u203a ● Codex  detected · recommended
-  ● Claude Code  detected · recommended
-◇  Integrations: done (2 selections)
-◆ Automated reviewers  (↑/↓ move · space select · enter confirm)
-\u203a ● Codex reviewer — runs via Codex CLI  gpt-5.6-sol
-  ● Claude reviewer — runs via Claude CLI  opus[1m]
-◇  Automated reviewers: done (2 selections)
-◆ GitHub setup  (↑/↓ move · enter confirm)
-  ○ Skip GitHub setup
-\u203a ● Configure GitHub
-◇  GitHub setup: Configure GitHub
+◆ Integrations done (2 selections)
+◆ Automated reviewers done (2 selections)
+◆ GitHub setup Configure GitHub
 ●  configuration: Configuration collected
 ◆  review: Review planned setup
 │  Integrations
@@ -1701,35 +1692,29 @@ PRE_PROGRESSIVE_DISCLOSURE_REPRESENTATIVE_TRANSCRIPT = """\
 │    Ensure workflow and PR template
 │  Files
 │    Update    11 files
-│      /work/my-project/.harness/events.jsonl
-│      /work/my-project/.harness/state.yaml
-│      /work/my-project/.harness/sensors.yaml
-│      /work/my-project/.harness/verification.yaml
-│      /work/my-project/.harness/source-paths.yaml
-│      /work/my-project/.harness/gates.yaml
-│      /work/my-project/.harness/version.yaml
-│      /work/my-project/.harness/review-governance.yaml
-│      /work/my-project/.harness/review-profiles.local.yaml
+│      .harness configuration (9 files)
 │      /work/my-project/AGENTS.md
 │      /work/my-project/.gitignore
-│    Preserve  5 files
+│    Preserve  3 files
 │      /work/my-project/.codex/hooks.json
 │      /work/my-project/.claude/settings.local.json
 │      /work/my-project/.github/workflows/super-harness.yml
-│      /work/my-project/.github/pull_request_template.md
-│      /work/my-project/.harness/adapters.yaml
-◆ Apply this plan?  Confirm and continue
+│    Skip      2 files
+◆ Apply this plan? Confirm and continue
 ●  review: Plan confirmed
 ◆  apply: Applying setup
-◇  Harness configuration ready
-◇  Configured integrations: codex, claude-code.
-◇  AGENTS.md and .gitignore updated
-▲  GitHub setup: GitHub repository settings need manual confirmation.
-│  Settings -> General -> Pull Requests.
+✓  Harness configuration ready
+✓  complete
+✓  AGENTS.md and .gitignore updated
+"""
+    "!  GitHub setup: GitHub repository settings need manual confirmation. "
+    "Settings -> General -> Pull Requests.\n"
+    """\
 ●  outcome: Setup complete in 3.1s
 │  Next: super-harness status
 └
 """
+)
 
 
 def _representative_progressive_disclosure_plan(tmp_path: Path) -> InitPlan:
@@ -1771,13 +1756,23 @@ def _representative_progressive_disclosure_plan(tmp_path: Path) -> InitPlan:
     )
 
 
-def test_representative_guided_transcript_stays_within_progressive_disclosure_budget() -> None:
+def _render_representative_progressive_disclosure_transcript(
+    *,
+    width: int = 120,
+    unicode: bool = True,
+    color: bool = False,
+) -> str:
     buffer = StringIO()
     renderer = RichGuidedRenderer(
-        console=Console(file=buffer, width=120, color_system=None),
-        unicode=True,
-        color=False,
-        width=120,
+        console=Console(
+            file=buffer,
+            width=width,
+            color_system="standard" if color else None,
+            force_terminal=color,
+        ),
+        unicode=unicode,
+        color=color,
+        width=width,
     )
     workspace = Path("/work/my-project")
     plan = _representative_progressive_disclosure_plan(workspace)
@@ -1820,11 +1815,19 @@ def test_representative_guided_transcript_stays_within_progressive_disclosure_bu
     )
     renderer.close_session()
 
-    transcript = buffer.getvalue()
+    return buffer.getvalue()
+
+
+def test_representative_guided_transcript_stays_within_progressive_disclosure_budget() -> None:
+    transcript = _render_representative_progressive_disclosure_transcript()
+    workspace = Path("/work/my-project")
+
     baseline_lines = PRE_PROGRESSIVE_DISCLOSURE_REPRESENTATIVE_TRANSCRIPT.splitlines()
     current_lines = transcript.splitlines()
     assert baseline_lines and all(line.strip() for line in baseline_lines)
     assert current_lines and all(line.strip() for line in current_lines)
+    assert len(baseline_lines) == 37
+    assert len(current_lines) == 18, transcript
     reduction = 1 - (len(current_lines) / len(baseline_lines))
     assert 0.40 <= reduction <= 0.60, (
         f"expected a 40%-60% reduction; baseline={len(baseline_lines)}, "
@@ -1873,14 +1876,11 @@ def test_rich_guided_review_hides_unchanged_and_backup_detail_by_default(
     assert all(line.startswith("│") for line in lines[1:-1])
     assert lines[-1] == "└"
     assert text.count("└") == 1
-    assert "Integrations" in text
-    assert "Codex" in text
-    assert "Claude Code" in text
-    assert "Automated reviewers" in text
-    assert "Codex  gpt-5.6-sol" in text
-    assert "Claude  opus[1m]" in text
-    assert "GitHub" in text
-    assert "Ensure workflow and PR template" in text
+    assert lines[1] == "│  Review changes"
+    assert "Integrations" not in text
+    assert "Automated reviewers" not in text
+    assert "GitHub" not in text
+    assert "Ensure workflow and PR template" not in text
     assert "Files" in text
     assert "Update    4 files" in text
     assert "Create    1 file" in text
@@ -1918,6 +1918,15 @@ def test_rich_guided_verbose_review_restores_exact_action_and_backup_paths(
 
     text = buffer.getvalue()
     compact = "".join(line.lstrip("│|").strip() for line in text.splitlines())
+    assert "Review changes" in text
+    assert "Integrations" in text
+    assert "Codex" in text
+    assert "Claude Code" in text
+    assert "Automated reviewers" in text
+    assert "Codex  gpt-5.6-sol" in text
+    assert "Claude  opus[1m]" in text
+    assert "GitHub" in text
+    assert "Ensure workflow and PR template" in text
     assert "Preserve  1 file" in text
     assert "Skip      1 file" in text
     assert "Back up   2 settings files" in text

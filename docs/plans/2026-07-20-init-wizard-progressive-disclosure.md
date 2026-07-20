@@ -160,6 +160,63 @@ mypy.
   super-harness verify
   ```
 
-- [x] Manually exercise the same two-agent fixture in a wide color terminal and a
-  narrow `NO_COLOR` terminal, compare it with the recorded CodeGraph interaction,
-  and save the observed line-count evidence in the implementation summary.
+- [x] Correct the transcript fixture with the faithful `6fcd6b3` capture: actual
+  Questionary adapters in a 120x80 tmux pane, Unicode/no-color, with 11 `UPDATE`,
+  3 `PRESERVE`, 2 `SKIP`, six successful executor events, and one GitHub warning.
+  The pre-change transcript is 37 nonblank lines.
+- [x] Remove the repeated Integrations, Automated reviewers, and GitHub sections
+  from the default review. The review now begins with `Review changes` and contains
+  only the file mutation summary plus the hidden unchanged-file count. Verbose mode
+  retains those three sections and every existing action/backup path diagnostic.
+- [x] Re-run the representative capture after the correction. At the fixed
+  120-column Unicode/no-color budget profile, the transcript is 18 nonblank lines:
+  `1 - 18 / 37 = 51.351351%`, within the accepted 40-60% range. The confirmation
+  remains the unchanged active `Apply this plan?` Questionary prompt immediately
+  after the delta-only review.
+
+### Reviewable capture evidence
+
+Both profiles use
+`_render_representative_progressive_disclosure_transcript` in
+`tests/unit/cli/test_init_ui.py`, which renders the same representative plan and
+executor events as the budget test. Reproduce the capture counts with:
+
+```bash
+.venv/bin/python -c 'import runpy; d=runpy.run_path("tests/unit/cli/test_init_ui.py"); f=d["_render_representative_progressive_disclosure_transcript"]; w=f(width=120, unicode=True, color=True); n=f(width=44, unicode=False, color=False); print(sum(bool(x.strip()) for x in w.splitlines()), chr(27) in w); print(sum(bool(x.strip()) for x in n.splitlines()), n.isascii())'
+NO_COLOR=1 .venv/bin/python -c 'import runpy; d=runpy.run_path("tests/unit/cli/test_init_ui.py"); print(d["_render_representative_progressive_disclosure_transcript"](width=44, unicode=False, color=False), end="")'
+```
+
+Observed evidence after the correction:
+
+| Profile | Nonblank lines | Evidence |
+| --- | ---: | --- |
+| 120-column Unicode/color | 19 | ANSI present; concrete answers, delta-only review, grouped apply, warning, and result all visible |
+| 44-column `NO_COLOR`/ASCII | 23 | ASCII-only; wrapped values retain hierarchy and no content is truncated |
+
+The narrow capture was:
+
+```text
++ super-harness init
+*  preflight: Inspected /work/my-project
+|  Detection is read-only
+|  Integrations  Codex, Claude Code
+|  Automated reviewers  Codex (gpt-5.6-sol),
+                        Claude (opus[1m])
+|  GitHub  Workflow and PR template
+|  Review changes
+|  Files
+|    Update    11 files
+|      .harness configuration (9 files)
+|      /work/my-project/AGENTS.md
+|      /work/my-project/.gitignore
+|    5 unchanged files hidden - use
+|    --verbose to inspect
+o  Harness configuration
+o  Agent integrations
+o  Repository guidance
+!  GitHub setup: GitHub repository settings
+   need manual confirmation. Settings ->
+   General -> Pull Requests.
++ Setup complete in 3.1s - Next:
+  super-harness status
+```
