@@ -245,8 +245,13 @@ the v1 tasks are done, the v2 task below is the active work.)
 
 **Files:**
 
-- Modify: `src/super_harness/cli/init_ui.py` (only `RichGuidedRenderer` line
-  composition + its prefix helpers)
+- Modify: `src/super_harness/cli/init_ui.py` — the guided presentation layer:
+  `RichGuidedRenderer` line composition + its prefix helpers (all persistent
+  methods), **and** `InteractiveInitUI.prepare_plan`'s workspace-line presentation
+  call (send a `◇ Workspace <path>` answer instead of the `Inspected …` /
+  `Detection is read-only` stage pair). `InteractiveInitUI`'s collection order,
+  confirmation, plan building, frozen transactions, and executor construction are
+  **not** changed.
 - Test: `tests/unit/cli/test_init_ui.py`, `tests/integration/cli/test_init.py`
 - Docs: `docs/getting-started.md` (representative transcript)
 
