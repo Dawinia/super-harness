@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import IO, Protocol, cast
+from typing import IO, Protocol, cast, runtime_checkable
 
 import questionary
 from rich.console import Console
@@ -380,7 +380,6 @@ class RailState(str, Enum):
 class GuidedRenderAdapter(Protocol):
     def open_session(self) -> None: ...
     def close_session(self) -> None: ...
-    def render_answer(self, label: str, value: str) -> None: ...
     def render_stage(
         self,
         stage: RailStage,
@@ -392,6 +391,13 @@ class GuidedRenderAdapter(Protocol):
     def render_plan(self, plan: InitPlan) -> None: ...
     def render_validation(self, message: str) -> None: ...
     def render_event(self, event: StepEventLike) -> None: ...
+
+
+@runtime_checkable
+class GuidedAnswerRenderAdapter(Protocol):
+    """Optional completed-answer capability for guided renderers."""
+
+    def render_answer(self, label: str, value: str) -> None: ...
 
 
 _RAIL_GLYPHS = {
@@ -522,10 +528,16 @@ class RichGuidedRenderer:
             self._print(f"{'│' if self._unicode else '|'}  {secondary}", style="dim")
 
     def render_answer(self, label: str, value: str) -> None:
-        self._print(
-            f"{_RAIL_GLYPHS[self._unicode][RailState.PENDING]}  {label}  {value}",
-            style="dim",
-        )
+        prefix = f"{_RAIL_GLYPHS[self._unicode][RailState.PENDING]}  {label}  "
+        prefix_width = Text(prefix).cell_len
+        wrapped = Text(value).wrap(
+            self._console,
+            max(1, self._width - prefix_width),
+            overflow="fold",
+        ) or [Text()]
+        for index, line in enumerate(wrapped):
+            leading = prefix if index == 0 else " " * prefix_width
+            self._print(f"{leading}{line}", style="dim")
 
     def render_plan(self, plan: InitPlan) -> None:
         owns_session = not self._session_open
@@ -937,15 +949,14 @@ class InteractiveInitUI:
                 self._renderer.render_validation("Choose confirm, back, or cancel.")
 
     def _render_answers(self, plan: InitPlan) -> None:
-        render_answer = getattr(self._renderer, "render_answer", None)
-        if render_answer is None:
+        if not isinstance(self._renderer, GuidedAnswerRenderAdapter):
             return
         integration_labels = {option.value: option.label for option in _INTEGRATIONS}
         integrations = ", ".join(
             integration_labels.get(integration, integration)
             for integration in plan.integrations
         )
-        render_answer("Integrations", integrations or "(none)")
+        self._renderer.render_answer("Integrations", integrations or "(none)")
 
         producers = {option.value: option for option in _REVIEW_PRODUCERS}
         reviewer_answers: list[str] = []
@@ -955,11 +966,11 @@ class InteractiveInitUI:
                 continue
             label = option.label.removesuffix(" CLI")
             reviewer_answers.append(f"{label} ({plan.review_models[option.source]})")
-        render_answer(
+        self._renderer.render_answer(
             "Automated reviewers",
             ", ".join(reviewer_answers) or "(none)",
         )
-        render_answer(
+        self._renderer.render_answer(
             "GitHub",
             (
                 "Workflow and PR template"

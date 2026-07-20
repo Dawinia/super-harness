@@ -10,7 +10,9 @@ from typing import Any
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 
+import super_harness.cli.init_ui as init_ui_module
 from super_harness.adapters.agent._settings_merge import SettingsMergePlan
 from super_harness.adapters.install import AgentIntegrationPlan
 from super_harness.cli.init_models import ReviewerModelCandidate
@@ -1511,6 +1513,41 @@ def test_rich_guided_answer_summary_owns_completed_lines() -> None:
     assert "Configuration collected" not in text
     assert "Review planned" not in text
     assert "Plan confirmed" not in text
+
+
+@pytest.mark.parametrize(
+    ("unicode", "glyph"),
+    [(True, "◇"), (False, "|")],
+)
+def test_rich_guided_answer_summary_indents_narrow_continuations(
+    unicode: bool,
+    glyph: str,
+) -> None:
+    width = 30
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=width, color_system=None),
+        unicode=unicode,
+        color=False,
+        width=width,
+    )
+
+    renderer.render_answer("Integrations", "Codex, Claude Code, 编辑器")
+
+    lines = buffer.getvalue().splitlines()
+    prefix = f"{glyph}  Integrations  "
+    indent = " " * Text(prefix).cell_len
+    assert len(lines) > 1
+    assert lines[0].startswith(prefix)
+    assert all(line.startswith(indent) for line in lines[1:])
+    assert all(Text(line).cell_len <= width for line in lines)
+
+
+def test_guided_answer_renderer_is_an_optional_runtime_capability() -> None:
+    assert "render_answer" not in init_ui_module.GuidedRenderAdapter.__dict__
+    capability = init_ui_module.GuidedAnswerRenderAdapter
+    assert isinstance(_FakeGuidedRenderer(), capability)
+    assert not isinstance(object(), capability)
 
 
 def test_rich_guided_glyphs_are_independent_of_color() -> None:
