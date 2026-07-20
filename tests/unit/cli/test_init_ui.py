@@ -1918,7 +1918,9 @@ def test_representative_guided_transcript_stays_within_progressive_disclosure_bu
         assert jargon not in transcript
     assert "\nFiles\n" not in transcript and "  Files\n" not in transcript
 
-    assert "◇  Workspace  /work/my-project" in transcript
+    # Use the workspace variable so the path separator matches the platform
+    # (str(Path("/work/my-project")) is backslash-separated on Windows).
+    assert f"◇  Workspace  {workspace}" in transcript
     assert "◇  Integrations  Codex, Claude Code" in transcript
     assert "◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])" in transcript
     assert "◇  GitHub  Workflow and PR template" in transcript
