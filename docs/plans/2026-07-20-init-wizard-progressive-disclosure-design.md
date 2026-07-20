@@ -253,14 +253,20 @@ Applies to every **persistent** guided line. Such a line is exactly one of:
 2. a **spine separator line** — the bare spine character `│` with **no** trailing
    whitespace, used only as the one blank line between groups; or
 3. a **corner** — the `┌` opener or `└` closer (these two alone omit the spine
-   prefix).
+   prefix). The closer carries the terminal result; when that result is long enough
+   to wrap, its continuation lines align **under the result text with spaces**, not
+   on the spine — the `└` has closed the box, so no spine follows it. This is the
+   one place a wrapped continuation leaves the rail, and it is deliberate (it mirrors
+   how the corners themselves sit outside the spine).
 
-**There are no other line shapes** — nothing floats off the rail. The separator
-(shape 2) is the single deliberate exception to the "two spaces after the prefix"
-rule: it carries no content, so it emits a bare `│` rather than `│  ` to avoid
-trailing whitespace. Continuation (wrapped) lines use the content prefix `│  ` so
-wrapped text still hangs on the rail. (The bare-`│` separator exception resolves
-plan-review CODX-004 / CLR-004.)
+**No line ever leaves trailing whitespace** (wrapping strips it), and no interior
+content line floats off the rail. The bare-`│` separator (shape 2) is the single
+deliberate exception to the "two spaces after the prefix" rule: it carries no
+content, so it emits a bare `│` rather than `│  `. Interior continuation (wrapped)
+lines use the content prefix `│  ` so wrapped text still hangs on the rail; only the
+closer's continuation (above) is space-aligned. (The bare-`│` separator exception
+resolves plan-review CODX-004 / CLR-004; the closer-continuation and
+trailing-whitespace clarifications resolve code-review CODX-001 / CLR-001.)
 
 Group spacing: exactly one spine separator line (`│`) separates distinct logical
 groups (workspace, each answer, the plan/review, the apply-outcome block, each

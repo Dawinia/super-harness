@@ -1895,6 +1895,32 @@ def test_representative_guided_transcript_stays_within_progressive_disclosure_bu
     assert "configuration: Choose integrations and reviews" not in transcript
 
 
+def test_rich_guided_lines_never_have_trailing_whitespace() -> None:
+    # Regression for code-review CODX-001 / CLR-001: wrapping must not leave a
+    # dangling space, including on the wrapped terminal-result closer.
+    wide = _render_representative_progressive_disclosure_transcript(width=120)
+    narrow = _render_representative_progressive_disclosure_transcript(
+        width=28, unicode=False
+    )
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=28, color_system=None),
+        unicode=True,
+        color=False,
+        width=28,
+    )
+    renderer.open_session()
+    renderer.render_result(
+        RailState.FAILED,
+        "Setup failed after 1.2s",
+        secondary="Recovery: super-harness init --force",
+    )
+    renderer.close_session()
+    for transcript in (wide, narrow, buffer.getvalue()):
+        for line in transcript.splitlines():
+            assert line == line.rstrip(), repr(line)
+
+
 def test_rich_guided_review_hides_unchanged_and_backup_detail_by_default(
     tmp_path: Path,
 ) -> None:
@@ -1953,7 +1979,7 @@ def test_rich_guided_verbose_review_restores_exact_action_and_backup_paths(
     # answers) or collapse .harness.
     assert "◇  Plan  6 files to write" in text
     for label in ("Update", "Create", "Delete", "Preserve", "Skip", "Back up"):
-        assert f"│  {label:<9} " in text
+        assert f"│  {label}" in text
     assert "unchanged hidden" not in text
     assert ".harness ×" not in text  # noqa: RUF001 - glyphs
     assert "Review changes" not in text

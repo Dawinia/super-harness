@@ -553,7 +553,9 @@ class RichGuidedRenderer:
     # --- spine primitives -------------------------------------------------------
 
     def _print(self, value: str, *, style: str | None = None) -> None:
-        value = self._output_safe(value)
+        # Never leave trailing whitespace: line wrapping can leave a dangling space
+        # on a wrapped segment, and the bare-│ separator must stay exactly "│".
+        value = self._output_safe(value).rstrip()
         self._console.print(
             Text(value, style=style if self._color and style else ""),
             overflow="fold",
