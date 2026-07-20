@@ -7,6 +7,7 @@ from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from rich.console import Console
@@ -1480,7 +1481,7 @@ def test_guided_never_has_a_live_renderer_while_any_prompt_owns_input(
     assert len(prompts.checkbox_calls) + len(prompts.text_calls) + len(prompts.select_calls) == 3
 
 
-def test_guided_answer_summary_removes_redundant_lifecycle_stages(tmp_path: Path) -> None:
+def test_guided_answer_summary_leaves_current_marker_to_active_prompt(tmp_path: Path) -> None:
     prompts = _FakePromptAdapter(
         checkboxes=[("codex",), ("codex-cli",)],
         texts=["gpt-model"],
@@ -1493,7 +1494,7 @@ def test_guided_answer_summary_removes_redundant_lifecycle_stages(tmp_path: Path
     completed = [stage for stage, state, _, _ in renderer.stages if state is RailState.COMPLETED]
     visible = {stage for stage, _, _, _ in renderer.stages}
     assert completed == [RailStage.PREFLIGHT]
-    assert visible == {RailStage.PREFLIGHT, RailStage.CONFIGURATION}
+    assert visible == {RailStage.PREFLIGHT}
 
 
 def test_rich_guided_answer_summary_owns_completed_lines() -> None:
@@ -1740,9 +1741,7 @@ def _representative_progressive_disclosure_plan(tmp_path: Path) -> InitPlan:
             PlannedFileAction(tmp_path / "AGENTS.md", FileAction.UPDATE),
             PlannedFileAction(tmp_path / ".gitignore", FileAction.UPDATE),
             PlannedFileAction(tmp_path / ".codex" / "hooks.json", FileAction.PRESERVE),
-            PlannedFileAction(
-                tmp_path / ".claude" / "settings.local.json", FileAction.PRESERVE
-            ),
+            PlannedFileAction(tmp_path / ".claude" / "settings.local.json", FileAction.PRESERVE),
             PlannedFileAction(
                 tmp_path / ".github" / "workflows" / "super-harness.yml",
                 FileAction.PRESERVE,
@@ -1776,21 +1775,36 @@ def _render_representative_progressive_disclosure_transcript(
     )
     workspace = Path("/work/my-project")
     plan = _representative_progressive_disclosure_plan(workspace)
-
-    renderer.open_session()
-    renderer.render_stage(
-        RailStage.PREFLIGHT,
-        RailState.COMPLETED,
-        f"Inspected {workspace}",
-        secondary="Detection is read-only",
+    prompts = _FakePromptAdapter(
+        checkboxes=[
+            ("codex", "claude-code"),
+            ("codex-cli", "claude-cli"),
+        ],
+        selects=["create", "confirm"],
     )
-    renderer.render_answer("Integrations", "Codex, Claude Code")
-    renderer.render_answer(
+    ui = InteractiveInitUI(prompt_adapter=prompts, renderer=renderer)
+    preflight = _preflight(
+        detected_integrations=("codex", "claude-code"),
+        available_integrations=frozenset({"codex", "claude-code"}),
+        detected_producers=("codex-cli", "claude-cli"),
+        available_producers=frozenset({"codex-cli", "claude-cli"}),
+        reviewer_model_candidates={
+            "codex": (ReviewerModelCandidate("codex", "gpt-5.6-sol", "Codex CLI config", 10),),
+            "claude": (ReviewerModelCandidate("claude", "opus[1m]", "Claude CLI config", 10),),
+        },
+        github_available=True,
+    )
+    ui.open_session()
+    with patch.object(init_ui_module, "build_init_plan", return_value=plan):
+        result = ui.prepare_plan(_request(workspace), preflight)
+    assert result.decision is WizardDecision.CONFIRM
+    assert result.plan is plan
+    assert prompts.calls == [
+        "Integrations",
         "Automated reviewers",
-        "Codex (gpt-5.6-sol), Claude (opus[1m])",
-    )
-    renderer.render_answer("GitHub", "Workflow and PR template")
-    renderer.render_plan(plan)
+        "GitHub setup",
+        "Apply this plan?",
+    ]
     for step_id in (
         "scaffold",
         "skeleton_config",
@@ -1799,8 +1813,8 @@ def _render_representative_progressive_disclosure_transcript(
         "agents_md",
         "gitignore",
     ):
-        renderer.render_event(StepRenderEvent(step_id, StepRenderState.SUCCEEDED, "complete"))
-    renderer.render_event(
+        ui.render_event(StepRenderEvent(step_id, StepRenderState.SUCCEEDED, "complete"))
+    ui.render_event(
         StepRenderEvent(
             "github",
             StepRenderState.WARNED,
@@ -1808,12 +1822,15 @@ def _render_representative_progressive_disclosure_transcript(
             "Settings -> General -> Pull Requests.",
         )
     )
-    renderer.render_result(
-        RailState.COMPLETED,
-        "Setup complete in 3.1s",
-        secondary="Next: super-harness status",
+    ui.render_outcome(
+        SimpleNamespace(
+            success=True,
+            elapsed_ms=3100,
+            next_command="super-harness status",
+            recovery_command=None,
+        )
     )
-    renderer.close_session()
+    ui.close_session()
 
     return buffer.getvalue()
 
@@ -1835,9 +1852,7 @@ def test_representative_guided_transcript_stays_within_progressive_disclosure_bu
     )
 
     assert "◇  Integrations  Codex, Claude Code" in transcript
-    assert (
-        "◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])" in transcript
-    )
+    assert "◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])" in transcript
     assert "◇  GitHub  Workflow and PR template" in transcript
     assert "11 files" in transcript
     assert ".harness configuration (9 files)" in transcript
@@ -1848,11 +1863,10 @@ def test_representative_guided_transcript_stays_within_progressive_disclosure_bu
         assert transcript.count(f"◇  {group}") == 1
     assert "▲  GitHub setup" in transcript
     assert "Settings -> General -> Pull Requests" in transcript
-    assert transcript.splitlines()[-1] == (
-        "└ Setup complete in 3.1s · Next: super-harness status"
-    )
+    assert transcript.splitlines()[-1] == ("└ Setup complete in 3.1s · Next: super-harness status")
     for redundant in ("done (", "Applying setup", "outcome:"):
         assert redundant not in transcript
+    assert "configuration: Choose integrations and reviews" not in transcript
 
 
 def test_rich_guided_review_hides_unchanged_and_backup_detail_by_default(
@@ -2012,6 +2026,44 @@ def test_rich_guided_ascii_review_hides_unchanged_with_ascii_separator(
     content = " ".join(line.lstrip("|+ ").strip() for line in text.splitlines())
     assert text.isascii()
     assert "2 unchanged files hidden - use --verbose to inspect" in content
+    assert "preserved.txt" not in text
+    assert "skipped.txt" not in text
+
+
+def test_rich_guided_strict_ascii_escapes_cjk_windows_action_and_keeps_hidden_rows() -> None:
+    byte_buffer = BytesIO()
+    output = TextIOWrapper(byte_buffer, encoding="ascii", errors="strict", write_through=True)
+    renderer = RichGuidedRenderer(
+        console=Console(file=output, width=48, color_system=None),
+        unicode=False,
+        color=False,
+        width=48,
+    )
+    windows_path = Path(r"C:\项目\非常长的配置目录\设置文件.yaml")
+    plan = replace(
+        _plan(Path(".")),
+        file_actions=(
+            PlannedFileAction(windows_path, FileAction.CREATE),
+            PlannedFileAction(Path("preserved.txt"), FileAction.PRESERVE),
+            PlannedFileAction(Path("skipped.txt"), FileAction.SKIP),
+        ),
+    )
+
+    renderer.render_plan(plan)
+
+    text = byte_buffer.getvalue().decode("ascii")
+    lines = text.splitlines()
+    escaped_path = str(windows_path).encode("ascii", "backslashreplace").decode("ascii")
+    compact = "".join(line.lstrip("|+ ").strip() for line in lines)
+    assert text.isascii()
+    assert lines[0] == "+ super-harness init"
+    assert lines[-1] == "+"
+    assert all(line.startswith("|") for line in lines[1:-1])
+    assert escaped_path in compact
+    assert "Create" in text
+    assert "2 unchanged files hidden - use --verbose to inspect" in " ".join(
+        line.lstrip("|+ ").strip() for line in lines
+    )
     assert "preserved.txt" not in text
     assert "skipped.txt" not in text
 

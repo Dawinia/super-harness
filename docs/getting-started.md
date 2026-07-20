@@ -153,7 +153,9 @@ terminal uses the same stages in deterministic plain text. It asks exactly one
 yes/no question per option and never asks for comma-separated input. If Unicode
 is unsafe, the rail uses `|`, `+`, `*`, and `x`, while plain status rows use
 words such as `OK`, `WARN`, and `FAIL`; color and glyphs never carry meaning by
-themselves.
+themselves. When the output stream itself accepts only ASCII, non-ASCII path
+characters remain identifiable as deterministic escapes such as `\u9879\u76ee`
+rather than being dropped or causing setup to crash.
 
 `--yes` skips only the final confirmation in an interactive mode. It does not
 select integrations or producers, choose among multiple model candidates, or

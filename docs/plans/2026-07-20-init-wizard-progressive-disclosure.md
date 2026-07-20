@@ -173,13 +173,26 @@ mypy.
   `1 - 18 / 37 = 51.351351%`, within the accepted 40-60% range. The confirmation
   remains the unchanged active `Apply this plan?` Questionary prompt immediately
   after the delta-only review.
+- [x] Drive the representative capture through `InteractiveInitUI.prepare_plan`
+  and `collect` with a scripted prompt adapter and the real `RichGuidedRenderer`,
+  then route executor events and the result through the UI. Remove the stale
+  `configuration: Choose integrations and reviews` rail row: the active
+  Questionary prompt owns the only current marker while it is open. The actual UI
+  path remains 18 lines against the faithful 37-line baseline (51.351351%).
+- [x] Prove strict-ASCII output with a combined Windows-style CJK path,
+  visible file action, and hidden unchanged rows. The renderer preserves UTF-8
+  output unchanged and renders unencodable path characters deterministically,
+  for example `C:\\u9879\\u76ee`, instead of raising `UnicodeEncodeError`.
 
 ### Reviewable capture evidence
 
 Both profiles use
 `_render_representative_progressive_disclosure_transcript` in
-`tests/unit/cli/test_init_ui.py`, which renders the same representative plan and
-executor events as the budget test. Reproduce the capture counts with:
+`tests/unit/cli/test_init_ui.py`. The helper drives the actual
+`InteractiveInitUI.prepare_plan`/`collect` orchestration with a scripted prompt
+adapter and the real renderer, substitutes only the stable representative plan,
+then sends the representative executor events and result through the UI. Reproduce
+the capture counts with:
 
 ```bash
 .venv/bin/python -c 'import runpy; d=runpy.run_path("tests/unit/cli/test_init_ui.py"); f=d["_render_representative_progressive_disclosure_transcript"]; w=f(width=120, unicode=True, color=True); n=f(width=44, unicode=False, color=False); print(sum(bool(x.strip()) for x in w.splitlines()), chr(27) in w); print(sum(bool(x.strip()) for x in n.splitlines()), n.isascii())'

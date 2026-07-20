@@ -524,11 +524,24 @@ class RichGuidedRenderer:
         self._session_closed = True
 
     def _print(self, value: str, *, style: str | None = None) -> None:
+        value = self._output_safe(value)
         self._console.print(
             Text(value, style=style if self._color and style else ""),
             overflow="fold",
             crop=False,
         )
+
+    def _output_safe(self, value: str) -> str:
+        encoding = _safe_encoding(self._console.file)
+        if encoding is None:
+            return value
+        try:
+            value.encode(encoding)
+        except UnicodeEncodeError:
+            return value.encode(encoding, errors="backslashreplace").decode(encoding)
+        except LookupError:
+            return value
+        return value
 
     def _print_prefixed(
         self,
@@ -537,6 +550,8 @@ class RichGuidedRenderer:
         *,
         style: str | None = None,
     ) -> None:
+        prefix = self._output_safe(prefix)
+        value = self._output_safe(value)
         prefix_width = Text(prefix).cell_len
         wrapped = Text(value).wrap(
             self._console,
@@ -554,6 +569,8 @@ class RichGuidedRenderer:
         *,
         style: str | None = None,
     ) -> None:
+        rail = self._output_safe(rail)
+        value = self._output_safe(value)
         leading_spaces = len(value) - len(value.lstrip(" "))
         available = max(1, self._width - Text(rail).cell_len - 2)
         indent = min(leading_spaces, max(0, available - 1))
@@ -581,7 +598,9 @@ class RichGuidedRenderer:
             self._print(f"{'│' if self._unicode else '|'}  {secondary}", style="dim")
 
     def render_answer(self, label: str, value: str) -> None:
-        glyph = _RAIL_GLYPHS[self._unicode][RailState.PENDING]
+        glyph = self._output_safe(_RAIL_GLYPHS[self._unicode][RailState.PENDING])
+        label = self._output_safe(label)
+        value = self._output_safe(value)
         heading = f"{glyph}  {label}"
         prefix = f"{heading}  "
         prefix_width = Text(prefix).cell_len
@@ -997,9 +1016,6 @@ class InteractiveInitUI:
         initial_choices: InitChoices | None = None,
     ) -> ChoiceCollectionResult:
         initial = _interactive_initial_choices(request, preflight, initial_choices)
-        self._renderer.render_stage(
-            RailStage.CONFIGURATION, RailState.CURRENT, "Choose integrations and reviews"
-        )
         if preflight.review_config_error is not None and initial.review_write is None:
             reset = self._prompts.select(
                 "Existing review configuration is invalid. Reset it?",
