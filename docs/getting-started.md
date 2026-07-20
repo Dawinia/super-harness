@@ -101,7 +101,7 @@ from continuing. Scripts can bypass discovery with explicit
 `--review-model SOURCE=MODEL` values; non-interactive init uses explicit flags
 and persisted workspace defaults and does not inspect user CLI configuration.
 
-A representative narrow terminal session looks like this (paths and selections
+A representative guided terminal session looks like this (paths and selections
 will reflect your machine):
 
 ```text
@@ -109,35 +109,42 @@ $ super-harness init --setup-github
 ┌ super-harness init
 ●  preflight: Inspected /work/my-project
 │  Detection is read-only
-◆  configuration: Choose integrations and reviews
-◆ Integrations  (↑/↓ move · space select · enter confirm)
-› ● Codex  detected · recommended
-  ○ Claude Code  not detected
-◆ Automated reviewers  (↑/↓ move · space select · enter confirm)
-› ● Codex reviewer — runs via Codex CLI  gpt-5.2-codex
-●  configuration: Configuration collected
-◆  review: Review planned setup
+◇  Integrations  Codex, Claude Code
+◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])
+◇  GitHub  Workflow and PR template
 │  Integrations
 │    Codex
+│    Claude Code
 │  Automated reviewers
-│    Codex  gpt-5.2-codex
+│    Codex  gpt-5.6-sol
+│    Claude  opus[1m]
 │  GitHub
 │    Ensure workflow and PR template
 │  Files
-│    Create    14 files
-◆ Apply this plan?  Confirm and continue
-●  review: Plan confirmed
-◆  apply: Applying setup
-✓  Harness configuration ready
-✓  Configured integrations: codex.
-●  outcome: Setup complete in 152ms
-│  Next: super-harness status
-└
+│    Update    11 files
+│      .harness configuration (9 files)
+│      /work/my-project/AGENTS.md
+│      /work/my-project/.gitignore
+│    5 unchanged files hidden · use --verbose to inspect
+◇  Harness configuration
+◇  Agent integrations
+◇  Repository guidance
+▲  GitHub setup: GitHub repository settings need manual confirmation.
+│  Settings -> General -> Pull Requests.
+└ Setup complete in 3.1s · Next: super-harness status
 ```
 
-If the reviewed plan will change an existing `.codex/hooks.json` or
-`.claude/settings.local.json`, the **Files** group includes a **Back up** row
-with that path.
+The default guided review shows only creates, updates, and deletes. Preserved
+and skipped files are summarized as hidden unchanged detail, and successful
+apply steps are grouped by user-visible outcome. Run
+`super-harness --verbose init` to expand exact preserved/skipped and backup paths
+in the review and show per-operation apply diagnostics. Verbose mode changes
+only rendering; it does not change the reviewed plan or writes.
+
+In the verbose review, if the plan will change an existing `.codex/hooks.json`
+or `.claude/settings.local.json`, the **Files** group includes a **Back up** row
+with that path. The default review leaves that unchanged diagnostic detail
+collapsed.
 The adapter transaction is frozen at review time: the original settings bytes,
 desired bytes, and resolved `super-harness` executable paths are checked again
 immediately before apply. If any of them changed, init stops before backing up or

@@ -1665,6 +1665,193 @@ def _guided_review_plan(tmp_path: Path) -> InitPlan:
     )
 
 
+# Frozen from the pre-progressive-disclosure renderer grammar at 6fcd6b3^ and
+# composed with the approved design's representative scenario. Workspace paths are
+# normalized, but the scenario is intentionally complete:
+# two integrations and reviewers, GitHub setup, eleven standard updates, five
+# unchanged local agent/GitHub files, one manual GitHub warning, and a successful
+# result. Every fixture line is nonblank so the transcript budget cannot be improved
+# by padding either side with empty lines.
+PRE_PROGRESSIVE_DISCLOSURE_REPRESENTATIVE_TRANSCRIPT = """\
+┌ super-harness init
+●  preflight: Inspected /work/my-project
+│  Detection is read-only
+◆  configuration: Choose integrations and reviews
+◆ Integrations  (↑/↓ move · space select · enter confirm)
+\u203a ● Codex  detected · recommended
+  ● Claude Code  detected · recommended
+◇  Integrations: done (2 selections)
+◆ Automated reviewers  (↑/↓ move · space select · enter confirm)
+\u203a ● Codex reviewer — runs via Codex CLI  gpt-5.6-sol
+  ● Claude reviewer — runs via Claude CLI  opus[1m]
+◇  Automated reviewers: done (2 selections)
+◆ GitHub setup  (↑/↓ move · enter confirm)
+  ○ Skip GitHub setup
+\u203a ● Configure GitHub
+◇  GitHub setup: Configure GitHub
+●  configuration: Configuration collected
+◆  review: Review planned setup
+│  Integrations
+│    Codex
+│    Claude Code
+│  Automated reviewers
+│    Codex  gpt-5.6-sol
+│    Claude  opus[1m]
+│  GitHub
+│    Ensure workflow and PR template
+│  Files
+│    Update    11 files
+│      /work/my-project/.harness/events.jsonl
+│      /work/my-project/.harness/state.yaml
+│      /work/my-project/.harness/sensors.yaml
+│      /work/my-project/.harness/verification.yaml
+│      /work/my-project/.harness/source-paths.yaml
+│      /work/my-project/.harness/gates.yaml
+│      /work/my-project/.harness/version.yaml
+│      /work/my-project/.harness/review-governance.yaml
+│      /work/my-project/.harness/review-profiles.local.yaml
+│      /work/my-project/AGENTS.md
+│      /work/my-project/.gitignore
+│    Preserve  5 files
+│      /work/my-project/.codex/hooks.json
+│      /work/my-project/.claude/settings.local.json
+│      /work/my-project/.github/workflows/super-harness.yml
+│      /work/my-project/.github/pull_request_template.md
+│      /work/my-project/.harness/adapters.yaml
+◆ Apply this plan?  Confirm and continue
+●  review: Plan confirmed
+◆  apply: Applying setup
+◇  Harness configuration ready
+◇  Configured integrations: codex, claude-code.
+◇  AGENTS.md and .gitignore updated
+▲  GitHub setup: GitHub repository settings need manual confirmation.
+│  Settings -> General -> Pull Requests.
+●  outcome: Setup complete in 3.1s
+│  Next: super-harness status
+└
+"""
+
+
+def _representative_progressive_disclosure_plan(tmp_path: Path) -> InitPlan:
+    harness_files = (
+        "events.jsonl",
+        "state.yaml",
+        "sensors.yaml",
+        "verification.yaml",
+        "source-paths.yaml",
+        "gates.yaml",
+        "version.yaml",
+        "review-governance.yaml",
+        "review-profiles.local.yaml",
+    )
+    return replace(
+        _guided_review_plan(tmp_path),
+        integration_plans={},
+        file_actions=(
+            *(
+                PlannedFileAction(tmp_path / ".harness" / name, FileAction.UPDATE)
+                for name in harness_files
+            ),
+            PlannedFileAction(tmp_path / "AGENTS.md", FileAction.UPDATE),
+            PlannedFileAction(tmp_path / ".gitignore", FileAction.UPDATE),
+            PlannedFileAction(tmp_path / ".codex" / "hooks.json", FileAction.PRESERVE),
+            PlannedFileAction(
+                tmp_path / ".claude" / "settings.local.json", FileAction.PRESERVE
+            ),
+            PlannedFileAction(
+                tmp_path / ".github" / "workflows" / "super-harness.yml",
+                FileAction.PRESERVE,
+            ),
+            PlannedFileAction(
+                tmp_path / ".github" / "pull_request_template.md",
+                FileAction.SKIP,
+            ),
+            PlannedFileAction(tmp_path / ".harness" / "adapters.yaml", FileAction.SKIP),
+        ),
+    )
+
+
+def test_representative_guided_transcript_stays_within_progressive_disclosure_budget() -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=120, color_system=None),
+        unicode=True,
+        color=False,
+        width=120,
+    )
+    workspace = Path("/work/my-project")
+    plan = _representative_progressive_disclosure_plan(workspace)
+
+    renderer.open_session()
+    renderer.render_stage(
+        RailStage.PREFLIGHT,
+        RailState.COMPLETED,
+        f"Inspected {workspace}",
+        secondary="Detection is read-only",
+    )
+    renderer.render_answer("Integrations", "Codex, Claude Code")
+    renderer.render_answer(
+        "Automated reviewers",
+        "Codex (gpt-5.6-sol), Claude (opus[1m])",
+    )
+    renderer.render_answer("GitHub", "Workflow and PR template")
+    renderer.render_plan(plan)
+    for step_id in (
+        "scaffold",
+        "skeleton_config",
+        "review_config",
+        "agent_integrations",
+        "agents_md",
+        "gitignore",
+    ):
+        renderer.render_event(StepRenderEvent(step_id, StepRenderState.SUCCEEDED, "complete"))
+    renderer.render_event(
+        StepRenderEvent(
+            "github",
+            StepRenderState.WARNED,
+            "GitHub repository settings need manual confirmation. "
+            "Settings -> General -> Pull Requests.",
+        )
+    )
+    renderer.render_result(
+        RailState.COMPLETED,
+        "Setup complete in 3.1s",
+        secondary="Next: super-harness status",
+    )
+    renderer.close_session()
+
+    transcript = buffer.getvalue()
+    baseline_lines = PRE_PROGRESSIVE_DISCLOSURE_REPRESENTATIVE_TRANSCRIPT.splitlines()
+    current_lines = transcript.splitlines()
+    assert baseline_lines and all(line.strip() for line in baseline_lines)
+    assert current_lines and all(line.strip() for line in current_lines)
+    reduction = 1 - (len(current_lines) / len(baseline_lines))
+    assert 0.40 <= reduction <= 0.60, (
+        f"expected a 40%-60% reduction; baseline={len(baseline_lines)}, "
+        f"current={len(current_lines)}, reduction={reduction:.1%}"
+    )
+
+    assert "◇  Integrations  Codex, Claude Code" in transcript
+    assert (
+        "◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])" in transcript
+    )
+    assert "◇  GitHub  Workflow and PR template" in transcript
+    assert "11 files" in transcript
+    assert ".harness configuration (9 files)" in transcript
+    assert "5 unchanged files hidden · use --verbose to inspect" in transcript
+    assert "Preserve" not in transcript
+    assert str(workspace / ".codex" / "hooks.json") not in transcript
+    for group in ("Harness configuration", "Agent integrations", "Repository guidance"):
+        assert transcript.count(f"◇  {group}") == 1
+    assert "▲  GitHub setup" in transcript
+    assert "Settings -> General -> Pull Requests" in transcript
+    assert transcript.splitlines()[-1] == (
+        "└ Setup complete in 3.1s · Next: super-harness status"
+    )
+    for redundant in ("done (", "Applying setup", "outcome:"):
+        assert redundant not in transcript
+
+
 def test_rich_guided_review_hides_unchanged_and_backup_detail_by_default(
     tmp_path: Path,
 ) -> None:
