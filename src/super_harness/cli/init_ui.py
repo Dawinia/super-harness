@@ -1061,20 +1061,34 @@ class InteractiveInitUI:
                 github_decision=initial.github_decision,
                 github_file_decisions=initial.github_file_decisions,
             )
+        # Each answer collapses to its own ◇ line the moment its question is
+        # resolved — one question is active at a time, and a completed one is
+        # summarized before the next opens (clack-style progressive disclosure).
         integrations = self._collect_integrations(request, preflight, initial)
         if integrations is _CANCEL:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
+        typed_integrations = cast(tuple[str, ...] | None, integrations)
+        # Explicit CLI flags bypass the prompt; summarize the effective value the
+        # plan will use (request flags win, else the collected value).
+        eff_integrations = request.integrations or typed_integrations or ()
+        self._emit_answer("Integrations", self._integrations_summary(eff_integrations))
+
         producers = self._collect_producers(request, preflight, initial)
         if producers is _CANCEL:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
-        typed_integrations = cast(tuple[str, ...] | None, integrations)
         typed_producers = cast(tuple[str, ...] | None, producers)
         models = self._collect_models(request, preflight, typed_producers, initial)
         if models is None:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
+        eff_producers = request.review_producers or typed_producers or ()
+        self._emit_answer(
+            "Automated reviewers", self._reviewers_summary(eff_producers, models)
+        )
+
         github_decision = self.collect_github_setup(request, preflight)
         if github_decision is None:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
+        self._emit_answer("GitHub", self._github_summary(github_decision))
         choices = InitChoices(
             integrations=typed_integrations,
             review_write=initial.review_write,
@@ -1106,34 +1120,31 @@ class InteractiveInitUI:
             except ValueError:
                 self._renderer.render_validation("Choose confirm, back, or cancel.")
 
-    def _render_answers(self, plan: InitPlan) -> None:
-        if not isinstance(self._renderer, GuidedAnswerRenderAdapter):
-            return
-        integration_labels = {option.value: option.label for option in _INTEGRATIONS}
-        integrations = ", ".join(
-            integration_labels.get(integration, integration) for integration in plan.integrations
-        )
-        self._renderer.render_answer("Integrations", integrations or "(none)")
+    def _emit_answer(self, label: str, value: str) -> None:
+        if isinstance(self._renderer, GuidedAnswerRenderAdapter):
+            self._renderer.render_answer(label, value)
 
-        producers = {option.value: option for option in _REVIEW_PRODUCERS}
-        reviewer_answers: list[str] = []
-        for producer in plan.review_producers:
-            option = producers[producer]
-            if option.source is None:
+    @staticmethod
+    def _integrations_summary(integrations: tuple[str, ...]) -> str:
+        labels = {option.value: option.label for option in _INTEGRATIONS}
+        return ", ".join(labels.get(value, value) for value in integrations) or "(none)"
+
+    @staticmethod
+    def _reviewers_summary(producers: tuple[str, ...], models: Mapping[str, str]) -> str:
+        options = {option.value: option for option in _REVIEW_PRODUCERS}
+        answers: list[str] = []
+        for producer in producers:
+            option = options.get(producer)
+            if option is None or option.source is None:
                 continue
             label = option.label.removesuffix(" CLI")
-            reviewer_answers.append(f"{label} ({plan.review_models[option.source]})")
-        self._renderer.render_answer(
-            "Automated reviewers",
-            ", ".join(reviewer_answers) or "(none)",
-        )
-        self._renderer.render_answer(
-            "GitHub",
-            (
-                "Workflow and PR template"
-                if plan.github_decision is GitHubDecision.CREATE
-                else "Skipped"
-            ),
+            answers.append(f"{label} ({models[option.source]})")
+        return ", ".join(answers) or "(none)"
+
+    @staticmethod
+    def _github_summary(decision: GitHubDecision) -> str:
+        return (
+            "Workflow and PR template" if decision is GitHubDecision.CREATE else "Skipped"
         )
 
     def prepare_plan(
@@ -1161,7 +1172,6 @@ class InteractiveInitUI:
                 return WizardResult.cancelled()
             choices, github_plan = _resolve_github_choices(collection.choices, github_resolver)
             plan = build_init_plan(request, preflight, choices)
-            self._render_answers(plan)
             decision = self.review(plan, assume_yes=effective_assume_yes)
             if decision is ReviewDecision.BACK:
                 continue

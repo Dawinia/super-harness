@@ -1177,7 +1177,14 @@ def test_guided_answer_summary_waits_for_github_resolution(tmp_path: Path) -> No
     )
 
     def resolve_github() -> Any:
-        assert renderer.answers == [("Workspace", str(tmp_path))]
+        # Answers now collapse inline as each question is resolved, so by the time
+        # the GitHub file resolver runs (after collection) all four are on screen.
+        assert renderer.answers == [
+            ("Workspace", str(tmp_path)),
+            ("Integrations", "(none)"),
+            ("Automated reviewers", "(none)"),
+            ("GitHub", "Workflow and PR template"),
+        ]
         return SimpleNamespace(
             root=tmp_path,
             pr_template=SimpleNamespace(
