@@ -267,9 +267,13 @@ the v1 tasks are done, the v2 task below is the active work.)
 
 ### Task V2.2: Reflow `RichGuidedRenderer` onto the spine
 
-- [ ] Route every guided line through one spine-prefixing helper that emits either
-  a glyph+`  ` or `│  `, and centralize the one-blank-`│`-between-groups rule so no
-  call site can print a bare line.
+- [ ] Route every guided line through one spine-prefixing helper with exactly three
+  emission modes: a **content** line prefixed `glyph+"  "`, a **content** line
+  prefixed `"│  "`, and a **bare-`│` separator** line (no trailing whitespace).
+  Centralize the one-separator-between-groups rule. The prohibition is on bare
+  *content* lines only — the bare-`│` separator is a first-class helper output, not
+  a violation (this is what lets V2.2 satisfy the V2.1 invariant; resolves
+  plan-review CODX-005 / CLR-006).
 - [ ] Emit the former preflight stage as a `◇ Workspace <path>` answer; drop the
   `Detection is read-only` secondary line.
 - [ ] Collapse the default review to a single `◇ Plan  N files to write` header

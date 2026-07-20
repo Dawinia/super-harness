@@ -219,16 +219,29 @@ guided renderer's line composition** so it reads as one connected clack flow.
 The spine invariant governs the **persistent guided transcript** — the lines
 `RichGuidedRenderer` emits and leaves on screen. It does **not** govern the
 **transient live-prompt frames** that Questionary draws while it owns keyboard
-input. Those `◆ question / ● option / ○ option` frames are Questionary's own
-chrome; per the v1 design they are erased on completion (`erase_when_done=True`),
-after which the renderer prints the single collapsed `◇` answer line. Because
-Questionary owns and then erases them, live-prompt frames are **explicitly exempt**
-from the spine invariant, and the renderer-only scope is correct: the renderer
-never composes those lines. The illustrative `◆ … / │ ● / │ ○` blocks shown under
-the default and review contracts below depict Questionary's live frame for context
-only; they are not renderer output and are not asserted by the transcript tests,
-which cover the persistent lines that remain after every prompt erases.
-(Resolves plan-review CODX-003 / CLR-003.)
+input.
+
+Those live frames use Questionary's **own native style**, not the spine. The
+existing adapter (unchanged by v2) renders a `◆` qmark plus the message and a
+per-option pointer/indicator — a `›` pointer for `select`, checkbox marks for
+`checkbox` — with **no** leading `│` on option lines. This design does **not**
+claim Questionary already draws clack `│ ● / │ ○` option rows: it does not, and v2
+does not change the backend to make it. While a prompt owns input the interaction
+is therefore deliberately **off-spine**, and that momentary discontinuity is an
+**accepted tradeoff** — keeping the portable, native-keyboard Questionary backend
+is worth more than a fully on-spine live frame, which would require forking prompt
+rendering (the same reason v1 rejected the "rebuild every prompt as full-screen
+sections" alternative).
+
+What makes the *session* read as one connected clack flow is that every prompt runs
+with `erase_when_done=True` (the v1 mechanism): the live frame is erased on
+completion and the renderer prints the single collapsed `◇` answer line in its
+place. So the **persistent** record — the only thing the transcript tests assert,
+and the only thing a user scans after answering — is fully on-spine. Live frames
+are **explicitly exempt** from the spine invariant and from the transcript tests,
+and the renderer-only scope is correct because the renderer never composes those
+frames. (Resolves plan-review CODX-003 / CLR-005: the earlier revision wrongly
+implied Questionary emits `│`-prefixed option rows.)
 
 ## Spine invariant (the core rule)
 
@@ -307,9 +320,11 @@ Key differences from v1:
   one-line hidden-count disclosure. When inlined names would exceed the width they
   wrap on the spine.
 - The active-question and review-decision blocks are drawn live by Questionary in
-  the clack `◆ … / │ ● / │ ○` shape and then erased; they are exempt from the spine
-  invariant (see the scope-boundary section). The persistent record left behind is
-  the collapsed `◇` answer line, separated from neighbours by a bare-`│` line.
+  its **native** style (a `◆` qmark, the message, and a `›` pointer / checkbox
+  marks — no `│` on option lines), then erased on completion. They are off-spine by
+  design and exempt from the spine invariant (see the scope-boundary section). The
+  persistent record left behind is the collapsed `◇` answer line, separated from
+  neighbours by a bare-`│` line.
 
 ## Apply, warning, failure, cancel (v2)
 
@@ -358,9 +373,10 @@ or GitHub behavior, and never reveals secrets.
   `GuidedRenderAdapter` protocol, `InteractiveInitUI` orchestration, questionary
   backend, `LineInitUI`, non-interactive/JSON/quiet paths, and all plan/executor
   code are untouched.
-- The renderer owns spine emission centrally: a single helper prefixes every line
-  with either a glyph or the spine and inserts group separators, so no call site
-  can emit a bare line. This keeps the invariant testable in one place.
+- The renderer owns spine emission centrally: a single helper emits one of the
+  three line shapes (glyph+two-space content, spine+two-space content, or a bare-`│`
+  separator) and inserts group separators, so no call site can emit a bare *content*
+  line. This keeps the invariant testable in one place.
 - Verbosity remains a renderer-only input.
 
 ## Verification (v2)
