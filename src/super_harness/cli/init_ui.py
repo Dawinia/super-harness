@@ -407,6 +407,14 @@ class GuidedAnswerRenderAdapter(Protocol):
     def render_answer(self, label: str, value: str) -> None: ...
 
 
+@runtime_checkable
+class GuidedSpacerRenderAdapter(Protocol):
+    """Optional capability: emit one spine separator before an active prompt so the
+    live Questionary frame reads on the spine (clack-style breathing room)."""
+
+    def render_prompt_spacer(self) -> None: ...
+
+
 # v2 renderer glyph set — the ONLY glyphs RichGuidedRenderer emits, all on the
 # spine. Live-frame glyphs (◆ ● ○) belong to Questionary's transient prompt chrome
 # and are never composed here (see the design doc's v2 glyph-grammar section).
@@ -651,6 +659,13 @@ class RichGuidedRenderer:
         self._content(glyph, f"{label}  {value}", style="green")
         self._last_was_outcome = False
 
+    def render_prompt_spacer(self) -> None:
+        # One spine line of breathing room before the live Questionary frame. It is
+        # tracked as a separator, so the answer that later collapses in the prompt's
+        # place skips its own group-break — the persistent transcript is unchanged.
+        if self._session_open and not self._session_closed:
+            self._group_break()
+
     def render_plan(self, plan: InitPlan) -> None:
         owns_session = not self._session_open
         if owns_session:
@@ -872,6 +887,7 @@ class InteractiveInitUI:
             return GitHubDecision.CREATE
         if not preflight.github_available:
             return GitHubDecision.SKIP
+        self._before_prompt()
         answer = self._prompts.select(
             "GitHub setup",
             (
@@ -948,6 +964,7 @@ class InteractiveInitUI:
             if initial.integrations is not None
             else frozenset(preflight.detected_integrations)
         )
+        self._before_prompt()
         answer = self._prompts.checkbox(
             "Integrations", self._integration_options(preflight, defaults)
         )
@@ -972,6 +989,7 @@ class InteractiveInitUI:
                 "No automated reviewers are ready; install a CLI and configure its model."
             )
             return ()
+        self._before_prompt()
         answer = self._prompts.checkbox(
             "Automated reviewers",
             options,
@@ -1021,6 +1039,7 @@ class InteractiveInitUI:
                     )
                     for index, candidate in enumerate(candidates)
                 )
+                self._before_prompt()
                 selected_answer = self._prompts.select(
                     f"Model for {option.label.removesuffix(' CLI')} reviewer",
                     choices,
@@ -1042,6 +1061,7 @@ class InteractiveInitUI:
     ) -> ChoiceCollectionResult:
         initial = _interactive_initial_choices(request, preflight, initial_choices)
         if preflight.review_config_error is not None and initial.review_write is None:
+            self._before_prompt()
             reset = self._prompts.select(
                 "Existing review configuration is invalid. Reset it?",
                 (
@@ -1112,6 +1132,7 @@ class InteractiveInitUI:
             GuidedPromptOption("cancel", "Cancel setup"),
         )
         while True:
+            self._before_prompt()
             answer = self._prompts.select("Apply this plan?", choices, default="confirm")
             if answer is None:
                 return ReviewDecision.CANCEL
@@ -1123,6 +1144,11 @@ class InteractiveInitUI:
     def _emit_answer(self, label: str, value: str) -> None:
         if isinstance(self._renderer, GuidedAnswerRenderAdapter):
             self._renderer.render_answer(label, value)
+
+    def _before_prompt(self) -> None:
+        """Breathe one spine line before an active prompt (clack-style)."""
+        if isinstance(self._renderer, GuidedSpacerRenderAdapter):
+            self._renderer.render_prompt_spacer()
 
     @staticmethod
     def _integrations_summary(integrations: tuple[str, ...]) -> str:

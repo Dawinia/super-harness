@@ -955,12 +955,19 @@ class _FakeGuidedRenderer:
         self.validations: list[str] = []
         self.events: list[Any] = []
         self.results: list[tuple[RailState, str, str | None]] = []
+        self.spacers = 0
+        self.log: list[str] = []
 
     def open_session(self) -> None:
         return None
 
     def close_session(self) -> None:
         return None
+
+    def render_prompt_spacer(self) -> None:
+        assert self.live_depth == 0
+        self.spacers += 1
+        self.log.append("spacer")
 
     def render_stage(
         self,
@@ -1062,6 +1069,34 @@ def _guided_ui(
         InteractiveInitUI(prompt_adapter=prompts, renderer=selected_renderer),
         selected_renderer,
     )
+
+
+def test_guided_breathes_one_spacer_before_every_active_prompt(tmp_path: Path) -> None:
+    renderer = _FakeGuidedRenderer()
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        selects=["confirm"],
+        before_prompt=lambda: renderer.log.append("prompt"),
+    )
+    ui, _ = _guided_ui(prompts, renderer)
+
+    ui.run(_request(tmp_path), _preflight())
+
+    # Every active prompt is immediately preceded by exactly one spine spacer, and
+    # there are no stray spacers (the persistent transcript is unchanged because the
+    # collapsed answer then skips its own group-break).
+    assert "prompt" in renderer.log
+    assert renderer.log.count("spacer") == renderer.log.count("prompt")
+    for index, entry in enumerate(renderer.log):
+        if entry == "prompt":
+            assert index > 0 and renderer.log[index - 1] == "spacer", renderer.log
+
+
+def test_guided_prompt_spacer_is_an_optional_runtime_capability() -> None:
+    assert "render_prompt_spacer" not in init_ui_module.GuidedRenderAdapter.__dict__
+    capability = init_ui_module.GuidedSpacerRenderAdapter
+    assert isinstance(_FakeGuidedRenderer(), capability)
+    assert not isinstance(object(), capability)
 
 
 def test_guided_preselects_and_labels_detected_options_and_disables_missing_producer(
