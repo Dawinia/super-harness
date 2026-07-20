@@ -573,16 +573,14 @@ def test_questionary_prompt_adapter_propagates_keyboard_interrupt(
 ) -> None:
     import questionary
 
-    question = questionary.text("unused")
-
     monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "previous")
 
-    def interrupt(_patch_stdout: bool = False) -> None:
-        assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
-        raise KeyboardInterrupt
+    class _Question:
+        def unsafe_ask(self) -> None:
+            assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
+            raise KeyboardInterrupt
 
-    monkeypatch.setattr(question, "unsafe_ask", interrupt)
-    monkeypatch.setattr(questionary, prompt_name, lambda *_args, **_kwargs: question)
+    monkeypatch.setattr(questionary, prompt_name, lambda *_args, **_kwargs: _Question())
     adapter = QuestionaryPromptAdapter()
 
     with pytest.raises(KeyboardInterrupt):
@@ -721,6 +719,9 @@ def test_questionary_checkbox_uses_color_aware_selection_style(
     color: bool,
     expected_foreground: str,
 ) -> None:
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import DummyInput
+    from prompt_toolkit.output import DummyOutput
     from prompt_toolkit.styles import default_ui_style, merge_styles
     from questionary.question import Question
 
@@ -735,10 +736,11 @@ def test_questionary_checkbox_uses_color_aware_selection_style(
 
     monkeypatch.setattr(Question, "unsafe_ask", capture_style)
 
-    QuestionaryPromptAdapter(color=color).checkbox(
-        "Choose",
-        (GuidedPromptOption("codex", "Codex", checked=True),),
-    )
+    with create_app_session(input=DummyInput(), output=DummyOutput()):
+        QuestionaryPromptAdapter(color=color).checkbox(
+            "Choose",
+            (GuidedPromptOption("codex", "Codex", checked=True),),
+        )
 
     assert len(effective_styles) == 1
     selected = effective_styles[0].get_attrs_for_style_str("class:selected")
@@ -2254,17 +2256,22 @@ def test_rich_guided_narrow_apply_and_failure_wrap_without_color_dependency(
 
     text = buffer.getvalue()
     lines = text.splitlines()
+    plain_lines = [Text.from_ansi(line).plain for line in lines]
     assert f"{success_glyph}  Harness configuration" in text
     assert f"{failure_glyph}  Agent integrations:" in text
     assert all(Text.from_ansi(line).cell_len <= 28 for line in lines)
-    failure_index = next(i for i, line in enumerate(lines) if "Agent integrations:" in line)
-    assert lines[failure_index + 1].startswith("   ")
-    close_index = next(
-        i for i, line in enumerate(lines) if line.startswith(f"{close_glyph} Setup failed")
+    failure_index = next(
+        i for i, line in enumerate(plain_lines) if "Agent integrations:" in line
     )
-    assert all(line.startswith("  ") for line in lines[close_index + 1 :])
+    assert plain_lines[failure_index + 1].startswith("   ")
+    close_index = next(
+        i
+        for i, line in enumerate(plain_lines)
+        if line.startswith(f"{close_glyph} Setup failed")
+    )
+    assert all(line.startswith("  ") for line in plain_lines[close_index + 1 :])
     assert "Recovery: super-harness init --force" in " ".join(
-        line.strip() for line in lines[close_index:]
+        line.strip() for line in plain_lines[close_index:]
     )
     if not color:
         assert "\x1b[" not in text
