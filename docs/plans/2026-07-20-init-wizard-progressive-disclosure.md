@@ -252,11 +252,14 @@ the v1 tasks are done, the v2 task below is the active work.)
 
 ### Task V2.1: Lock the spine invariant and de-jargoned grammar with tests
 
-- [ ] Add failing tests asserting, on the representative default guided transcript:
-  - every non-blank line except the `┌`/`└` corners begins with a state glyph or
-    `│` followed by two spaces (the spine invariant — no bare lines);
-  - exactly one blank spine line (`│`) separates each logical group, and the run of
-    apply `◇` outcomes has no internal blank lines;
+- [ ] Add failing tests asserting, on the representative default *persistent*
+  guided transcript (live Questionary prompt frames are erased and out of scope):
+  - every non-blank line is one of: the `┌`/`└` corners; a bare spine separator
+    `│` with no trailing whitespace; or a content line whose first two cells are a
+    state glyph or `│` followed by two spaces (the spine invariant — no other
+    shapes, and the bare-`│` separator is the one exception to the two-space rule);
+  - exactly one bare-`│` separator line separates each logical group, and the run
+    of apply `◇` outcomes has no internal separator lines;
   - the transcript contains no `preflight:`, no `Detection is read-only`, and no
     standalone `Review changes` or `Files` label;
   - the workspace appears as a plain `◇ Workspace <path>` answer line.

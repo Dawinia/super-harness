@@ -214,19 +214,45 @@ v2 keeps every v1 behavior (progressive disclosure, delta-only review, outcome
 grouping, `--verbose` diagnostics, all safety boundaries) and changes **only the
 guided renderer's line composition** so it reads as one connected clack flow.
 
+## Scope boundary: persistent transcript vs. live prompt frames
+
+The spine invariant governs the **persistent guided transcript** — the lines
+`RichGuidedRenderer` emits and leaves on screen. It does **not** govern the
+**transient live-prompt frames** that Questionary draws while it owns keyboard
+input. Those `◆ question / ● option / ○ option` frames are Questionary's own
+chrome; per the v1 design they are erased on completion (`erase_when_done=True`),
+after which the renderer prints the single collapsed `◇` answer line. Because
+Questionary owns and then erases them, live-prompt frames are **explicitly exempt**
+from the spine invariant, and the renderer-only scope is correct: the renderer
+never composes those lines. The illustrative `◆ … / │ ● / │ ○` blocks shown under
+the default and review contracts below depict Questionary's live frame for context
+only; they are not renderer output and are not asserted by the transcript tests,
+which cover the persistent lines that remain after every prompt erases.
+(Resolves plan-review CODX-003 / CLR-003.)
+
 ## Spine invariant (the core rule)
 
-Every emitted guided line, except the `┌` opener and `└` closer, begins with a
-two-cell prefix that is either a state glyph followed by two spaces, or the bare
-spine `│` followed by two spaces. **There are no bare lines** — nothing floats off
-the rail. Continuation (wrapped) lines use the spine prefix `│  ` so wrapped text
-still hangs on the rail.
+Applies to every **persistent** guided line. Such a line is exactly one of:
 
-Group spacing: exactly one blank spine line (`│`) separates distinct logical
+1. a **content line** — a state glyph or the spine `│`, followed by two spaces,
+   then content (e.g. `◇  Workspace …`, `│  .harness ×9 · …`); or
+2. a **spine separator line** — the bare spine character `│` with **no** trailing
+   whitespace, used only as the one blank line between groups; or
+3. a **corner** — the `┌` opener or `└` closer (these two alone omit the spine
+   prefix).
+
+**There are no other line shapes** — nothing floats off the rail. The separator
+(shape 2) is the single deliberate exception to the "two spaces after the prefix"
+rule: it carries no content, so it emits a bare `│` rather than `│  ` to avoid
+trailing whitespace. Continuation (wrapped) lines use the content prefix `│  ` so
+wrapped text still hangs on the rail. (The bare-`│` separator exception resolves
+plan-review CODX-004 / CLR-004.)
+
+Group spacing: exactly one spine separator line (`│`) separates distinct logical
 groups (workspace, each answer, the plan/review, the apply-outcome block, each
 warning). Consecutive same-kind result rows (the run of `◇` apply outcomes) are
-**not** separated. The opener is followed by one `│`; the closer is preceded by
-one `│`.
+**not** separated. The opener is followed by one separator; the closer is preceded
+by one separator.
 
 ## Glyph grammar (unchanged vocabulary, disambiguated use)
 
@@ -280,8 +306,10 @@ Key differences from v1:
   changed paths inlined on one spine line, separated by ` · `, plus the existing
   one-line hidden-count disclosure. When inlined names would exceed the width they
   wrap on the spine.
-- The active-question and review-decision blocks keep the clack `◆ … / │ ● / │ ○`
-  shape and are separated from neighbours by blank spine lines.
+- The active-question and review-decision blocks are drawn live by Questionary in
+  the clack `◆ … / │ ● / │ ○` shape and then erased; they are exempt from the spine
+  invariant (see the scope-boundary section). The persistent record left behind is
+  the collapsed `◇` answer line, separated from neighbours by a bare-`│` line.
 
 ## Apply, warning, failure, cancel (v2)
 
@@ -339,11 +367,13 @@ or GitHub behavior, and never reveals secrets.
 
 Automated tests prove, in addition to the v1 guarantees (which still hold):
 
-- **Spine invariant:** in the representative default and verbose guided transcripts,
-  every non-blank line except the `┌`/`└` corners starts with a state glyph or `│`
-  followed by two spaces; no bare content line exists.
-- **Group spacing:** exactly one blank spine line separates each logical group; the
-  run of apply `◇` outcomes has no internal blank lines.
+- **Spine invariant:** in the representative default and verbose *persistent*
+  transcripts, every non-blank line is either the `┌`/`└` corners, a bare spine
+  separator `│` (no trailing whitespace), or a content line whose first two cells
+  are a state glyph or `│` followed by two spaces; no other line shape exists. Live
+  Questionary prompt frames are out of scope for this assertion (they are erased).
+- **Group spacing:** exactly one bare-`│` separator line separates each logical
+  group; the run of apply `◇` outcomes has no internal separator lines.
 - **De-jargon:** the default transcript contains no `preflight:`, no
   `Detection is read-only`, no standalone `Review changes` or `Files` label.
 - **Flattened review:** the default review renders one `◇ Plan  N files to write`
