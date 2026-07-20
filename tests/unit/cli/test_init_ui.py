@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import FrozenInstanceError, replace
-from io import StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1783,6 +1783,36 @@ def test_rich_guided_narrow_output_drops_hints_and_wraps_paths(tmp_path: Path) -
     assert "will be written during apply" not in text
     assert "..." not in text
     assert len(text.splitlines()) > len(plan.file_actions)
+
+
+def test_rich_guided_ascii_review_hides_unchanged_with_ascii_separator(
+    tmp_path: Path,
+) -> None:
+    byte_buffer = BytesIO()
+    output = TextIOWrapper(byte_buffer, encoding="ascii", errors="strict", write_through=True)
+    renderer = RichGuidedRenderer(
+        console=Console(file=output, width=48, color_system=None),
+        unicode=False,
+        color=False,
+        width=48,
+    )
+    plan = replace(
+        _plan(tmp_path),
+        file_actions=(
+            PlannedFileAction(Path(".harness/state.yaml"), FileAction.UPDATE),
+            PlannedFileAction(Path("preserved.txt"), FileAction.PRESERVE),
+            PlannedFileAction(Path("skipped.txt"), FileAction.SKIP),
+        ),
+    )
+
+    renderer.render_plan(plan)
+
+    text = byte_buffer.getvalue().decode("ascii")
+    content = " ".join(line.lstrip("|+ ").strip() for line in text.splitlines())
+    assert text.isascii()
+    assert "2 unchanged files hidden - use --verbose to inspect" in content
+    assert "preserved.txt" not in text
+    assert "skipped.txt" not in text
 
 
 def test_rich_guided_cjk_windows_path_wraps_inside_every_review_rail_line(

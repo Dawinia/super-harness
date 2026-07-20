@@ -623,9 +623,11 @@ class RichGuidedRenderer:
             )
             if hidden_count:
                 noun = "file" if hidden_count == 1 else "files"
+                separator = "·" if self._unicode else "-"
                 self._print_review_row(
                     rail,
-                    f"  {hidden_count} unchanged {noun} hidden · use --verbose to inspect",
+                    f"  {hidden_count} unchanged {noun} hidden "
+                    f"{separator} use --verbose to inspect",
                     style="dim",
                 )
         if owns_session:
