@@ -528,8 +528,21 @@ class RichGuidedRenderer:
             self._print(f"{'│' if self._unicode else '|'}  {secondary}", style="dim")
 
     def render_answer(self, label: str, value: str) -> None:
-        prefix = f"{_RAIL_GLYPHS[self._unicode][RailState.PENDING]}  {label}  "
+        glyph = _RAIL_GLYPHS[self._unicode][RailState.PENDING]
+        heading = f"{glyph}  {label}"
+        prefix = f"{heading}  "
         prefix_width = Text(prefix).cell_len
+        if prefix_width >= self._width:
+            self._print(heading, style="dim")
+            indent = " " * min(3, max(0, self._width - 1))
+            wrapped_value = Text(value).wrap(
+                self._console,
+                max(1, self._width - Text(indent).cell_len),
+                overflow="fold",
+            )
+            for line in wrapped_value:
+                self._print(f"{indent}{line}", style="dim")
+            return
         wrapped = Text(value).wrap(
             self._console,
             max(1, self._width - prefix_width),

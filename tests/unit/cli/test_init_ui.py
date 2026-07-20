@@ -1543,6 +1543,34 @@ def test_rich_guided_answer_summary_indents_narrow_continuations(
     assert all(Text(line).cell_len <= width for line in lines)
 
 
+@pytest.mark.parametrize(
+    ("unicode", "glyph", "width"),
+    [(True, "◇", 24), (False, "|", 23)],
+)
+def test_rich_guided_answer_summary_falls_back_when_prefix_fills_width(
+    unicode: bool,
+    glyph: str,
+    width: int,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=width, color_system=None),
+        unicode=unicode,
+        color=False,
+        width=width,
+    )
+    value = "Codex (gpt-5.6-sol), Claude (opus[1m])"
+
+    renderer.render_answer("Automated reviewers", value)
+
+    lines = buffer.getvalue().splitlines()
+    assert lines[0] == f"{glyph}  Automated reviewers"
+    assert all(line.strip() for line in lines)
+    assert all(Text(line).cell_len <= width for line in lines)
+    assert all(line.startswith("   ") for line in lines[1:])
+    assert " ".join(line.strip() for line in lines[1:]) == value
+
+
 def test_guided_answer_renderer_is_an_optional_runtime_capability() -> None:
     assert "render_answer" not in init_ui_module.GuidedRenderAdapter.__dict__
     capability = init_ui_module.GuidedAnswerRenderAdapter
