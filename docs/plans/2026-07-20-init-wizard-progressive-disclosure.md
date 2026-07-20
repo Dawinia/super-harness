@@ -233,3 +233,67 @@ o  Repository guidance
 + Setup complete in 3.1s - Next:
   super-harness status
 ```
+
+---
+
+## v2: continuous clack bar spine
+
+**Status:** v1 tasks above are complete and verified; this section adds the v2
+renderer rework. See the design doc's "v2 revision" section for the authoritative
+grammar. (This resolves the plan-review lifecycle-status contradiction CODX-002:
+the v1 tasks are done, the v2 task below is the active work.)
+
+**Files:**
+
+- Modify: `src/super_harness/cli/init_ui.py` (only `RichGuidedRenderer` line
+  composition + its prefix helpers)
+- Test: `tests/unit/cli/test_init_ui.py`, `tests/integration/cli/test_init.py`
+- Docs: `docs/getting-started.md` (representative transcript)
+
+### Task V2.1: Lock the spine invariant and de-jargoned grammar with tests
+
+- [ ] Add failing tests asserting, on the representative default guided transcript:
+  - every non-blank line except the `┌`/`└` corners begins with a state glyph or
+    `│` followed by two spaces (the spine invariant — no bare lines);
+  - exactly one blank spine line (`│`) separates each logical group, and the run of
+    apply `◇` outcomes has no internal blank lines;
+  - the transcript contains no `preflight:`, no `Detection is read-only`, and no
+    standalone `Review changes` or `Files` label;
+  - the workspace appears as a plain `◇ Workspace <path>` answer line.
+- [ ] Confirm RED.
+
+### Task V2.2: Reflow `RichGuidedRenderer` onto the spine
+
+- [ ] Route every guided line through one spine-prefixing helper that emits either
+  a glyph+`  ` or `│  `, and centralize the one-blank-`│`-between-groups rule so no
+  call site can print a bare line.
+- [ ] Emit the former preflight stage as a `◇ Workspace <path>` answer; drop the
+  `Detection is read-only` secondary line.
+- [ ] Collapse the default review to a single `◇ Plan  N files to write` header
+  with changed paths inlined on one spine line separated by ` · `, keeping the
+  one-line hidden-count disclosure; wrap inlined names on the spine when they
+  exceed width. Remove the `Review changes` and `Files` labels and the extra
+  indentation levels.
+- [ ] Keep apply outcomes, the `▲` warning block, `✗` failure + recovery line,
+  `■` cancel, and the `└` result on the spine with the group-spacing rule.
+- [ ] Confirm GREEN.
+
+### Task V2.3: Update verbose, portability, and doc evidence
+
+- [ ] Verbose review adds preserved/skipped and backup rows on the spine under the
+  `◇ Plan` header without changing plan/executor/writes; assert same-plan/same-calls
+  parity between default and verbose still holds.
+- [ ] Refresh ASCII, no-color, and narrow-width snapshots to the spine grammar;
+  confirm the ASCII map and on-spine wrapping preserve hierarchy and never truncate
+  paths.
+- [ ] Confirm the representative default transcript still meets the 40–60%
+  line-budget test versus the checked-in baseline.
+- [ ] Replace the representative transcript in `docs/getting-started.md` with the v2
+  capture.
+
+### v2 acceptance evidence (to be filled after GREEN)
+
+The same commands as the v1 evidence block above re-render the representative
+transcript; record the v2 wide/narrow nonblank-line counts and paste the v2 narrow
+ASCII capture here. The CodeGraph parity comparison (CODX-001) stays a manual
+reviewer-checklist step, not a CI gate, per the design doc's v2 verification note.

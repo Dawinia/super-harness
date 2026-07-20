@@ -15,7 +15,11 @@ scope:
 
 # Init Wizard Progressive Disclosure Design
 
-**Status:** Approved direction, awaiting implementation
+**Status:** v1 shipped and verified. Superseded in part by the **v2 revision**
+(continuous clack bar spine) at the end of this document — read the v2 section for
+the authoritative current grammar. The sections between here and v2 describe the
+v1 progressive-disclosure work that v2 builds on; where v1 and v2 disagree
+(notably the role of `│`), v2 wins.
 
 ## Goal
 
@@ -118,7 +122,7 @@ must never reveal secrets and must not alter the plan or executor inputs.
 - `▲` marks a warning that requires attention.
 - `✗` marks failure.
 - `│` is used only inside the active review/question block, not as a permanent rail
-  connecting the whole session.
+  connecting the whole session. **(Reversed by v2: `│` becomes the permanent spine.)**
 - Color reinforces state but never carries state alone; glyphs and text preserve the
   distinction under `NO_COLOR` and redirected output.
 
@@ -182,3 +186,182 @@ Automated tests will prove:
 Manual acceptance compares the same initialized fixture in CodeGraph and
 super-harness, checking visual hierarchy, answer recall, review scan time, and the
 absence of debug-style narration.
+
+---
+
+# v2 revision — continuous clack bar spine
+
+**Status:** Approved direction (2026-07-20), implementation in progress.
+
+## Why v2
+
+v1 met the line-budget goal but still read as a disconnected list rather than a
+designed wizard. Rendering the same representative transcript exposed three
+concrete gaps against a clack/CodeGraph-style installer:
+
+1. **Broken spine.** v1 answer lines (`◇ Integrations …`) carried no leading `│`,
+   and the review block reused `│` as content indentation. There was no single
+   vertical rail from `┌` to `└`, so the session looked like stacked fragments.
+2. **Leaked internal vocabulary.** The stage line printed `preflight:` (a state
+   machine name) plus `Detection is read-only` (reassurance noise); the review
+   printed a bare structural `Files` label. These are the exact "expose the state
+   machine, not the task" symptoms v1 set out to remove.
+3. **Over-deep review.** `Review changes → Files → Update 11 files → .harness
+   configuration (9 files)` is four indentation levels to say "11 files will be
+   written."
+
+v2 keeps every v1 behavior (progressive disclosure, delta-only review, outcome
+grouping, `--verbose` diagnostics, all safety boundaries) and changes **only the
+guided renderer's line composition** so it reads as one connected clack flow.
+
+## Spine invariant (the core rule)
+
+Every emitted guided line, except the `┌` opener and `└` closer, begins with a
+two-cell prefix that is either a state glyph followed by two spaces, or the bare
+spine `│` followed by two spaces. **There are no bare lines** — nothing floats off
+the rail. Continuation (wrapped) lines use the spine prefix `│  ` so wrapped text
+still hangs on the rail.
+
+Group spacing: exactly one blank spine line (`│`) separates distinct logical
+groups (workspace, each answer, the plan/review, the apply-outcome block, each
+warning). Consecutive same-kind result rows (the run of `◇` apply outcomes) are
+**not** separated. The opener is followed by one `│`; the closer is preceded by
+one `│`.
+
+## Glyph grammar (unchanged vocabulary, disambiguated use)
+
+- `┌` / `└` — session open / close corners (only these two omit the spine prefix).
+- `│` — the permanent spine and the blank group separator. It no longer doubles as
+  content indentation; file details hang directly on the spine.
+- `◇` — a completed answer or a completed apply outcome (green).
+- `◆` — the one active question or decision (cyan); questionary owns this while it
+  has input, then the block collapses to a single `◇` answer line.
+- `▲` — a warning that needs attention (yellow).
+- `✗` — a failed step (red).
+- `■` — a cancellation.
+- `●` / `○` — selected / unselected option inside an active `◆` block.
+
+ASCII fallback maps `┌│└◆◇▲✗●○■` → `+ | + * o ! x (*) ( ) x` with the hierarchy
+and spine invariant preserved. Color reinforces state but never carries it alone.
+
+## Default interaction contract (v2)
+
+```text
+┌  super-harness init
+│
+◇  Workspace  /work/my-project
+│
+◇  Integrations  Codex, Claude Code
+│
+◇  Reviewers  Codex gpt-5.6-sol · Claude opus[1m]
+│
+◇  GitHub  Workflow + PR template
+│
+◇  Plan  11 files to write
+│  .harness ×9 · AGENTS.md · .gitignore
+│  5 unchanged hidden — --verbose to see them
+│
+◇  Harness configured
+◇  Agents wired up
+◇  Repo guidance written
+│
+▲  GitHub needs one manual step
+│  Settings › General › Pull Requests
+│
+└  Done in 3.1s   →   super-harness status
+```
+
+Key differences from v1:
+
+- The stage line becomes a plain `◇ Workspace <path>` answer — no `preflight:`
+  prefix and no `Detection is read-only` line.
+- The review collapses from a `Review changes` / `Files` / `<action> N files` /
+  `<paths>` four-level tree to a single `◇ Plan  N files to write` header with the
+  changed paths inlined on one spine line, separated by ` · `, plus the existing
+  one-line hidden-count disclosure. When inlined names would exceed the width they
+  wrap on the spine.
+- The active-question and review-decision blocks keep the clack `◆ … / │ ● / │ ○`
+  shape and are separated from neighbours by blank spine lines.
+
+## Apply, warning, failure, cancel (v2)
+
+Apply outcomes stay grouped and print once, now on the spine:
+
+```text
+◇  Harness configured
+◇  Agents wired up
+◇  Repo guidance written
+```
+
+Warning (still actionable, on the spine, preceded by a blank spine line):
+
+```text
+│
+▲  GitHub needs one manual step
+│  Settings › General › Pull Requests
+```
+
+Failure preserves completed groups, then names the failed outcome and one recovery
+command:
+
+```text
+◇  Harness configured
+✗  Agents wired up — codex exited 1
+│  Fix the error above, then: super-harness init --force
+```
+
+Cancellation before any write ends in one line: `■  Cancelled — nothing was
+written`. Repeat-init renders the existing status/force guidance inside one
+compact `▲ Already initialized` block.
+
+## Verbose interaction contract (v2)
+
+`--verbose` keeps the identical spine and grammar; it only adds rows inside the
+plan block — preserved/skipped paths and backup paths, each on its own spine line
+under the `◇ Plan` header — and may re-enable per-operation apply diagnostics. It
+never changes the plan, the confirmation decision, executor inputs/order, writes,
+or GitHub behavior, and never reveals secrets.
+
+## Rendering and data boundaries (v2)
+
+- Only `RichGuidedRenderer`'s line composition changes: `open_session`,
+  `close_session`, `render_stage` (now emitted as a plain answer), `render_answer`,
+  `render_plan`, `render_event`, and their shared prefixing helpers. The
+  `GuidedRenderAdapter` protocol, `InteractiveInitUI` orchestration, questionary
+  backend, `LineInitUI`, non-interactive/JSON/quiet paths, and all plan/executor
+  code are untouched.
+- The renderer owns spine emission centrally: a single helper prefixes every line
+  with either a glyph or the spine and inserts group separators, so no call site
+  can emit a bare line. This keeps the invariant testable in one place.
+- Verbosity remains a renderer-only input.
+
+## Verification (v2)
+
+Automated tests prove, in addition to the v1 guarantees (which still hold):
+
+- **Spine invariant:** in the representative default and verbose guided transcripts,
+  every non-blank line except the `┌`/`└` corners starts with a state glyph or `│`
+  followed by two spaces; no bare content line exists.
+- **Group spacing:** exactly one blank spine line separates each logical group; the
+  run of apply `◇` outcomes has no internal blank lines.
+- **De-jargon:** the default transcript contains no `preflight:`, no
+  `Detection is read-only`, no standalone `Review changes` or `Files` label.
+- **Flattened review:** the default review renders one `◇ Plan  N files to write`
+  header with inlined changed paths and the single hidden-count line, and no
+  four-level indentation.
+- **Parity preserved:** same scripted answers in default and verbose guided modes
+  still produce equal `InitPlan` values, equal confirmation decisions, and
+  identical executor calls in identical order; rejection performs zero writes;
+  fixture secrets never appear.
+- **Budget preserved:** the representative default transcript stays within the
+  existing 40–60%-fewer-non-blank-lines budget versus the checked-in baseline.
+- **Portability preserved:** ASCII, no-color, narrow-width wrapping (on the spine),
+  and the Windows entrypoint contracts do not regress.
+
+**On the CodeGraph manual-acceptance gap (plan-review CODX-001):** the
+CodeGraph-vs-super-harness comparison is an explicitly *manual* acceptance step and
+is not automatable here (it depends on a second product's installer). The automated
+proxy for interaction quality remains the line-budget test plus the spine/de-jargon
+snapshot assertions above; the manual comparison is recorded as a reviewer checklist
+item, not a CI gate. This is called out so the two artifacts no longer imply
+automated coverage of that comparison.
