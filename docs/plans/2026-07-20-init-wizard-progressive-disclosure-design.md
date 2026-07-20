@@ -239,8 +239,9 @@ completion and the renderer prints the single collapsed `◇` answer line in its
 place. So the **persistent** record — the only thing the transcript tests assert,
 and the only thing a user scans after answering — is fully on-spine. Live frames
 are **explicitly exempt** from the spine invariant and from the transcript tests,
-and the renderer-only scope is correct because the renderer never composes those
-frames. (Resolves plan-review CODX-003 / CLR-005: the earlier revision wrongly
+and excluding the Questionary backend from scope is correct because the renderer
+never composes those frames. (Resolves plan-review CODX-003 / CLR-005: the earlier
+revision wrongly
 implied Questionary emits `│`-prefixed option rows.)
 
 ## Spine invariant (the core rule)
@@ -326,23 +327,33 @@ ASCII map no longer list live-frame glyphs as renderer output.)
 │
 ◇  Integrations  Codex, Claude Code
 │
-◇  Reviewers  Codex gpt-5.6-sol · Claude opus[1m]
+◇  Automated reviewers  Codex (gpt-5.6-sol) · Claude (opus[1m])
 │
-◇  GitHub  Workflow + PR template
+◇  GitHub  Workflow and PR template
 │
 ◇  Plan  11 files to write
 │  .harness ×9 · AGENTS.md · .gitignore
 │  5 unchanged hidden — --verbose to see them
 │
-◇  Harness configured
-◇  Agents wired up
-◇  Repo guidance written
+◇  Harness configuration
+◇  Agent integrations
+◇  Repository guidance
 │
-▲  GitHub needs one manual step
+▲  GitHub setup needs one manual step
 │  Settings › General › Pull Requests
 │
-└  Done in 3.1s   →   super-harness status
+└  Setup complete in 3.1s · Next: super-harness status
 ```
+
+Wording note: the answer labels (`Integrations`, `Automated reviewers`, `GitHub`),
+the apply-outcome labels (`Harness configuration`, `Agent integrations`,
+`Repository guidance`), and the terminal result/next text (`Setup complete in …`,
+`Next: super-harness status`) are the **existing** strings — v2 does not reword
+them, so this stays inside the presentation scope. The deliberate content changes
+are exactly: the `◇ Workspace <path>` line replacing the `● preflight: Inspected …`
++ `Detection is read-only` pair; the single `◇ Plan  N files to write` header
+replacing the `Review changes` / `Files` / per-action tree; and the spine + group
+spacing throughout.
 
 Key differences from v1:
 
@@ -365,16 +376,16 @@ Key differences from v1:
 Apply outcomes stay grouped and print once, now on the spine:
 
 ```text
-◇  Harness configured
-◇  Agents wired up
-◇  Repo guidance written
+◇  Harness configuration
+◇  Agent integrations
+◇  Repository guidance
 ```
 
 Warning (still actionable, on the spine, preceded by a blank spine line):
 
 ```text
 │
-▲  GitHub needs one manual step
+▲  GitHub setup needs one manual step
 │  Settings › General › Pull Requests
 ```
 
@@ -382,15 +393,19 @@ Failure preserves completed groups, then names the failed outcome and one recove
 command:
 
 ```text
-◇  Harness configured
-✗  Agents wired up — codex exited 1
+◇  Harness configuration
+✗  Agent integrations — codex exited 1
 │  Fix the error above, then: super-harness init --force
 ```
 
-Cancellation before any write ends on the closer line:
-`└  Cancelled — nothing was written` (the terminal result carried by `└`, as the
-code already does — no separate cancel glyph). Repeat-init renders the existing
-status/force guidance inside one compact `▲ Already initialized` block.
+(The `✗` failure detail text is the existing caller-supplied error; only its
+placement on the spine is new.) Cancellation before any write ends on the closer
+line with the existing text: `└  Setup cancelled` (the terminal result carried by
+`└`, as the code already does — no separate cancel glyph, and the `Setup cancelled`
+wording and its `InteractiveInitUI._render_cancelled` source are unchanged, so this
+stays inside the presentation scope). Repeat-init renders the existing status/force
+guidance inside
+one compact `▲ Already initialized` block.
 
 ## Verbose interaction contract (v2)
 
@@ -402,16 +417,27 @@ or GitHub behavior, and never reveals secrets.
 
 ## Rendering and data boundaries (v2)
 
-- Only `RichGuidedRenderer`'s line composition changes: `open_session`,
-  `close_session`, `render_stage` (now emitted as a plain answer), `render_answer`,
-  `render_plan`, `render_event`, and their shared prefixing helpers. The
-  `GuidedRenderAdapter` protocol, `InteractiveInitUI` orchestration, questionary
-  backend, `LineInitUI`, non-interactive/JSON/quiet paths, and all plan/executor
-  code are untouched.
+- v2 changes the **guided presentation layer**, which spans two in-scope places:
+  1. **`RichGuidedRenderer`** — all persistent output methods and their shared
+     prefixing helpers: `open_session`, `close_session`, `render_stage`,
+     `render_answer`, `render_plan`, `render_event`, `render_validation`, and
+     `render_result`. **Every** one of these must emit only the renderer glyph set on
+     the spine; none is exempt (this is why `render_validation`, which today emits
+     `!`, is named explicitly — it moves onto the spine with the `▲` caution glyph).
+  2. **`InteractiveInitUI`'s presentation calls** — only the strings it hands the
+     renderer for the workspace line: `prepare_plan` stops sending
+     `"Inspected …"` + `"Detection is read-only"` and instead drives a
+     `◇ Workspace <path>` answer. Its **collection order, confirmation, plan
+     building, frozen integration transactions, and executor construction are
+     unchanged**, as are the `GuidedRenderAdapter` protocol, questionary backend,
+     `LineInitUI`, and non-interactive/JSON/quiet paths.
+- No answer/outcome/result **wording** changes (see the wording note under the
+  default contract): the labels and terminal text are the existing strings.
 - The renderer owns spine emission centrally: a single helper emits one of the
   three line shapes (glyph+two-space content, spine+two-space content, or a bare-`│`
   separator) and inserts group separators, so no call site can emit a bare *content*
-  line. This keeps the invariant testable in one place.
+  line, and every renderer method routes through it. This keeps the invariant
+  testable in one place.
 - Verbosity remains a renderer-only input.
 
 ## Verification (v2)

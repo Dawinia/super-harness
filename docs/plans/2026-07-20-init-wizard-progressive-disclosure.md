@@ -263,6 +263,12 @@ the v1 tasks are done, the v2 task below is the active work.)
   - the transcript contains no `preflight:`, no `Detection is read-only`, and no
     standalone `Review changes` or `Files` label;
   - the workspace appears as a plain `◇ Workspace <path>` answer line.
+- [ ] Add failing tests that assert the same spine invariant and glyph set over the
+  **non-happy** persistent paths too, so no uncovered renderer method can violate
+  the grammar: a validation/invalid-answer transcript (`render_validation`), an
+  apply-failure transcript (`render_event` FAILED + recovery line), a cancel
+  transcript, and an already-initialized transcript. Assert none emits `!` or any
+  glyph outside `┌ └ │ ◇ ▲ ✗` (+ `…` verbose).
 - [ ] Confirm RED.
 
 ### Task V2.2: Reflow `RichGuidedRenderer` onto the spine
@@ -289,9 +295,18 @@ the v1 tasks are done, the v2 task below is the active work.)
   one-line hidden-count disclosure; wrap inlined names on the spine when they
   exceed width. Remove the `Review changes` and `Files` labels and the extra
   indentation levels.
+- [ ] Bring `render_validation` onto the spine: replace its `!` glyph with the
+  in-set `▲` caution on a spine content line (resolves plan-review CODX-010 /
+  CLR-010). Confirm no renderer method (`render_stage`, `render_answer`,
+  `render_plan`, `render_event`, `render_validation`, `render_result`/
+  `close_session`) emits off-spine or off-set output.
 - [ ] Keep apply outcomes, the `▲` warning block, and the `✗` failure + recovery
-  line on the spine; render the terminal result (success, cancel, or failure) on the
-  `└` closer line as today (no separate cancel glyph), with the group-spacing rule.
+  line on the spine; render the terminal result on the `└` closer line as today.
+  Keep the existing result/next/cancel wording (`Setup complete in …` /
+  `Next: super-harness status` / `Setup cancelled` / `Setup failed after …`) so
+  `InteractiveInitUI._render_cancelled` and the result text are unchanged and the
+  change stays inside the presentation scope (resolves plan-review CODX-011 /
+  CLR-011).
 - [ ] Confirm GREEN.
 
 ### Task V2.3: Update verbose, portability, and doc evidence
