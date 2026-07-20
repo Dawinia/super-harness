@@ -1,5 +1,6 @@
 import json
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -86,12 +87,13 @@ def test_agents_md_subsection_does_not_teach_kill_switch():
 
 def test_codex_capabilities():
     caps = CodexAdapter().capabilities
-    assert caps["post_tool_use_hook"] is True       # spike-verified (fires under codex exec)
-    assert caps["turn_end_feedback_hook"] is True    # cut-2 Stop delivery
+    assert caps["post_tool_use_hook"] is True  # spike-verified (fires under codex exec)
+    assert caps["turn_end_feedback_hook"] is True  # cut-2 Stop delivery
 
 
 def test_codex_stop_should_check_and_feedback_delegate():
     from super_harness.core.authoring_check import Verdict, Violation
+
     a = CodexAdapter()
     assert a.stop_should_check({"stop_hook_active": True}) is False
     assert a.stop_should_check({"stop_hook_active": False}) is True
@@ -165,3 +167,68 @@ def test_codex_agents_md_teaches_compiled_review_contract():
     assert "plan, scope, or requirements changed" in sub
     assert "never widen it to the whole pr" in sub
     assert "must never confirm the human nonce" in sub
+
+
+def test_codex_fresh_install_uninstall_removes_managed_only_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/{name}")
+    adapter = CodexAdapter()
+    adapter.install_hooks(tmp_path)
+    path = tmp_path / ".codex" / "hooks.json"
+    assert path.exists()
+    adapter.on_uninstall(tmp_path)
+    assert not path.exists()
+
+
+def test_codex_uninstall_without_backup_strips_only_managed_markers(tmp_path):
+    path = tmp_path / ".codex" / "hooks.json"
+    path.parent.mkdir()
+    path.write_text(
+        json.dumps(
+            {
+                "theme": "dark",
+                "hooks": {
+                    "Stop": [
+                        {"hooks": [{"type": "command", "command": "keep-me"}]},
+                        {
+                            "hooks": [
+                                {"type": "command", "command": "/h --agent codex --event stop"}
+                            ]
+                        },
+                    ]
+                },
+            }
+        )
+    )
+    CodexAdapter().on_uninstall(tmp_path)
+    assert json.loads(path.read_text()) == {
+        "theme": "dark",
+        "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "keep-me"}]}]},
+    }
+
+
+def test_codex_symlinked_config_directory_is_rejected_without_external_mutation(
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "external-codex"
+    external.mkdir()
+    settings = external / "hooks.json"
+    original = b'{"theme":"keep"}\n'
+    settings.write_bytes(original)
+    link = tmp_path / ".codex"
+    try:
+        link.symlink_to(external, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    adapter = CodexAdapter()
+    with pytest.raises(ValueError, match=r"\.codex.*symlink"):
+        adapter.plan_hook_install(
+            tmp_path,
+            hook_executable="/abs/super-harness-hook",
+            cli_executable="/abs/super-harness",
+        )
+    with pytest.raises(ValueError, match=r"\.codex.*symlink"):
+        adapter.on_uninstall(tmp_path)
+
+    assert settings.read_bytes() == original
+    assert sorted(path.name for path in external.iterdir()) == ["hooks.json"]

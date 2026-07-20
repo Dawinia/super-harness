@@ -11,6 +11,7 @@ them — the gate is INACTIVE until then. See design 2026-06-25 §4.3.
 
 API stability: experimental (v0.1).
 """
+
 from __future__ import annotations
 
 import shutil
@@ -21,9 +22,10 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from super_harness.adapters import AgentAdapter
 from super_harness.adapters.agent import _stop_protocol
 from super_harness.adapters.agent._settings_merge import (
-    merge_pre_tool_use_hook,
-    merge_session_start_hook,
-    merge_stop_hook,
+    SettingsMergePlan,
+    apply_settings_merge_plan,
+    plan_settings_merge,
+    restore_or_remove_managed_hooks,
 )
 
 if TYPE_CHECKING:
@@ -151,36 +153,32 @@ class CodexAdapter(AgentAdapter):
                 f"Codex adapter."
             )
 
-        hooks_path = workspace / ".codex" / "hooks.json"
-        pre_command = f"{resolved_hook} --agent codex"
-        session_command = f"{resolved_cli} change resume"
-        stop_command = f"{resolved_hook} --agent codex --event stop"
-
-        snapshot: str | None = (
-            hooks_path.read_text(encoding="utf-8") if hooks_path.exists() else None
+        plan = self.plan_hook_install(
+            workspace, hook_executable=resolved_hook, cli_executable=resolved_cli
         )
-        try:
-            merge_pre_tool_use_hook(
-                hooks_path, command=pre_command,
-                matcher=_CODEX_MATCHER, marker=_CODEX_MARKER,
-            )
-            merge_session_start_hook(hooks_path, command=session_command)
-            merge_stop_hook(hooks_path, command=stop_command, marker=_CODEX_STOP_MARKER)
-        except BaseException:
-            self._restore_snapshot(hooks_path, snapshot)
-            raise
+        assert plan is not None
+        apply_settings_merge_plan(plan)
 
-    @staticmethod
-    def _restore_snapshot(hooks_path: Path, snapshot: str | None) -> None:
-        if snapshot is None:
-            hooks_path.unlink(missing_ok=True)
-        else:
-            hooks_path.write_text(snapshot, encoding="utf-8")
+    def plan_hook_install(
+        self, workspace: Path, *, hook_executable: str, cli_executable: str
+    ) -> SettingsMergePlan:
+        return plan_settings_merge(
+            workspace / ".codex" / "hooks.json",
+            workspace_root=workspace,
+            pre_tool_use_command=f"{hook_executable} --agent codex",
+            session_start_command=f"{cli_executable} change resume",
+            stop_command=f"{hook_executable} --agent codex --event stop",
+            pre_tool_use_matcher=_CODEX_MATCHER,
+            pre_tool_use_marker=_CODEX_MARKER,
+            stop_marker=_CODEX_STOP_MARKER,
+        )
 
     def inject_context(self, change_id: str) -> str:
         result = subprocess.run(
             [_CLI_BINARY, "change", "resume", change_id],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         return result.stdout or ""
 
@@ -210,18 +208,9 @@ class CodexAdapter(AgentAdapter):
 
     def on_uninstall(self, workspace: Path) -> None:
         hooks_path = workspace / ".codex" / "hooks.json"
-        backups = sorted(
-            hooks_path.parent.glob(f"{hooks_path.name}.super-harness-backup.*"),
-            key=_backup_sort_key,
+        restore_or_remove_managed_hooks(
+            hooks_path,
+            pre_tool_use_marker=_CODEX_MARKER,
+            stop_marker=_CODEX_STOP_MARKER,
+            workspace_root=workspace,
         )
-        if not backups:
-            return
-        hooks_path.write_text(backups[0].read_text(encoding="utf-8"), encoding="utf-8")
-
-
-def _backup_sort_key(path: Path) -> int:
-    suffix = path.name.rsplit(".", 1)[-1]
-    try:
-        return int(suffix)
-    except ValueError:
-        return -1

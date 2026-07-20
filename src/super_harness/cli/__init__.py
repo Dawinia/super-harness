@@ -1,45 +1,116 @@
 """super-harness CLI root group.
 
-Defines the top-level `super-harness` Click group and wires up all subcommands
-(init, change, status, state, event). Per `cli-command-surface` §2.1 global
-conventions (`--workspace`, `--json`, `--quiet`, `--verbose` flags).
+Defines the top-level `super-harness` Click group and its lazy command registry.
+Per `cli-command-surface` §2.1 global conventions (`--workspace`, `--json`,
+`--quiet`, `--verbose` flags).
 """
+
 from __future__ import annotations
 
 import click
 
-from super_harness.cli.adapter import adapter_group
-from super_harness.cli.attest import attest_group
-from super_harness.cli.change import change_group
-from super_harness.cli.decision import decision_group
-from super_harness.cli.doc import doc_group
-from super_harness.cli.done import done_cmd
-from super_harness.cli.event import event_group
-from super_harness.cli.gate import gate_group
 from super_harness.cli.group_options import (
     GroupAwareCommand,
     GroupAwareGroup,
-    rewrap_subtree,
 )
-from super_harness.cli.implementation import implementation_group
-from super_harness.cli.init import init_cmd
-from super_harness.cli.observe import observe_group
-from super_harness.cli.on_merge import on_merge_cli
-from super_harness.cli.plan import plan_group
-from super_harness.cli.pr import pr_group
-from super_harness.cli.report import report_cmd
-from super_harness.cli.review import review_group
-from super_harness.cli.sensor import sensor_group
-from super_harness.cli.state import state_group
-from super_harness.cli.status import status_cmd
-from super_harness.cli.sync import sync_cmd
-from super_harness.cli.verification import verification_group
-from super_harness.cli.verify import verify_cmd
+from super_harness.cli.lazy_group import CommandSpec, LazyGroup
 from super_harness.version import __version__
+
+COMMAND_SPECS = {
+    "adapter": CommandSpec(
+        "super_harness.cli.adapter:adapter_group",
+        "Install / uninstall / list super-harness integrations for frameworks + agents.",
+    ),
+    "attest": CommandSpec(
+        "super_harness.cli.attest:attest_group",
+        "Lifecycle attestation: snapshot evidence + verify it covers a diff.",
+    ),
+    "change": CommandSpec(
+        "super_harness.cli.change:change_group",
+        "Declare / abandon / list lifecycle changes.",
+    ),
+    "decision": CommandSpec(
+        "super_harness.cli.decision:decision_group",
+        "Author, ratify, and check decision records.",
+    ),
+    "doc": CommandSpec(
+        "super_harness.cli.doc:doc_group",
+        "Check that derivable docs match their generators.",
+    ),
+    "done": CommandSpec(
+        "super_harness.cli.done:done_cmd",
+        "Verify a change and emit implementation_complete on a pass.",
+    ),
+    "event": CommandSpec(
+        "super_harness.cli.event:event_group",
+        "Inspect the event stream.",
+    ),
+    "gate": CommandSpec(
+        "super_harness.cli.gate:gate_group",
+        "Inspect the gate registry.",
+    ),
+    "implementation": CommandSpec(
+        "super_harness.cli.implementation:implementation_group",
+        "Implementation-phase lifecycle verbs.",
+    ),
+    "init": CommandSpec(
+        "super_harness.cli.init:init_cmd",
+        "Initialize a project for super-harness.",
+    ),
+    "observe": CommandSpec(
+        "super_harness.cli.observe:observe_group",
+        "Operate the optional framework-observer host (start / stop / status).",
+    ),
+    "on-merge": CommandSpec(
+        "super_harness.cli.on_merge:on_merge_cli",
+        "Emit a ``merged`` event (transitions the change to ARCHIVED).",
+    ),
+    "plan": CommandSpec(
+        "super_harness.cli.plan:plan_group",
+        "Plan-phase lifecycle verbs (plain-mode manual emit).",
+    ),
+    "pr": CommandSpec(
+        "super_harness.cli.pr:pr_group",
+        "PR-side helpers (validate PR metadata + lifecycle).",
+    ),
+    "report": CommandSpec(
+        "super_harness.cli.report:report_cmd",
+        "Show what the harness measurably did for you over a repo/time-window.",
+    ),
+    "review": CommandSpec(
+        "super_harness.cli.review:review_group",
+        "Compile contracts, import receipts, or disclose a review skip.",
+    ),
+    "sensor": CommandSpec(
+        "super_harness.cli.sensor:sensor_group",
+        "Inspect the sensor registry.",
+    ),
+    "state": CommandSpec(
+        "super_harness.cli.state:state_group",
+        "Inspect / rebuild the derived state.yaml.",
+    ),
+    "status": CommandSpec(
+        "super_harness.cli.status:status_cmd",
+        "Show current state for one change, all changes, or the most recently active change.",
+    ),
+    "sync": CommandSpec(
+        "super_harness.cli.sync:sync_cmd",
+        "Re-render the managed super-harness artifacts without re-running init.",
+    ),
+    "verification": CommandSpec(
+        "super_harness.cli.verification:verification_group",
+        "Register / manage verification checks in `.harness/verification.yaml`.",
+    ),
+    "verify": CommandSpec(
+        "super_harness.cli.verify:verify_cmd",
+        "Run verification checks for a change and report the verdict.",
+    ),
+}
 
 
 @click.group(
-    cls=GroupAwareGroup,
+    cls=LazyGroup,
+    command_specs=COMMAND_SPECS,
     help="super-harness — CI-first cross-framework + cross-agent AI coding harness.",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
@@ -75,47 +146,11 @@ def main(
     ctx.obj["verbose"] = verbose
 
 
-# Subgroup registration is at module bottom because it must reference `main`
-# after its definition. The subgroup *imports* themselves are top-of-file —
-# state.py / event.py only depend on `super_harness.exit_codes` and
-# `super_harness.cli.output`, never on `super_harness.cli` itself, so there's
-# no circular-import risk.
-main.add_command(state_group)
-main.add_command(event_group)
-main.add_command(init_cmd)
-main.add_command(change_group)
-main.add_command(status_cmd)
-main.add_command(report_cmd)
-main.add_command(sensor_group)
-main.add_command(gate_group)
-main.add_command(observe_group)
-main.add_command(adapter_group)
-main.add_command(verify_cmd)
-main.add_command(done_cmd)
-main.add_command(sync_cmd)
-main.add_command(verification_group)
-main.add_command(pr_group)
-main.add_command(review_group)
-main.add_command(plan_group)
-main.add_command(implementation_group)
-main.add_command(on_merge_cli)
-main.add_command(attest_group)
-main.add_command(decision_group)
-main.add_command(doc_group)
-
-
-# Rewrap every registered subcommand (and its descendants) so each one is a
-# `GroupAwareCommand` / `GroupAwareGroup`. Subgroups defined in their own
-# modules use plain ``@click.group(...)`` decorators, so the root group's
-# `command_class`/`group_class` propagation does NOT retroactively apply to
-# them. The class-swap below fixes that minimally — no per-module
-# `cls=GroupAwareCommand` wiring needed. Refs OPEN-ITEMS #6 S8-misleading.
-rewrap_subtree(main)
-
-
 # Re-export names used by other modules / tests.
 __all__ = [
+    "CommandSpec",
     "GroupAwareCommand",
     "GroupAwareGroup",
+    "LazyGroup",
     "main",
 ]

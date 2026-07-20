@@ -50,6 +50,7 @@ Remaining deferral:
 - No ``adapters.yaml`` file locking (so the surface's ``5``/EXIT_CONCURRENCY is
   never emitted in v0.1).
 """
+
 from __future__ import annotations
 
 import sys
@@ -60,17 +61,19 @@ import click
 import yaml
 
 from super_harness.adapters import AgentAdapter, FrameworkAdapter
+from super_harness.adapters.install import (
+    _persist_install_entry,
+    _read_adapter_entries,
+    _remove_install_entry,
+)
 from super_harness.adapters.registry import get_builtin, list_builtins
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
 from super_harness.core.paths import (
     HarnessNotInitialized,
     adapters_yaml_path,
-    events_path,
     find_harness_root,
 )
-from super_harness.core.post_emit import refresh_state_after_emit
-from super_harness.core.writer import EmitPreconditionError, EventWriter
 from super_harness.engineering.agents_md import (
     AgentsMdInjectionError,
     inject_agent_subsection,
@@ -87,31 +90,6 @@ from super_harness.exit_codes import (
     EXIT_OK,
     EXIT_VALIDATION,
 )
-
-# Leading comment written when CREATING adapters.yaml so users know the file is
-# tool-managed (mirrors state.yaml's AUTO-GENERATED header convention).
-_ADAPTERS_YAML_HEADER = (
-    "# .harness/adapters.yaml\n"
-    "# AUTO-MANAGED by super-harness adapter install/uninstall. Do not edit.\n"
-)
-
-
-def install_agent_integration(root: Path, name: str) -> AgentAdapter:
-    """Install one built-in coding-agent integration for init or adapter CLI.
-
-    This wires only super-harness hooks and registry metadata. It never installs
-    the coding-agent binary itself.
-    """
-
-    cls = get_builtin(name)
-    if cls is None or not issubclass(cls, AgentAdapter):
-        raise ValueError(f"{name!r} is not a built-in agent integration")
-    adapter = cls()
-    adapter.install_hooks(root)
-    _persist_install_entry(
-        root, name=adapter.name, kind="agent", version=adapter.version
-    )
-    return adapter
 
 
 @click.group("adapter")
@@ -241,8 +219,7 @@ def adapter_install(ctx: click.Context, name: str) -> None:
         else:
             detail = "framework adapter registered"
         click.echo(
-            f"Installed {name} adapter ({kind}): {detail}; "
-            f"recorded in .harness/adapters.yaml."
+            f"Installed {name} adapter ({kind}): {detail}; recorded in .harness/adapters.yaml."
         )
     sys.exit(EXIT_OK)
 
@@ -265,6 +242,10 @@ def adapter_scan_once(ctx: click.Context, name: str) -> None:
     no ``proposal.md``) surfaces as EXIT_VALIDATION naming the failing event —
     never a raw traceback. Zero new events is a valid no-op (exit 0).
     """
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.writer import EmitPreconditionError, EventWriter
+
     root = _resolve_root(ctx, "adapter scan-once")
 
     adapter = _resolve_builtin_or_exit(name, "adapter scan-once")
@@ -300,10 +281,7 @@ def adapter_scan_once(ctx: click.Context, name: str) -> None:
             click.echo(
                 format_error(
                     subcommand="adapter scan-once",
-                    message=(
-                        f"emit failed for change {ev.change_id!r} "
-                        f"event {ev.type!r}: {e}"
-                    ),
+                    message=(f"emit failed for change {ev.change_id!r} event {ev.type!r}: {e}"),
                     hint=(
                         "Fix the offending change (e.g. an openspec change with "
                         "tasks.md but no proposal.md) and re-run scan-once."
@@ -317,10 +295,7 @@ def adapter_scan_once(ctx: click.Context, name: str) -> None:
         emitted += 1
 
     if not ctx.obj.get("quiet"):
-        click.echo(
-            f"scan-once {name}: emitted {emitted} "
-            f"event{'' if emitted == 1 else 's'}."
-        )
+        click.echo(f"scan-once {name}: emitted {emitted} event{'' if emitted == 1 else 's'}.")
     sys.exit(EXIT_OK)
 
 
@@ -447,13 +422,9 @@ def adapter_uninstall(ctx: click.Context, name: str) -> None:
     default=None,
     help="Only list adapters of this kind.",
 )
-@click.option(
-    "--enabled-only", is_flag=True, help="Only list adapters with enabled: true."
-)
+@click.option("--enabled-only", is_flag=True, help="Only list adapters with enabled: true.")
 @click.pass_context
-def adapter_list(
-    ctx: click.Context, type_filter: str | None, enabled_only: bool
-) -> None:
+def adapter_list(ctx: click.Context, type_filter: str | None, enabled_only: bool) -> None:
     """List INSTALLED adapters (adapters.yaml entries), enriched from built-ins."""
     root = _resolve_root(ctx, "adapter list")
 
@@ -504,9 +475,7 @@ def _resolve_root(ctx: click.Context, subcommand: str) -> Path:
         sys.exit(EXIT_NO_CONFIG)
 
 
-def _resolve_builtin_or_exit(
-    name: str, subcommand: str
-) -> FrameworkAdapter | AgentAdapter:
+def _resolve_builtin_or_exit(name: str, subcommand: str) -> FrameworkAdapter | AgentAdapter:
     """Resolve a built-in adapter instance, or print + exit EXIT_GENERIC (1).
 
     Free-form name → registry membership check by hand (NOT a click.Choice, which
@@ -530,9 +499,7 @@ def _resolve_builtin_or_exit(
     return cls()
 
 
-def _merge_verification_checks(
-    root: Path, adapter: FrameworkAdapter | AgentAdapter
-) -> None:
+def _merge_verification_checks(root: Path, adapter: FrameworkAdapter | AgentAdapter) -> None:
     """Merge adapter-provided checks into verification.yaml — EMPTY-SAFE.
 
     Only FrameworkAdapter declares ``verification_checks``; agents have none. If
@@ -559,9 +526,7 @@ def _merge_verification_checks(
     merge_adapter_provided(root / ".harness" / "verification.yaml", checks)
 
 
-def _remove_verification_checks(
-    root: Path, adapter: FrameworkAdapter | AgentAdapter
-) -> None:
+def _remove_verification_checks(root: Path, adapter: FrameworkAdapter | AgentAdapter) -> None:
     """Remove this adapter's contributed verification.yaml.adapter_provided rows.
 
     Prunes by ``(provided_by, id)`` match — NOT exact-dict-match — so AC-5 holds:
@@ -585,108 +550,16 @@ def _remove_verification_checks(
         return
     # The adapter owns the (provided_by, id) pairs it contributes. Drop exactly
     # those rows; leave every other adapter's + user's rows untouched.
-    owned = {
-        (c.get("provided_by"), c.get("id"))
-        for c in checks
-        if isinstance(c, dict)
-    }
+    owned = {(c.get("provided_by"), c.get("id")) for c in checks if isinstance(c, dict)}
     loaded["adapter_provided"] = [
         row
         for row in provided
-        if not (
-            isinstance(row, dict)
-            and (row.get("provided_by"), row.get("id")) in owned
-        )
+        if not (isinstance(row, dict) and (row.get("provided_by"), row.get("id")) in owned)
     ]
     path.write_text(
-        yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False), encoding="utf-8"
+        yaml.safe_dump(loaded, sort_keys=False, default_flow_style=False),
+        encoding="utf-8",
     )
-
-
-def _read_adapter_cfg(path: Path) -> dict[str, Any]:
-    """Return the full parsed mapping from adapters.yaml ({} if absent/empty).
-
-    Raises:
-        yaml.YAMLError: if the file exists but contains invalid YAML (callers
-            must catch this and surface it via ``format_error``).
-    """
-    if not path.exists():
-        return {}
-    # NOTE: yaml.YAMLError propagates — callers catch it.
-    loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
-    if not isinstance(loaded, dict):
-        return {}
-    return loaded
-
-
-def _read_adapter_entries(path: Path) -> list[dict[str, Any]]:
-    """Return the list of adapter entries from adapters.yaml ([] if absent/empty).
-
-    Raises:
-        yaml.YAMLError: propagated from ``_read_adapter_cfg`` on corrupt YAML.
-    """
-    cfg = _read_adapter_cfg(path)
-    entries = cfg.get("adapters") or []
-    if not isinstance(entries, list):
-        return []
-    return [e for e in entries if isinstance(e, dict)]
-
-
-def _write_adapter_cfg(path: Path, cfg: dict[str, Any]) -> None:
-    """Write the full config mapping back to adapters.yaml (preserving top-level keys).
-
-    Lazily creates parent directories and prepends the AUTO-MANAGED header.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    body = yaml.safe_dump(cfg, sort_keys=False, default_flow_style=False)
-    path.write_text(_ADAPTERS_YAML_HEADER + body, encoding="utf-8")
-
-
-def _persist_install_entry(
-    root: Path, *, name: str, kind: str, version: str
-) -> None:
-    """Write/update the §2.3 adapters.yaml entry — idempotent update-in-place.
-
-    Re-installing rewrites the existing same-name entry rather than appending a
-    duplicate; the file is created lazily if absent. Preserves all other
-    top-level keys already present in adapters.yaml.
-    """
-    path = adapters_yaml_path(root)
-    cfg = _read_adapter_cfg(path)
-    entries: list[dict[str, Any]] = cfg.get("adapters") or []
-    if not isinstance(entries, list):
-        entries = []
-    entries = [e for e in entries if isinstance(e, dict)]
-    new_entry: dict[str, Any] = {
-        "name": name,
-        "type": kind,
-        "builtin": True,
-        "version": version,
-        "enabled": True,
-    }
-    for idx, entry in enumerate(entries):
-        if entry.get("name") == name:
-            entries[idx] = new_entry
-            break
-    else:
-        entries.append(new_entry)
-    cfg["adapters"] = entries
-    _write_adapter_cfg(path, cfg)
-
-
-def _remove_install_entry(root: Path, *, name: str) -> None:
-    """Drop the adapters.yaml entry for `name` (leaving ``adapters: []`` if empty).
-
-    Preserves all other top-level keys already present in adapters.yaml.
-    """
-    path = adapters_yaml_path(root)
-    cfg = _read_adapter_cfg(path)
-    entries: list[dict[str, Any]] = cfg.get("adapters") or []
-    if not isinstance(entries, list):
-        entries = []
-    entries = [e for e in entries if isinstance(e, dict)]
-    cfg["adapters"] = [e for e in entries if e.get("name") != name]
-    _write_adapter_cfg(path, cfg)
 
 
 def _collect_adapter_rows(path: Path) -> list[dict[str, Any]]:
@@ -744,9 +617,7 @@ def _capabilities_summary(capabilities: dict[str, bool] | None) -> str:
     return ", ".join(enabled) if enabled else "-"
 
 
-def _render_human_table(
-    rows: list[dict[str, Any]], *, filtered: bool = False
-) -> None:
+def _render_human_table(rows: list[dict[str, Any]], *, filtered: bool = False) -> None:
     """Print an aligned NAME/TYPE/SOURCE/VERSION/ENABLED/CAPABILITIES table.
 
     Args:

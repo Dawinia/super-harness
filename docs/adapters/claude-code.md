@@ -59,23 +59,35 @@ Mechanics:
    `shutil.which` — a missing binary raises `RuntimeError` before any write.
    Resolution happens at *install* time (not hook runtime) because Claude
    Code runs hooks with a minimal PATH; a bare reference would fail there.
-2. Snapshots `.claude/settings.local.json` (or notes its absence) so the
-   install is one transaction; if either merge below raises, the snapshot
-   restores.
-3. Merges a **PreToolUse** entry: `matcher: "Edit|Write|MultiEdit|NotebookEdit"`,
+2. Freezes the original settings bytes, complete desired bytes, and both
+   resolved executable paths as one reviewed transaction. Apply revalidates
+   those inputs before any backup or write.
+3. Plans a **PreToolUse** entry: `matcher: "Edit|Write|MultiEdit|NotebookEdit"`,
    `command: "<abs super-harness-hook> --agent claude-code"`, `timeout: 10`.
-4. Merges a **SessionStart** entry (no `matcher` → fires on every session
+4. Plans a **SessionStart** entry (no `matcher` → fires on every session
    source): `command: "<abs super-harness> change resume"`, `timeout: 10`.
-   Merges a **Stop** entry (no `matcher` → fires on every turn end):
+   Plans a **Stop** entry (no `matcher` → fires on every turn end):
    `command: "<abs super-harness-hook> --agent claude-code --event stop"`,
    `timeout: 10` (the outer bound; the inner authoring check budget is 8s).
-5. Persists the row in `.harness/adapters.yaml` and injects the
+5. Under an exclusive sibling lock, confirms the settings and executable paths
+   still match the reviewed transaction, then writes the complete settings file
+   once with an atomic replace.
+6. Persists the row in `.harness/adapters.yaml` and injects the
    `<!-- super-harness agent: claude-code -->` subsection into `AGENTS.md`
    (replacing the no-agent anchor written by `init`).
 
-Each merge backs up `.claude/settings.local.json` to
-`settings.local.json.super-harness-backup.<time_ns>` before writing. Re-installs
-are idempotent: an unchanged file is not rewritten, no backup produced.
+An absent settings file creates no backup. Changing an existing file creates
+exactly one sibling
+`settings.local.json.super-harness-backup.<time_ns>` containing its exact
+original bytes. Reinstalls are idempotent: an unchanged file is not rewritten
+and creates no backup.
+
+The sibling lock is platform-neutral. A concurrent live writer is refused; a
+lock whose owner process is gone is reclaimed, while a fresh corrupt lock is
+left alone until it is old enough to be safely treated as stale. Symlinked
+settings files are refused so atomic replacement cannot unexpectedly modify or
+detach a linked target. The liveness path uses stdlib platform checks, including
+native Windows process inspection.
 
 ## What it injects into AGENTS.md
 
@@ -152,9 +164,14 @@ by exact marker match. Re-run `adapter install claude-code` if it drifts.
   (`jq '.hooks.SessionStart' .claude/settings.local.json`); if absent, re-run
   `adapter install claude-code`. If present but no slug is active,
   `change resume` exits 0 with empty stdout — start one with `change start`.
-- **`adapter uninstall claude-code` leaves entries in `.claude/settings.local.json`.**
-  By design — uninstall restores the *earliest* pre-install backup; later
-  user edits are preserved. See Uninstall below for details.
+- **Install says the settings or executable plan is stale.** Another process or
+  PATH update changed an input after review. Rerun init or `adapter install
+  claude-code`; the rejected transaction did not create a backup or write.
+- **Install reports an update already in progress or an unsafe symlink.** Let
+  the other settings update finish, or replace the symlinked settings file or
+  parent directory with a regular workspace-local path, then retry. Planning,
+  apply, and uninstall reject symlinks from the workspace root through
+  `.claude/settings.local.json`. Stale owner locks are reclaimed automatically.
 
 ## Uninstall
 
@@ -164,11 +181,13 @@ super-harness adapter uninstall claude-code
 
 Mechanics (reverse of install):
 
-1. `on_uninstall()` restores the *earliest*
-   `settings.local.json.super-harness-backup.<ts>` backup (the truly pristine
-   pre-install copy). If no backup exists the file is left untouched (v0.1
-   limitation — clean per-entry removal is tracked as OPEN-ITEMS #9 for a
-   future release).
+1. Under the same settings lock used by install, `on_uninstall()` restores the
+   *earliest* `settings.local.json.super-harness-backup.<ts>` backup (the truly
+   pristine pre-install copy). If no backup exists, it removes only the
+   marker-owned PreToolUse, SessionStart, and Stop hooks, preserves unrelated
+   settings, and prunes empty hook scaffolding. It removes the settings file
+   only when nothing user-owned remains; writes use the same atomic replace as
+   install.
 2. Removes the `claude-code` row from `.harness/adapters.yaml`
    (verification.yaml prune is a no-op — Claude Code adds no checks).
 3. Removes the `<!-- super-harness agent: claude-code -->` subsection from

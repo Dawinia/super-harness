@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import glob
 import json
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -55,6 +56,7 @@ def _session_commands(settings: dict[str, object]) -> list[str]:
         for hook in entry.get("hooks", []):  # type: ignore[union-attr]
             out.append(hook["command"])
     return out
+
 
 _CANONICAL_CAPABILITY_KEYS = {
     "pre_tool_use_hook",
@@ -163,9 +165,7 @@ def test_install_hooks_missing_cli_binary_raises_before_write(
     assert not (tmp_path / ".claude" / "settings.local.json").exists()
 
 
-def test_install_hooks_idempotent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_install_hooks_idempotent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "super_harness.adapters.agent.claude_code.shutil.which",
         _which_both,
@@ -179,7 +179,7 @@ def test_install_hooks_idempotent(
     assert _session_commands(settings).count(_EXPECTED_SESSION_COMMAND) == 1
 
 
-def test_install_hooks_rolls_back_on_second_merge_failure(
+def test_install_hooks_preserves_existing_file_when_atomic_apply_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If the SECOND merge raises mid-install, settings.local.json is restored to
@@ -200,21 +200,21 @@ def test_install_hooks_rolls_back_on_second_merge_failure(
     )
 
     def boom(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("simulated SessionStart merge failure")
+        raise RuntimeError("simulated atomic apply failure")
 
     monkeypatch.setattr(
-        "super_harness.adapters.agent.claude_code.merge_session_start_hook",
+        "super_harness.adapters.agent.claude_code.apply_settings_merge_plan",
         boom,
     )
 
-    with pytest.raises(RuntimeError, match="simulated SessionStart"):
+    with pytest.raises(RuntimeError, match="simulated atomic apply"):
         ClaudeCodeAdapter().install_hooks(tmp_path)
 
     # Snapshot restored: byte-identical to the pre-install file.
     assert settings_path.read_text() == pristine
 
 
-def test_install_hooks_rolls_back_to_absent_when_file_was_absent(
+def test_install_hooks_preserves_absence_when_atomic_apply_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """If settings.local.json did not exist pre-install and a merge fails, rollback
@@ -228,14 +228,14 @@ def test_install_hooks_rolls_back_to_absent_when_file_was_absent(
     )
 
     def boom(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("simulated SessionStart merge failure")
+        raise RuntimeError("simulated atomic apply failure")
 
     monkeypatch.setattr(
-        "super_harness.adapters.agent.claude_code.merge_session_start_hook",
+        "super_harness.adapters.agent.claude_code.apply_settings_merge_plan",
         boom,
     )
 
-    with pytest.raises(RuntimeError, match="simulated SessionStart"):
+    with pytest.raises(RuntimeError, match="simulated atomic apply"):
         ClaudeCodeAdapter().install_hooks(tmp_path)
 
     assert not settings_path.exists()
@@ -248,9 +248,7 @@ def test_inject_context_returns_stdout(monkeypatch: pytest.MonkeyPatch) -> None:
         captured["cmd"] = cmd
         return subprocess.CompletedProcess(cmd, 0, stdout="# change my-slug\n", stderr="")
 
-    monkeypatch.setattr(
-        "super_harness.adapters.agent.claude_code.subprocess.run", fake_run
-    )
+    monkeypatch.setattr("super_harness.adapters.agent.claude_code.subprocess.run", fake_run)
     out = ClaudeCodeAdapter().inject_context("my-slug")
     assert out == "# change my-slug\n"
     assert captured["cmd"] == [
@@ -268,9 +266,7 @@ def test_inject_context_empty_result_returns_empty_string(
         # Non-zero exit + empty stdout (e.g. unknown slug) must not crash.
         return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="boom")
 
-    monkeypatch.setattr(
-        "super_harness.adapters.agent.claude_code.subprocess.run", fake_run
-    )
+    monkeypatch.setattr("super_harness.adapters.agent.claude_code.subprocess.run", fake_run)
     assert ClaudeCodeAdapter().inject_context("nope") == ""
 
 
@@ -334,12 +330,10 @@ def test_on_uninstall_restores_earliest_pristine_backup(tmp_path: Path) -> None:
     pristine = {"model": "claude-opus", "hooks": {}}
     # ts=100: pristine (1st merge's backup). ts=200: pristine + our PreToolUse
     # (2nd merge's backup). The earliest (100) must win.
-    settings_path.with_name(
-        "settings.local.json.super-harness-backup.100"
-    ).write_text(json.dumps(pristine))
-    settings_path.with_name(
-        "settings.local.json.super-harness-backup.200"
-    ).write_text(
+    settings_path.with_name("settings.local.json.super-harness-backup.100").write_text(
+        json.dumps(pristine)
+    )
+    settings_path.with_name("settings.local.json.super-harness-backup.200").write_text(
         json.dumps(
             {
                 "model": "claude-opus",
@@ -364,8 +358,8 @@ def test_install_then_uninstall_round_trip_restores_pristine(
     )
     settings_path = tmp_path / ".claude" / "settings.local.json"
     settings_path.parent.mkdir(parents=True)
-    pristine = {"model": "claude-opus", "permissions": {"allow": ["Bash(ls:*)"]}}
-    settings_path.write_text(json.dumps(pristine, indent=2))
+    pristine_bytes = b'{ "model": "claude-opus", "permissions": {"allow": ["Bash(ls:*)"]} }\n\n'
+    settings_path.write_bytes(pristine_bytes)
 
     adapter = ClaudeCodeAdapter()
     adapter.install_hooks(tmp_path)
@@ -376,7 +370,7 @@ def test_install_then_uninstall_round_trip_restores_pristine(
 
     adapter.on_uninstall(tmp_path)
 
-    assert json.loads(settings_path.read_text()) == pristine
+    assert settings_path.read_bytes() == pristine_bytes
 
 
 def test_on_uninstall_no_backup_is_noop(tmp_path: Path) -> None:
@@ -415,18 +409,26 @@ def test_agents_md_subsection_does_not_teach_kill_switch():
 
 # --- authoring-time Stop feedback (2026-07-01) ---
 
+
 def _stop_verdict():
     from super_harness.core.authoring_check import Verdict, Violation
-    return Verdict(violations=[Violation(
-        "d-core-is-base",
-        "core is not allowed to import super_harness.sensors",
-        "docs/decisions/d-core-is-base.md")])
+
+    return Verdict(
+        violations=[
+            Violation(
+                "d-core-is-base",
+                "core is not allowed to import super_harness.sensors",
+                "docs/decisions/d-core-is-base.md",
+            )
+        ]
+    )
 
 
 def test_claude_format_stop_feedback_blocks_with_reason():
     import json
 
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
     out = ClaudeCodeAdapter().format_stop_feedback(_stop_verdict())
     obj = json.loads(out)
     assert obj["decision"] == "block"
@@ -438,6 +440,7 @@ def test_claude_format_stop_feedback_blocks_with_reason():
 def test_claude_format_stop_feedback_clean_is_empty():
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
     from super_harness.core.authoring_check import Verdict
+
     assert ClaudeCodeAdapter().format_stop_feedback(Verdict(violations=[])) == ""
 
 
@@ -453,6 +456,7 @@ def _install_into(tmp_path, monkeypatch, pre_existing):
 
     import super_harness.adapters.agent.claude_code as cc
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
     monkeypatch.setattr(cc.shutil, "which", lambda n: f"/abs/{n}")
     (tmp_path / ".claude").mkdir()
     f = tmp_path / ".claude" / "settings.local.json"
@@ -464,6 +468,7 @@ def _install_into(tmp_path, monkeypatch, pre_existing):
 
 def test_install_registers_stop(tmp_path, monkeypatch):
     import json
+
     f = _install_into(tmp_path, monkeypatch, pre_existing=None)
     events = json.loads(f.read_text())["hooks"]
     assert "Stop" in events and "PreToolUse" in events
@@ -474,6 +479,7 @@ def test_uninstall_round_trip_removes_stop(tmp_path, monkeypatch):
     import json
 
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
     pristine = {"model": "x", "permissions": {}}
     f = _install_into(tmp_path, monkeypatch, pre_existing=pristine)
     assert "Stop" in json.loads(f.read_text())["hooks"]
@@ -487,8 +493,49 @@ def test_stop_advisory_has_no_self_authorized_bypass():
     import json
 
     from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+
     reason = json.loads(ClaudeCodeAdapter().format_stop_feedback(_stop_verdict()))["reason"]
     low = reason.lower()
     assert "deliberate, disclosed exception, proceed" not in low
     assert "proceed on your own authority" in low  # explicitly forbidden
     assert "surface it to the human" in low
+
+
+def test_fresh_install_uninstall_removes_managed_only_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/{name}")
+    adapter = ClaudeCodeAdapter()
+    adapter.install_hooks(tmp_path)
+    path = tmp_path / ".claude" / "settings.local.json"
+    assert path.exists()
+    adapter.on_uninstall(tmp_path)
+    assert not path.exists()
+
+
+def test_claude_symlinked_config_directory_is_rejected_without_external_mutation(
+    tmp_path: Path,
+) -> None:
+    external = tmp_path / "external-claude"
+    external.mkdir()
+    settings = external / "settings.local.json"
+    original = b'{"theme":"keep"}\n'
+    settings.write_bytes(original)
+    link = tmp_path / ".claude"
+    try:
+        link.symlink_to(external, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    adapter = ClaudeCodeAdapter()
+    with pytest.raises(ValueError, match=r"\.claude.*symlink"):
+        adapter.plan_hook_install(
+            tmp_path,
+            hook_executable="/abs/super-harness-hook",
+            cli_executable="/abs/super-harness",
+        )
+    with pytest.raises(ValueError, match=r"\.claude.*symlink"):
+        adapter.on_uninstall(tmp_path)
+
+    assert settings.read_bytes() == original
+    assert sorted(path.name for path in external.iterdir()) == ["settings.local.json"]

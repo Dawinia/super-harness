@@ -20,16 +20,22 @@ Coverage:
   6. Repeated regeneration is idempotent (running twice produces no diff)
   7. ``main(["--emit"])`` prints the rendered markdown to stdout and returns 0
   8. ``_HEADER_NOTICE`` references the live `super-harness doc check --fix` gate
+  9. Real ``init`` help documents the interactive-only ``--yes`` behavior
 """
+
 from __future__ import annotations
+
+import sys
 
 import click
 
 from scripts import gen_cli_reference
+from super_harness.cli.lazy_group import CommandSpec, LazyGroup
 
 
 def _build_fixture_group() -> click.Group:
     """A 3-command fixture: 1 leaf, 1 subgroup with leaf, 1 leaf with flag/pipe-help."""
+
     @click.group(help="Fixture root group.")
     def root() -> None:
         """Fixture root."""
@@ -48,8 +54,7 @@ def _build_fixture_group() -> click.Group:
         """A child of sub."""
 
     @root.command("flagged")
-    @click.option("--mode", type=click.Choice(["a", "b"]), default="a",
-                  help="Mode | with pipe.")
+    @click.option("--mode", type=click.Choice(["a", "b"]), default="a", help="Mode | with pipe.")
     @click.option("--count", type=int, default=0)
     def flagged_cmd(mode: str, count: int) -> None:
         """A leaf with a flag whose help text contains a | pipe."""
@@ -103,6 +108,53 @@ def test_render_is_idempotent() -> None:
     first = gen_cli_reference.render_markdown(group, root_name="fixture")
     second = gen_cli_reference.render_markdown(group, root_name="fixture")
     assert first == second
+
+
+def test_render_intentionally_loads_the_complete_lazy_tree(tmp_path, monkeypatch) -> None:
+    package_name = f"reference_fixture_{tmp_path.name}"
+    package = tmp_path / package_name
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    for name in ("alpha", "beta"):
+        (package / f"{name}.py").write_text(
+            "import click\n\n"
+            f"@click.command('{name}')\n"
+            f"def {name}_cmd():\n"
+            f'    """{name.title()} command."""\n'
+            "    pass\n",
+            encoding="utf-8",
+        )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    group = LazyGroup(
+        name="root",
+        command_specs={
+            name: CommandSpec(f"{package_name}.{name}:{name}_cmd", f"{name.title()} command.")
+            for name in ("alpha", "beta")
+        },
+    )
+
+    md = gen_cli_reference.render_markdown(group, root_name="fixture")
+
+    assert "## fixture alpha" in md
+    assert "## fixture beta" in md
+    assert f"{package_name}.alpha" in sys.modules
+    assert f"{package_name}.beta" in sys.modules
+
+
+def test_real_init_reference_documents_interactive_yes_without_losing_lazy_commands() -> None:
+    """The real lazy tree includes every root command and init's exact --yes help."""
+    from super_harness.cli import main as real_main
+
+    rendered = gen_cli_reference.render_markdown(real_main, root_name="super-harness")
+    init_section = rendered.split("## super-harness init", 1)[1].split(
+        "## super-harness observe", 1
+    )[0]
+
+    assert (
+        "| `--yes` | flag | `False` | Skip the final confirmation in interactive mode. |"
+    ) in init_section
+    for command_name in real_main.commands:
+        assert f"## super-harness {command_name}\n" in rendered
 
 
 def test_md_escape_cell_handles_pipe_and_newline() -> None:
@@ -177,9 +229,7 @@ def test_real_cli_reference_is_in_sync() -> None:
 
     repo_root = Path(__file__).resolve().parents[3]
     target = repo_root / "docs" / "cli-reference.md"
-    code = gen_cli_reference.run_check(
-        real_main, root_name="super-harness", target=target
-    )
+    code = gen_cli_reference.run_check(real_main, root_name="super-harness", target=target)
     assert code == 0, (
         "docs/cli-reference.md is out of sync with the CLI surface. "
         "Run: super-harness doc check --fix"
@@ -214,9 +264,7 @@ def test_emit_mode_prints_rendered_markdown(capsys) -> None:
     assert code == 0
 
     captured = capsys.readouterr()
-    expected = gen_cli_reference.render_markdown(
-        real_main, root_name="super-harness"
-    )
+    expected = gen_cli_reference.render_markdown(real_main, root_name="super-harness")
     assert captured.out == expected
     # No extra trailing newline beyond what render_markdown already emits.
     assert captured.out.startswith(gen_cli_reference._HEADER_NOTICE)

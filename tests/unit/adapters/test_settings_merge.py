@@ -10,14 +10,21 @@ from __future__ import annotations
 
 import glob
 import json
+import os
+import time
 from pathlib import Path
 
 import pytest
 
+from super_harness.adapters.agent import _settings_merge as settings_merge_module
 from super_harness.adapters.agent._settings_merge import (
+    StaleSettingsPlanError,
+    apply_settings_merge_plan,
     merge_pre_tool_use_hook,
     merge_session_start_hook,
     merge_stop_hook,
+    plan_settings_merge,
+    restore_or_remove_managed_hooks,
 )
 
 _COMMAND = "/abs/bin/super-harness-hook --agent claude-code"
@@ -76,9 +83,7 @@ def test_pre_existing_file_merges_and_backs_up(tmp_path: Path) -> None:
                     ],
                 }
             ],
-            "PostToolUse": [
-                {"matcher": "Write", "hooks": [{"type": "command", "command": "x"}]}
-            ],
+            "PostToolUse": [{"matcher": "Write", "hooks": [{"type": "command", "command": "x"}]}],
         },
     }
     settings_path.write_text(json.dumps(original, indent=2))
@@ -407,18 +412,36 @@ def test_codex_marker_does_not_strip_claude_pre_tool_use(tmp_path):
 
     p = tmp_path / "hooks.json"
     # Pre-seed a claude-code entry (foreign marker).
-    p.write_text(json.dumps({"hooks": {"PreToolUse": [
-        {"matcher": "Edit", "hooks": [
-            {"type": "command", "command": "/x super-harness-hook --agent claude-code"}]}
-    ]}}))
-    merge_pre_tool_use_hook(
-        p, command="/abs/h --agent codex",
-        matcher="^(apply_patch|Edit|Write)$", marker="--agent codex",
+    p.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {
+                            "matcher": "Edit",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "/x super-harness-hook --agent claude-code",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            }
+        )
     )
-    cmds = [h["command"] for e in json.loads(p.read_text())["hooks"]["PreToolUse"]
-            for h in e["hooks"]]
+    merge_pre_tool_use_hook(
+        p,
+        command="/abs/h --agent codex",
+        matcher="^(apply_patch|Edit|Write)$",
+        marker="--agent codex",
+    )
+    cmds = [
+        h["command"] for e in json.loads(p.read_text())["hooks"]["PreToolUse"] for h in e["hooks"]
+    ]
     assert any("--agent claude-code" in c for c in cmds)  # foreign preserved
-    assert any("--agent codex" in c for c in cmds)        # ours added
+    assert any("--agent codex" in c for c in cmds)  # ours added
 
 
 def test_merge_stop_adds_entry(tmp_path):
@@ -432,8 +455,17 @@ def test_merge_stop_adds_entry(tmp_path):
 
 def test_merge_stop_preserves_existing_hooks(tmp_path):
     hooks = tmp_path / "settings.json"
-    hooks.write_text(json.dumps({"hooks": {"PreToolUse": [
-        {"matcher": "Edit", "hooks": [{"type": "command", "command": "keepme"}]}]}}))
+    hooks.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "PreToolUse": [
+                        {"matcher": "Edit", "hooks": [{"type": "command", "command": "keepme"}]}
+                    ]
+                }
+            }
+        )
+    )
     merge_stop_hook(hooks, command="/abs/super-harness-hook --agent claude-code --event stop")
     data = json.loads(hooks.read_text())
     assert data["hooks"]["PreToolUse"][0]["hooks"][0]["command"] == "keepme"
@@ -454,10 +486,331 @@ def test_merge_stop_preserves_unrelated_stop_hook(tmp_path):
     # tool) must NOT be stripped — our marker is the full "--agent claude-code
     # --event stop" flag-pair, not the bare "--event stop".
     hooks = tmp_path / "settings.json"
-    hooks.write_text(json.dumps({"hooks": {"Stop": [
-        {"hooks": [{"type": "command", "command": "othertool --event stop"}]}]}}))
+    hooks.write_text(
+        json.dumps(
+            {
+                "hooks": {
+                    "Stop": [{"hooks": [{"type": "command", "command": "othertool --event stop"}]}]
+                }
+            }
+        )
+    )
     merge_stop_hook(hooks, command="/abs/super-harness-hook --agent claude-code --event stop")
     entries = json.loads(hooks.read_text())["hooks"]["Stop"]
     cmds = [h["command"] for e in entries for h in e["hooks"]]
     assert "othertool --event stop" in cmds  # user's unrelated hook survives
     assert any("--agent claude-code --event stop" in c for c in cmds)  # ours added
+
+
+def test_batch_merge_has_one_backup_only_for_changed_existing_file(tmp_path: Path) -> None:
+    path = tmp_path / ".claude" / "settings.local.json"
+    kwargs = {
+        "pre_tool_use_command": "/bin/hook --agent claude-code",
+        "session_start_command": "/bin/super-harness change resume",
+        "stop_command": "/bin/hook --agent claude-code --event stop",
+    }
+    apply_settings_merge_plan(plan_settings_merge(path, **kwargs))
+    assert list(path.parent.glob("*.super-harness-backup.*")) == []
+
+    path.write_bytes(b'{"theme":"dark"}\n')
+    original = path.read_bytes()
+    apply_settings_merge_plan(plan_settings_merge(path, **kwargs))
+    backups = list(path.parent.glob("*.super-harness-backup.*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+
+    apply_settings_merge_plan(plan_settings_merge(path, **kwargs))
+    assert list(path.parent.glob("*.super-harness-backup.*")) == backups
+
+
+def test_settings_plan_rejects_byte_drift_before_backup_or_write(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_bytes(b'{"theme":"dark"}\n')
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    drifted = b'{"theme":"light"}\n'
+    path.write_bytes(drifted)
+
+    with pytest.raises(StaleSettingsPlanError, match="changed after review"):
+        apply_settings_merge_plan(plan)
+
+    assert path.read_bytes() == drifted
+    assert list(tmp_path.glob("*.super-harness-backup.*")) == []
+
+
+@pytest.mark.parametrize("original", [b'{"theme":"dark"}\n', None])
+@pytest.mark.parametrize("failure_stage", ["temp-write", "replace"])
+def test_settings_plan_atomic_failure_leaves_target_exact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    original: bytes | None,
+    failure_stage: str,
+) -> None:
+    path = tmp_path / "settings.json"
+    if original is not None:
+        path.write_bytes(original)
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    if failure_stage == "temp-write":
+
+        def partial_temp_write(fd: int, _data: bytes) -> None:
+            os.write(fd, b"partial-temp")
+            raise OSError("simulated temp write failure")
+
+        monkeypatch.setattr(
+            settings_merge_module,
+            "_write_temp_bytes",
+            partial_temp_write,
+            raising=False,
+        )
+    else:
+        monkeypatch.setattr(
+            os,
+            "replace",
+            lambda _source, _target: (_ for _ in ()).throw(OSError("simulated replace failure")),
+        )
+
+    with pytest.raises(OSError, match=f"simulated {failure_stage.replace('-', ' ')} failure"):
+        apply_settings_merge_plan(plan)
+
+    if original is None:
+        assert not path.exists()
+        assert list(tmp_path.glob("*.super-harness-backup.*")) == []
+    else:
+        assert path.read_bytes() == original
+        backups = list(tmp_path.glob("*.super-harness-backup.*"))
+        assert len(backups) == 1
+        assert backups[0].read_bytes() == original
+    assert not path.with_name(f"{path.name}.super-harness.lock").exists()
+    assert list(tmp_path.glob(f".{path.name}.super-harness.*.tmp")) == []
+
+
+def test_concurrent_settings_apply_fails_clearly_without_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "settings.json"
+    original = b'{"theme":"dark"}\n'
+    path.write_bytes(original)
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    real_replace = os.replace
+    concurrent_error: list[str] = []
+
+    def interleaved_replace(source: str | bytes, target: str | bytes) -> None:
+        with pytest.raises(RuntimeError, match="another settings update is in progress") as exc:
+            apply_settings_merge_plan(plan)
+        concurrent_error.append(str(exc.value))
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", interleaved_replace)
+
+    apply_settings_merge_plan(plan)
+
+    assert concurrent_error
+    assert path.read_bytes() == plan.desired_bytes
+    backups = list(tmp_path.glob("*.super-harness-backup.*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == original
+    assert not path.with_name(f"{path.name}.super-harness.lock").exists()
+
+
+def test_concurrent_uninstall_cannot_race_install_replace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "settings.json"
+    original = b'{"theme":"dark"}\n'
+    path.write_bytes(original)
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    real_replace = os.replace
+    uninstall_errors: list[str] = []
+
+    def interleaved_replace(source: str | bytes, target: str | bytes) -> None:
+        with pytest.raises(RuntimeError, match="another settings update is in progress") as exc:
+            restore_or_remove_managed_hooks(
+                path,
+                pre_tool_use_marker="--agent claude-code",
+                stop_marker="--agent claude-code --event stop",
+            )
+        uninstall_errors.append(str(exc.value))
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", interleaved_replace)
+
+    apply_settings_merge_plan(plan)
+
+    assert uninstall_errors
+    assert path.read_bytes() == plan.desired_bytes
+
+
+def test_dead_owner_lock_is_reclaimed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "settings.json"
+    path.write_bytes(b'{"theme":"dark"}\n')
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    lock = path.with_name(f"{path.name}.super-harness.lock")
+    lock.write_text('{"pid":424242}\n')
+    monkeypatch.setattr(
+        settings_merge_module, "_process_is_alive", lambda _pid: False, raising=False
+    )
+
+    apply_settings_merge_plan(plan)
+
+    assert path.read_bytes() == plan.desired_bytes
+    assert not lock.exists()
+
+
+def test_live_owner_lock_is_refused_and_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "settings.json"
+    original = b'{"theme":"dark"}\n'
+    path.write_bytes(original)
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    lock = path.with_name(f"{path.name}.super-harness.lock")
+    lock_bytes = b'{"pid":12345}\n'
+    lock.write_bytes(lock_bytes)
+    monkeypatch.setattr(
+        settings_merge_module, "_process_is_alive", lambda _pid: True, raising=False
+    )
+
+    with pytest.raises(RuntimeError, match="another settings update is in progress"):
+        apply_settings_merge_plan(plan)
+
+    assert path.read_bytes() == original
+    assert lock.read_bytes() == lock_bytes
+    assert list(tmp_path.glob("*.super-harness-backup.*")) == []
+
+
+def test_corrupt_lock_is_refused_conservatively(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    original = b'{"theme":"dark"}\n'
+    path.write_bytes(original)
+    plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    lock = path.with_name(f"{path.name}.super-harness.lock")
+    lock.write_text("not-owner-json")
+
+    with pytest.raises(RuntimeError, match="cannot verify its owner"):
+        apply_settings_merge_plan(plan)
+
+    assert path.read_bytes() == original
+    assert lock.exists()
+
+
+@pytest.mark.parametrize("lock_bytes", [b"", b'{"pid":'])
+def test_old_corrupt_lock_is_reclaimed_without_settings_mutation(
+    tmp_path: Path,
+    lock_bytes: bytes,
+) -> None:
+    path = tmp_path / "settings.json"
+    seed_plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    path.write_bytes(seed_plan.desired_bytes)
+    current_plan = plan_settings_merge(
+        path,
+        pre_tool_use_command="/bin/hook --agent claude-code",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent claude-code --event stop",
+    )
+    assert current_plan.changed is False
+    original = path.read_bytes()
+    lock = path.with_name(f"{path.name}.super-harness.lock")
+    lock.write_bytes(lock_bytes)
+    old = time.time() - settings_merge_module._CORRUPT_LOCK_STALE_SECONDS - 1
+    os.utime(lock, (old, old))
+
+    apply_settings_merge_plan(current_plan)
+
+    assert path.read_bytes() == original
+    assert not lock.exists()
+    assert list(tmp_path.glob("*.super-harness-backup.*")) == []
+
+
+def test_symlink_settings_are_rejected_for_plan_and_uninstall(tmp_path: Path) -> None:
+    target = tmp_path / "real-settings.json"
+    original = b'{"hooks":{}}\n'
+    target.write_bytes(original)
+    link = tmp_path / "settings.json"
+    try:
+        link.symlink_to(target)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    with pytest.raises(ValueError, match="symlink"):
+        plan_settings_merge(
+            link,
+            pre_tool_use_command="/bin/hook --agent claude-code",
+            session_start_command="/bin/super-harness change resume",
+            stop_command="/bin/hook --agent claude-code --event stop",
+        )
+    with pytest.raises(ValueError, match="symlink"):
+        restore_or_remove_managed_hooks(
+            link,
+            pre_tool_use_marker="--agent claude-code",
+            stop_marker="--agent claude-code --event stop",
+        )
+
+    assert link.is_symlink()
+    assert target.read_bytes() == original
+
+
+def test_symlinked_settings_parent_is_rejected_again_at_apply(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    settings_dir = workspace / ".codex"
+    settings_dir.mkdir(parents=True)
+    path = settings_dir / "hooks.json"
+    plan = plan_settings_merge(
+        path,
+        workspace_root=workspace,
+        pre_tool_use_command="/bin/hook --agent codex",
+        session_start_command="/bin/super-harness change resume",
+        stop_command="/bin/hook --agent codex --event stop",
+    )
+    settings_dir.rmdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    try:
+        settings_dir.symlink_to(external, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"symlinks unavailable: {error}")
+
+    with pytest.raises(ValueError, match=r"\.codex.*symlink"):
+        apply_settings_merge_plan(plan)
+
+    assert list(external.iterdir()) == []

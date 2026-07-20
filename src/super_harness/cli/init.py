@@ -4,33 +4,56 @@ Creates the canonical directory layout (4 subdirs + 6 skeleton files) per
 `engineering-integration` §2.1. Idempotent without `--force`; `--force`
 overwrites all skeleton files including user edits. Per `cli-command-surface` §2.3.
 """
+
 from __future__ import annotations
 
+import os
 import shutil
 import sys
+from collections.abc import Mapping
 from importlib.resources import files
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import click
 import yaml
 
-from super_harness.cli.adapter import install_agent_integration
+from super_harness.adapters.install import install_agent_integration
 from super_harness.cli.errors import format_error
+from super_harness.cli.init_executor import (
+    InitExecutor,
+    InitOperationError,
+    InitOperationResult,
+    InitOperations,
+)
+from super_harness.cli.init_github import (
+    GithubFileError,
+    GithubFileKind,
+    GithubFilePlan,
+    GithubKeepReason,
+    GithubPlan,
+    apply_github_file,
+    inspect_github_files,
+    resolve_github_plan,
+)
+from super_harness.cli.init_plan import (
+    FileAction,
+    GithubFileDecision,
+    HarnessState,
+    InitPlan,
+    InitPlanValidationError,
+    InitRequest,
+    InteractionMode,
+    ReviewWrite,
+    inspect_workspace,
+)
 from super_harness.core.clock import utc_now_iso
 from super_harness.engineering.agents_md import AgentsMdInjectionError
-from super_harness.engineering.agents_md_render import render_super_harness_section
-from super_harness.engineering.gh import GhError, check_gh, enable_repo_merge_settings
 from super_harness.engineering.gitignore_injector import (
     GitignoreInjectionError,
     inject_gitignore_block,
 )
 from super_harness.engineering.operation_log import write_operation_log
-from super_harness.engineering.pr_metadata import (
-    METADATA_BEGIN,
-    METADATA_END,
-    parse_metadata_block,
-)
 from super_harness.exit_codes import (
     EXIT_EXTERNAL_TOOL,
     EXIT_GENERIC,
@@ -38,6 +61,9 @@ from super_harness.exit_codes import (
     EXIT_OK,
 )
 from super_harness.version import __version__
+
+if TYPE_CHECKING:
+    from super_harness.engineering.gh import GhError
 
 _TEMPLATES = files("super_harness.templates")
 
@@ -58,94 +84,48 @@ _REVIEW_PRODUCERS: dict[str, dict[str, object]] = {
 }
 
 
-def _stdin_is_tty() -> bool:
-    return sys.stdin.isatty()
+def detect_runtime_terminal_capabilities(
+    stdin: Any,
+    stdout: Any,
+    environ: Mapping[str, str],
+) -> Any:
+    """Lazily load the Questionary/Rich boundary only when init executes."""
+
+    from super_harness.cli.init_ui import detect_runtime_terminal_capabilities as detect
+
+    return detect(stdin, stdout, environ)
 
 
-def _prompt_multi_select(
-    title: str,
-    options: tuple[str, ...],
-) -> tuple[str, ...]:
-    if not options:
-        click.echo(f"{title}: no installed options detected")
-        return ()
-    click.echo(f"{title}:")
-    for index, option in enumerate(options, start=1):
-        click.echo(f"  {index}. {option} (recommended)")
-    default = ",".join(str(index) for index in range(1, len(options) + 1))
-    raw = click.prompt(
-        "Select comma-separated numbers, or 'none'",
-        default=default,
-        show_default=True,
-    ).strip()
-    if raw.lower() == "none":
-        return ()
-    selected: list[str] = []
-    for token in raw.split(","):
-        token = token.strip()
-        try:
-            index = int(token)
-        except ValueError as exc:
-            raise click.ClickException(
-                f"invalid selection {token!r}; enter comma-separated numbers"
-            ) from exc
-        if index < 1 or index > len(options):
-            raise click.ClickException(
-                f"selection {index} is out of range 1..{len(options)}"
-            )
-        option = options[index - 1]
-        if option not in selected:
-            selected.append(option)
-    return tuple(selected)
+def create_init_ui(capabilities: Any, **kwargs: Any) -> Any:
+    """Preserve an injectable command seam without eagerly importing Questionary."""
+
+    from super_harness.cli.init_ui import create_init_ui as create
+
+    return create(capabilities, **kwargs)
 
 
-def _resolve_init_selections(
-    integrations: tuple[str, ...],
-    review_producers: tuple[str, ...],
-    review_models: tuple[str, ...],
-    *,
-    no_agent: bool,
-) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
-    """Resolve optional TTY selections; non-TTY values pass through unchanged."""
+def check_gh() -> None:
+    """Lazily run the GitHub CLI preflight while preserving the patch seam."""
+    from super_harness.engineering.gh import check_gh as _check_gh
 
-    if not _stdin_is_tty():
-        return integrations, review_producers, review_models
+    _check_gh()
 
-    resolved_integrations = integrations
-    if not resolved_integrations and not no_agent:
-        detected_integrations: list[str] = []
-        if shutil.which("codex"):
-            detected_integrations.append("codex")
-        if shutil.which("claude"):
-            detected_integrations.append("claude-code")
-        resolved_integrations = _prompt_multi_select(
-            "Coding-agent integrations", tuple(detected_integrations)
-        )
 
-    resolved_producers = review_producers
-    if not resolved_producers:
-        detected_producers: list[str] = []
-        if shutil.which("codex"):
-            detected_producers.append("codex-cli")
-        if shutil.which("claude"):
-            detected_producers.append("claude-cli")
-        resolved_producers = _prompt_multi_select(
-            "Review producers", tuple(detected_producers)
-        )
+def enable_repo_merge_settings() -> None:
+    """Lazily enable repository settings while preserving the patch seam."""
+    from super_harness.engineering.gh import (
+        enable_repo_merge_settings as _enable_repo_merge_settings,
+    )
 
-    models = _parse_review_models(review_models)
-    for producer in resolved_producers:
-        source = str(_REVIEW_PRODUCERS[producer]["source"])
-        if source not in models:
-            models[source] = click.prompt(
-                f"Explicit model for {source}", type=str
-            ).strip()
-            if not models[source]:
-                raise click.ClickException(
-                    f"explicit model for {source!r} cannot be empty"
-                )
-    resolved_models = tuple(f"{source}={model}" for source, model in models.items())
-    return resolved_integrations, resolved_producers, resolved_models
+    _enable_repo_merge_settings()
+
+
+def _gh_error_type() -> type[GhError]:
+    """Resolve the GitHub integration error type only on an executed error path."""
+    from super_harness.engineering.gh import GhError
+
+    return GhError
+
 
 # S3 fix (OPEN-ITEMS #6): typed outcome literals returned by `_write_pr_template`
 # and `_write_workflow_file` so the advisory printed in `_setup_github` honestly
@@ -245,12 +225,7 @@ def _skeleton_files() -> dict[str, str]:
         ),
         "sensors.yaml": "sensors: []\n",
         "gates.yaml": (
-            "gates:\n"
-            "  - pre-tool-use\n"
-            "  - pre-commit\n"
-            "  - pre-push\n"
-            "  - pr-open\n"
-            "  - pr-merge\n"
+            "gates:\n  - pre-tool-use\n  - pre-commit\n  - pre-push\n  - pr-open\n  - pr-merge\n"
         ),
         "source-paths.yaml": _source_paths_default(),
         "derived-docs.yaml": _derived_docs_default(),
@@ -265,8 +240,7 @@ def _parse_review_models(values: tuple[str, ...]) -> dict[str, str]:
         source, separator, model = value.partition("=")
         if not separator or not source or not model:
             raise ValueError(
-                "--review-model must use SOURCE=MODEL, for example "
-                "--review-model codex=gpt-review"
+                "--review-model must use SOURCE=MODEL, for example --review-model codex=gpt-review"
             )
         if source in models:
             raise ValueError(f"duplicate --review-model source {source!r}")
@@ -296,8 +270,7 @@ def _configure_review_producers(
         model = models.get(source)
         if model is None:
             raise ValueError(
-                f"--review-producer {producer} requires "
-                f"--review-model {source}=<model>"
+                f"--review-producer {producer} requires --review-model {source}=<model>"
             )
         if shutil.which(executable) is None:
             raise ValueError(
@@ -308,9 +281,7 @@ def _configure_review_producers(
         governance_sources[source] = {"kind": "automated"}
         raw_options = definition["agent_options"]
         if not isinstance(raw_options, dict):
-            raise ValueError(
-                f"built-in review producer {producer!r} has invalid agent_options"
-            )
+            raise ValueError(f"built-in review producer {producer!r} has invalid agent_options")
         profile_sources[source] = {
             "protocol": producer,
             "model": model,
@@ -319,9 +290,7 @@ def _configure_review_producers(
         }
     if unknown_models:
         source = sorted(unknown_models)[0]
-        raise ValueError(
-            f"--review-model source {source!r} has no selected --review-producer"
-        )
+        raise ValueError(f"--review-model source {source!r} has no selected --review-producer")
 
     governance_sources["human"] = {"kind": "human"}
     participants = selected_sources or ["human"]
@@ -343,19 +312,188 @@ def _configure_review_producers(
         },
     }
     governance_path = root / ".harness" / "review-governance.yaml"
-    governance_path.write_text(
-        yaml.safe_dump(governance, sort_keys=False), encoding="utf-8"
-    )
+    governance_path.write_text(yaml.safe_dump(governance, sort_keys=False), encoding="utf-8")
     profile_path = root / ".harness" / "review-profiles.local.yaml"
     if profile_sources:
         profile_path.write_text(
-            yaml.safe_dump(
-                {"version": 1, "sources": profile_sources}, sort_keys=False
-            ),
+            yaml.safe_dump({"version": 1, "sources": profile_sources}, sort_keys=False),
             encoding="utf-8",
         )
     else:
         profile_path.unlink(missing_ok=True)
+
+
+def build_init_operations(
+    *,
+    ctx: click.Context,
+    request: InitRequest,
+    github_plan: GithubPlan | None,
+) -> InitOperations:
+    """Adapt the established init helpers into prompt-free executor operations."""
+
+    root = request.workspace
+    harness = root / ".harness"
+
+    def scaffold(_plan: InitPlan) -> InitOperationResult:
+        harness.mkdir(parents=True, exist_ok=True)
+        (harness / "events.jsonl").touch()
+        for subdir in (
+            "sensor-results",
+            "verification-results",
+            "operation-logs",
+            "pending-reviews",
+        ):
+            (harness / subdir).mkdir(exist_ok=True)
+        return InitOperationResult("Scaffolded .harness and runtime directories.")
+
+    def skeleton_config(_plan: InitPlan) -> InitOperationResult:
+        try:
+            skeletons = _skeleton_files()
+            for name, content in skeletons.items():
+                if name == "review-governance.yaml":
+                    continue
+                path = harness / name
+                if path.exists() and not request.force:
+                    continue
+                path.write_text(content, encoding="utf-8")
+        except (OSError, click.ClickException) as error:
+            raise InitOperationError(
+                str(error),
+                exit_code=EXIT_GENERIC,
+                recovery_command="super-harness init --force",
+            ) from error
+        return InitOperationResult("Wrote skeleton configuration.")
+
+    def review_config(plan: InitPlan) -> InitOperationResult:
+        if plan.review_write is ReviewWrite.PRESERVE:
+            return InitOperationResult("Preserved existing review configuration.")
+        try:
+            review_paths = {
+                ".harness/review-governance.yaml",
+                ".harness/review-profiles.local.yaml",
+            }
+            for action in plan.file_actions:
+                if action.path.as_posix() not in review_paths:
+                    continue
+                path = root / action.path
+                if action.action in {FileAction.CREATE, FileAction.UPDATE}:
+                    if action.content is None:
+                        raise ValueError(f"reviewed write for {action.path} has no content")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(action.content)
+                elif action.action is FileAction.DELETE:
+                    path.unlink(missing_ok=True)
+        except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as error:
+            raise InitOperationError(
+                f"could not configure review producers: {error}",
+                exit_code=EXIT_GENERIC,
+                hint="Select an installed producer and pass one explicit model per source.",
+            ) from error
+        verb = "Reset" if plan.review_write is ReviewWrite.RESET else "Configured"
+        return InitOperationResult(f"{verb} review configuration.")
+
+    def agent_integrations(plan: InitPlan) -> InitOperationResult:
+        configured: list[str] = []
+        for integration in plan.integrations:
+            try:
+                adapter = install_agent_integration(
+                    root,
+                    integration,
+                    plan=plan.integration_plans[integration],
+                )
+            except (RuntimeError, ValueError, yaml.YAMLError, OSError) as error:
+                raise InitOperationError(
+                    f"could not configure {integration} integration: {error}",
+                    exit_code=EXIT_GENERIC,
+                    hint=(
+                        "Settings or executable paths may have changed after review; "
+                        "rerun init and review the refreshed plan. If a management "
+                        "executable is missing, reinstall super-harness first."
+                    ),
+                ) from error
+            configured.append(integration)
+            if not (
+                request.quiet
+                or request.json_output
+                or request.interaction_mode is InteractionMode.GUIDED
+            ):
+                click.echo(f"configured {integration} integration: {adapter.installed_detail()}")
+        labels = {"codex": "Codex", "claude-code": "Claude Code"}
+        named = [labels.get(integration, integration) for integration in configured]
+        if len(named) > 1:
+            rendered = f"{', '.join(named[:-1])} and {named[-1]}"
+        else:
+            rendered = "".join(named)
+        detail = (
+            f"{rendered} {'integrations' if len(named) > 1 else 'integration'} configured."
+            if named
+            else "No agent integrations selected."
+        )
+        return InitOperationResult(detail)
+
+    def agents_md(_plan: InitPlan) -> InitOperationResult:
+        agents_path = root / "AGENTS.md"
+        try:
+            from super_harness.engineering.agents_md_render import (
+                render_super_harness_section,
+            )
+
+            render_super_harness_section(root, agents_path, __version__)
+        except (OSError, AgentsMdInjectionError) as error:
+            raise InitOperationError(
+                f"scaffolded .harness/ but failed to write AGENTS.md: {error}",
+                exit_code=EXIT_GENERIC,
+                hint=(
+                    "Fix AGENTS.md (permissions / duplicate super-harness markers) "
+                    "and re-run `init --force`."
+                ),
+            ) from error
+        return InitOperationResult("Updated AGENTS.md.")
+
+    def gitignore(_plan: InitPlan) -> InitOperationResult:
+        try:
+            inject_gitignore_block(root / ".gitignore")
+        except (OSError, GitignoreInjectionError) as error:
+            raise InitOperationError(
+                f"scaffolded .harness/ but failed to write .gitignore: {error}",
+                exit_code=EXIT_GENERIC,
+                hint=(
+                    "Fix .gitignore (permissions / duplicate super-harness markers) "
+                    "and re-run `init --force`."
+                ),
+            ) from error
+        return InitOperationResult("Updated .gitignore.")
+
+    def github(_plan: InitPlan) -> InitOperationResult:
+        if github_plan is None:
+            return InitOperationResult("GitHub setup skipped.")
+        try:
+            warning = _setup_github(
+                ctx,
+                root,
+                harness,
+                github_plan,
+                compact_output=request.interaction_mode is InteractionMode.GUIDED,
+            )
+        except GithubFileError as error:
+            raise InitOperationError(
+                str(error),
+                exit_code=EXIT_GENERIC,
+                hint=error.hint,
+            ) from error
+        if warning is not None:
+            return InitOperationResult(warning, warned=True)
+        return InitOperationResult("GitHub files ensured.")
+
+    return InitOperations(
+        scaffold=scaffold,
+        skeleton_config=skeleton_config,
+        review_config=review_config,
+        agent_integrations=agent_integrations,
+        agents_md=agents_md,
+        gitignore=gitignore,
+        github=github,
+    )
 
 
 @click.command("init")
@@ -399,6 +537,12 @@ def _configure_review_producers(
     metavar="SOURCE=MODEL",
     help="Explicit model for a selected review source; repeat per source.",
 )
+@click.option(
+    "--yes",
+    "assume_yes",
+    is_flag=True,
+    help="Skip the final confirmation in interactive mode.",
+)
 @click.pass_context
 def init_cmd(
     ctx: click.Context,
@@ -409,187 +553,143 @@ def init_cmd(
     integrations: tuple[str, ...],
     review_producers: tuple[str, ...],
     review_models: tuple[str, ...],
+    assume_yes: bool,
 ) -> None:
     """Initialize a project for super-harness.
 
     v0.1: --json is not honored by init (bootstrap command produces no
     machine-parseable state).
     """
-    # --framework remains a CLI-surface placeholder in v0.1 (Phase 1 convention:
-    # accept the flag, mark it unread, advertise the no-op via the --help caveat —
-    # NO runtime stderr notice). Phase 4 wires --framework detection.
-    # --setup-github is wired in Phase 12 (gh checks + PR template + repo settings).
-    _ = framework
     root = Path(ctx.obj.get("workspace") or ".").resolve()
-    harness = root / ".harness"
-    if harness.exists() and not force:
+    quiet = bool(ctx.obj.get("quiet"))
+    json_output = bool(ctx.obj.get("json"))
+    capabilities = detect_runtime_terminal_capabilities(sys.stdin, sys.stdout, os.environ)
+    try:
+        parsed_models = _parse_review_models(review_models)
+    except ValueError as error:
         click.echo(
             format_error(
                 subcommand="init",
-                message=f".harness/ already exists at {harness}",
-                hint="Pass `--force` to overwrite the existing directory.",
+                message=f"could not configure review producers: {error}",
+                hint="Select an installed producer and pass one explicit model per source.",
             ),
             err=True,
         )
-        sys.exit(EXIT_NO_CONFIG)
-    interactive = _stdin_is_tty()
-    explicit_review_selection = bool(review_producers or review_models)
-    governance_path = harness / "review-governance.yaml"
-    configure_review = (
-        not governance_path.is_file()
-        or explicit_review_selection
-        or interactive
-    )
-    integrations, review_producers, review_models = _resolve_init_selections(
-        integrations,
-        review_producers,
-        review_models,
+        ctx.exit(EXIT_GENERIC)
+
+    request = InitRequest(
+        workspace=root,
+        interaction_mode=capabilities.mode,
+        force=force,
+        integrations=integrations,
+        review_producers=review_producers,
+        review_models=parsed_models,
+        review_flags_explicit=bool(review_producers or review_models),
+        framework=framework,
         no_agent=no_agent,
+        setup_github=setup_github,
+        assume_yes=assume_yes,
+        quiet=quiet,
+        json_output=json_output,
     )
-    harness.mkdir(parents=True, exist_ok=True)
-    # events.jsonl created empty (writer appends later)
-    (harness / "events.jsonl").touch()
-    # N-4 fix: create all 4 sub-directories per engineering-integration §2.1
-    for subdir in (
-        "sensor-results",
-        "verification-results",
-        "operation-logs",
-        "pending-reviews",
-    ):
-        (harness / subdir).mkdir(exist_ok=True)
-    for name, content in _skeleton_files().items():
-        path = harness / name
-        if name == "review-governance.yaml" and path.exists() and not configure_review:
-            continue
-        if path.exists() and not force:
-            continue
-        path.write_text(content, encoding="utf-8")
-    if configure_review:
-        try:
-            _configure_review_producers(root, review_producers, review_models)
-        except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as e:
+    ui = create_init_ui(
+        capabilities,
+        input_fn=input,
+        output_fn=click.echo,
+        quiet=quiet or json_output,
+        verbose=bool(ctx.obj.get("verbose")),
+    )
+    ui.open_session()
+    ctx.call_on_close(ui.close_session)
+    preflight = inspect_workspace(request)
+    harness = root / ".harness"
+    if preflight.harness_state is not HarnessState.ABSENT and not force:
+        if capabilities.mode is InteractionMode.GUIDED:
+            ui.render_already_initialized(harness)
+        else:
             click.echo(
                 format_error(
                     subcommand="init",
-                    message=f"could not configure review producers: {e}",
+                    message=f".harness/ already exists at {harness}",
                     hint=(
-                        "Select an installed producer and pass one explicit model "
-                        "per source."
+                        "Run `super-harness status` to inspect the existing setup. "
+                        "Use `super-harness init --force` to review and reconfigure it."
                     ),
                 ),
                 err=True,
             )
-            sys.exit(EXIT_GENERIC)
-    for integration in integrations:
-        try:
-            adapter = install_agent_integration(root, integration)
-        except (RuntimeError, ValueError, yaml.YAMLError, OSError) as e:
-            click.echo(
-                format_error(
-                    subcommand="init",
-                    message=f"could not configure {integration} integration: {e}",
-                    hint=(
-                        f"Install the agent and super-harness hook, then run "
-                        f"`super-harness adapter install {integration}`."
-                    ),
-                ),
-                err=True,
-            )
-            sys.exit(EXIT_GENERIC)
-        if not (ctx.obj.get("quiet") or ctx.obj.get("json")):
-            click.echo(
-                f"configured {integration} integration: {adapter.installed_detail()}"
-            )
-    # Wire the repo-root AGENTS.md "super-harness section" (§2.2 / §3.2): create
-    # or append our section (preserving any user content outside the markers),
-    # then replace the framework placeholder with the plain framework block.
-    # PlainAdapter is the single source of the plain block (no hardcoded text).
-    # The injectors' atomic-write / CRLF-safety guarantees are documented in the
-    # `super_harness.engineering.agents_md` module docstring (single source of
-    # truth). Idempotent: a re-render (e.g. --force) replaces the existing section
-    # rather than duplicating it.
-    agents_path = root / "AGENTS.md"
-    # .harness/ is fully scaffolded above. An OSError (unwritable AGENTS.md / full
-    # disk) or AgentsMdInjectionError (duplicate super-harness outer block) here
-    # must surface through format_error like the .harness-exists branch — never a
-    # raw traceback. `init --force` re-renders the section in place, so the
-    # recovery contract is "fix AGENTS.md, re-run init --force".
-    # A re-render (`--force`) rewrites the super-harness section back to the
-    # base template (the no-agent anchor) — but it then RE-INJECTS every adapter
-    # still registered in `.harness/adapters.yaml`, so installed agent/framework
-    # guidance is never lost (full `--force` loop closure). On a fresh init (no
-    # adapters.yaml) re-injection is a no-op, so the render is unconditional. The
-    # shared renderer (init + sync SSOT) lets OSError / AgentsMdInjectionError
-    # propagate into THIS try's AGENTS.md envelope (fail-loud); only its internal
-    # adapters.yaml load is non-fatal (advisory + skip) — see the renderer module.
+        ctx.exit(EXIT_NO_CONFIG)
+
     try:
-        render_super_harness_section(root, agents_path, __version__)
-    except (OSError, AgentsMdInjectionError) as e:
+        wizard = ui.prepare_plan(
+            request,
+            preflight,
+            github_resolver=lambda: _plan_github_setup(
+                ctx,
+                root,
+                compact_output=capabilities.mode is InteractionMode.GUIDED,
+            ),
+        )
+    except KeyboardInterrupt as error:
+        if capabilities.mode is InteractionMode.GUIDED:
+            ui.render_interrupted()
+            ctx.exit(EXIT_GENERIC)
+        raise click.Abort() from error
+    except InitPlanValidationError as error:
+        message = str(error)
+        prefix = (
+            "could not configure review producers"
+            if "review" in message or "producer" in message or "model" in message
+            else "could not prepare init plan"
+        )
         click.echo(
             format_error(
                 subcommand="init",
-                message=f"scaffolded .harness/ but failed to write AGENTS.md: {e}",
-                hint=(
-                    "Fix AGENTS.md (permissions / duplicate super-harness markers) "
-                    "and re-run `init --force`."
-                ),
+                message=f"{prefix}: {message}",
+                hint="Select valid, complete choices and re-run init.",
             ),
             err=True,
         )
-        sys.exit(EXIT_GENERIC)
-    # Wire the repo-root .gitignore (S2 fix — OPEN-ITEMS #6): write a
-    # marker-bounded block listing the canonical `.harness/` runtime + per-machine
-    # `.claude/` paths so
-    # `git add -A` after init does not commit auto-generated state. Same
-    # marker-discipline contract as AGENTS.md: ≥2 blocks → fail loud (never
-    # splice — Phase 7/9/12 data-loss lesson). We do NOT `git add` — staging is
-    # the user's call.
-    gitignore_path = root / ".gitignore"
-    try:
-        inject_gitignore_block(gitignore_path)
-    except (OSError, GitignoreInjectionError) as e:
+        ctx.exit(EXIT_GENERIC)
+
+    if getattr(wizard.decision, "value", wizard.decision) == "cancel":
+        ui.render_cancelled()
+        ctx.exit(EXIT_OK)
+    if wizard.plan is None:  # defensive totality for injected UI implementations
+        raise click.ClickException("init UI confirmed without a plan")
+
+    result = InitExecutor(
+        build_init_operations(ctx=ctx, request=request, github_plan=wizard.github_plan)
+    ).apply(wizard.plan, ui.on_step)
+    ui.render_outcome(result)
+    if not result.success:
         click.echo(
             format_error(
                 subcommand="init",
-                message=f"scaffolded .harness/ but failed to write .gitignore: {e}",
-                hint=(
-                    "Fix .gitignore (permissions / duplicate super-harness markers) "
-                    "and re-run `init --force`."
-                ),
+                message=result.message or "initialization failed",
+                hint=result.hint,
             ),
             err=True,
         )
-        sys.exit(EXIT_GENERIC)
-    if setup_github:
-        _setup_github(ctx, root, harness)
-    click.echo(f"super-harness initialized at {harness}")
-    sys.exit(EXIT_OK)
+        ctx.exit(result.exit_code)
+
+    if capabilities.mode is not InteractionMode.GUIDED:
+        click.echo(f"super-harness initialized at {harness}")
+    ctx.exit(EXIT_OK)
 
 
-def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
-    """Phase 12 `--setup-github` flow (engineering-integration §2.6 / §3.1).
+def _plan_github_setup(
+    ctx: click.Context,
+    root: Path,
+    *,
+    compact_output: bool = False,
+) -> GithubPlan:
+    """Resolve every GitHub file conflict before the first init write."""
 
-    Sequence (runs AFTER `.harness/` is scaffolded, BEFORE the final echo):
-
-    1. ``check_gh()`` first — any ``GhError`` aborts with EXIT_EXTERNAL_TOOL (4),
-       BEFORE any ``.github/`` write (AC-1: no silent fallback). The partial
-       `.harness/` left behind is acceptable (init is re-runnable).
-    2. Write / marker-merge ``<root>/.github/pull_request_template.md`` (§2.6).
-    3. Best-effort repo settings — a ``GhError`` is non-fatal: write an
-       operation-log + advisory to stderr + continue (exit stays 0; AC-7).
-
-    S3 fix (OPEN-ITEMS #6): each substep prints a stdout advisory describing
-    what actually happened (typed outcome from `_write_pr_template` /
-    `_write_workflow_file`). Suppressed under ``--quiet`` or ``--json``.
-    """
-    # S3: advisory prints honor --quiet AND --json (init emits no JSON envelope,
-    # but prose advisories would pollute JSON-consumer pipelines all the same).
-    advise = not (bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
-
-    # --- Step 1: gh checks first (before any .github/ write) ---
+    advise = not (compact_output or bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
     try:
         check_gh()
-    except GhError as e:
+    except _gh_error_type() as e:
         click.echo(
             format_error(
                 subcommand="init",
@@ -605,21 +705,112 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
     if advise:
         click.echo("gh CLI: ok")
 
+    try:
+        inspection = inspect_github_files(
+            root,
+            _pull_request_template().encode("utf-8"),
+            _workflow_template().encode("utf-8"),
+        )
+    except GithubFileError as e:
+        click.echo(
+            format_error(subcommand="init", message=str(e), hint=e.hint),
+            err=True,
+        )
+        sys.exit(EXIT_GENERIC)
+
+    decisions: dict[str, GithubFileDecision] = {}
+    keep_reasons: dict[str, GithubKeepReason] = {}
+    quiet = bool(ctx.obj.get("quiet"))
+    for file in (inspection.pr_template, inspection.workflow):
+        if file.decision is not None:
+            continue
+        relative = file.path.relative_to(root).as_posix()
+        write_decision = (
+            GithubFileDecision.APPEND
+            if file.kind is GithubFileKind.PR_TEMPLATE
+            else GithubFileDecision.OVERWRITE
+        )
+        if quiet:
+            decisions[relative] = write_decision
+            continue
+        prompt = (
+            f"Append super-harness metadata placeholder to existing {file.path}?"
+            if file.kind is GithubFileKind.PR_TEMPLATE
+            else f"Overwrite existing {file.path}?"
+        )
+        try:
+            proceed = click.confirm(prompt, default=True)
+        except click.Abort:
+            if sys.stdin.isatty():
+                raise
+            decisions[relative] = GithubFileDecision.KEEP
+            keep_reasons[relative] = GithubKeepReason.NON_INTERACTIVE
+            if file.kind is GithubFileKind.PR_TEMPLATE:
+                message = (
+                    "skipped appending the metadata placeholder to existing "
+                    f"{file.path} (non-interactive)"
+                )
+                hint = "Re-run with --quiet to append it, or add the block manually."
+            else:
+                message = f"skipped overwriting existing {file.path} (non-interactive)"
+                hint = "Re-run with --quiet to overwrite, or update the file manually."
+            click.echo(
+                format_error(subcommand="init", message=message, hint=hint),
+                err=True,
+            )
+            continue
+        decisions[relative] = write_decision if proceed else GithubFileDecision.KEEP
+        if not proceed:
+            keep_reasons[relative] = GithubKeepReason.DECLINED
+    return resolve_github_plan(inspection, decisions, keep_reasons)
+
+
+def _setup_github(
+    ctx: click.Context,
+    root: Path,
+    harness: Path,
+    plan: GithubPlan,
+    *,
+    compact_output: bool = False,
+) -> str | None:
+    """Phase 12 `--setup-github` flow (engineering-integration §2.6 / §3.1).
+
+    The read-only inspection, ``gh`` preflight, and every conflict prompt have
+    already completed in ``_plan_github_setup`` before this apply phase starts.
+    This function runs AFTER `.harness/` is scaffolded, BEFORE the final echo:
+
+    1. Apply the resolved PR-template and workflow decisions without prompting.
+    2. Best-effort repo settings — a ``GhError`` is non-fatal: write an
+       operation-log + advisory to stderr + continue (exit stays 0; AC-7).
+
+    Plain modes print one stdout advisory per substep, preserving the existing
+    typed outcomes from `_write_pr_template` / `_write_workflow_file`. Guided
+    mode suppresses those raw lines and returns an actionable repository-setting
+    warning for the executor renderer instead.
+    """
+    # Raw advisories stay in plain modes and remain suppressed for quiet / JSON.
+    advise = not (compact_output or bool(ctx.obj.get("quiet")) or bool(ctx.obj.get("json")))
+
     # --- Step 2: write / marker-merge .github/pull_request_template.md ---
-    pr_outcome = _write_pr_template(ctx, root)
+    pr_outcome = _write_pr_template(ctx, root, plan.pr_template)
     if advise:
         _echo_outcome(".github/pull_request_template.md", pr_outcome)
 
     # --- Step 2.5: write .github/workflows/super-harness.yml (Task 14.2) ---
-    wf_outcome = _write_workflow_file(ctx, root)
+    wf_outcome = _write_workflow_file(ctx, root, plan.workflow)
     if advise:
         _echo_outcome(".github/workflows/super-harness.yml", wf_outcome)
 
     # --- Step 3: best-effort repo settings (non-fatal) ---
     try:
         enable_repo_merge_settings()
-    except GhError as e:
+    except _gh_error_type() as e:
         _log_setup_github_failure(harness, e)
+        if compact_output:
+            return (
+                "GitHub repository settings need manual confirmation. "
+                "Settings -> General -> Pull Requests."
+            )
         click.echo(
             format_error(
                 subcommand="init",
@@ -637,6 +828,7 @@ def _setup_github(ctx: click.Context, root: Path, harness: Path) -> None:
         # existing format_error already informs the user via stderr.
         if advise:
             click.echo("repo merge settings: enabled auto-merge + squash")
+    return None
 
 
 def _echo_outcome(label: str, outcome: PRTemplateOutcome | WorkflowOutcome) -> None:
@@ -657,188 +849,26 @@ def _echo_outcome(label: str, outcome: PRTemplateOutcome | WorkflowOutcome) -> N
         click.echo(f"kept existing {label} (skipped, non-interactive)")
 
 
-def _write_pr_template(ctx: click.Context, root: Path) -> PRTemplateOutcome:
-    """Write or marker-merge ``.github/pull_request_template.md`` (§2.6).
+def _write_pr_template(
+    ctx: click.Context,
+    root: Path,
+    plan: GithubFilePlan,
+) -> PRTemplateOutcome:
+    """Apply a pre-resolved PR-template decision without prompting."""
 
-    Returns a typed outcome literal so callers can print an HONEST advisory
-    matching what actually happened (S3 fix — OPEN-ITEMS #6):
-
-    - "wrote"         : fresh write OR append-placeholder to existing.
-    - "kept-existing" : existing template already has exactly one block (no-op).
-    - "declined"      : user said 'n' at the append-confirm prompt.
-    - "skipped"       : non-interactive EOF without --quiet (advisory on stderr).
-
-    Branches:
-    - File absent → write the bundled template verbatim (no prompt). → "wrote"
-    - File present → marker-aware merge: ensure exactly one metadata placeholder
-      block exists. ``block_count >= 2`` → FAIL LOUD (never splice — the AGENTS.md
-      greedy-regex data-loss lesson). Already exactly one → no-op (idempotent).
-      Modifying an EXISTING file prompts (unless global ``--quiet``); decline →
-      leave untouched (non-fatal, continue).
-    """
-    gh_dir = root / ".github"
-    template_path = gh_dir / "pull_request_template.md"
-
-    if not template_path.exists():
-        gh_dir.mkdir(parents=True, exist_ok=True)
-        template_path.write_text(_pull_request_template(), encoding="utf-8")
-        return "wrote"
-
-    try:
-        existing = template_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        # error-family: UnicodeDecodeError is a ValueError (not OSError), so both
-        # must be caught — a non-UTF-8 / unreadable existing template must surface
-        # a friendly error, never a raw traceback.
-        click.echo(
-            format_error(
-                subcommand="init",
-                message=f"could not read existing {template_path}: {e}",
-                hint="Ensure the file is UTF-8 and readable, then re-run.",
-            ),
-            err=True,
-        )
-        sys.exit(EXIT_GENERIC)
-    block = parse_metadata_block(existing)
-
-    if block.block_count >= 2:
-        click.echo(
-            format_error(
-                subcommand="init",
-                message=(
-                    f"{template_path} has {block.block_count} super-harness "
-                    f"metadata blocks; refusing to splice (manual cleanup required)."
-                ),
-                hint=(
-                    "Remove the duplicate "
-                    "`<!-- super-harness:metadata -->` … "
-                    "`<!-- /super-harness:metadata -->` block(s); "
-                    "exactly one is expected."
-                ),
-            ),
-            err=True,
-        )
-        sys.exit(EXIT_GENERIC)
-
-    if block.block_count == 1:
-        # Already has exactly one placeholder block — idempotent no-op.
-        return "kept-existing"
-
-    # Exactly zero blocks: append one placeholder, preserving the user's content.
-    # Modifying an existing file → overwrite-confirm unless --quiet.
-    quiet = bool(ctx.obj.get("quiet"))
-    if not quiet:
-        try:
-            proceed = click.confirm(
-                f"Append super-harness metadata placeholder to existing {template_path}?",
-                default=True,
-            )
-        except click.Abort:
-            # click.Abort fires on BOTH an interactive Ctrl-C and a
-            # non-interactive EOF. A real Ctrl-C (TTY) means "stop" → re-raise →
-            # exit 1, consistent with sync.py / `adapter uninstall`'s confirm. A
-            # non-interactive EOF (CI without --quiet) cannot prompt → leave the
-            # user's file UNTOUCHED (never modify it silently), non-fatal, advise.
-            if sys.stdin.isatty():
-                raise
-            click.echo(
-                format_error(
-                    subcommand="init",
-                    message=(
-                        f"skipped appending the metadata placeholder to existing "
-                        f"{template_path} (non-interactive)"
-                    ),
-                    hint="Re-run with --quiet to append it, or add the block manually.",
-                ),
-                err=True,
-            )
-            return "skipped"
-        if not proceed:
-            return "declined"  # declined ('n') → leave untouched, non-fatal
-    placeholder = f"{METADATA_BEGIN}\n{METADATA_END}\n"
-    new = existing.rstrip("\n") + "\n\n" + placeholder
-    template_path.write_text(new, encoding="utf-8")
-    return "wrote"
+    _ = (ctx, root)
+    return apply_github_file(plan)
 
 
-def _write_workflow_file(ctx: click.Context, root: Path) -> WorkflowOutcome:
-    """Write or overwrite-with-confirm ``.github/workflows/super-harness.yml`` (§2.8).
+def _write_workflow_file(
+    ctx: click.Context,
+    root: Path,
+    plan: GithubFilePlan,
+) -> WorkflowOutcome:
+    """Apply a pre-resolved workflow decision without prompting."""
 
-    Returns a typed outcome literal (S3 fix — OPEN-ITEMS #6):
-    - "wrote"         : fresh write OR overwrite of differing existing file.
-    - "kept-existing" : byte-identical to bundled (idempotent no-op).
-    - "declined"      : user said 'n' at the overwrite-confirm prompt.
-    - "skipped"       : non-interactive EOF without --quiet.
-
-    Branches:
-    - File absent → write bundled template verbatim (no prompt; ``mkdir -p`` first).
-    - File present + byte-identical to bundled → idempotent no-op.
-    - File present + differs → confirm overwrite (unless global ``--quiet``);
-      non-TTY EOF leaves untouched + advisory (non-fatal);
-      TTY Ctrl-C re-raises (exit 1).
-    - Read of existing file: catch ``(OSError, UnicodeDecodeError)`` → friendly
-      error, EXIT_GENERIC (UnicodeDecodeError is a ValueError, not OSError —
-      the project's recurring error-family bug class).
-    """
-    workflows_dir = root / ".github" / "workflows"
-    workflow_path = workflows_dir / "super-harness.yml"
-    bundled = _workflow_template()
-
-    if not workflow_path.exists():
-        workflows_dir.mkdir(parents=True, exist_ok=True)
-        workflow_path.write_text(bundled, encoding="utf-8")
-        return "wrote"
-
-    try:
-        existing = workflow_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as e:
-        # error-family: UnicodeDecodeError is a ValueError (not OSError), so both
-        # must be caught — a non-UTF-8 / unreadable existing workflow file must
-        # surface a friendly error, never a raw traceback.
-        click.echo(
-            format_error(
-                subcommand="init",
-                message=f"could not read existing {workflow_path}: {e}",
-                hint="Ensure the file is UTF-8 and readable, then re-run.",
-            ),
-            err=True,
-        )
-        sys.exit(EXIT_GENERIC)
-
-    if existing == bundled:
-        return "kept-existing"  # byte-identical → idempotent no-op
-
-    quiet = bool(ctx.obj.get("quiet"))
-    if not quiet:
-        try:
-            proceed = click.confirm(
-                f"Overwrite existing {workflow_path}?",
-                default=True,
-            )
-        except click.Abort:
-            # click.Abort fires on BOTH an interactive Ctrl-C and a
-            # non-interactive EOF. A real Ctrl-C (TTY) means "stop" → re-raise →
-            # exit 1, consistent with _write_pr_template. A non-interactive EOF
-            # (CI without --quiet) cannot prompt → leave the file UNTOUCHED
-            # (never modify it silently), non-fatal, advise.
-            if sys.stdin.isatty():
-                raise
-            click.echo(
-                format_error(
-                    subcommand="init",
-                    message=(
-                        f"skipped overwriting existing {workflow_path} (non-interactive)"
-                    ),
-                    hint="Re-run with --quiet to overwrite, or update the file manually.",
-                ),
-                err=True,
-            )
-            return "skipped"
-        if not proceed:
-            return "declined"  # declined ('n') → leave untouched, non-fatal
-
-    workflow_path.write_text(bundled, encoding="utf-8")
-    return "wrote"
+    _ = (ctx, root)
+    return apply_github_file(plan)
 
 
 def _log_setup_github_failure(harness: Path, error: GhError) -> None:

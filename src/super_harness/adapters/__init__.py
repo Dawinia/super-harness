@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     # `core`, and this is the normal downward direction (adapters build on core), so
     # the core-is-base contract — which forbids core → {cli,gates,sensors,engineering} —
     # is unaffected.
+    from super_harness.adapters.agent._settings_merge import SettingsMergePlan
     from super_harness.core.authoring_check import Verdict
 
 __all__ = [
@@ -84,13 +85,9 @@ class AgentAdapter(ABC):
         if inspect.isabstract(cls):
             return
         if not cls.name:
-            raise TypeError(
-                f"{cls.__name__} must define a non-empty `name` class attribute"
-            )
+            raise TypeError(f"{cls.__name__} must define a non-empty `name` class attribute")
         if not cls.version or cls.version == "0.0.0":
-            raise TypeError(
-                f"{cls.__name__} must define `version` (not the default '0.0.0')"
-            )
+            raise TypeError(f"{cls.__name__} must define `version` (not the default '0.0.0')")
 
     @abstractmethod
     def detect(self, workspace: Path) -> bool:
@@ -138,6 +135,16 @@ class AgentAdapter(ABC):
         cleanup (e.g. removing a hook entry from `.claude/settings.json`).
         """
         pass
+
+    def plan_hook_install(
+        self,
+        workspace: Path,
+        *,
+        hook_executable: str,
+        cli_executable: str,
+    ) -> SettingsMergePlan | None:
+        """Return a non-mutating settings transaction when the adapter supports it."""
+        return None
 
     def local_config_relpath(self) -> str:
         """Workspace-relative path of the per-machine hook config this adapter
@@ -211,13 +218,9 @@ class FrameworkAdapter(ABC):
         if inspect.isabstract(cls):
             return
         if not cls.name:
-            raise TypeError(
-                f"{cls.__name__} must define a non-empty `name` class attribute"
-            )
+            raise TypeError(f"{cls.__name__} must define a non-empty `name` class attribute")
         if not cls.version or cls.version == "0.0.0":
-            raise TypeError(
-                f"{cls.__name__} must define `version` (not the default '0.0.0')"
-            )
+            raise TypeError(f"{cls.__name__} must define `version` (not the default '0.0.0')")
 
     @abstractmethod
     def detect(self, workspace: Path) -> bool:

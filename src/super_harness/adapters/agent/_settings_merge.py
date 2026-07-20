@@ -28,14 +28,25 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "SettingsMergePlan",
+    "SettingsUpdateInProgressError",
+    "StaleSettingsPlanError",
+    "apply_settings_merge_plan",
     "merge_pre_tool_use_hook",
     "merge_session_start_hook",
     "merge_stop_hook",
+    "plan_settings_merge",
+    "restore_or_remove_managed_hooks",
 ]
 
 # The PreToolUse matcher super-harness registers (sensor-gate §3.2.1). Covers
@@ -70,6 +81,155 @@ _STOP_OURS_MARKER = "--agent claude-code --event stop"
 # Per-hook timeout (seconds) for the Stop authoring-check command; matches the
 # PreToolUse/SessionStart budget shape and is the OUTER bound the inner check must beat.
 _STOP_TIMEOUT = 10
+# A crash can leave the O_EXCL lock empty or partially written. Refuse such
+# locks while fresh; only reclaim after this conservative grace period.
+_CORRUPT_LOCK_STALE_SECONDS = 5 * 60
+
+
+class StaleSettingsPlanError(RuntimeError):
+    """The settings file no longer matches the bytes captured for review."""
+
+
+class SettingsUpdateInProgressError(RuntimeError):
+    """Another super-harness writer owns the settings transaction lock."""
+
+
+class UnsafeSettingsPathError(ValueError):
+    """The settings path cannot safely participate in atomic replacement."""
+
+
+@dataclass(frozen=True)
+class SettingsMergePlan:
+    path: Path
+    original_bytes: bytes | None
+    desired_bytes: bytes
+    changed: bool
+    backup_required: bool
+    workspace_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "path", Path(self.path))
+        if self.workspace_root is not None:
+            object.__setattr__(self, "workspace_root", Path(self.workspace_root))
+
+
+def plan_settings_merge(
+    settings_path: Path,
+    *,
+    workspace_root: Path | None = None,
+    pre_tool_use_command: str,
+    session_start_command: str,
+    stop_command: str,
+    pre_tool_use_matcher: str = _MATCHER,
+    pre_tool_use_marker: str = _OURS_MARKER,
+    session_start_marker: str = _SESSION_OURS_MARKER,
+    stop_marker: str = _STOP_OURS_MARKER,
+) -> SettingsMergePlan:
+    """Purely compute the complete three-hook settings transaction."""
+    _reject_symlink_settings(settings_path, workspace_root=workspace_root)
+    original_bytes = settings_path.read_bytes() if settings_path.exists() else None
+    original = (
+        _parse_settings_bytes(settings_path, original_bytes) if original_bytes is not None else {}
+    )
+    settings = copy.deepcopy(original)
+    hooks = _ensure_hooks_dict(settings)
+
+    pre_tool_use = _ensure_event_list(hooks, "PreToolUse")
+    _strip_entries(pre_tool_use, pre_tool_use_marker)
+    pre_tool_use.append(_hook_entry(pre_tool_use_command, pre_tool_use_matcher))
+
+    session_start = _ensure_event_list(hooks, "SessionStart")
+    _strip_entries(session_start, session_start_marker)
+    session_start.append(_session_start_entry(session_start_command))
+
+    stop = _ensure_event_list(hooks, "Stop")
+    _strip_entries(stop, stop_marker)
+    stop.append(_stop_entry(stop_command))
+
+    changed = settings != original
+    desired_bytes = (
+        json.dumps(settings, indent=2).encode("utf-8") + b"\n" if changed else original_bytes or b""
+    )
+    return SettingsMergePlan(
+        path=settings_path,
+        original_bytes=original_bytes,
+        desired_bytes=desired_bytes,
+        changed=changed,
+        backup_required=changed and original_bytes is not None,
+        workspace_root=workspace_root,
+    )
+
+
+def apply_settings_merge_plan(plan: SettingsMergePlan) -> None:
+    """Apply a reviewed plan under an exclusive sibling lock and atomic replace."""
+    _reject_symlink_settings(plan.path, workspace_root=plan.workspace_root)
+    with _settings_lock(plan.path, workspace_root=plan.workspace_root):
+        _reject_symlink_settings(plan.path, workspace_root=plan.workspace_root)
+        current = plan.path.read_bytes() if plan.path.exists() else None
+        if current != plan.original_bytes:
+            raise StaleSettingsPlanError(
+                f"{plan.path} changed after review; rerun init and review the new plan."
+            )
+        if not plan.changed:
+            return
+        if plan.backup_required:
+            _write_backup_bytes(plan.path, plan.original_bytes or b"")
+        _atomic_replace_bytes(plan.path, plan.desired_bytes)
+
+
+def restore_or_remove_managed_hooks(
+    settings_path: Path,
+    *,
+    pre_tool_use_marker: str,
+    session_start_marker: str = _SESSION_OURS_MARKER,
+    stop_marker: str,
+    workspace_root: Path | None = None,
+) -> None:
+    """Restore the pristine backup, or remove only marker-owned hook entries."""
+    _reject_symlink_settings(settings_path, workspace_root=workspace_root)
+    if not settings_path.parent.exists():
+        return
+    with _settings_lock(settings_path, workspace_root=workspace_root):
+        _reject_symlink_settings(settings_path, workspace_root=workspace_root)
+        backups = sorted(
+            settings_path.parent.glob(f"{settings_path.name}.super-harness-backup.*"),
+            key=_backup_sort_key,
+        )
+        if backups:
+            _atomic_replace_bytes(settings_path, backups[0].read_bytes())
+            return
+        if not settings_path.exists():
+            return
+
+        original_bytes = settings_path.read_bytes()
+        settings = _parse_settings_bytes(settings_path, original_bytes)
+        hooks = settings.get("hooks")
+        if not isinstance(hooks, dict):
+            return
+        changed = False
+        for event, marker in (
+            ("PreToolUse", pre_tool_use_marker),
+            ("SessionStart", session_start_marker),
+            ("Stop", stop_marker),
+        ):
+            entries = hooks.get(event)
+            if not isinstance(entries, list):
+                continue
+            before = copy.deepcopy(entries)
+            _strip_entries(entries, marker)
+            if entries != before:
+                changed = True
+            if not entries:
+                hooks.pop(event, None)
+        if not changed:
+            return
+        if not hooks:
+            settings.pop("hooks", None)
+        if not settings:
+            settings_path.unlink()
+            return
+        desired = json.dumps(settings, indent=2).encode("utf-8") + b"\n"
+        _atomic_replace_bytes(settings_path, desired)
 
 
 def merge_pre_tool_use_hook(
@@ -219,10 +379,13 @@ def merge_stop_hook(
 
 
 def _read_settings(settings_path: Path) -> dict[str, Any]:
-    raw = settings_path.read_text(encoding="utf-8")
+    return _parse_settings_bytes(settings_path, settings_path.read_bytes())
+
+
+def _parse_settings_bytes(settings_path: Path, raw: bytes) -> dict[str, Any]:
     try:
-        parsed: Any = json.loads(raw)
-    except json.JSONDecodeError as exc:
+        parsed: Any = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(
             f"{settings_path} is not valid JSON ({exc}); fix or remove it before "
             f"installing the super-harness hook."
@@ -242,16 +405,264 @@ def _write_backup(settings_path: Path) -> None:
     wall-clock second get distinct names; if the chosen path somehow already
     exists, bump until unique so a backup can never silently overwrite another.
     """
+    _write_backup_bytes(settings_path, settings_path.read_bytes())
+
+
+def _write_backup_bytes(settings_path: Path, content: bytes) -> Path:
     stamp = time.time_ns()
-    backup = settings_path.with_name(
-        f"{settings_path.name}.super-harness-backup.{stamp}"
-    )
-    while backup.exists():
-        stamp += 1
-        backup = settings_path.with_name(
-            f"{settings_path.name}.super-harness-backup.{stamp}"
+    while True:
+        backup = settings_path.with_name(f"{settings_path.name}.super-harness-backup.{stamp}")
+        try:
+            fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            stamp += 1
+            continue
+        try:
+            _write_fd_bytes(fd, content)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            backup.unlink(missing_ok=True)
+            raise
+        try:
+            os.close(fd)
+        except BaseException:
+            backup.unlink(missing_ok=True)
+            raise
+        return backup
+
+
+@contextmanager
+def _settings_lock(
+    settings_path: Path,
+    *,
+    workspace_root: Path | None = None,
+) -> Iterator[None]:
+    _reject_symlink_settings(settings_path, workspace_root=workspace_root)
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    _reject_symlink_settings(settings_path, workspace_root=workspace_root)
+    lock_path = settings_path.with_name(f"{settings_path.name}.super-harness.lock")
+    _acquire_settings_lock(lock_path)
+    try:
+        yield
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def _acquire_settings_lock(lock_path: Path) -> None:
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError as exc:
+            owner_bytes = _read_lock_owner(lock_path)
+            if owner_bytes is None:
+                continue
+            try:
+                owner_pid = _parse_lock_owner_pid(lock_path, owner_bytes)
+            except SettingsUpdateInProgressError:
+                try:
+                    corrupt_lock_is_stale = _corrupt_lock_is_stale(lock_path)
+                except FileNotFoundError:
+                    continue
+                if not corrupt_lock_is_stale:
+                    raise
+                try:
+                    if lock_path.read_bytes() != owner_bytes:
+                        continue
+                except FileNotFoundError:
+                    continue
+                lock_path.unlink(missing_ok=True)
+                continue
+            try:
+                owner_alive = _process_is_alive(owner_pid)
+            except OSError as error:
+                raise SettingsUpdateInProgressError(
+                    f"another settings update is in progress for {lock_path.name}; "
+                    f"cannot verify owner pid {owner_pid}"
+                ) from error
+            if owner_alive:
+                raise SettingsUpdateInProgressError(
+                    f"another settings update is in progress for {lock_path.name} "
+                    f"(owner pid {owner_pid})"
+                ) from exc
+            try:
+                if lock_path.read_bytes() != owner_bytes:
+                    continue
+            except FileNotFoundError:
+                continue
+            lock_path.unlink(missing_ok=True)
+            continue
+
+        owner = (
+            json.dumps(
+                {"pid": os.getpid(), "created_ns": time.time_ns()},
+                separators=(",", ":"),
+            ).encode("ascii")
+            + b"\n"
         )
-    backup.write_text(settings_path.read_text(encoding="utf-8"), encoding="utf-8")
+        try:
+            _write_fd_bytes(fd, owner)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            lock_path.unlink(missing_ok=True)
+            raise
+        try:
+            os.close(fd)
+        except BaseException:
+            lock_path.unlink(missing_ok=True)
+            raise
+        return
+
+
+def _read_lock_owner(lock_path: Path) -> bytes | None:
+    try:
+        return lock_path.read_bytes()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise SettingsUpdateInProgressError(
+            f"another settings update is in progress for {lock_path.name}; "
+            "cannot read its owner information"
+        ) from exc
+
+
+def _parse_lock_owner_pid(lock_path: Path, owner_bytes: bytes) -> int:
+    try:
+        owner = json.loads(owner_bytes.decode("ascii"))
+        pid = owner["pid"]
+    except (KeyError, TypeError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SettingsUpdateInProgressError(
+            f"another settings update is in progress for {lock_path.name}; "
+            "cannot verify its owner because the lock is corrupt"
+        ) from exc
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        raise SettingsUpdateInProgressError(
+            f"another settings update is in progress for {lock_path.name}; "
+            "cannot verify its owner because the lock PID is invalid"
+        )
+    return pid
+
+
+def _corrupt_lock_is_stale(lock_path: Path) -> bool:
+    age_ns = time.time_ns() - lock_path.stat().st_mtime_ns
+    return age_ns >= _CORRUPT_LOCK_STALE_SECONDS * 1_000_000_000
+
+
+def _process_is_alive(pid: int) -> bool:
+    if os.name == "nt":
+        return _windows_process_is_alive(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _windows_process_is_alive(pid: int) -> bool:
+    import ctypes
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.GetExitCodeProcess.argtypes = [
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_ulong),
+    ]
+    kernel32.GetExitCodeProcess.restype = ctypes.c_int
+    kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+    kernel32.CloseHandle.restype = ctypes.c_int
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        error = ctypes.get_last_error()  # type: ignore[attr-defined]
+        if error == 5:  # Access denied means the process exists.
+            return True
+        if error == 87:  # Invalid parameter means the PID does not exist.
+            return False
+        raise OSError(error, f"could not inspect settings lock owner pid {pid}")
+    try:
+        exit_code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            error = ctypes.get_last_error()  # type: ignore[attr-defined]
+            raise OSError(error, f"could not inspect settings lock owner pid {pid}")
+        return exit_code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _atomic_replace_bytes(settings_path: Path, content: bytes) -> None:
+    temp_fd, temp_name = tempfile.mkstemp(
+        prefix=f".{settings_path.name}.super-harness.",
+        suffix=".tmp",
+        dir=settings_path.parent,
+    )
+    temp_path: Path | None = Path(temp_name)
+    try:
+        try:
+            _write_temp_bytes(temp_fd, content)
+        finally:
+            os.close(temp_fd)
+        os.replace(temp_name, settings_path)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+
+
+def _reject_symlink_settings(
+    settings_path: Path,
+    *,
+    workspace_root: Path | None = None,
+) -> None:
+    path = settings_path.absolute()
+    root = path.parent if workspace_root is None else workspace_root.absolute()
+    try:
+        relative = path.relative_to(root)
+    except ValueError as error:
+        raise UnsafeSettingsPathError(
+            f"{settings_path} is outside workspace {root}; choose a per-workspace settings path"
+        ) from error
+
+    current = root
+    candidates = [current]
+    for part in relative.parts:
+        current /= part
+        candidates.append(current)
+    for candidate in candidates:
+        if candidate.is_symlink():
+            raise UnsafeSettingsPathError(
+                f"{candidate} is a symlink in settings path {settings_path}; replace it with "
+                "a regular per-workspace path before configuring super-harness hooks"
+            )
+
+
+def _write_temp_bytes(fd: int, content: bytes) -> None:
+    _write_fd_bytes(fd, content)
+
+
+def _write_fd_bytes(fd: int, content: bytes) -> None:
+    remaining = memoryview(content)
+    while remaining:
+        written = os.write(fd, remaining)
+        if written == 0:
+            raise OSError("could not complete settings write")
+        remaining = remaining[written:]
+    os.fsync(fd)
+
+
+def _backup_sort_key(path: Path) -> int:
+    try:
+        return int(path.name.rsplit(".", 1)[-1])
+    except ValueError:
+        return -1
 
 
 def _ensure_hooks_dict(settings: dict[str, Any]) -> dict[str, Any]:

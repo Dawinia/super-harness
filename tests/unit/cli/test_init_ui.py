@@ -1,0 +1,2473 @@
+from __future__ import annotations
+
+import os
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import FrozenInstanceError, replace
+from io import BytesIO, StringIO, TextIOWrapper
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+from rich.console import Console
+from rich.text import Text
+
+import super_harness.cli.init_ui as init_ui_module
+from super_harness.adapters.agent._settings_merge import SettingsMergePlan
+from super_harness.adapters.install import AgentIntegrationPlan
+from super_harness.cli.init_models import ReviewerModelCandidate
+from super_harness.cli.init_plan import (
+    FileAction,
+    GitHubDecision,
+    GithubFileDecision,
+    HarnessState,
+    InitChoices,
+    InitPlan,
+    InitPreflight,
+    InitRequest,
+    InteractionMode,
+    PlannedFileAction,
+    ReviewWrite,
+    build_init_plan,
+)
+from super_harness.cli.init_ui import (
+    ChoiceCollectionDecision,
+    GuidedPromptOption,
+    InteractiveInitUI,
+    LineInitUI,
+    NonInteractiveInitUI,
+    QuestionaryPromptAdapter,
+    RailStage,
+    RailState,
+    ReviewDecision,
+    RichGuidedRenderer,
+    StepRenderEvent,
+    StepRenderState,
+    TerminalCapabilities,
+    WizardDecision,
+    detect_runtime_terminal_capabilities,
+    detect_terminal_capabilities,
+)
+
+
+def _preflight(
+    *,
+    detected_integrations: tuple[str, ...] = ("codex",),
+    available_integrations: frozenset[str] = frozenset({"codex"}),
+    detected_producers: tuple[str, ...] = ("codex-cli",),
+    available_producers: frozenset[str] = frozenset({"codex-cli"}),
+    reviewer_model_candidates: dict[str, tuple[ReviewerModelCandidate, ...]] | None = None,
+    reviewer_model_errors: dict[str, str] | None = None,
+    github_available: bool = False,
+) -> InitPreflight:
+    candidates = (
+        {"codex": (ReviewerModelCandidate("codex", "gpt-5-codex", "Codex CLI config", 10),)}
+        if reviewer_model_candidates is None
+        else reviewer_model_candidates
+    )
+    return InitPreflight(
+        harness_state=HarnessState.ABSENT,
+        existing_file_bytes={},
+        available_integrations=available_integrations,
+        available_review_producers=available_producers,
+        detected_integrations=detected_integrations,
+        detected_review_producers=detected_producers,
+        reviewer_model_candidates=candidates,
+        reviewer_model_errors=({} if reviewer_model_errors is None else reviewer_model_errors),
+        github_available=github_available,
+    )
+
+
+def _request(
+    tmp_path: Path,
+    *,
+    integrations: tuple[str, ...] = (),
+    producers: tuple[str, ...] = (),
+    models: dict[str, str] | None = None,
+) -> InitRequest:
+    return InitRequest(
+        workspace=tmp_path,
+        interaction_mode=InteractionMode.LINE,
+        integrations=integrations,
+        review_producers=producers,
+        review_models={} if models is None else models,
+        review_flags_explicit=bool(producers or models),
+    )
+
+
+def _plan(tmp_path: Path) -> InitPlan:
+    return InitPlan(
+        harness_state=HarnessState.ABSENT,
+        review_write=ReviewWrite.UPDATE,
+        integrations=("codex",),
+        review_producers=("codex-cli",),
+        review_models={"codex": "gpt-5-codex"},
+        github_decision=GitHubDecision.SKIP,
+        file_actions=(
+            PlannedFileAction(
+                path=tmp_path / "a-very-long-project-name" / ".harness" / "state.yaml",
+                action=FileAction.CREATE,
+                content=b"version: 1\n",
+            ),
+        ),
+    )
+
+
+def _sequence_input(values: list[str]) -> tuple[Callable[[str], str], list[str]]:
+    iterator: Iterator[str] = iter(values)
+    prompts: list[str] = []
+
+    def read(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(iterator)
+
+    return read, prompts
+
+
+@pytest.mark.parametrize(
+    ("stdin_tty", "stdout_tty", "term", "expected"),
+    [
+        (False, True, "xterm-256color", InteractionMode.NON_INTERACTIVE),
+        (False, False, "dumb", InteractionMode.NON_INTERACTIVE),
+        (True, True, "xterm-256color", InteractionMode.GUIDED),
+        (True, False, "xterm-256color", InteractionMode.LINE),
+        (True, True, "dumb", InteractionMode.LINE),
+    ],
+)
+def test_capability_mode_matrix(
+    stdin_tty: bool,
+    stdout_tty: bool,
+    term: str,
+    expected: InteractionMode,
+) -> None:
+    capabilities = detect_terminal_capabilities(
+        stdin_tty=stdin_tty,
+        stdout_tty=stdout_tty,
+        term=term,
+        no_color=False,
+        encoding="utf-8",
+        width=80,
+    )
+
+    assert capabilities.mode is expected
+
+
+def test_ci_forces_noninteractive_mode_even_when_both_streams_are_ttys() -> None:
+    capabilities = detect_terminal_capabilities(
+        stdin_tty=True,
+        stdout_tty=True,
+        term="xterm-256color",
+        no_color=False,
+        encoding="utf-8",
+        width=80,
+        ci=True,
+    )
+
+    assert capabilities.mode is InteractionMode.NON_INTERACTIVE
+
+
+class _TTYProbe:
+    def __init__(self, *, tty: bool | BaseException, encoding: str = "utf-8") -> None:
+        self._tty = tty
+        self.encoding = encoding
+
+    def isatty(self) -> bool:
+        if isinstance(self._tty, BaseException):
+            raise self._tty
+        return self._tty
+
+
+@pytest.mark.parametrize(
+    ("stdin_probe", "stdout_probe", "expected"),
+    [
+        (
+            _TTYProbe(tty=OSError("stdin probe failed")),
+            _TTYProbe(tty=True),
+            InteractionMode.NON_INTERACTIVE,
+        ),
+        (_TTYProbe(tty=True), _TTYProbe(tty=OSError("stdout probe failed")), InteractionMode.LINE),
+    ],
+)
+def test_runtime_terminal_probe_failures_fall_back_to_plain_modes(
+    stdin_probe: _TTYProbe,
+    stdout_probe: _TTYProbe,
+    expected: InteractionMode,
+) -> None:
+    capabilities = detect_runtime_terminal_capabilities(  # type: ignore[arg-type]
+        stdin_probe,
+        stdout_probe,
+        {"TERM": "xterm-256color"},
+        width=80,
+    )
+
+    assert capabilities.mode is expected
+
+
+def test_no_color_changes_only_color() -> None:
+    colored = detect_terminal_capabilities(
+        stdin_tty=True,
+        stdout_tty=True,
+        term="xterm-256color",
+        no_color=False,
+        encoding="utf-8",
+        width=80,
+    )
+    uncolored = detect_terminal_capabilities(
+        stdin_tty=True,
+        stdout_tty=True,
+        term="xterm-256color",
+        no_color=True,
+        encoding="utf-8",
+        width=80,
+    )
+
+    assert colored.mode is uncolored.mode is InteractionMode.GUIDED
+    assert colored.unicode is uncolored.unicode is True
+    assert colored.color is True
+    assert uncolored.color is False
+
+
+def test_unsafe_encoding_changes_only_unicode() -> None:
+    safe = detect_terminal_capabilities(
+        stdin_tty=True,
+        stdout_tty=True,
+        term="xterm-256color",
+        no_color=False,
+        encoding="utf-8",
+        width=80,
+    )
+    unsafe = detect_terminal_capabilities(
+        stdin_tty=True,
+        stdout_tty=True,
+        term="xterm-256color",
+        no_color=False,
+        encoding="ascii",
+        width=80,
+    )
+
+    assert safe.mode is unsafe.mode is InteractionMode.GUIDED
+    assert safe.color is unsafe.color is True
+    assert safe.unicode is True
+    assert unsafe.unicode is False
+
+
+@pytest.mark.parametrize(("raw_width", "expected"), [(0, 1), (-12, 1), (19, 19)])
+def test_width_is_normalized_to_a_safe_positive_value(raw_width: int, expected: int) -> None:
+    capabilities = detect_terminal_capabilities(
+        stdin_tty=True,
+        stdout_tty=False,
+        term="xterm-256color",
+        no_color=False,
+        encoding="utf-8",
+        width=raw_width,
+    )
+
+    assert capabilities.width == expected
+
+
+def test_terminal_capabilities_are_immutable() -> None:
+    capabilities = TerminalCapabilities(
+        mode=InteractionMode.LINE,
+        color=False,
+        unicode=True,
+        width=80,
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        capabilities.width = 10  # type: ignore[misc]
+
+
+def test_line_collect_asks_one_yes_no_question_per_selectable_option(
+    tmp_path: Path,
+) -> None:
+    read, prompts = _sequence_input(["", "y", ""])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+
+    result = ui.collect(_request(tmp_path), _preflight())
+
+    assert result.decision is ChoiceCollectionDecision.REVIEW
+    assert result.choices.integrations == ("codex", "claude-code")
+    assert result.choices.review_producers == ("codex-cli",)
+    assert dict(result.choices.review_models) == {"codex": "gpt-5-codex"}
+    assert prompts == [
+        "Select Codex integration? [Y/n] ",
+        "Select Claude Code integration? [y/N] ",
+        "Select Codex CLI review producer? [Y/n] ",
+    ]
+    assert all("," not in prompt for prompt in prompts)
+    assert "comma" not in "\n".join(output).lower()
+
+
+def test_line_collect_rejects_numeric_and_comma_answers_instead_of_parsing_them(
+    tmp_path: Path,
+) -> None:
+    read, prompts = _sequence_input(["1,2", "1", "n", "n", "n"])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(
+            detected_integrations=(),
+            available_integrations=frozenset(),
+            detected_producers=(),
+            available_producers=frozenset(),
+        ),
+    )
+
+    assert result.choices.integrations == ()
+    assert len([prompt for prompt in prompts if prompt.startswith("Select Codex ")]) == 3
+    assert output.count("Please answer yes or no.") == 2
+
+
+def test_unavailable_integrations_remain_selectable_but_default_false(tmp_path: Path) -> None:
+    read, prompts = _sequence_input(["n", "", "n"])
+    ui = LineInitUI(input_fn=read, output_fn=lambda _: None, unicode=False, width=80)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(
+            detected_integrations=(),
+            available_integrations=frozenset(),
+            detected_producers=(),
+            available_producers=frozenset({"codex-cli"}),
+        ),
+    )
+
+    assert result.choices.integrations == ()
+    assert "[y/N]" in prompts[0]
+    assert "[y/N]" in prompts[1]
+
+
+def test_detected_and_unavailable_defaults_are_explained(tmp_path: Path) -> None:
+    read, _ = _sequence_input(["n", "n", "n"])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+
+    ui.collect(
+        _request(tmp_path),
+        _preflight(
+            detected_integrations=("codex",),
+            available_integrations=frozenset({"codex"}),
+            detected_producers=("codex-cli",),
+            available_producers=frozenset({"codex-cli"}),
+        ),
+    )
+
+    assert "Codex integration detected (recommended)." in output
+    assert "Claude Code integration not detected (still selectable)." in output
+    assert "Codex CLI review producer detected (recommended)." in output
+
+
+def test_unavailable_producers_are_not_prompted_or_defaulted(tmp_path: Path) -> None:
+    read, prompts = _sequence_input(["n", "n"])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(
+            detected_integrations=(),
+            available_integrations=frozenset(),
+            detected_producers=(),
+            available_producers=frozenset(),
+        ),
+    )
+
+    assert result.choices.review_producers == ()
+    assert all("review producer" not in prompt for prompt in prompts)
+    assert "Codex CLI review producer unavailable (executable not found)." in output
+    assert "Claude CLI review producer unavailable (executable not found)." in output
+
+
+def test_line_auto_selects_the_only_configured_model(tmp_path: Path) -> None:
+    read, prompts = _sequence_input(["n", "n", ""])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+
+    result = ui.collect(_request(tmp_path), _preflight())
+
+    assert dict(result.choices.review_models) == {"codex": "gpt-5-codex"}
+    assert all(not prompt.startswith("Model") for prompt in prompts)
+    assert "Codex CLI reviewer model: gpt-5-codex (Codex CLI config)." in output
+
+
+def test_line_force_deselecting_persisted_reviewer_clears_model_and_plans_delete(
+    tmp_path: Path,
+) -> None:
+    profile_path = ".harness/review-profiles.local.yaml"
+    preflight = replace(
+        _preflight(detected_integrations=(), available_integrations=frozenset()),
+        harness_state=HarnessState.INITIALIZED,
+        existing_file_bytes={
+            ".harness/review-governance.yaml": b"existing governance\n",
+            profile_path: b"existing profile\n",
+        },
+        persisted_review_producers=("codex-cli",),
+        persisted_review_models={"codex": "gpt-persisted"},
+    )
+    request = replace(_request(tmp_path), force=True, no_agent=True)
+    read, prompts = _sequence_input(["n"])
+    ui = LineInitUI(input_fn=read, output_fn=lambda _: None, unicode=False, width=80)
+
+    result = ui.collect(request, preflight)
+
+    assert result.choices.review_producers == ()
+    assert dict(result.choices.review_models) == {}
+    assert prompts == ["Select Codex CLI review producer? [Y/n] "]
+    plan = build_init_plan(request, preflight, result.choices)
+    profile_action = next(
+        action for action in plan.file_actions if action.path.as_posix() == profile_path
+    )
+    assert profile_action.action is FileAction.DELETE
+
+
+def test_line_selects_configured_model_by_number_without_accepting_raw_text(
+    tmp_path: Path,
+) -> None:
+    read, prompts = _sequence_input(["n", "n", "", "gpt-fast", "2"])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+    preflight = _preflight(
+        reviewer_model_candidates={
+            "codex": (
+                ReviewerModelCandidate("codex", "gpt-workspace", "workspace", 0),
+                ReviewerModelCandidate("codex", "gpt-fast", "profile fast", 20),
+            )
+        }
+    )
+
+    result = ui.collect(_request(tmp_path), preflight)
+
+    assert dict(result.choices.review_models) == {"codex": "gpt-fast"}
+    assert prompts[-2:] == ["Model [1]: ", "Model [1]: "]
+    assert "Choose a number from 1 to 2." in output
+    assert "  1. gpt-workspace (workspace)" in output
+    assert "  2. gpt-fast (profile fast)" in output
+
+
+def test_explicit_invalid_producer_is_left_for_plan_validation(tmp_path: Path) -> None:
+    read, prompts = _sequence_input(["n", "n"])
+    ui = LineInitUI(input_fn=read, output_fn=lambda _: None, unicode=False, width=80)
+
+    result = ui.collect(
+        _request(
+            tmp_path,
+            producers=("codex-cli",),
+            models={"codex": "gpt-explicit"},
+        ),
+        _preflight(
+            available_producers=frozenset(),
+            reviewer_model_candidates={},
+        ),
+    )
+
+    assert result.choices.review_producers is None
+    assert dict(result.choices.review_models) == {"codex": "gpt-explicit"}
+    assert all(not prompt.startswith("Model") for prompt in prompts)
+
+
+def test_line_disables_reviewer_without_a_configured_model(tmp_path: Path) -> None:
+    read, prompts = _sequence_input(["n", "n"])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(reviewer_model_candidates={}),
+    )
+
+    assert result.choices.review_producers == ()
+    assert dict(result.choices.review_models) == {}
+    assert all("review producer" not in prompt for prompt in prompts)
+    assert "Codex CLI reviewer unavailable (model not configured)." in output
+
+
+@pytest.mark.parametrize(
+    ("answer", "expected"),
+    [
+        ("", ReviewDecision.CONFIRM),
+        ("review", ReviewDecision.CONFIRM),
+        ("back", ReviewDecision.BACK),
+        ("cancel", ReviewDecision.CANCEL),
+    ],
+)
+def test_line_review_returns_closed_decisions(
+    tmp_path: Path,
+    answer: str,
+    expected: ReviewDecision,
+) -> None:
+    read, prompts = _sequence_input([answer])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+
+    decision = ui.review(_plan(tmp_path))
+
+    assert decision is expected
+    assert prompts == ["Apply this plan? [Y/back/cancel] "]
+
+
+def test_assume_yes_skips_only_final_review_input(tmp_path: Path) -> None:
+    read, prompts = _sequence_input(["n", "n", ""])
+    output: list[str] = []
+    ui = LineInitUI(input_fn=read, output_fn=output.append, unicode=False, width=80)
+
+    result = ui.collect(_request(tmp_path), _preflight())
+    decision = ui.review(_plan(tmp_path), assume_yes=True)
+
+    assert result.choices.integrations == ()
+    assert dict(result.choices.review_models) == {"codex": "gpt-5-codex"}
+    assert decision is ReviewDecision.CONFIRM
+    assert prompts[-1] == "Select Codex CLI review producer? [Y/n] "
+
+
+def test_line_collect_returns_closed_cancel_result(tmp_path: Path) -> None:
+    read, _ = _sequence_input(["cancel"])
+    initial = InitChoices(review_models={"codex": "kept"})
+    ui = LineInitUI(input_fn=read, output_fn=lambda _: None, unicode=False, width=80)
+
+    result = ui.collect(_request(tmp_path), _preflight(), initial_choices=initial)
+
+    assert result.decision is ChoiceCollectionDecision.CANCEL
+    assert result.choices is initial
+
+
+def test_line_github_setup_defaults_off_and_can_be_enabled(tmp_path: Path) -> None:
+    default_read, default_prompts = _sequence_input([""])
+    enabled_read, enabled_prompts = _sequence_input(["y"])
+    default_ui = LineInitUI(
+        input_fn=default_read, output_fn=lambda _: None, unicode=False, width=80
+    )
+    enabled_ui = LineInitUI(
+        input_fn=enabled_read, output_fn=lambda _: None, unicode=False, width=80
+    )
+    request = _request(tmp_path)
+    preflight = _preflight(github_available=True)
+
+    assert default_ui.collect_github_setup(request, preflight) is GitHubDecision.SKIP
+    assert enabled_ui.collect_github_setup(request, preflight) is GitHubDecision.CREATE
+    assert default_prompts == ["Configure GitHub files and repository settings? [y/N] "]
+    assert enabled_prompts == ["Configure GitHub files and repository settings? [y/N] "]
+
+
+def test_explicit_setup_github_never_prompts(tmp_path: Path) -> None:
+    request = replace(_request(tmp_path), setup_github=True)
+    preflight = _preflight(github_available=False)
+    line = LineInitUI(
+        input_fn=lambda _: pytest.fail("line GitHub prompt called"),
+        output_fn=lambda _: None,
+        unicode=False,
+        width=80,
+    )
+    guided, _ = _guided_ui(_FakePromptAdapter())
+
+    assert line.collect_github_setup(request, preflight) is GitHubDecision.CREATE
+    assert guided.collect_github_setup(request, preflight) is GitHubDecision.CREATE
+
+
+@pytest.mark.parametrize("prompt_name", ["checkbox", "text", "select"])
+def test_questionary_prompt_adapter_propagates_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch, prompt_name: str
+) -> None:
+    import questionary
+
+    monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "previous")
+
+    class _Question:
+        def unsafe_ask(self) -> None:
+            assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(questionary, prompt_name, lambda *_args, **_kwargs: _Question())
+    adapter = QuestionaryPromptAdapter()
+
+    with pytest.raises(KeyboardInterrupt):
+        if prompt_name == "checkbox":
+            adapter.checkbox("Choose", (GuidedPromptOption("one", "One"),))
+        elif prompt_name == "text":
+            adapter.text("Model")
+        else:
+            adapter.select("Apply", (GuidedPromptOption("yes", "Yes"),))
+
+    assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "previous"
+
+
+def test_questionary_prompts_erase_completed_lines_with_native_chrome_and_cpr_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import questionary
+
+    calls: list[tuple[str, str, dict[str, Any]]] = []
+
+    class _Question:
+        def __init__(self, result: object) -> None:
+            self._result = result
+
+        def unsafe_ask(self) -> object:
+            assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
+            return self._result
+
+    def factory(name: str, result: object) -> Callable[..., _Question]:
+        def create(message: str, **kwargs: Any) -> _Question:
+            calls.append((name, message, kwargs))
+            return _Question(result)
+
+        return create
+
+    monkeypatch.delenv("PROMPT_TOOLKIT_NO_CPR", raising=False)
+    monkeypatch.setattr(questionary, "checkbox", factory("checkbox", []))
+    monkeypatch.setattr(questionary, "select", factory("select", "confirm"))
+    monkeypatch.setattr(questionary, "text", factory("text", "model"))
+    adapter = QuestionaryPromptAdapter()
+
+    adapter.checkbox("Integrations", (GuidedPromptOption("codex", "Codex"),))
+    adapter.select("GitHub setup", (GuidedPromptOption("confirm", "Confirm"),))
+    adapter.text("Model")
+
+    checkbox = calls[0][2]
+    select = calls[1][2]
+    text = calls[2][2]
+    assert checkbox["erase_when_done"] is True
+    assert checkbox["qmark"] == "◆"
+    assert checkbox["pointer"] == "›"  # noqa: RUF001 - intentional pointer glyph
+    assert checkbox["instruction"] == "(↑/↓ move · space select · enter confirm)"
+    assert checkbox["choices"][0].title == [("class:choice", "Codex")]
+    assert select["erase_when_done"] is True
+    assert select["qmark"] == "◆"
+    assert select["pointer"] == "›"  # noqa: RUF001 - intentional pointer glyph
+    assert select["instruction"] == "(↑/↓ move · enter confirm)"
+    assert text["erase_when_done"] is True
+    assert text["qmark"] == "◆"
+    assert "PROMPT_TOOLKIT_NO_CPR" not in os.environ
+
+
+@pytest.mark.parametrize("prompt_name", ["checkbox", "text", "select"])
+@pytest.mark.parametrize("raises", [False, True])
+def test_questionary_cpr_guard_covers_prompt_construction_and_ask(
+    monkeypatch: pytest.MonkeyPatch,
+    prompt_name: str,
+    raises: bool,
+) -> None:
+    import questionary
+
+    class _Question:
+        def unsafe_ask(self) -> object:
+            assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
+            if raises:
+                raise RuntimeError("prompt failed")
+            return [] if prompt_name == "checkbox" else "answer"
+
+    def construct(*_args: object, **_kwargs: object) -> _Question:
+        assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "1"
+        return _Question()
+
+    monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "previous")
+    monkeypatch.setattr(questionary, prompt_name, construct)
+    adapter = QuestionaryPromptAdapter()
+
+    def ask() -> object:
+        if prompt_name == "checkbox":
+            return adapter.checkbox("Integrations", (GuidedPromptOption("codex", "Codex"),))
+        if prompt_name == "text":
+            return adapter.text("Model")
+        return adapter.select("GitHub setup", (GuidedPromptOption("skip", "Skip"),))
+
+    if raises:
+        with pytest.raises(RuntimeError, match="prompt failed"):
+            ask()
+    else:
+        ask()
+
+    assert os.environ["PROMPT_TOOLKIT_NO_CPR"] == "previous"
+
+
+def test_questionary_prompt_chrome_has_an_ascii_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import questionary
+
+    captured: dict[str, Any] = {}
+
+    class _Question:
+        def unsafe_ask(self) -> list[str]:
+            return []
+
+    def checkbox(_message: str, **kwargs: Any) -> _Question:
+        captured.update(kwargs)
+        return _Question()
+
+    monkeypatch.setattr(questionary, "checkbox", checkbox)
+
+    QuestionaryPromptAdapter(unicode=False).checkbox(
+        "Integrations", (GuidedPromptOption("codex", "Codex"),)
+    )
+
+    assert captured["qmark"] == "?"
+    assert captured["pointer"] == ">"
+    assert captured["instruction"] == "(up/down move, space select, enter confirm)"
+    captured["instruction"].encode("ascii")
+
+
+@pytest.mark.parametrize(
+    ("color", "expected_foreground"),
+    [(True, "ansigreen"), (False, "")],
+)
+def test_questionary_checkbox_uses_color_aware_selection_style(
+    monkeypatch: pytest.MonkeyPatch,
+    color: bool,
+    expected_foreground: str,
+) -> None:
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import DummyInput
+    from prompt_toolkit.output import DummyOutput
+    from prompt_toolkit.styles import default_ui_style, merge_styles
+    from questionary.question import Question
+
+    effective_styles: list[Any] = []
+
+    def capture_style(question: Question, _patch_stdout: bool = False) -> list[str]:
+        application_style = question.application.style
+        assert application_style is not None
+        effective = merge_styles([default_ui_style(), application_style])
+        effective_styles.append(effective)
+        return []
+
+    monkeypatch.setattr(Question, "unsafe_ask", capture_style)
+
+    with create_app_session(input=DummyInput(), output=DummyOutput()):
+        QuestionaryPromptAdapter(color=color).checkbox(
+            "Choose",
+            (GuidedPromptOption("codex", "Codex", checked=True),),
+        )
+
+    assert len(effective_styles) == 1
+    selected = effective_styles[0].get_attrs_for_style_str("class:selected")
+    unselected = effective_styles[0].get_attrs_for_style_str("class:text")
+    choice = effective_styles[0].get_attrs_for_style_str("class:choice")
+    assert selected.color == expected_foreground
+    assert selected.reverse is False
+    assert selected.bgcolor == ""
+    assert unselected.dim is True
+    assert unselected.reverse is False
+    assert choice.color == ""
+    assert choice.bgcolor == ""
+    assert choice.reverse is False
+
+
+def test_interactive_ui_passes_color_capability_to_questionary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    received: list[tuple[bool, bool]] = []
+
+    class CapturingPromptAdapter(_FakePromptAdapter):
+        def __init__(self, *, color: bool = True, unicode: bool = True) -> None:
+            received.append((color, unicode))
+            super().__init__()
+
+    monkeypatch.setattr(
+        "super_harness.cli.init_ui.QuestionaryPromptAdapter",
+        CapturingPromptAdapter,
+    )
+
+    InteractiveInitUI(color=False, unicode=False, renderer=_FakeGuidedRenderer())
+
+    assert received == [(False, False)]
+
+
+def test_keyboard_interrupt_from_line_input_propagates(tmp_path: Path) -> None:
+    def interrupt(_: str) -> str:
+        raise KeyboardInterrupt
+
+    ui = LineInitUI(input_fn=interrupt, output_fn=lambda _: None, unicode=False, width=80)
+
+    with pytest.raises(KeyboardInterrupt):
+        ui.collect(_request(tmp_path), _preflight())
+
+
+def test_plain_plan_and_event_output_contains_no_ansi_sequences(tmp_path: Path) -> None:
+    output: list[str] = []
+    ui = LineInitUI(
+        input_fn=lambda _: "cancel",
+        output_fn=output.append,
+        unicode=True,
+        width=80,
+    )
+
+    ui.render_plan(_plan(tmp_path))
+    ui.render_event(
+        StepRenderEvent(
+            step_id="scaffold",
+            state=StepRenderState.SUCCEEDED,
+            detail="Created .harness/",
+        )
+    )
+
+    assert "\x1b[" not in "\n".join(output)
+
+
+def test_plan_hints_distinguish_writes_from_preserve_and_skip(tmp_path: Path) -> None:
+    output: list[str] = []
+    plan = replace(
+        _plan(tmp_path),
+        file_actions=(
+            PlannedFileAction(Path("create.txt"), FileAction.CREATE),
+            PlannedFileAction(Path("delete.txt"), FileAction.DELETE),
+            PlannedFileAction(Path("preserve.txt"), FileAction.PRESERVE),
+            PlannedFileAction(Path("skip.txt"), FileAction.SKIP),
+        ),
+    )
+    ui = NonInteractiveInitUI(
+        output_fn=output.append,
+        input_fn=lambda _: pytest.fail("input called"),
+        unicode=False,
+        width=80,
+    )
+
+    ui.render_plan(plan)
+
+    text = "\n".join(output)
+    assert "File create: create.txt\n  hint: will be written during apply" in text
+    assert "File delete: delete.txt\n  hint: will be removed during apply" in text
+    assert "File preserve: preserve.txt\n  hint: will be left unchanged" in text
+    assert "File skip: skip.txt\n  hint: not part of this run" in text
+
+
+def test_unicode_and_ascii_glyph_selection_is_independent_from_color() -> None:
+    unicode_output: list[str] = []
+    ascii_output: list[str] = []
+    unicode_ui = NonInteractiveInitUI(
+        output_fn=unicode_output.append,
+        input_fn=lambda _: pytest.fail("input called"),
+        unicode=True,
+        color=False,
+        width=80,
+    )
+    ascii_ui = NonInteractiveInitUI(
+        output_fn=ascii_output.append,
+        input_fn=lambda _: pytest.fail("input called"),
+        unicode=False,
+        color=True,
+        width=80,
+    )
+    event = StepRenderEvent("scaffold", StepRenderState.SUCCEEDED, "Created")
+
+    unicode_ui.render_event(event)
+    ascii_ui.render_event(event)
+
+    assert unicode_output == ["✓ scaffold: Created"]
+    assert ascii_output == ["OK scaffold: Created"]
+    assert "\x1b[" not in ascii_output[0]
+
+
+def test_narrow_output_omits_secondary_hints_but_never_truncates_paths(
+    tmp_path: Path,
+) -> None:
+    output: list[str] = []
+    plan = _plan(tmp_path)
+    ui = NonInteractiveInitUI(
+        output_fn=output.append,
+        input_fn=lambda _: pytest.fail("input called"),
+        unicode=False,
+        width=20,
+    )
+
+    ui.render_plan(plan)
+
+    text = "\n".join(output)
+    path = str(plan.file_actions[0].path)
+    assert path in text
+    assert "gpt-5-codex" in text
+    assert "will be written during apply" not in text
+    assert "..." not in path
+
+
+def test_noninteractive_collect_never_calls_input_or_derives_choices(tmp_path: Path) -> None:
+    ui = NonInteractiveInitUI(
+        output_fn=lambda _: None,
+        input_fn=lambda _: pytest.fail("input called"),
+        unicode=False,
+        width=80,
+    )
+
+    result = ui.collect(
+        _request(
+            tmp_path,
+            integrations=("codex",),
+            producers=("codex-cli",),
+            models={"codex": "gpt-explicit"},
+        ),
+        _preflight(),
+    )
+
+    assert result.decision is ChoiceCollectionDecision.REVIEW
+    assert result.choices == InitChoices()
+
+
+def test_noninteractive_review_never_calls_input(tmp_path: Path) -> None:
+    output: list[str] = []
+    ui = NonInteractiveInitUI(
+        output_fn=output.append,
+        input_fn=lambda _: pytest.fail("input called"),
+        unicode=False,
+        width=80,
+    )
+
+    decision = ui.review(_plan(tmp_path), assume_yes=False)
+
+    assert decision is ReviewDecision.CONFIRM
+    assert "\x1b[" not in "\n".join(output)
+
+
+def test_nested_collection_results_are_immutable(tmp_path: Path) -> None:
+    read, _ = _sequence_input(["n", "n"])
+    ui = LineInitUI(input_fn=read, output_fn=lambda _: None, unicode=False, width=80)
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(
+            detected_integrations=(),
+            available_integrations=frozenset(),
+            detected_producers=(),
+            available_producers=frozenset(),
+        ),
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        result.decision = ChoiceCollectionDecision.CANCEL  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        result.choices.review_models["codex"] = "mutated"  # type: ignore[index]
+
+
+def test_step_render_events_are_immutable() -> None:
+    event = StepRenderEvent("scaffold", StepRenderState.STARTED, "Creating files")
+
+    with pytest.raises(FrozenInstanceError):
+        event.detail = "changed"  # type: ignore[misc]
+
+
+class _FakeGuidedRenderer:
+    def __init__(self) -> None:
+        self.live_depth = 0
+        self.stages: list[tuple[RailStage, RailState, str, str | None]] = []
+        self.answers: list[tuple[str, str]] = []
+        self.plans: list[InitPlan] = []
+        self.validations: list[str] = []
+        self.events: list[Any] = []
+        self.results: list[tuple[RailState, str, str | None]] = []
+        self.spacers = 0
+        self.log: list[str] = []
+
+    def open_session(self) -> None:
+        return None
+
+    def close_session(self) -> None:
+        return None
+
+    def render_prompt_spacer(self) -> None:
+        assert self.live_depth == 0
+        self.spacers += 1
+        self.log.append("spacer")
+
+    def render_stage(
+        self,
+        stage: RailStage,
+        state: RailState,
+        detail: str,
+        *,
+        secondary: str | None = None,
+    ) -> None:
+        assert self.live_depth == 0
+        self.stages.append((stage, state, detail, secondary))
+
+    def render_plan(self, plan: InitPlan) -> None:
+        assert self.live_depth == 0
+        self.plans.append(plan)
+
+    def render_answer(self, label: str, value: str) -> None:
+        assert self.live_depth == 0
+        self.answers.append((label, value))
+
+    def render_validation(self, message: str) -> None:
+        assert self.live_depth == 0
+        self.validations.append(message)
+
+    def render_event(self, event: Any) -> None:
+        assert self.live_depth == 0
+        self.events.append(event)
+
+    def render_result(
+        self,
+        state: RailState,
+        detail: str,
+        *,
+        secondary: str | None = None,
+    ) -> None:
+        assert self.live_depth == 0
+        self.results.append((state, detail, secondary))
+
+
+class _FakePromptAdapter:
+    def __init__(
+        self,
+        *,
+        checkboxes: Sequence[tuple[str, ...] | None | BaseException] = (),
+        texts: Sequence[str | None | BaseException] = (),
+        selects: Sequence[str | None | BaseException] = (),
+        before_prompt: Callable[[], None] | None = None,
+    ) -> None:
+        self._checkboxes = iter(checkboxes)
+        self._texts = iter(texts)
+        self._selects = iter(selects)
+        self._before_prompt = before_prompt or (lambda: None)
+        self.checkbox_calls: list[tuple[str, tuple[GuidedPromptOption, ...]]] = []
+        self.text_calls: list[tuple[str, str | None]] = []
+        self.select_calls: list[tuple[str, tuple[GuidedPromptOption, ...], str | None]] = []
+        self.calls: list[str] = []
+
+    @staticmethod
+    def _answer(value: Any) -> Any:
+        if isinstance(value, BaseException):
+            raise value
+        return value
+
+    def checkbox(
+        self,
+        message: str,
+        choices: Sequence[GuidedPromptOption],
+    ) -> tuple[str, ...] | None:
+        self._before_prompt()
+        self.calls.append(message)
+        self.checkbox_calls.append((message, tuple(choices)))
+        return self._answer(next(self._checkboxes))
+
+    def text(self, message: str, *, default: str | None = None) -> str | None:
+        self._before_prompt()
+        self.calls.append(message)
+        self.text_calls.append((message, default))
+        return self._answer(next(self._texts))
+
+    def select(
+        self,
+        message: str,
+        choices: Sequence[GuidedPromptOption],
+        *,
+        default: str | None = None,
+    ) -> str | None:
+        self._before_prompt()
+        self.calls.append(message)
+        self.select_calls.append((message, tuple(choices), default))
+        return self._answer(next(self._selects))
+
+
+def _guided_ui(
+    prompts: _FakePromptAdapter,
+    renderer: _FakeGuidedRenderer | None = None,
+) -> tuple[InteractiveInitUI, _FakeGuidedRenderer]:
+    selected_renderer = renderer or _FakeGuidedRenderer()
+    return (
+        InteractiveInitUI(prompt_adapter=prompts, renderer=selected_renderer),
+        selected_renderer,
+    )
+
+
+def test_guided_breathes_one_spacer_before_every_active_prompt(tmp_path: Path) -> None:
+    renderer = _FakeGuidedRenderer()
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        selects=["confirm"],
+        before_prompt=lambda: renderer.log.append("prompt"),
+    )
+    ui, _ = _guided_ui(prompts, renderer)
+
+    ui.run(_request(tmp_path), _preflight())
+
+    # Every active prompt is immediately preceded by exactly one spine spacer, and
+    # there are no stray spacers (the persistent transcript is unchanged because the
+    # collapsed answer then skips its own group-break).
+    assert "prompt" in renderer.log
+    assert renderer.log.count("spacer") == renderer.log.count("prompt")
+    for index, entry in enumerate(renderer.log):
+        if entry == "prompt":
+            assert index > 0 and renderer.log[index - 1] == "spacer", renderer.log
+
+
+def test_guided_prompt_spacer_is_an_optional_runtime_capability() -> None:
+    assert "render_prompt_spacer" not in init_ui_module.GuidedRenderAdapter.__dict__
+    capability = init_ui_module.GuidedSpacerRenderAdapter
+    assert isinstance(_FakeGuidedRenderer(), capability)
+    assert not isinstance(object(), capability)
+
+
+def test_guided_preselects_and_labels_detected_options_and_disables_missing_producer(
+    tmp_path: Path,
+) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex", "claude-code"), ("codex-cli",)],
+        texts=["gpt-5-codex"],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(
+            available_integrations=frozenset({"codex"}),
+            available_producers=frozenset({"codex-cli"}),
+        ),
+    )
+
+    integrations = prompts.checkbox_calls[0][1]
+    producers = prompts.checkbox_calls[1][1]
+    assert [message for message, _ in prompts.checkbox_calls] == [
+        "Integrations",
+        "Automated reviewers",
+    ]
+    assert integrations[0].checked is True
+    assert "detected · recommended" in integrations[0].title
+    assert integrations[1].checked is False
+    assert integrations[1].disabled is None
+    assert "not detected" in integrations[1].title
+    assert producers[0].checked is True
+    assert producers[0].title == ("Codex reviewer — runs via Codex CLI  detected · recommended")
+    assert producers[1].title == ("Claude reviewer — runs via Claude CLI  executable not found")
+    assert producers[1].disabled == "executable not found"
+    assert result.choices.integrations == ("codex", "claude-code")
+
+
+def test_guided_skips_producer_checkbox_when_every_producer_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    prompts = _FakePromptAdapter(checkboxes=[()])
+    ui, renderer = _guided_ui(prompts)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(detected_producers=(), available_producers=frozenset()),
+    )
+
+    assert [message for message, _ in prompts.checkbox_calls] == ["Integrations"]
+    assert result.choices.review_producers == ()
+    assert renderer.validations == [
+        "No automated reviewers are ready; install a CLI and configure its model."
+    ]
+
+
+def test_guided_auto_selects_the_only_configured_model(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("codex-cli",)],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.collect(_request(tmp_path), _preflight())
+
+    assert dict(result.choices.review_models) == {"codex": "gpt-5-codex"}
+    assert prompts.text_calls == []
+    assert prompts.select_calls == []
+
+
+def test_guided_github_setup_is_a_default_off_choice(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(selects=["create"])
+    ui, _ = _guided_ui(prompts)
+
+    decision = ui.collect_github_setup(
+        _request(tmp_path),
+        _preflight(github_available=True),
+    )
+
+    assert decision is GitHubDecision.CREATE
+    message, choices, default = prompts.select_calls[0]
+    assert message == "GitHub setup"
+    assert [choice.value for choice in choices] == ["skip", "create"]
+    assert default == "skip"
+
+
+def test_guided_collects_github_after_integrations_and_reviewers(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("codex-cli",)],
+        selects=["create"],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.collect(
+        _request(tmp_path),
+        _preflight(github_available=True),
+    )
+
+    assert prompts.calls == [
+        "Integrations",
+        "Automated reviewers",
+        "GitHub setup",
+    ]
+    assert result.choices.github_decision is GitHubDecision.CREATE
+
+
+def test_guided_answer_summary_waits_for_github_resolution(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(selects=["create", "confirm"])
+    ui, renderer = _guided_ui(prompts)
+    request = replace(_request(tmp_path), no_agent=True)
+    preflight = _preflight(
+        detected_producers=(),
+        available_producers=frozenset(),
+        github_available=True,
+    )
+
+    def resolve_github() -> Any:
+        # Answers now collapse inline as each question is resolved, so by the time
+        # the GitHub file resolver runs (after collection) all four are on screen.
+        assert renderer.answers == [
+            ("Workspace", str(tmp_path)),
+            ("Integrations", "(none)"),
+            ("Automated reviewers", "(none)"),
+            ("GitHub", "Workflow and PR template"),
+        ]
+        return SimpleNamespace(
+            root=tmp_path,
+            pr_template=SimpleNamespace(
+                inspection=SimpleNamespace(path=tmp_path / ".github" / "pull_request_template.md"),
+                decision=GithubFileDecision.CREATE,
+            ),
+            workflow=SimpleNamespace(
+                inspection=SimpleNamespace(
+                    path=tmp_path / ".github" / "workflows" / "super-harness.yml"
+                ),
+                decision=GithubFileDecision.CREATE,
+            ),
+        )
+
+    ui.prepare_plan(request, preflight, github_resolver=resolve_github)
+
+    assert renderer.answers == [
+        ("Workspace", str(tmp_path)),
+        ("Integrations", "(none)"),
+        ("Automated reviewers", "(none)"),
+        ("GitHub", "Workflow and PR template"),
+    ]
+    details = [detail for _, _, detail, _ in renderer.stages]
+    assert "Configuration collected" not in details
+    assert "Review planned setup" not in details
+    assert "Plan confirmed" not in details
+
+
+def test_guided_answer_summary_renders_explicit_cli_values_once(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter()
+    ui, renderer = _guided_ui(prompts)
+    request = replace(
+        _request(
+            tmp_path,
+            integrations=("codex", "claude-code"),
+            producers=("codex-cli", "claude-cli"),
+            models={"codex": "gpt-explicit", "claude": "opus-explicit"},
+        ),
+        setup_github=True,
+    )
+
+    result = ui.prepare_plan(
+        request,
+        _preflight(
+            available_integrations=frozenset({"codex", "claude-code"}),
+            detected_producers=("codex-cli", "claude-cli"),
+            available_producers=frozenset({"codex-cli", "claude-cli"}),
+            reviewer_model_candidates={
+                "codex": (ReviewerModelCandidate("codex", "gpt-explicit", "explicit", 0),),
+                "claude": (ReviewerModelCandidate("claude", "opus-explicit", "explicit", 0),),
+            },
+        ),
+        assume_yes=True,
+    )
+
+    assert result.decision is WizardDecision.CONFIRM
+    assert prompts.calls == []
+    assert renderer.answers == [
+        ("Workspace", str(tmp_path)),
+        ("Integrations", "Codex, Claude Code"),
+        (
+            "Automated reviewers",
+            "Codex (gpt-explicit), Claude (opus-explicit)",
+        ),
+        ("GitHub", "Workflow and PR template"),
+    ]
+
+
+def test_guided_answer_summary_reports_empty_and_skipped_choices(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(checkboxes=[(), ()])
+    ui, renderer = _guided_ui(prompts)
+
+    result = ui.prepare_plan(
+        _request(tmp_path),
+        _preflight(
+            detected_integrations=(),
+            available_integrations=frozenset(),
+            detected_producers=(),
+            available_producers=frozenset({"codex-cli"}),
+        ),
+        assume_yes=True,
+    )
+
+    assert result.decision is WizardDecision.CONFIRM
+    assert renderer.answers == [
+        ("Workspace", str(tmp_path)),
+        ("Integrations", "(none)"),
+        ("Automated reviewers", "(none)"),
+        ("GitHub", "Skipped"),
+    ]
+
+
+def test_guided_selects_from_multiple_configured_models(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("codex-cli",)],
+        selects=["gpt-fast"],
+    )
+    ui, _ = _guided_ui(prompts)
+    preflight = _preflight(
+        reviewer_model_candidates={
+            "codex": (
+                ReviewerModelCandidate("codex", "gpt-workspace", "existing workspace profile", 0),
+                ReviewerModelCandidate("codex", "gpt-fast", "Codex CLI profile fast", 20),
+            )
+        }
+    )
+
+    result = ui.collect(_request(tmp_path), preflight)
+
+    message, choices, default = prompts.select_calls[0]
+    assert message == "Model for Codex reviewer"
+    assert [choice.value for choice in choices] == ["gpt-workspace", "gpt-fast"]
+    assert [choice.title for choice in choices] == [
+        "gpt-workspace  existing workspace profile",
+        "gpt-fast  Codex CLI profile fast",
+    ]
+    assert default == "gpt-workspace"
+    assert dict(result.choices.review_models) == {"codex": "gpt-fast"}
+    assert prompts.text_calls == []
+
+
+def test_guided_uses_provider_error_only_for_the_affected_reviewer(
+    tmp_path: Path,
+) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("claude-cli",)],
+    )
+    ui, _ = _guided_ui(prompts)
+    preflight = _preflight(
+        detected_producers=("codex-cli", "claude-cli"),
+        available_producers=frozenset({"codex-cli", "claude-cli"}),
+        reviewer_model_candidates={
+            "claude": (
+                ReviewerModelCandidate("claude", "opus-configured", "Claude CLI config", 10),
+            )
+        },
+        reviewer_model_errors={"codex": "Codex CLI config is not valid TOML"},
+    )
+
+    result = ui.collect(_request(tmp_path), preflight)
+
+    producer_options = prompts.checkbox_calls[1][1]
+    assert producer_options[0].disabled == "Codex CLI config is not valid TOML"
+    assert producer_options[1].disabled is None
+    assert dict(result.choices.review_models) == {"claude": "opus-configured"}
+
+
+def test_guided_explicit_model_bypasses_candidate_selection(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(checkboxes=[()])
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.collect(
+        _request(
+            tmp_path,
+            producers=("codex-cli",),
+            models={"codex": "gpt-explicit"},
+        ),
+        _preflight(reviewer_model_candidates={}),
+    )
+
+    assert dict(result.choices.review_models) == {"codex": "gpt-explicit"}
+    assert prompts.text_calls == []
+    assert prompts.select_calls == []
+
+
+def test_guided_cancel_from_model_selection_cancels_configuration(
+    tmp_path: Path,
+) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[(), ("codex-cli",)],
+        selects=[None],
+    )
+    ui, _ = _guided_ui(prompts)
+    preflight = _preflight(
+        reviewer_model_candidates={
+            "codex": (
+                ReviewerModelCandidate("codex", "gpt-one", "one", 10),
+                ReviewerModelCandidate("codex", "gpt-two", "two", 20),
+            )
+        }
+    )
+
+    result = ui.collect(_request(tmp_path), preflight)
+
+    assert result.decision is ChoiceCollectionDecision.CANCEL
+    assert prompts.text_calls == []
+
+
+def test_guided_run_back_reuses_choices_then_returns_revised_plan(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[
+            ("codex",),
+            ("codex-cli",),
+            ("claude-code",),
+            ("codex-cli",),
+        ],
+        texts=["gpt-5-codex"],
+        selects=["back", "confirm"],
+    )
+    ui, renderer = _guided_ui(prompts)
+
+    result = ui.run(_request(tmp_path), _preflight())
+
+    assert result.decision is WizardDecision.CONFIRM
+    assert result.plan is not None
+    assert result.plan.integrations == ("claude-code",)
+    second_integrations = prompts.checkbox_calls[2][1]
+    assert [option.checked for option in second_integrations] == [True, False]
+    assert prompts.text_calls == []
+    assert len(renderer.plans) == 2
+
+
+def test_guided_confirm_returns_an_immutable_result(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        texts=["gpt-5-codex"],
+        selects=["confirm"],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.run(_request(tmp_path), _preflight())
+
+    assert result.decision is WizardDecision.CONFIRM
+    assert result.plan is not None
+    with pytest.raises(FrozenInstanceError):
+        result.plan = None  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        result.plan.review_models["codex"] = "changed"  # type: ignore[index]
+
+
+@pytest.mark.parametrize("cancel_at", ["configuration", "review"])
+def test_guided_none_maps_to_explicit_cancel_with_no_plan(
+    tmp_path: Path,
+    cancel_at: str,
+) -> None:
+    if cancel_at == "configuration":
+        prompts = _FakePromptAdapter(checkboxes=[None])
+    else:
+        prompts = _FakePromptAdapter(
+            checkboxes=[("codex",), ("codex-cli",)],
+            texts=["gpt-5-codex"],
+            selects=[None],
+        )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.run(_request(tmp_path), _preflight())
+
+    assert result.decision is WizardDecision.CANCEL
+    assert result.plan is None
+
+
+def test_guided_explicit_cancel_has_no_plan(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        texts=["gpt-5-codex"],
+        selects=["cancel"],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.run(_request(tmp_path), _preflight())
+
+    assert result.decision is WizardDecision.CANCEL
+    assert result.plan is None
+
+
+def test_guided_keyboard_interrupt_propagates(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(checkboxes=[KeyboardInterrupt()])
+    ui, _ = _guided_ui(prompts)
+
+    with pytest.raises(KeyboardInterrupt):
+        ui.run(_request(tmp_path), _preflight())
+
+
+def test_guided_assume_yes_skips_only_review(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+    )
+    ui, _ = _guided_ui(prompts)
+
+    result = ui.run(_request(tmp_path), _preflight(), assume_yes=True)
+
+    assert result.decision is WizardDecision.CONFIRM
+    assert result.plan is not None
+    assert dict(result.plan.review_models) == {"codex": "gpt-5-codex"}
+    assert len(prompts.checkbox_calls) == 2
+    assert prompts.text_calls == []
+    assert prompts.select_calls == []
+
+
+def test_guided_never_has_a_live_renderer_while_any_prompt_owns_input(
+    tmp_path: Path,
+) -> None:
+    renderer = _FakeGuidedRenderer()
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        texts=["gpt-model"],
+        selects=["confirm"],
+        before_prompt=lambda: (
+            renderer.live_depth == 0 or pytest.fail("Rich live display active during prompt")
+        ),
+    )
+    ui, _ = _guided_ui(prompts, renderer)
+
+    ui.run(_request(tmp_path), _preflight())
+
+    assert len(prompts.checkbox_calls) + len(prompts.text_calls) + len(prompts.select_calls) == 3
+
+
+def test_guided_answer_summary_leaves_current_marker_to_active_prompt(tmp_path: Path) -> None:
+    prompts = _FakePromptAdapter(
+        checkboxes=[("codex",), ("codex-cli",)],
+        texts=["gpt-model"],
+        selects=["confirm"],
+    )
+    ui, renderer = _guided_ui(prompts)
+
+    ui.run(_request(tmp_path), _preflight())
+
+    # The workspace is now a completed ◇ answer, not a stage; the renderer emits no
+    # active/current marker (the ◆ active frame belongs to Questionary).
+    assert ("Workspace", str(tmp_path)) in renderer.answers
+    assert all(state is RailState.COMPLETED for _, state, _, _ in renderer.stages)
+
+
+def test_rich_guided_answer_summary_owns_completed_lines() -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=120, color_system=None),
+        unicode=True,
+        color=False,
+        width=120,
+    )
+
+    renderer.render_answer("Integrations", "Codex, Claude Code")
+    renderer.render_answer(
+        "Automated reviewers",
+        "Codex (gpt-5.6-sol), Claude (opus[1m])",
+    )
+    renderer.render_answer("GitHub", "Workflow and PR template")
+
+    text = buffer.getvalue()
+    assert "◇  Integrations  Codex, Claude Code" in text
+    assert "◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])" in text
+    assert "◇  GitHub  Workflow and PR template" in text
+    assert "done (" not in text
+    assert "Configuration collected" not in text
+    assert "Review planned" not in text
+    assert "Plan confirmed" not in text
+
+
+@pytest.mark.parametrize(
+    ("unicode", "glyph", "bar"),
+    [(True, "◇", "│"), (False, "o", "|")],
+)
+def test_rich_guided_answer_summary_wraps_continuations_on_the_spine(
+    unicode: bool,
+    glyph: str,
+    bar: str,
+) -> None:
+    width = 30
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=width, color_system=None),
+        unicode=unicode,
+        color=False,
+        width=width,
+    )
+
+    renderer.render_answer("Integrations", "Codex, Claude Code, 编辑器")
+
+    lines = buffer.getvalue().splitlines()
+    assert len(lines) > 1
+    assert lines[0].startswith(f"{glyph}  Integrations  ")
+    # Continuations hang on the spine, not under the label.
+    assert all(line.startswith(f"{bar}  ") for line in lines[1:])
+    assert all(Text(line).cell_len <= width for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("unicode", "glyph", "bar", "width"),
+    [(True, "◇", "│", 24), (False, "o", "|", 23)],
+)
+def test_rich_guided_answer_summary_wraps_label_and_value_on_the_spine(
+    unicode: bool,
+    glyph: str,
+    bar: str,
+    width: int,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=width, color_system=None),
+        unicode=unicode,
+        color=False,
+        width=width,
+    )
+    value = "Codex (gpt-5.6-sol), Claude (opus[1m])"
+
+    renderer.render_answer("Automated reviewers", value)
+
+    lines = buffer.getvalue().splitlines()
+    assert lines[0].rstrip() == f"{glyph}  Automated reviewers"
+    assert all(line.strip() for line in lines)
+    assert all(Text(line).cell_len <= width for line in lines)
+    assert all(line.startswith(f"{bar}  ") for line in lines[1:])
+    recon = " ".join(" ".join(line.lstrip(f"{glyph}{bar} ").split()) for line in lines)
+    assert recon == f"Automated reviewers {value}"
+
+
+def test_guided_answer_renderer_is_an_optional_runtime_capability() -> None:
+    assert "render_answer" not in init_ui_module.GuidedRenderAdapter.__dict__
+    capability = init_ui_module.GuidedAnswerRenderAdapter
+    assert isinstance(_FakeGuidedRenderer(), capability)
+    assert not isinstance(object(), capability)
+
+
+def test_rich_guided_glyphs_are_independent_of_color() -> None:
+    unicode_buffer = StringIO()
+    ascii_buffer = StringIO()
+    unicode_renderer = RichGuidedRenderer(
+        console=Console(file=unicode_buffer, width=80, color_system=None),
+        unicode=True,
+        color=False,
+        width=80,
+    )
+    ascii_renderer = RichGuidedRenderer(
+        console=Console(file=ascii_buffer, width=80, color_system="standard"),
+        unicode=False,
+        color=True,
+        width=80,
+    )
+
+    # The renderer's v2 glyph set is chosen by the unicode flag, independent of
+    # color: completed ◇/o, warning ▲/!, failure ✗/x — de-jargoned, on the spine.
+    unicode_renderer.render_answer("Workspace", "/work/proj")
+    ascii_renderer.render_answer("Workspace", "/work/proj")
+    ascii_renderer.render_validation("bad answer")
+    ascii_renderer.render_stage(RailStage.OUTCOME, RailState.FAILED, "Failed")
+
+    assert "◇  Workspace  /work/proj" in unicode_buffer.getvalue()
+    ascii_text = ascii_buffer.getvalue()
+    assert "o  Workspace  /work/proj" in ascii_text
+    assert "!  bad answer" in ascii_text
+    assert "x  Failed" in ascii_text
+    assert "preflight:" not in ascii_text
+
+
+def _guided_review_plan(tmp_path: Path) -> InitPlan:
+    return replace(
+        _plan(tmp_path),
+        integrations=("codex", "claude-code"),
+        review_producers=("codex-cli", "claude-cli"),
+        review_models={"codex": "gpt-5.6-sol", "claude": "opus[1m]"},
+        github_decision=GitHubDecision.CREATE,
+        integration_plans={
+            "codex": AgentIntegrationPlan(
+                "codex",
+                "/usr/local/bin/super-harness-hook",
+                "/usr/local/bin/super-harness",
+                SettingsMergePlan(
+                    path=tmp_path / ".codex" / "hooks.json",
+                    original_bytes=b"{}\n",
+                    desired_bytes=b'{"hooks": {}}\n',
+                    changed=True,
+                    backup_required=True,
+                ),
+            ),
+            "claude-code": AgentIntegrationPlan(
+                "claude-code",
+                "/usr/local/bin/super-harness-hook",
+                "/usr/local/bin/super-harness",
+                SettingsMergePlan(
+                    path=tmp_path / ".claude" / "settings.local.json",
+                    original_bytes=b"{}\n",
+                    desired_bytes=b'{"hooks": {}}\n',
+                    changed=True,
+                    backup_required=True,
+                ),
+            ),
+        },
+        file_actions=(
+            PlannedFileAction(tmp_path / ".harness" / "state.yaml", FileAction.UPDATE),
+            PlannedFileAction(tmp_path / ".harness" / "sensors.yaml", FileAction.UPDATE),
+            PlannedFileAction(
+                tmp_path / ".harness" / "review-profiles.local.yaml",
+                FileAction.DELETE,
+            ),
+            PlannedFileAction(tmp_path / "AGENTS.md", FileAction.UPDATE),
+            PlannedFileAction(tmp_path / ".codex" / "hooks.json", FileAction.UPDATE),
+            PlannedFileAction(
+                tmp_path / ".github" / "workflows" / "super-harness.yml",
+                FileAction.CREATE,
+            ),
+            PlannedFileAction(tmp_path / ".harness" / "events.jsonl", FileAction.PRESERVE),
+            PlannedFileAction(tmp_path / ".harness" / "state.yaml", FileAction.SKIP),
+        ),
+    )
+
+
+# Captured from 6fcd6b3 with the actual Questionary adapters inside a 120x80 tmux
+# pane (Unicode, no color). The scenario uses two integrations and reviewers,
+# GitHub setup, 11 UPDATE / 3 PRESERVE / 2 SKIP file actions, six successful
+# executor events, one GitHub warning, and a successful result. Workspace paths are
+# normalized. Every fixture line is nonblank so blank-line padding cannot improve
+# the transcript budget.
+PRE_PROGRESSIVE_DISCLOSURE_REPRESENTATIVE_TRANSCRIPT = (
+    """\
+┌ super-harness init
+●  preflight: Inspected /work/my-project
+│  Detection is read-only
+◆  configuration: Choose integrations and reviews
+◆ Integrations done (2 selections)
+◆ Automated reviewers done (2 selections)
+◆ GitHub setup Configure GitHub
+●  configuration: Configuration collected
+◆  review: Review planned setup
+│  Integrations
+│    Codex
+│    Claude Code
+│  Automated reviewers
+│    Codex  gpt-5.6-sol
+│    Claude  opus[1m]
+│  GitHub
+│    Ensure workflow and PR template
+│  Files
+│    Update    11 files
+│      .harness configuration (9 files)
+│      /work/my-project/AGENTS.md
+│      /work/my-project/.gitignore
+│    Preserve  3 files
+│      /work/my-project/.codex/hooks.json
+│      /work/my-project/.claude/settings.local.json
+│      /work/my-project/.github/workflows/super-harness.yml
+│    Skip      2 files
+◆ Apply this plan? Confirm and continue
+●  review: Plan confirmed
+◆  apply: Applying setup
+✓  Harness configuration ready
+✓  complete
+✓  AGENTS.md and .gitignore updated
+"""
+    "!  GitHub setup: GitHub repository settings need manual confirmation. "
+    "Settings -> General -> Pull Requests.\n"
+    """\
+●  outcome: Setup complete in 3.1s
+│  Next: super-harness status
+└
+"""
+)
+
+
+def _representative_progressive_disclosure_plan(tmp_path: Path) -> InitPlan:
+    harness_files = (
+        "events.jsonl",
+        "state.yaml",
+        "sensors.yaml",
+        "verification.yaml",
+        "source-paths.yaml",
+        "gates.yaml",
+        "version.yaml",
+        "review-governance.yaml",
+        "review-profiles.local.yaml",
+    )
+    return replace(
+        _guided_review_plan(tmp_path),
+        integration_plans={},
+        file_actions=(
+            *(
+                PlannedFileAction(tmp_path / ".harness" / name, FileAction.UPDATE)
+                for name in harness_files
+            ),
+            PlannedFileAction(tmp_path / "AGENTS.md", FileAction.UPDATE),
+            PlannedFileAction(tmp_path / ".gitignore", FileAction.UPDATE),
+            PlannedFileAction(tmp_path / ".codex" / "hooks.json", FileAction.PRESERVE),
+            PlannedFileAction(tmp_path / ".claude" / "settings.local.json", FileAction.PRESERVE),
+            PlannedFileAction(
+                tmp_path / ".github" / "workflows" / "super-harness.yml",
+                FileAction.PRESERVE,
+            ),
+            PlannedFileAction(
+                tmp_path / ".github" / "pull_request_template.md",
+                FileAction.SKIP,
+            ),
+            PlannedFileAction(tmp_path / ".harness" / "adapters.yaml", FileAction.SKIP),
+        ),
+    )
+
+
+def _render_representative_progressive_disclosure_transcript(
+    *,
+    width: int = 120,
+    unicode: bool = True,
+    color: bool = False,
+) -> str:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(
+            file=buffer,
+            width=width,
+            color_system="standard" if color else None,
+            force_terminal=color,
+        ),
+        unicode=unicode,
+        color=color,
+        width=width,
+    )
+    workspace = Path("/work/my-project")
+    plan = _representative_progressive_disclosure_plan(workspace)
+    prompts = _FakePromptAdapter(
+        checkboxes=[
+            ("codex", "claude-code"),
+            ("codex-cli", "claude-cli"),
+        ],
+        selects=["create", "confirm"],
+    )
+    ui = InteractiveInitUI(prompt_adapter=prompts, renderer=renderer)
+    preflight = _preflight(
+        detected_integrations=("codex", "claude-code"),
+        available_integrations=frozenset({"codex", "claude-code"}),
+        detected_producers=("codex-cli", "claude-cli"),
+        available_producers=frozenset({"codex-cli", "claude-cli"}),
+        reviewer_model_candidates={
+            "codex": (ReviewerModelCandidate("codex", "gpt-5.6-sol", "Codex CLI config", 10),),
+            "claude": (ReviewerModelCandidate("claude", "opus[1m]", "Claude CLI config", 10),),
+        },
+        github_available=True,
+    )
+    ui.open_session()
+    with patch.object(init_ui_module, "build_init_plan", return_value=plan):
+        result = ui.prepare_plan(_request(workspace), preflight)
+    assert result.decision is WizardDecision.CONFIRM
+    assert result.plan is plan
+    assert prompts.calls == [
+        "Integrations",
+        "Automated reviewers",
+        "GitHub setup",
+        "Apply this plan?",
+    ]
+    for step_id in (
+        "scaffold",
+        "skeleton_config",
+        "review_config",
+        "agent_integrations",
+        "agents_md",
+        "gitignore",
+    ):
+        ui.render_event(StepRenderEvent(step_id, StepRenderState.SUCCEEDED, "complete"))
+    ui.render_event(
+        StepRenderEvent(
+            "github",
+            StepRenderState.WARNED,
+            "GitHub repository settings need manual confirmation. "
+            "Settings -> General -> Pull Requests.",
+        )
+    )
+    ui.render_outcome(
+        SimpleNamespace(
+            success=True,
+            elapsed_ms=3100,
+            next_command="super-harness status",
+            recovery_command=None,
+        )
+    )
+    ui.close_session()
+
+    return buffer.getvalue()
+
+
+def test_representative_guided_transcript_stays_within_progressive_disclosure_budget() -> None:
+    transcript = _render_representative_progressive_disclosure_transcript()
+    workspace = Path("/work/my-project")
+
+    baseline_lines = PRE_PROGRESSIVE_DISCLOSURE_REPRESENTATIVE_TRANSCRIPT.splitlines()
+    current_lines = transcript.splitlines()
+    assert baseline_lines and all(line.strip() for line in baseline_lines)
+    assert current_lines and all(line.strip() for line in current_lines)
+    assert len(baseline_lines) == 37
+    assert len(current_lines) == 21, transcript
+    reduction = 1 - (len(current_lines) / len(baseline_lines))
+    assert 0.40 <= reduction <= 0.60, (
+        f"expected a 40%-60% reduction; baseline={len(baseline_lines)}, "
+        f"current={len(current_lines)}, reduction={reduction:.1%}"
+    )
+
+    # Spine invariant: every persistent line is a corner, a bare-│ separator, or a
+    # content line prefixed by a v2 glyph or the spine followed by two spaces.
+    content_prefixes = ("◇  ", "▲  ", "✗  ", "…  ", "│  ")
+    for line in current_lines:
+        if line.startswith("┌") or line.startswith("└") or line == "│":
+            continue
+        assert line.startswith(content_prefixes), repr(line)
+    # Group spacing: the run of apply outcomes has no internal separators.
+    outcome_run = "◇  Harness configuration\n◇  Agent integrations\n◇  Repository guidance"
+    assert outcome_run in transcript
+    # De-jargon: no internal state-machine vocabulary leaks into the transcript.
+    for jargon in ("preflight:", "Detection is read-only", "Review changes"):
+        assert jargon not in transcript
+    assert "\nFiles\n" not in transcript and "  Files\n" not in transcript
+
+    # Use the workspace variable so the path separator matches the platform
+    # (str(Path("/work/my-project")) is backslash-separated on Windows).
+    assert f"◇  Workspace  {workspace}" in transcript
+    assert "◇  Integrations  Codex, Claude Code" in transcript
+    assert "◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])" in transcript
+    assert "◇  GitHub  Workflow and PR template" in transcript
+    assert "◇  Plan  11 files to write" in transcript
+    assert "│  .harness ×9 · AGENTS.md · .gitignore" in transcript  # noqa: RUF001 - glyphs
+    assert "│  5 unchanged hidden — --verbose to see them" in transcript
+    assert "Preserve" not in transcript
+    assert str(workspace / ".codex" / "hooks.json") not in transcript
+    for group in ("Harness configuration", "Agent integrations", "Repository guidance"):
+        assert transcript.count(f"◇  {group}") == 1
+    assert "▲  GitHub setup" in transcript
+    assert "Settings -> General -> Pull Requests" in transcript
+    assert transcript.splitlines()[-1] == ("└ Setup complete in 3.1s · Next: super-harness status")
+    for redundant in ("done (", "Applying setup", "outcome:"):
+        assert redundant not in transcript
+    assert "configuration: Choose integrations and reviews" not in transcript
+
+
+def test_rich_guided_lines_never_have_trailing_whitespace() -> None:
+    # Regression for code-review CODX-001 / CLR-001: wrapping must not leave a
+    # dangling space, including on the wrapped terminal-result closer.
+    wide = _render_representative_progressive_disclosure_transcript(width=120)
+    narrow = _render_representative_progressive_disclosure_transcript(
+        width=28, unicode=False
+    )
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=28, color_system=None),
+        unicode=True,
+        color=False,
+        width=28,
+    )
+    renderer.open_session()
+    renderer.render_result(
+        RailState.FAILED,
+        "Setup failed after 1.2s",
+        secondary="Recovery: super-harness init --force",
+    )
+    renderer.close_session()
+    for transcript in (wide, narrow, buffer.getvalue()):
+        for line in transcript.splitlines():
+            assert line == line.rstrip(), repr(line)
+
+
+def test_rich_guided_review_hides_unchanged_and_backup_detail_by_default(
+    tmp_path: Path,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=120, color_system=None),
+        unicode=True,
+        color=False,
+        width=120,
+    )
+    plan = _guided_review_plan(tmp_path)
+
+    renderer.render_plan(plan)
+
+    text = buffer.getvalue()
+    lines = text.splitlines()
+    assert lines[0] == "┌ super-harness init"
+    assert lines[-1] == "└"
+    assert text.count("└") == 1
+    # Spine invariant: interior lines are a bare separator or hang on the spine.
+    for line in lines[1:-1]:
+        assert line == "│" or line.startswith(("◇  ", "│  ")), repr(line)
+    # Flattened: one Plan header, inlined mutation names, one hidden-count line.
+    assert "◇  Plan  6 files to write" in text
+    assert "│  .harness ×3 · AGENTS.md · hooks.json · super-harness.yml" in text  # noqa: RUF001
+    assert "│  2 unchanged hidden — --verbose to see them" in text
+    assert text.count("unchanged hidden") == 1
+    # No v1 structural labels, per-action tree, or hints in the default review.
+    for absent in ("Review changes", "Files", "Preserve", "Skip", "Back up", "hint:"):
+        assert absent not in text
+    assert "will be written during apply" not in text
+    # Default review inlines mutation basenames, not full paths or unchanged files.
+    assert str(tmp_path / "AGENTS.md") not in text
+    assert str(tmp_path / ".harness" / "events.jsonl") not in text
+
+
+def test_rich_guided_verbose_review_restores_exact_action_and_backup_paths(
+    tmp_path: Path,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=120, color_system=None),
+        unicode=True,
+        color=False,
+        width=120,
+        verbose=True,
+    )
+    plan = _guided_review_plan(tmp_path)
+
+    renderer.render_plan(plan)
+
+    text = buffer.getvalue()
+    compact = "".join(line.lstrip("│|").strip() for line in text.splitlines())
+    # Verbose keeps the same spine + Plan header, and adds per-action full paths and
+    # the backup row; it does not re-show integrations/reviewers/GitHub (those are
+    # answers) or collapse .harness.
+    assert "◇  Plan  6 files to write" in text
+    for label in ("Update", "Create", "Delete", "Preserve", "Skip", "Back up"):
+        assert f"│  {label}" in text
+    assert "unchanged hidden" not in text
+    assert ".harness ×" not in text  # noqa: RUF001 - glyphs
+    assert "Review changes" not in text
+    for action in plan.file_actions:
+        assert str(action.path) in compact
+    for path in plan.backup_paths:
+        assert str(path) in compact
+
+
+def test_rich_guided_terminal_result_closes_session_once_without_empty_rail(
+    tmp_path: Path,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=100, color_system=None),
+        unicode=True,
+        color=False,
+        width=100,
+    )
+
+    renderer.open_session()
+    renderer.render_plan(_plan(tmp_path))
+    assert "└" not in buffer.getvalue()
+    renderer.render_result(
+        RailState.COMPLETED,
+        "Setup complete in 152ms",
+        secondary="Next: super-harness status",
+    )
+    renderer.close_session()
+    renderer.close_session()
+
+    text = buffer.getvalue()
+    assert text.count("┌ super-harness init") == 1
+    assert text.count("└") == 1
+    assert text.splitlines()[-1] == "└ Setup complete in 152ms · Next: super-harness status"
+
+
+def test_rich_guided_narrow_output_drops_hints_and_wraps_paths(tmp_path: Path) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=24, color_system=None),
+        unicode=False,
+        color=False,
+        width=24,
+    )
+    plan = _plan(tmp_path)
+
+    renderer.render_plan(plan)
+
+    text = buffer.getvalue()
+    compact = "".join(line.lstrip("│|").strip() for line in text.splitlines())
+    # The default inline review shows basenames (verbose shows full paths).
+    assert plan.file_actions[0].path.name in compact
+    assert "will be written during apply" not in text
+    assert "..." not in text
+    assert all(Text(line).cell_len <= 24 for line in text.splitlines())
+
+
+def test_rich_guided_ascii_review_hides_unchanged_with_ascii_separator(
+    tmp_path: Path,
+) -> None:
+    byte_buffer = BytesIO()
+    output = TextIOWrapper(byte_buffer, encoding="ascii", errors="strict", write_through=True)
+    renderer = RichGuidedRenderer(
+        console=Console(file=output, width=48, color_system=None),
+        unicode=False,
+        color=False,
+        width=48,
+    )
+    plan = replace(
+        _plan(tmp_path),
+        file_actions=(
+            PlannedFileAction(Path(".harness/state.yaml"), FileAction.UPDATE),
+            PlannedFileAction(Path("preserved.txt"), FileAction.PRESERVE),
+            PlannedFileAction(Path("skipped.txt"), FileAction.SKIP),
+        ),
+    )
+
+    renderer.render_plan(plan)
+
+    text = byte_buffer.getvalue().decode("ascii")
+    content = " ".join(line.lstrip("|+o ").strip() for line in text.splitlines())
+    assert text.isascii()
+    assert "2 unchanged hidden -- --verbose to see them" in content
+    assert "preserved.txt" not in text
+    assert "skipped.txt" not in text
+
+
+def test_rich_guided_strict_ascii_escapes_cjk_windows_action_and_keeps_hidden_rows() -> None:
+    byte_buffer = BytesIO()
+    output = TextIOWrapper(byte_buffer, encoding="ascii", errors="strict", write_through=True)
+    renderer = RichGuidedRenderer(
+        console=Console(file=output, width=48, color_system=None),
+        unicode=False,
+        color=False,
+        width=48,
+    )
+    windows_path = Path(r"C:\项目\非常长的配置目录\设置文件.yaml")
+    plan = replace(
+        _plan(Path(".")),
+        file_actions=(
+            PlannedFileAction(windows_path, FileAction.CREATE),
+            PlannedFileAction(Path("preserved.txt"), FileAction.PRESERVE),
+            PlannedFileAction(Path("skipped.txt"), FileAction.SKIP),
+        ),
+    )
+
+    renderer.render_plan(plan)
+
+    text = byte_buffer.getvalue().decode("ascii")
+    lines = text.splitlines()
+    escaped_name = str(windows_path.name).encode("ascii", "backslashreplace").decode("ascii")
+    compact = "".join(line.lstrip("|+o ").strip() for line in lines)
+    assert text.isascii()
+    assert lines[0] == "+ super-harness init"
+    assert lines[-1] == "+"
+    # Interior lines are a bare rail or hang on the rail with a glyph/rail prefix.
+    assert all(line == "|" or line.startswith(("o  ", "|  ")) for line in lines[1:-1])
+    # The default inline review shows the escaped basename, not the full path.
+    assert escaped_name in compact
+    assert "2 unchanged hidden -- --verbose to see them" in " ".join(
+        line.lstrip("|+o ").strip() for line in lines
+    )
+    assert "preserved.txt" not in text
+    assert "skipped.txt" not in text
+
+
+def test_rich_guided_cjk_windows_path_wraps_inside_every_review_rail_line(
+    tmp_path: Path,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=22, color_system=None),
+        unicode=True,
+        color=False,
+        width=22,
+    )
+    windows_path = Path(r"C:\项目\非常长的配置目录\设置文件.yaml")
+    plan = replace(
+        _plan(tmp_path),
+        file_actions=(PlannedFileAction(windows_path, FileAction.CREATE),),
+    )
+
+    renderer.render_plan(plan)
+
+    lines = buffer.getvalue().splitlines()
+    assert lines[0] == "┌ super-harness init"
+    assert lines[-1] == "└"
+    assert all(line == "│" or line.startswith(("◇  ", "│  ")) for line in lines[1:-1])
+    # The default inline review shows the basename, wrapped on the spine.
+    assert windows_path.name in "".join(line.lstrip("│").strip() for line in lines)
+
+
+def test_guided_step_rendering_accepts_plain_structural_event() -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+    event = StepRenderEvent("scaffold", StepRenderState.SUCCEEDED, "Created")
+
+    ui.render_event(event)
+
+    assert renderer.events == [event]
+
+
+def test_rich_guided_apply_groups_successes_once_without_internal_chatter() -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=100, color_system=None),
+        unicode=True,
+        color=False,
+        width=100,
+    )
+    events = (
+        StepRenderEvent("scaffold", StepRenderState.STARTED, "Scaffolding .harness."),
+        StepRenderEvent("scaffold", StepRenderState.SUCCEEDED, "Scaffolded .harness."),
+        StepRenderEvent(
+            "skeleton_config", StepRenderState.SUCCEEDED, "Wrote skeleton configuration."
+        ),
+        StepRenderEvent(
+            "review_config", StepRenderState.SUCCEEDED, "Configured review configuration."
+        ),
+        StepRenderEvent(
+            "agent_integrations",
+            StepRenderState.SUCCEEDED,
+            "Codex and Claude Code integrations configured.",
+        ),
+        StepRenderEvent("agents_md", StepRenderState.SUCCEEDED, "Updated AGENTS.md."),
+        StepRenderEvent("gitignore", StepRenderState.SUCCEEDED, "Updated .gitignore."),
+        StepRenderEvent("github", StepRenderState.SUCCEEDED, "GitHub files ensured."),
+        StepRenderEvent("review_config", StepRenderState.SUCCEEDED, "duplicate"),
+        StepRenderEvent("gitignore", StepRenderState.SUCCEEDED, "duplicate"),
+        StepRenderEvent("github", StepRenderState.SUCCEEDED, "duplicate"),
+    )
+
+    for event in events:
+        renderer.render_event(event)
+
+    text = buffer.getvalue()
+    assert "Applying setup" not in text
+    assert "started" not in text
+    assert text.count("◇  Harness configuration") == 1
+    assert text.count("◇  Agent integrations") == 1
+    assert text.count("◇  Repository guidance") == 1
+    assert text.count("◇  GitHub setup") == 1
+    assert "Harness configuration ready" not in text
+    assert "Codex and Claude Code integrations configured" not in text
+    assert "AGENTS.md and .gitignore updated" not in text
+    assert "GitHub files ensured" not in text
+    assert "duplicate" not in text
+    for internal_id in (
+        "scaffold:",
+        "skeleton_config",
+        "review_config",
+        "agent_integrations",
+        "agents_md",
+        "gitignore:",
+        "github:",
+    ):
+        assert internal_id not in text
+
+
+def test_rich_guided_verbose_apply_retains_per_operation_diagnostics() -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=100, color_system=None),
+        unicode=True,
+        color=False,
+        width=100,
+        verbose=True,
+    )
+
+    renderer.render_event(
+        StepRenderEvent("scaffold", StepRenderState.STARTED, "Scaffolding .harness.")
+    )
+    renderer.render_event(
+        StepRenderEvent("scaffold", StepRenderState.SUCCEEDED, "Scaffolded .harness.")
+    )
+
+    text = buffer.getvalue()
+    assert "…  Harness configuration: Scaffolding .harness." in text
+    assert "◇  Harness configuration: Scaffolded .harness." in text
+    assert "✓" not in text
+
+
+def test_rich_guided_apply_keeps_github_warning_actionable() -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=100, color_system=None),
+        unicode=True,
+        color=False,
+        width=100,
+    )
+
+    renderer.render_event(
+        StepRenderEvent(
+            "github",
+            StepRenderState.WARNED,
+            "GitHub repository settings need manual confirmation. "
+            "Settings -> General -> Pull Requests.",
+        )
+    )
+
+    text = buffer.getvalue()
+    # Drop the spine continuation chars so a wrapped phrase reads contiguously.
+    compact = " ".join(text.replace("│", " ").split())
+    assert "▲  GitHub setup" in text
+    assert "Settings -> General -> Pull Requests" in compact
+    assert "github:" not in text
+    assert "Applying setup" not in text
+
+
+@pytest.mark.parametrize(
+    ("unicode", "color", "success_glyph", "failure_glyph", "close_glyph"),
+    [
+        (True, False, "◇", "✗", "└"),
+        (False, False, "o", "x", "+"),
+        (False, True, "o", "x", "+"),
+    ],
+)
+def test_rich_guided_narrow_apply_and_failure_wrap_without_color_dependency(
+    unicode: bool,
+    color: bool,
+    success_glyph: str,
+    failure_glyph: str,
+    close_glyph: str,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(
+            file=buffer,
+            width=28,
+            color_system="standard" if color else None,
+        ),
+        unicode=unicode,
+        color=color,
+        width=28,
+    )
+    renderer.open_session()
+    for step_id in ("scaffold", "skeleton_config", "review_config"):
+        renderer.render_event(StepRenderEvent(step_id, StepRenderState.SUCCEEDED, "done"))
+    renderer.render_event(
+        StepRenderEvent(
+            "agent_integrations",
+            StepRenderState.FAILED,
+            "Settings changed after review; rerun init and inspect the refreshed plan.",
+        )
+    )
+    renderer.render_result(
+        RailState.FAILED,
+        "Setup failed after 1.2s",
+        secondary="Recovery: super-harness init --force",
+    )
+    renderer.close_session()
+
+    text = buffer.getvalue()
+    lines = text.splitlines()
+    plain_lines = [Text.from_ansi(line).plain for line in lines]
+    assert f"{success_glyph}  Harness configuration" in text
+    assert f"{failure_glyph}  Agent integrations:" in text
+    assert all(Text.from_ansi(line).cell_len <= 28 for line in lines)
+    failure_index = next(
+        i for i, line in enumerate(plain_lines) if "Agent integrations:" in line
+    )
+    # The failure detail wraps onto the spine, not under the glyph.
+    bar = "│" if unicode else "|"
+    assert plain_lines[failure_index + 1].startswith(f"{bar}  ")
+    close_index = next(
+        i
+        for i, line in enumerate(plain_lines)
+        if line.startswith(f"{close_glyph} Setup failed")
+    )
+    # The wrapped terminal result hangs on the spine, satisfying the invariant.
+    assert all(line.startswith(f"{bar}  ") for line in plain_lines[close_index + 1 :])
+    assert "Recovery: super-harness init --force" in " ".join(
+        line.lstrip(f"{close_glyph}{bar} ") for line in plain_lines[close_index:]
+    )
+    if not color:
+        assert "\x1b[" not in text
+    if not unicode:
+        assert text.isascii()
+
+
+@pytest.mark.parametrize(
+    ("success", "message", "next_command", "recovery_command", "expected_secondary"),
+    [
+        (True, None, "super-harness status", None, "Next: super-harness status"),
+        (
+            False,
+            "GitHub setup failed",
+            None,
+            "gh auth login && super-harness init --force",
+            "Recovery: gh auth login && super-harness init --force",
+        ),
+    ],
+)
+def test_guided_outcome_includes_the_next_or_recovery_command(
+    success: bool,
+    message: str | None,
+    next_command: str | None,
+    recovery_command: str | None,
+    expected_secondary: str,
+) -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+    result = SimpleNamespace(
+        success=success,
+        message=message,
+        next_command=next_command,
+        recovery_command=recovery_command,
+        elapsed_ms=0,
+    )
+
+    ui.render_outcome(result)
+
+    assert renderer.results[-1][2] == expected_secondary
+    assert renderer.stages == []
+
+
+@pytest.mark.parametrize(
+    ("success", "message", "elapsed_ms", "expected_detail"),
+    [
+        (True, None, 152, "Setup complete in 152ms"),
+        (True, None, 1_200, "Setup complete in 1.2s"),
+        (False, "Setup failed", 1_200, "Setup failed after 1.2s"),
+    ],
+)
+def test_guided_outcome_formats_truthful_elapsed_time(
+    success: bool,
+    message: str | None,
+    elapsed_ms: int,
+    expected_detail: str,
+) -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+    result = SimpleNamespace(
+        success=success,
+        message=message,
+        next_command="super-harness status" if success else None,
+        recovery_command=None if success else "super-harness init --force",
+        elapsed_ms=elapsed_ms,
+    )
+
+    ui.render_outcome(result)
+
+    assert renderer.results == [
+        (
+            RailState.COMPLETED if success else RailState.FAILED,
+            expected_detail,
+            ("Next: super-harness status" if success else "Recovery: super-harness init --force"),
+        )
+    ]
+
+
+def test_guided_already_initialized_is_one_status_first_recovery_block(
+    tmp_path: Path,
+) -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+
+    ui.render_already_initialized(tmp_path / ".harness")
+
+    assert renderer.results == [
+        (
+            RailState.COMPLETED,
+            "Already initialized",
+            ("Next: super-harness status; Review/reconfigure: super-harness init --force"),
+        )
+    ]
+
+
+def test_guided_prompt_interruption_renders_a_terminal_outcome() -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+
+    ui.render_interrupted()
+
+    assert renderer.results == [(RailState.FAILED, "Setup interrupted", None)]
+    assert renderer.stages == []
+
+
+def test_guided_cancel_is_one_concise_terminal_result() -> None:
+    renderer = _FakeGuidedRenderer()
+    ui, _ = _guided_ui(_FakePromptAdapter(), renderer)
+
+    ui.render_cancelled()
+
+    assert renderer.results == [(RailState.COMPLETED, "Setup cancelled", None)]
+    assert renderer.stages == []
