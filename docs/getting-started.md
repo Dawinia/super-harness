@@ -112,14 +112,7 @@ $ super-harness init --setup-github
 ◇  Integrations  Codex, Claude Code
 ◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])
 ◇  GitHub  Workflow and PR template
-│  Integrations
-│    Codex
-│    Claude Code
-│  Automated reviewers
-│    Codex  gpt-5.6-sol
-│    Claude  opus[1m]
-│  GitHub
-│    Ensure workflow and PR template
+│  Review changes
 │  Files
 │    Update    11 files
 │      .harness configuration (9 files)
