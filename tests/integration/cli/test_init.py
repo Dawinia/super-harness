@@ -10,6 +10,7 @@ from click.testing import CliRunner
 
 from super_harness.adapters.framework.plain import PlainAdapter
 from super_harness.cli import main
+from super_harness.cli.init_executor import InitOperationResult, InitOperations
 from super_harness.cli.init_plan import (
     FileAction,
     GitHubDecision,
@@ -21,6 +22,7 @@ from super_harness.cli.init_plan import (
 from super_harness.cli.init_ui import (
     InteractiveInitUI,
     TerminalCapabilities,
+    WizardDecision,
     WizardResult,
 )
 from super_harness.engineering.gh import GhError
@@ -41,6 +43,33 @@ def _assert_init_owned_paths_absent(root: Path) -> None:
     assert not (root / "AGENTS.md").exists()
     assert not (root / ".gitignore").exists()
     assert not (root / ".github").exists()
+
+
+def _snapshot_files(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def _recording_operations(calls: list[str]) -> InitOperations:
+    def operation(step_id: str) -> Callable[[Any], InitOperationResult]:
+        def run(_plan: Any) -> InitOperationResult:
+            calls.append(step_id)
+            return InitOperationResult(f"{step_id} complete")
+
+        return run
+
+    return InitOperations(
+        scaffold=operation("scaffold"),
+        skeleton_config=operation("skeleton_config"),
+        review_config=operation("review_config"),
+        agent_integrations=operation("agent_integrations"),
+        agents_md=operation("agents_md"),
+        gitignore=operation("gitignore"),
+        github=operation("github"),
+    )
 
 
 class _ScriptedInitUI:
@@ -153,6 +182,17 @@ class _PlanCaptureRenderer:
 
     def render_event(self, _event: Any) -> None:
         return None
+
+
+class _RecordingInteractiveInitUI(InteractiveInitUI):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.results: list[WizardResult] = []
+
+    def prepare_plan(self, *args: Any, **kwargs: Any) -> WizardResult:
+        result = super().prepare_plan(*args, **kwargs)
+        self.results.append(result)
+        return result
 
 
 def test_init_creates_harness_dir(tmp_path: Path):
@@ -299,6 +339,174 @@ def test_init_guided_confirmation_boundary_writes_only_after_confirm(
     assert (tmp_path / "AGENTS.md").exists()
     assert (tmp_path / ".gitignore").exists()
     assert ui.outcome is not None and ui.outcome.success is True
+
+
+def test_init_guided_verbose_changes_only_rendering_for_confirmed_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "sk-secret-like-value-never-render"
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".claude").mkdir()
+    (home / ".codex" / "config.toml").write_text(
+        f'model = "gpt-review"\napi_key = "{secret}"\n'
+    )
+    (home / ".claude" / "settings.json").write_text(
+        json.dumps({"model": "claude-review", "apiKey": secret})
+    )
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, True, 100)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=(
+                lambda name: f"/abs/bin/{name}"
+                if name in {"codex", "claude", "super-harness", "super-harness-hook"}
+                else None
+            ),
+            home=home,
+        ),
+    )
+    verbose_values: list[bool] = []
+    uis: list[_RecordingInteractiveInitUI] = []
+
+    def create_ui(_capabilities: Any, **kwargs: Any) -> _RecordingInteractiveInitUI:
+        verbose = kwargs.pop("verbose")
+        assert type(verbose) is bool
+        verbose_values.append(verbose)
+        ui = _RecordingInteractiveInitUI(
+            prompt_adapter=_GuidedAnswers(
+                checkboxes=[(), ("codex-cli", "claude-cli")],
+                selects=["confirm"],
+            ),
+            unicode=True,
+            color=False,
+            width=100,
+            verbose=verbose,
+        )
+        uis.append(ui)
+        return ui
+
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", create_ui)
+    operation_runs: list[list[str]] = []
+
+    def build_operations(**_kwargs: Any) -> InitOperations:
+        calls: list[str] = []
+        operation_runs.append(calls)
+        return _recording_operations(calls)
+
+    monkeypatch.setattr("super_harness.cli.init.build_init_operations", build_operations)
+    before = _snapshot_files(tmp_path)
+
+    default = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+    verbose = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--verbose", "--verbose", "init"],
+    )
+
+    assert default.exit_code == 0, default.output
+    assert verbose.exit_code == 0, verbose.output
+    assert verbose_values == [False, True]
+    assert [ui.results[0].decision for ui in uis] == [
+        WizardDecision.CONFIRM,
+        WizardDecision.CONFIRM,
+    ]
+    assert uis[0].results[0].plan == uis[1].results[0].plan
+    assert operation_runs == [
+        [
+            "scaffold",
+            "skeleton_config",
+            "review_config",
+            "agent_integrations",
+            "agents_md",
+            "gitignore",
+        ],
+        [
+            "scaffold",
+            "skeleton_config",
+            "review_config",
+            "agent_integrations",
+            "agents_md",
+            "gitignore",
+        ],
+    ]
+    assert _snapshot_files(tmp_path) == before
+    assert secret not in default.output
+    assert secret not in verbose.output
+
+
+def test_init_guided_verbose_rejection_has_no_executor_calls_or_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "token-secret-like-value-never-render"
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "config.toml").write_text(
+        f'model = "gpt-review"\napi_key = "{secret}"\n'
+    )
+    capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, True, 100)
+    monkeypatch.setattr(
+        "super_harness.cli.init.detect_runtime_terminal_capabilities",
+        lambda *_a, **_kw: capabilities,
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.init.inspect_workspace",
+        lambda request: inspect_workspace(
+            request,
+            executable_lookup=(lambda name: "/abs/bin/codex" if name == "codex" else None),
+            home=home,
+        ),
+    )
+    verbose_values: list[bool] = []
+    uis: list[_RecordingInteractiveInitUI] = []
+
+    def create_ui(_capabilities: Any, **kwargs: Any) -> _RecordingInteractiveInitUI:
+        verbose = kwargs.pop("verbose")
+        assert type(verbose) is bool
+        verbose_values.append(verbose)
+        ui = _RecordingInteractiveInitUI(
+            prompt_adapter=_GuidedAnswers(
+                checkboxes=[(), ("codex-cli",)],
+                selects=["cancel"],
+            ),
+            unicode=True,
+            color=False,
+            width=100,
+            verbose=verbose,
+        )
+        uis.append(ui)
+        return ui
+
+    monkeypatch.setattr("super_harness.cli.init.create_init_ui", create_ui)
+    build_calls: list[object] = []
+    monkeypatch.setattr(
+        "super_harness.cli.init.build_init_operations",
+        lambda **kwargs: build_calls.append(kwargs),
+    )
+    before = _snapshot_files(tmp_path)
+
+    default = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+    verbose = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "--verbose", "init"],
+    )
+
+    assert default.exit_code == 0, default.output
+    assert verbose.exit_code == 0, verbose.output
+    assert verbose_values == [False, True]
+    assert [ui.results[0].decision for ui in uis] == [
+        WizardDecision.CANCEL,
+        WizardDecision.CANCEL,
+    ]
+    assert build_calls == []
+    assert _snapshot_files(tmp_path) == before
+    _assert_init_owned_paths_absent(tmp_path)
+    assert secret not in default.output
+    assert secret not in verbose.output
 
 
 def test_init_explicit_cancel_is_a_normal_noop(

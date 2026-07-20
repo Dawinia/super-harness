@@ -443,11 +443,14 @@ _PUBLIC_STEP_LABELS = {
 }
 
 
-def _file_action_display_rows(plan: InitPlan, action: FileAction) -> tuple[str, ...]:
+def _file_action_display_rows(
+    plan: InitPlan,
+    action: FileAction,
+    *,
+    collapse_harness: bool,
+) -> tuple[str, ...]:
     selected = tuple(item for item in plan.file_actions if item.action is action)
-    if action is FileAction.SKIP:
-        return ()
-    if action is FileAction.PRESERVE:
+    if not collapse_harness:
         return tuple(str(item.path) for item in selected)
 
     harness = tuple(item for item in selected if ".harness" in item.path.parts)
@@ -471,10 +474,12 @@ class RichGuidedRenderer:
         unicode: bool,
         color: bool,
         width: int,
+        verbose: bool = False,
     ) -> None:
         self._unicode = unicode
         self._color = color
         self._width = max(1, width)
+        self._verbose = verbose
         self._console = console or Console(color_system="auto" if color else None, width=width)
         self._apply_started = False
         self._session_open = False
@@ -500,7 +505,13 @@ class RichGuidedRenderer:
             crop=False,
         )
 
-    def _print_review_row(self, rail: str, value: str) -> None:
+    def _print_review_row(
+        self,
+        rail: str,
+        value: str,
+        *,
+        style: str | None = None,
+    ) -> None:
         leading_spaces = len(value) - len(value.lstrip(" "))
         available = max(1, self._width - Text(rail).cell_len - 2)
         indent = min(leading_spaces, max(0, available - 1))
@@ -510,7 +521,7 @@ class RichGuidedRenderer:
             overflow="fold",
         ) or [Text()]
         for line in wrapped:
-            self._print(f"{rail}  {' ' * indent}{line}")
+            self._print(f"{rail}  {' ' * indent}{line}", style=style)
 
     def render_stage(
         self,
@@ -583,19 +594,40 @@ class RichGuidedRenderer:
         self._print_review_row(rail, f"  {github}")
 
         self._print_review_row(rail, "Files")
-        for action in _FILE_ACTION_ORDER:
+        visible_actions = (
+            _FILE_ACTION_ORDER
+            if self._verbose
+            else (FileAction.UPDATE, FileAction.CREATE, FileAction.DELETE)
+        )
+        for action in visible_actions:
             count = sum(item.action is action for item in plan.file_actions)
             if count == 0:
                 continue
             noun = "file" if count == 1 else "files"
             self._print_review_row(rail, f"  {_FILE_ACTION_LABELS[action]:<9} {count} {noun}")
-            for row in _file_action_display_rows(plan, action):
+            for row in _file_action_display_rows(
+                plan,
+                action,
+                collapse_harness=not self._verbose,
+            ):
                 self._print_review_row(rail, f"    {row}")
-        if plan.backup_paths:
+        if self._verbose and plan.backup_paths:
             noun = "settings file" if len(plan.backup_paths) == 1 else "settings files"
             self._print_review_row(rail, f"  {'Back up':<9} {len(plan.backup_paths)} {noun}")
             for path in plan.backup_paths:
                 self._print_review_row(rail, f"    {path}")
+        if not self._verbose:
+            hidden_count = sum(
+                item.action in {FileAction.PRESERVE, FileAction.SKIP}
+                for item in plan.file_actions
+            )
+            if hidden_count:
+                noun = "file" if hidden_count == 1 else "files"
+                self._print_review_row(
+                    rail,
+                    f"  {hidden_count} unchanged {noun} hidden · use --verbose to inspect",
+                    style="dim",
+                )
         if owns_session:
             self.close_session()
 
@@ -703,9 +735,15 @@ class InteractiveInitUI:
         unicode: bool = True,
         color: bool = True,
         width: int = 80,
+        verbose: bool = False,
     ) -> None:
         self._prompts = prompt_adapter or QuestionaryPromptAdapter(color=color, unicode=unicode)
-        self._renderer = renderer or RichGuidedRenderer(unicode=unicode, color=color, width=width)
+        self._renderer = renderer or RichGuidedRenderer(
+            unicode=unicode,
+            color=color,
+            width=width,
+            verbose=verbose,
+        )
 
     def open_session(self) -> None:
         self._renderer.open_session()
@@ -1483,6 +1521,7 @@ def create_init_ui(
     input_fn: TextInput,
     output_fn: TextOutput,
     quiet: bool = False,
+    verbose: bool = False,
 ) -> InteractiveInitUI | LineInitUI | NonInteractiveInitUI:
     """Select one UI once; callers may inject both streams for deterministic tests."""
 
@@ -1492,6 +1531,7 @@ def create_init_ui(
             unicode=capabilities.unicode,
             color=capabilities.color,
             width=capabilities.width,
+            verbose=verbose,
         )
     ui_type = LineInitUI if capabilities.mode is InteractionMode.LINE else NonInteractiveInitUI
     return ui_type(

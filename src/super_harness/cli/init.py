@@ -597,6 +597,7 @@ def init_cmd(
         input_fn=input,
         output_fn=click.echo,
         quiet=quiet or json_output,
+        verbose=bool(ctx.obj.get("verbose")),
     )
     ui.open_session()
     ctx.call_on_close(ui.close_session)

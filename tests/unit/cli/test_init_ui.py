@@ -1606,15 +1606,8 @@ def test_rich_guided_glyphs_are_independent_of_color() -> None:
     assert "x  outcome: Failed" in ascii_text
 
 
-def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -> None:
-    buffer = StringIO()
-    renderer = RichGuidedRenderer(
-        console=Console(file=buffer, width=120, color_system=None),
-        unicode=True,
-        color=False,
-        width=120,
-    )
-    plan = replace(
+def _guided_review_plan(tmp_path: Path) -> InitPlan:
+    return replace(
         _plan(tmp_path),
         integrations=("codex", "claude-code"),
         review_producers=("codex-cli", "claude-cli"),
@@ -1664,6 +1657,19 @@ def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -
         ),
     )
 
+
+def test_rich_guided_review_hides_unchanged_and_backup_detail_by_default(
+    tmp_path: Path,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=120, color_system=None),
+        unicode=True,
+        color=False,
+        width=120,
+    )
+    plan = _guided_review_plan(tmp_path)
+
     renderer.render_plan(plan)
 
     text = buffer.getvalue()
@@ -1685,18 +1691,48 @@ def test_rich_guided_review_is_compact_and_groups_file_actions(tmp_path: Path) -
     assert "Update    4 files" in text
     assert "Create    1 file" in text
     assert "Delete    1 file" in text
-    assert "Preserve  1 file" in text
-    assert "Skip      1 file" in text
-    assert "Back up   2 settings files" in text
+    assert "Preserve" not in text
+    assert "Skip" not in text
+    assert "Back up" not in text
+    assert "2 unchanged files hidden · use --verbose to inspect" in text
+    assert text.count("unchanged files hidden") == 1
     assert ".harness configuration (2 files)" in text
     assert str(tmp_path / "AGENTS.md") in compact
     assert str(tmp_path / ".codex" / "hooks.json") in compact
-    assert str(tmp_path / ".claude" / "settings.local.json") in compact
-    assert str(tmp_path / ".harness" / "events.jsonl") in compact
+    assert str(tmp_path / ".claude" / "settings.local.json") not in compact
+    assert str(tmp_path / ".harness" / "events.jsonl") not in compact
     assert str(tmp_path / ".harness" / "state.yaml") not in compact
     assert "hint:" not in text
     assert "will be written during apply" not in text
     assert "File update:" not in text
+
+
+def test_rich_guided_verbose_review_restores_exact_action_and_backup_paths(
+    tmp_path: Path,
+) -> None:
+    buffer = StringIO()
+    renderer = RichGuidedRenderer(
+        console=Console(file=buffer, width=120, color_system=None),
+        unicode=True,
+        color=False,
+        width=120,
+        verbose=True,
+    )
+    plan = _guided_review_plan(tmp_path)
+
+    renderer.render_plan(plan)
+
+    text = buffer.getvalue()
+    compact = "".join(line.lstrip("│|").strip() for line in text.splitlines())
+    assert "Preserve  1 file" in text
+    assert "Skip      1 file" in text
+    assert "Back up   2 settings files" in text
+    assert "unchanged files hidden" not in text
+    assert ".harness configuration" not in text
+    for action in plan.file_actions:
+        assert str(action.path) in compact
+    for path in plan.backup_paths:
+        assert str(path) in compact
 
 
 def test_rich_guided_explicit_session_keeps_review_open_until_final_outcome(
