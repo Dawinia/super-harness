@@ -32,7 +32,26 @@ convention in `core/anchor_scanner.py:45`), pytest.
 | D1 | Plan-path allowance fires **only in `INTENT_DECLARED`** | `PLAN_REJECTED` already has the `plan_artifacts` mechanism whose "full replacement on each `plan_ready` = revoke" semantics would be diluted by a second, pattern-based source. Two non-overlapping mechanisms keep both existing proofs intact. |
 | D2 | **No `change start --plan` flag** | That value would be supplied by the governed agent at `change start` — self-declared identity, the exact thing rejected in design §Design/1. The tracked config file already covers per-repo layout, and editing it is itself a gated edit. |
 | D3 | Config loader is **fail-CLOSED** (unlike `core/source_scope.py`) | `source_scope` degrades to permissive defaults because a typo there must not brick doc scanning. Here a corrupt file degrading to the default would *grant* an allowance the owner may have narrowed. Corrupt/missing-key → `[]` → nothing allowed → the state table blocks, i.e. today's behaviour. A **missing file** is different: it means "never configured" → the built-in default applies. |
-| D4 | Matching via `fnmatch.fnmatchcase` on the POSIX repo-relative path | Consistent with `anchor_scanner`. Known looseness: `*` crosses `/`, so `docs/plans/*{slug}*.md` also matches `docs/plans/sub/x-<slug>-y.md`. Harmless — still under `docs/plans/`, still contains the slug, still `.md`. Not worth a bespoke segment-aware matcher (YAGNI). |
+| D4 | Matching via `fnmatch.fnmatchcase` on the POSIX repo-relative path | Consistent with `anchor_scanner`. **`fnmatch` is not glob**: `*` crosses `/` and `**` carries no recursive meaning. Both consequences are load-bearing — see below. Not worth a bespoke segment-aware matcher (YAGNI). |
+
+### `fnmatch` semantics — measured, because they cut both ways
+
+```
+openspec/changes/<slug>/**/*.md  vs  openspec/changes/<slug>/proposal.md   -> False
+openspec/changes/<slug>/**/*.md  vs  openspec/changes/<slug>/specs/a.md    -> True
+openspec/changes/<slug>/*.md     vs  openspec/changes/<slug>/proposal.md   -> True
+openspec/changes/<slug>/*.md     vs  openspec/changes/<slug>/specs/a.md    -> True
+```
+
+- **Looser than glob**: `*` spans `/`, so `docs/plans/*{slug}*.md` also matches
+  `docs/plans/sub/x-<slug>-y.md`. Harmless — still under `docs/plans/`, still
+  contains the slug, still `.md`.
+- **Stricter than glob, and this one bites**: a glob-style `**/` segment demands a
+  literal extra `/`, so `openspec/changes/{slug}/**/*.md` would **miss
+  `proposal.md` and `tasks.md`** — precisely the two files the OpenSpec adapter
+  watches. Every pattern in this plan therefore uses a single `*`, never `**`.
+  Write `openspec/changes/{slug}/*.md`; because `*` spans `/`, it covers the
+  nested `specs/` layout too.
 | D5 | Scratch dir is `.harness/scratch/<slug>/`, compared **after** `canonical_relpath` | `canonical_relpath` resolves `..` and symlinks before the gate sees the path, so `.harness/scratch/x/../../gate-disabled` resolves to `.harness/gate-disabled`, fails the prefix test, and blocks. Same defence #85 used against symlink laundering. |
 
 ---
@@ -705,27 +724,49 @@ Apply the identical change at the `cli/gate.py` construction site so `gate check
 and the hook can never disagree (`d-single-gate-policy`: one policy, all readers).
 
 Add a test asserting the deferral holds — otherwise a later refactor silently
-reintroduces the cost. **Do not use `monkeypatch` here**: every test in this module
-drives the gate through `_hook()`, which is `subprocess.run` of a *child*
-interpreter, so patching in the parent process has no effect. Assert on observable
-behaviour instead — a **corrupt** config must be harmless in states that never read
-it, and fail-closed in the one that does:
+reintroduces the cost. Two traps to avoid, both of which produced a test that
+guards nothing:
+
+- **`monkeypatch` cannot go in the integration module.** Its tests drive the gate
+  through `_hook()`, i.e. `subprocess.run` of a *child* interpreter; patching in
+  the parent has no effect on the child.
+- **The deferral is not observable from the verdict.** `load_plan_paths` never
+  raises and fails closed to `[]`, and `PreToolUseGate` re-checks
+  `PLAN_PATH_ALLOW_STATES` itself — so reading or not reading the config yields
+  the *same* allow/block outcome in every state. Any test asserting on exit codes
+  is vacuous.
+
+The deferral is a **performance** property, so assert it where it lives: in-process,
+on the call itself. Put this in `tests/unit/daemon/test_hook_entry_decide.py`,
+calling `_decide` directly (no subprocess):
 
 ```python
-def test_corrupt_config_is_not_read_outside_intent_declared(repo):
-    """Deferral is observable: a config that would fail-closed if parsed must not
-    affect a state that never consults it."""
-    (repo / ".harness" / "plan-paths.yaml").write_text("plan_paths: [oops\n", "utf-8")
-    _set_state(repo, "IMPLEMENTATION_IN_PROGRESS")
-    assert _hook(repo, "Edit", "src/api.py") == 0        # allowed by the table
-    _set_state(repo, "AWAITING_CODE_REVIEW")
-    assert _hook(repo, "Edit", "src/api.py") == 2        # blocked by the table
-    # Same corrupt file DOES fail-closed where it is read (already covered by
-    # test_corrupt_config_fails_closed).
+import pytest
+import super_harness.core.plan_paths as plan_paths
+from super_harness.daemon import hook_entry
+
+
+@pytest.mark.parametrize(
+    "state,expect_read",
+    [("INTENT_DECLARED", True), ("IMPLEMENTATION_IN_PROGRESS", False),
+     ("AWAITING_CODE_REVIEW", False), ("READY_TO_MERGE", False)],
+)
+def test_plan_path_config_read_only_where_it_is_consulted(
+    tmp_repo, monkeypatch, state, expect_read
+):
+    calls: list = []
+    monkeypatch.setattr(
+        plan_paths, "load_plan_paths", lambda root: calls.append(root) or []
+    )
+    monkeypatch.chdir(tmp_repo)
+    _write_state(tmp_repo, "my-change", state)
+    hook_entry._decide("Edit", "src/api.py")
+    assert bool(calls) is expect_read
 ```
 
-Add `_set_state(repo, state)` as a small helper in the module that rewrites
-`current_state` in the fixture's `state.yaml`.
+`hook_entry` imports `load_plan_paths` inside `_decide`, so patching the module
+attribute is what the lookup resolves against — patch `plan_paths.load_plan_paths`,
+not a name bound at import time.
 
 **Step 4: Run to verify it passes**
 
@@ -757,16 +798,38 @@ def test_init_writes_plan_paths_skeleton(tmp_path):
     assert "plan-paths.yaml" in _skeleton_files()
 
 
-def test_plan_paths_skeleton_loads_to_the_default(tmp_path):
-    """The shipped skeleton must survive its own loader — a skeleton that
-    fails validation would silently ship a fail-closed empty list."""
+def test_plan_paths_skeleton_survives_its_own_loader(tmp_path):
+    """Every shipped pattern must pass validation — one that fails silently ships
+    a narrower allowance than the docs promise."""
     from super_harness.cli.init import _skeleton_files
     from super_harness.core.plan_paths import load_plan_paths
     (tmp_path / ".harness").mkdir()
     (tmp_path / ".harness" / "plan-paths.yaml").write_text(
         _skeleton_files()["plan-paths.yaml"], encoding="utf-8"
     )
-    assert load_plan_paths(tmp_path) == ["docs/plans/*{slug}*.md"]
+    assert load_plan_paths(tmp_path) == [
+        "docs/plans/*{slug}*.md",
+        "openspec/changes/{slug}/*.md",
+        "docs/superpowers/plans/*{slug}*.md",
+        "docs/superpowers/specs/*{slug}*.md",
+    ]
+
+
+def test_skeleton_openspec_pattern_matches_the_files_openspec_watches(tmp_path):
+    """Regression anchor for the `**` trap: fnmatch gives `**` no recursive
+    meaning, so a glob-style pattern would miss proposal.md / tasks.md — exactly
+    the files the OpenSpec adapter emits plan_ready from."""
+    from fnmatch import fnmatchcase
+    from super_harness.cli.init import _skeleton_files
+    import yaml
+    patterns = yaml.safe_load(_skeleton_files()["plan-paths.yaml"])["plan_paths"]
+    openspec = [p for p in patterns if p.startswith("openspec/")]
+    assert openspec, "skeleton must ship an openspec pattern"
+    for name in ("proposal.md", "tasks.md", "specs/nested.md"):
+        target = f"openspec/changes/my-change/{name}"
+        assert any(
+            fnmatchcase(target, p.replace("{slug}", "my-change")) for p in openspec
+        ), target
 
 
 def test_gitignore_covers_scratch():
@@ -794,11 +857,14 @@ Add to `_skeleton_files()`:
             "version: 1\n"
             "plan_paths:\n"
             '  - "docs/plans/*{slug}*.md"\n'
-            '  - "openspec/changes/{slug}/**/*.md"\n'
+            '  - "openspec/changes/{slug}/*.md"\n'
             '  - "docs/superpowers/plans/*{slug}*.md"\n'
             '  - "docs/superpowers/specs/*{slug}*.md"\n'
         ),
 ```
+
+Note the single `*` in the openspec line — a `**/` segment would miss
+`proposal.md` and `tasks.md` under `fnmatch` (see the D4 measurements).
 
 **All four ship enabled, none commented out.** `init --framework` is a documented
 no-op placeholder and `_skeleton_files()` takes no framework argument, so a

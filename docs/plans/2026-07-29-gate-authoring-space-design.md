@@ -95,9 +95,11 @@ New tracked config:
 # .harness/plan-paths.yaml   (tracked — editing it must itself pass the gate)
 version: 1
 plan_paths:
-  - "docs/plans/*{slug}*.md"            # default
-  # - "openspec/changes/{slug}/**/*.md" # openspec layout
-  # - "specs/{slug}/design.md"          # your own convention
+  - "docs/plans/*{slug}*.md"                 # generic / plain
+  - "openspec/changes/{slug}/*.md"           # openspec layout
+  - "docs/superpowers/plans/*{slug}*.md"     # superpowers candidate dirs
+  - "docs/superpowers/specs/*{slug}*.md"
+  # add your own, e.g. "specs/{slug}/design.md"; trim what you don't use
 ```
 
 **Guard rails (both mandatory, validated at load):**
