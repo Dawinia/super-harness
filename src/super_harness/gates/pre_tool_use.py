@@ -10,6 +10,8 @@ Gate contract; this gate may change in v0.2 without backwards compatibility.
 """
 from __future__ import annotations
 
+import glob
+from fnmatch import fnmatchcase
 from typing import ClassVar
 
 from super_harness.core.events import Event
@@ -23,6 +25,7 @@ from super_harness.gates import (
 )
 from super_harness.gates.decisions import (
     PLAN_ARTIFACT_ALLOW_STATES,
+    PLAN_PATH_ALLOW_STATES,
     PRE_TOOL_USE_DECISIONS,
     SCRATCH_ROOT,
     SUGGESTIONS,
@@ -42,6 +45,14 @@ class PreToolUseGate(Gate):
     name: ClassVar[str] = "pre-tool-use"
     version: ClassVar[str] = "0.1.0"
     fires_on: ClassVar[GateFiresOn] = "pre_tool_use"
+
+    def __init__(self, plan_path_patterns: list[str] | None = None) -> None:
+        """`plan_path_patterns` come from `core.plan_paths.load_plan_paths` (already
+        validated: each contains `{slug}` and ends in `.md`). Injected rather than
+        read here so the gate stays pure and testable. Default `None` keeps every
+        existing construction site (and every pre-existing test) behaving exactly as
+        before: no patterns → no plan-path allowance."""
+        self._plan_path_patterns = plan_path_patterns or []
 
     def decide(
         self,
@@ -71,6 +82,39 @@ class PreToolUseGate(Gate):
                     decision=GateDecision.ALLOW,
                     reason=f"{state.current_state}: scratch area ({rp})",
                 )
+        # Plan-path allowance (design 2026-07-29). Guards, in order: state opted in;
+        # a canonicalized path exists; the RESOLVED path is `.md` (so a symlinked
+        # `docs/plans/x-<slug>.md` -> `src/evil.py` cannot launder); the pattern list
+        # is really a list (a forged config must BLOCK, never raise — the hook treats
+        # an exception as non-blocking); and the slug-substituted pattern matches.
+        #
+        # `change_id` is ESCAPED before substitution. It is read from
+        # `.harness/state.yaml`, which is gitignored and writable by the agent in
+        # every ALLOW state, and `change start`'s slug validation does not protect
+        # that path — so a forged `change_id` containing `*`, `?` or `[...]` would
+        # otherwise widen the pattern past the active change (e.g. `*` turning
+        # `docs/plans/*{slug}*.md` into a match for every doc). `glob.escape` renders
+        # those characters literal, keeping the binding the guard rail promises.
+        if (
+            state.current_state in PLAN_PATH_ALLOW_STATES
+            and rp
+            and rp.lower().endswith(".md")
+            and state.change_id
+            and isinstance(state.change_id, str)
+            and isinstance(self._plan_path_patterns, list)
+        ):
+            safe_slug = glob.escape(state.change_id)
+            for pattern in self._plan_path_patterns:
+                if not isinstance(pattern, str):
+                    continue
+                if fnmatchcase(rp, pattern.replace("{slug}", safe_slug)):
+                    return GateResult(
+                        decision=GateDecision.ALLOW,
+                        reason=(
+                            f"{state.current_state}: plan-document authoring "
+                            f"authorized ({rp})"
+                        ),
+                    )
         if (
             state.current_state in PLAN_ARTIFACT_ALLOW_STATES
             and rp

@@ -216,3 +216,113 @@ def test_forged_change_id_cannot_allow_outside_scratch_tree(forged):
     # match that prefix and widen the allowance to someone else's scratch area.
     r = _decide(_state("INTENT_DECLARED", change_id=forged), ".harness/scratch/other-change/x.md")
     assert r.decision is GateDecision.BLOCK
+
+
+# --- Plan-path allowance (design 2026-07-29) ---
+
+PATTERNS = ["docs/plans/*{slug}*.md"]
+
+
+def test_plan_path_allowed_in_intent_declared():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.ALLOW
+
+
+def test_plan_path_not_allowed_in_awaiting_plan_review():
+    # D1 + design non-goal: the reviewer's frozen target must not move.
+    r = _decide(
+        _state("AWAITING_PLAN_REVIEW"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_plan_path_not_allowed_in_plan_rejected():
+    # D1: PLAN_REJECTED keeps using the recorded plan_artifacts list only.
+    r = _decide(
+        _state("PLAN_REJECTED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_plan_path_for_a_different_slug_is_blocked():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-other-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_non_md_resolved_path_is_blocked_even_if_pattern_matches():
+    # Symlink laundering: `docs/plans/x-my-change.md` -> `src/evil.py` canonicalizes
+    # to the .py, which must fail the post-resolution suffix check.
+    r = _decide(
+        _state("INTENT_DECLARED"), "src/evil.py", plan_path_patterns=PATTERNS
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_no_patterns_configured_blocks_as_before():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=[],
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_forged_non_list_patterns_block_cleanly():
+    # Defence in depth: a non-list must not raise (the hook would fail-open).
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns="docs/plans/*{slug}*.md",  # type: ignore[arg-type]
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_source_file_never_allowed_in_intent_declared():
+    r = _decide(
+        _state("INTENT_DECLARED"), "src/api.py", plan_path_patterns=PATTERNS
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_forged_glob_metachars_in_change_id_do_not_widen_the_pattern():
+    """`change_id` comes from the gitignored state.yaml, which the agent can write
+    in any ALLOW state. A `*` in it must NOT turn `docs/plans/*{slug}*.md` into a
+    match for every plan document."""
+    r = _decide(
+        _state("INTENT_DECLARED", change_id="*"),
+        "docs/plans/2026-07-29-somebody-elses-plan.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_forged_bracket_class_in_change_id_is_literal():
+    r = _decide(
+        _state("INTENT_DECLARED", change_id="[a-z]"),
+        "docs/plans/x-a-y.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_literal_metachar_slug_still_matches_its_own_document():
+    """Escaping must not break the legitimate case: a change_id containing a
+    metachar still matches the file literally named after it."""
+    r = _decide(
+        _state("INTENT_DECLARED", change_id="odd*name"),
+        "docs/plans/2026-07-29-odd*name-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.ALLOW
