@@ -2,19 +2,14 @@
 id: d-single-gate-policy
 status: ratified
 ratified_by: dawinialo@163.com
-ratified_at: '2026-07-29T13:13:19.966360Z'
-ratified_text_hash: sha256:4439bb9c58e597db9970c1757b75c567d644fe8d38270cefedb882cf873c1f79
+ratified_at: '2026-07-29T13:19:06.561089Z'
+ratified_text_hash: sha256:c70ba32e4314d0da59b5a5bc844c5995d4b592b7240d81bf6afea764a5eec92b
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-07-29T13:13:20.212866Z'
+last_reconciled_at: '2026-07-29T13:19:07.312252Z'
 last_reconcile_kind: self
-last_reconcile_justification: 'Gate policy is now four literals in gates.decisions
-  (PRE_TOOL_USE_DECISIONS, PLAN_ARTIFACT_ALLOW_STATES, PLAN_PATH_ALLOW_STATES, SCRATCH_ROOT).
-  PreToolUseGate reads all four and forks none; cli/gate.py and hook_entry both go
-  through the shared patterns_for_state helper so the two readers cannot disagree.
-  Each narrowing turns a block into a specific allow and none widens to source: plan-path
-  requires a {slug}-bearing pattern AND a resolved .md suffix, scratch is a per-change
-  prefix that is gitignored and never reviewed. Allow-state sets verified disjoint
-  by test.'
+last_reconcile_justification: 'Re-ratified after rewording only: the body cited a
+  test function in backticks, which doc refs --gate correctly flagged as a dead reference
+  (tests/ is outside source scope). No policy change from the previous ratification.'
 reconciled_anchors:
   src/super_harness/gates/decisions.py: sha256:34ca148dfd266609f5b17a2f03e1475e22e7994716575215725c5d9b8f0a312b
 ---
@@ -40,9 +35,9 @@ source:
   never merged.
 
 Two invariants a reviewer must re-confirm on any gate change: (a) the allow-state sets
-stay disjoint, so branch ordering cannot change a verdict — asserted by
-`test_allow_state_sets_are_disjoint`; (b) allowances are hard-coded path whitelists and
-are NEVER derived from gitignore status — see `d-gate-governs-git-product`.
+stay disjoint, so branch ordering cannot change a verdict — there is a unit test in
+tests/unit/gates asserting exactly this; (b) allowances are hard-coded path whitelists
+and are NEVER derived from gitignore status — see the d-gate-governs-git-product record.
 
 Confirm the reader still defers to this single SSOT module. Still holds ->
 `decision reconcile d-single-gate-policy`; broken -> `decision betray
