@@ -1760,3 +1760,20 @@ def test_init_gitignore_multiple_blocks_fails_loud(tmp_path: Path):
     assert "super-harness init:" in r.stderr
     # File left untouched (never spliced).
     assert gitignore.read_text() == before
+
+
+def test_every_skeleton_file_is_announced_in_the_frozen_plan() -> None:
+    """`init` must never write a file its reviewed plan did not announce.
+
+    The wizard shows a frozen plan ("Plan N files to write") and only then applies
+    it. That promise breaks silently if `_skeleton_files()` grows an entry while
+    `init_plan`'s path tuples do not: the file still lands, just unannounced. This
+    happened when `plan-paths.yaml` was added, so pin the invariant rather than the
+    one file.
+    """
+    from super_harness.cli.init import _skeleton_files
+    from super_harness.cli.init_plan import _REVIEW_PATHS, _SKELETON_PATHS
+
+    announced = {p.as_posix() for p in (*_SKELETON_PATHS, *_REVIEW_PATHS)}
+    written = {f".harness/{name}" for name in _skeleton_files()}
+    assert written <= announced, f"written but never announced: {sorted(written - announced)}"
