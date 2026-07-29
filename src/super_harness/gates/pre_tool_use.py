@@ -78,6 +78,9 @@ class PreToolUseGate(Gate):
         # into the list; `isinstance(list)` so a forged non-list state.yaml yields a
         # clean BLOCK instead of a `TypeError` the hook would fail-open on. Everything
         # else falls through to the table below (BLOCK).
+        # Allowances below are hard-coded path whitelists compared AFTER
+        # canonicalization — never derived from gitignore status.
+        # @decision:d-gate-governs-git-product
         rp = action.resolved_path
         # Scratch-area allowance (design 2026-07-29): the change's own scratch dir is
         # allowed in EVERY state. `rp` is already canonicalized by the caller, so a
