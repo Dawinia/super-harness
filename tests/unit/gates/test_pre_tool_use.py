@@ -123,3 +123,289 @@ def test_carveout_awaiting_never_allows() -> None:
         PreToolUseGate().decide(_act("docs/plans/c.md", "docs/plans/c.md"), st, []).decision
         is GateDecision.BLOCK
     )
+
+
+# --- Scratch-area allowance (design 2026-07-29) ---
+
+
+def _state(current: str, change_id: str = "my-change") -> ChangeState:
+    return ChangeState(change_id=change_id, current_state=current)
+
+
+def _decide(state, resolved, **kw):
+    return PreToolUseGate(**kw).decide(
+        ProposedAction(kind="edit", file=resolved, resolved_path=resolved), state, []
+    )
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        "INTENT_DECLARED",
+        "AWAITING_PLAN_REVIEW",
+        "PLAN_REJECTED",
+        "AWAITING_CODE_REVIEW",
+        "READY_TO_MERGE",
+        "ARCHIVED",
+        "ABANDONED",
+    ],
+)
+def test_scratch_area_allowed_in_every_blocking_state(current):
+    r = _decide(_state(current), ".harness/scratch/my-change/notes.md")
+    assert r.decision is GateDecision.ALLOW
+
+
+def test_scratch_area_allows_any_extension():
+    # It never enters git, so there is no reason to restrict it to .md.
+    r = _decide(_state("READY_TO_MERGE"), ".harness/scratch/my-change/probe.py")
+    assert r.decision is GateDecision.ALLOW
+
+
+def test_other_changes_scratch_is_blocked():
+    r = _decide(_state("INTENT_DECLARED"), ".harness/scratch/other-change/notes.md")
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_scratch_sibling_prefix_is_not_a_match():
+    # `.harness/scratch/my-change-evil/` must NOT satisfy the `my-change` prefix.
+    r = _decide(_state("INTENT_DECLARED"), ".harness/scratch/my-change-evil/x.md")
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_scratch_bare_directory_path_is_blocked():
+    r = _decide(_state("INTENT_DECLARED"), ".harness/scratch/my-change")
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_gate_disabled_path_is_never_allowed_via_scratch():
+    # Post-canonicalization the traversal has already resolved; the gate sees the
+    # real target and must block it.
+    r = _decide(_state("INTENT_DECLARED"), ".harness/gate-disabled")
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_traversal_out_of_scratch_resolves_and_blocks(tmp_path):
+    # Proves the actual composition (canonical_relpath -> gate), not just that
+    # the gate blocks an already-resolved string. A raw `..` traversal out of
+    # the scratch tree must canonicalize to its real target BEFORE the gate
+    # ever sees it, and that real target (the gate's own kill switch) blocks.
+    from super_harness.core.paths import canonical_relpath
+
+    rp = canonical_relpath(tmp_path, ".harness/scratch/my-change/../../gate-disabled")
+    assert rp == ".harness/gate-disabled"  # canonicalization did its job
+    r = _decide(_state("INTENT_DECLARED"), rp)
+    assert r.decision is GateDecision.BLOCK  # and the gate blocks the real target
+
+
+# --- Forged `change_id` (state.yaml is gitignored + agent-writable) ---
+
+
+@pytest.mark.parametrize("forged", [None, 0, 42, [], {}, True, "", "..", "../..", "a/../.."])
+def test_forged_change_id_never_raises_and_never_widens(forged):
+    # A forged non-str/empty/traversal-shaped change_id must never raise (the
+    # gate fails OPEN on exceptions) and must never turn into a widened ALLOW
+    # for an ordinary source path outside any scratch tree.
+    r = _decide(_state("INTENT_DECLARED", change_id=forged), "src/api.py")
+    assert r.decision is GateDecision.BLOCK
+
+
+@pytest.mark.parametrize("forged", [None, 0, 42, [], {}, True, "", "..", "../..", "a/../.."])
+def test_forged_change_id_cannot_allow_outside_scratch_tree(forged):
+    # Same forged ids, but this time the probe path lives under `.harness/scratch/`
+    # for a DIFFERENT, real-looking change id — a forged id must not accidentally
+    # match that prefix and widen the allowance to someone else's scratch area.
+    r = _decide(_state("INTENT_DECLARED", change_id=forged), ".harness/scratch/other-change/x.md")
+    assert r.decision is GateDecision.BLOCK
+
+
+# --- Plan-path allowance (design 2026-07-29) ---
+
+PATTERNS = ["docs/plans/*{slug}*.md"]
+
+
+def test_plan_path_allowed_in_intent_declared():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.ALLOW
+
+
+def test_plan_path_not_allowed_in_awaiting_plan_review():
+    # D1 + design non-goal: the reviewer's frozen target must not move.
+    r = _decide(
+        _state("AWAITING_PLAN_REVIEW"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_plan_path_not_allowed_in_plan_rejected():
+    # D1: PLAN_REJECTED keeps using the recorded plan_artifacts list only.
+    r = _decide(
+        _state("PLAN_REJECTED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_plan_path_for_a_different_slug_is_blocked():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-other-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_non_md_resolved_path_is_blocked_even_if_pattern_matches():
+    # Symlink laundering: `docs/plans/x-my-change.md` -> `src/evil.py` canonicalizes
+    # to the .py, which must fail the post-resolution suffix check.
+    r = _decide(
+        _state("INTENT_DECLARED"), "src/evil.py", plan_path_patterns=PATTERNS
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_no_patterns_configured_blocks_as_before():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=[],
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_forged_non_list_patterns_block_cleanly():
+    # Defence in depth: a non-list must not raise (the hook would fail-open).
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns="docs/plans/*{slug}*.md",  # type: ignore[arg-type]
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_source_file_never_allowed_in_intent_declared():
+    r = _decide(
+        _state("INTENT_DECLARED"), "src/api.py", plan_path_patterns=PATTERNS
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_forged_glob_metachars_in_change_id_do_not_widen_the_pattern():
+    """`change_id` comes from the gitignored state.yaml, which the agent can write
+    in any ALLOW state. A `*` in it must NOT turn `docs/plans/*{slug}*.md` into a
+    match for every plan document."""
+    r = _decide(
+        _state("INTENT_DECLARED", change_id="*"),
+        "docs/plans/2026-07-29-somebody-elses-plan.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_forged_bracket_class_in_change_id_is_literal():
+    r = _decide(
+        _state("INTENT_DECLARED", change_id="[a-z]"),
+        "docs/plans/x-a-y.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_literal_metachar_slug_still_matches_its_own_document():
+    """Escaping must not break the legitimate case: a change_id containing a
+    metachar still matches the file literally named after it."""
+    r = _decide(
+        _state("INTENT_DECLARED", change_id="odd*name"),
+        "docs/plans/2026-07-29-odd*name-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.ALLOW
+
+
+# --- Critical fixes: pattern-content validation + exception containment ---
+
+
+def test_pattern_without_slug_placeholder_blocks_unrelated_md():
+    # Critical-1: a pattern lacking `{slug}` must not degrade the allowance from
+    # "this change's plan document" to "any .md anywhere". Defence in depth even
+    # though core.plan_paths already rejects such patterns at load time — the gate
+    # is injected patterns and must not trust the loader's guarantee blindly.
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "AGENTS.md",
+        plan_path_patterns=["*.md"],
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_pattern_without_slug_placeholder_blocks_even_a_legitimate_looking_path():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=["*.md"],
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_non_str_pattern_in_list_does_not_block_a_valid_pattern_alongside_it():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=[123, "docs/plans/*{slug}*.md"],  # type: ignore[list-item]
+    )
+    assert r.decision is GateDecision.ALLOW
+
+
+class _HostileStr(str):
+    """A str subclass whose `.replace` raises — isinstance(pattern, str) is True,
+    so only a try/except around the per-pattern work (not a type check) can
+    contain this."""
+
+    def replace(self, *args: object, **kwargs: object) -> str:  # type: ignore[override]
+        raise RuntimeError("hostile pattern")
+
+
+def test_pattern_whose_replace_raises_blocks_instead_of_raising():
+    # Critical-2: an exception here must not propagate — the hook treats a
+    # non-returning gate as non-blocking, i.e. fails OPEN.
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=[_HostileStr("docs/plans/*{slug}*.md")],
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_uppercase_md_resolved_suffix_falls_through_to_block_on_case_mismatch():
+    # `.lower()` on the resolved-path suffix check is a defense-in-depth guard
+    # against a non-`.md` symlink target laundering through (mirroring the
+    # PLAN_ARTIFACT_ALLOW_STATES carve-out) — it does not promise the pattern MATCH
+    # itself is case-insensitive. `fnmatchcase` compares exact case, so a resolved
+    # path ending in `.MD` against a pattern authored in lowercase (this repo's own
+    # convention) correctly falls through to the block-by-default table. This is
+    # fail-closed, not a defect.
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.MD",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_uppercase_md_resolved_suffix_matches_when_pattern_case_agrees():
+    # Same resolved path as above, but now the pattern's own extension is also
+    # uppercase — proving the `.lower()` suffix pre-check does accept an uppercase
+    # `.MD` resolved path (it isn't rejected outright); whether the allowance
+    # actually fires is left to `fnmatchcase`'s exact-case comparison.
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.MD",
+        plan_path_patterns=["docs/plans/*{slug}*.MD"],
+    )
+    assert r.decision is GateDecision.ALLOW

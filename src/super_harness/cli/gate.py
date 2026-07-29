@@ -154,10 +154,17 @@ def gate_check(
         )
         sys.exit(EXIT_GENERIC)
 
+    from super_harness.core.plan_paths import patterns_for_state
     from super_harness.core.state_snapshot import load_state_snapshot
+    from super_harness.gates.decisions import PLAN_PATH_ALLOW_STATES
 
     snapshot = load_state_snapshot(root, change_id_override=change_id)
-    result = PreToolUseGate().decide(
+    # Shared helper with `hook_entry._decide` (d-single-gate-policy: one policy,
+    # all readers — `gate check` and the hook can never disagree). See
+    # `patterns_for_state`'s docstring in `core/plan_paths.py` for the deferral
+    # rationale.
+    patterns = patterns_for_state(root, snapshot.state, PLAN_PATH_ALLOW_STATES)
+    result = PreToolUseGate(plan_path_patterns=patterns).decide(
         ProposedAction(
             kind="edit", file=file, resolved_path=canonical_relpath(root, file)
         ),

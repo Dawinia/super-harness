@@ -313,9 +313,14 @@ This is where Claude Code (or your agent of choice) takes over. The agent
 sees the `AGENTS.md` super-harness section + the active change context and
 starts editing. The hot-path gate enforces lifecycle rules:
 
-- In `INTENT_DECLARED`, the agent can author `proposal.md` / `tasks.md` (the
-  OpenSpec adapter watches for these and emits `plan_ready` automatically →
-  `AWAITING_PLAN_REVIEW`).
+- In `INTENT_DECLARED`, authoring the plan document is allowed for any path
+  matching `.harness/plan-paths.yaml`. `init` ships that file with the OpenSpec
+  pattern (`openspec/changes/{slug}/*.md`) enabled by default, so writing
+  `proposal.md` / `tasks.md` under this change's `openspec/changes/` directory is
+  unblocked out of the box — the OpenSpec adapter then watches for them and
+  emits `plan_ready` automatically → `AWAITING_PLAN_REVIEW`. Everything else
+  (source files) stays blocked until then. Working notes that aren't part of
+  the plan itself go in `.harness/scratch/<slug>/`, writable in every state.
 - The plan is then reviewed. super-harness **does not run the review** — it
   compiles immutable contracts and enforces that all configured independent
   sources produce valid receipts. Reviewer **roles** are lifecycle positions

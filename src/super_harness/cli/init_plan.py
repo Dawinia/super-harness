@@ -318,6 +318,7 @@ _SKELETON_PATHS = (
     Path(".harness/derived-docs.yaml"),
     Path(".harness/verification.yaml"),
     Path(".harness/conventions.md"),
+    Path(".harness/plan-paths.yaml"),
 )
 _REVIEW_PATHS = (
     Path(".harness/review-governance.yaml"),

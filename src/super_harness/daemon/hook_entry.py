@@ -243,13 +243,22 @@ def _decide(
 
     import os
 
+    # Function-local (matches every other import in this function): keeps the
+    # `super-harness-hook` cold-start light when `_decide` is never reached
+    # (empty argv / unknown --agent return before this point).
+    from super_harness.core.plan_paths import patterns_for_state
     from super_harness.core.state_snapshot import load_state_snapshot
     from super_harness.gates import GateDecision, ProposedAction
+    from super_harness.gates.decisions import PLAN_PATH_ALLOW_STATES
     from super_harness.gates.pre_tool_use import PreToolUseGate
 
     override = os.environ.get("SUPER_HARNESS_CHANGE_ID")
     snapshot = load_state_snapshot(root, change_id_override=override)
-    result = PreToolUseGate().decide(
+    # Deferral (design 2026-07-29) lives inside `patterns_for_state` — see its
+    # docstring in `core/plan_paths.py` for the rationale and the
+    # d-single-gate-policy note on why `cli/gate.py` calls the same helper.
+    patterns = patterns_for_state(root, snapshot.state, PLAN_PATH_ALLOW_STATES)
+    result = PreToolUseGate(plan_path_patterns=patterns).decide(
         ProposedAction(
             kind="edit", file=file, resolved_path=canonical_relpath(root, file)
         ),

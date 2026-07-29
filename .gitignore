@@ -52,6 +52,7 @@ __pycache__/
 .harness/verification-results/
 .harness/operation-logs/
 .harness/pending-reviews/
+.harness/scratch/
 .harness/review-profiles.local.yaml
 .harness/gate-disabled
 .harness/daemon.pid

@@ -65,6 +65,14 @@ keeps working); an action taken through a tool Codex does not surface isn't caug
 in real time, so real-time coverage is narrower than Claude Code's. The CI cold
 floor backs the gap.
 
+**Authoring-space caveat:** super-harness also allows the change's plan document in
+`INTENT_DECLARED` (any path matching `.harness/plan-paths.yaml`) and scratch notes in
+`.harness/scratch/<slug>/` in every state — but both key off the edited file's path,
+and Codex's `apply_patch` hook payload never carries one (see the coverage caveat
+above). Neither carve-out can fire for Codex: an `apply_patch` edit to either
+location blocks in a blocking state exactly like any other edit. Draft the plan
+document before `change start` instead of relying on in-gate authoring for it.
+
 When a tool call is blocked:
 - Run `super-harness status` to see the change, its state, and the next step.
 - Resume context with `super-harness change resume <change_id>`.

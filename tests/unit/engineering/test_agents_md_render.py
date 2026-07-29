@@ -164,6 +164,16 @@ def test_section_points_to_norm_discovery_skill(tmp_path: Path) -> None:
     assert "repo access" in text
 
 
+def test_agents_md_documents_the_authoring_space() -> None:
+    """The Claude Code AGENTS.md subsection must name both new in-gate
+    authoring allowances (HG-PLAN-AUTHORING v2): the plan-paths.yaml-governed
+    plan document in INTENT_DECLARED, and the always-writable scratch area —
+    not just the pre-existing PLAN_REJECTED plan-artifact carve-out."""
+    text = ClaudeCodeAdapter().agents_md_subsection()
+    assert ".harness/scratch/" in text
+    assert "INTENT_DECLARED" in text
+
+
 def test_corrupt_adapters_yaml_broken_syntax_is_nonfatal(tmp_path: Path) -> None:
     """A syntactically-broken adapters.yaml raises yaml.YAMLError inside
     load_adapters; render swallows it (advisory on stderr) and still writes a

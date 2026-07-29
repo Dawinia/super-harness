@@ -553,6 +553,7 @@ def test_file_actions_are_ordered_before_any_apply_boundary(tmp_path: Path) -> N
         ".harness/derived-docs.yaml",
         ".harness/verification.yaml",
         ".harness/conventions.md",
+        ".harness/plan-paths.yaml",
         ".harness/review-governance.yaml",
         ".harness/review-profiles.local.yaml",
         ".codex/hooks.json",

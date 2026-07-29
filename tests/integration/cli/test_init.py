@@ -1085,6 +1085,48 @@ def test_init_scaffolds_derived_docs_skeleton(tmp_path: Path):
     assert errors == []
 
 
+def test_init_writes_plan_paths_skeleton(tmp_path: Path):
+    from super_harness.cli.init import _skeleton_files
+
+    assert "plan-paths.yaml" in _skeleton_files()
+
+
+def test_plan_paths_skeleton_survives_its_own_loader(tmp_path: Path):
+    """Every shipped pattern must pass validation — one that fails silently ships
+    a narrower allowance than the docs promise."""
+    from super_harness.cli.init import _skeleton_files
+    from super_harness.core.plan_paths import load_plan_paths
+
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".harness" / "plan-paths.yaml").write_text(
+        _skeleton_files()["plan-paths.yaml"], encoding="utf-8"
+    )
+    assert load_plan_paths(tmp_path) == [
+        "docs/plans/*{slug}*.md",
+        "openspec/changes/{slug}/*.md",
+        "docs/superpowers/plans/*{slug}*.md",
+        "docs/superpowers/specs/*{slug}*.md",
+    ]
+
+
+def test_skeleton_openspec_pattern_matches_the_files_openspec_watches(tmp_path: Path):
+    """Regression anchor for the `**` trap: fnmatch gives `**` no recursive
+    meaning, so a glob-style pattern would miss proposal.md / tasks.md — exactly
+    the files the OpenSpec adapter emits plan_ready from."""
+    from fnmatch import fnmatchcase
+
+    from super_harness.cli.init import _skeleton_files
+
+    patterns = yaml.safe_load(_skeleton_files()["plan-paths.yaml"])["plan_paths"]
+    openspec = [p for p in patterns if p.startswith("openspec/")]
+    assert openspec, "skeleton must ship an openspec pattern"
+    for name in ("proposal.md", "tasks.md", "specs/nested.md"):
+        target = f"openspec/changes/my-change/{name}"
+        assert any(
+            fnmatchcase(target, p.replace("{slug}", "my-change")) for p in openspec
+        ), target
+
+
 def test_init_idempotent_without_force(tmp_path: Path):
     runner = CliRunner()
     runner.invoke(main, ["--workspace", str(tmp_path), "init"])
@@ -1718,3 +1760,20 @@ def test_init_gitignore_multiple_blocks_fails_loud(tmp_path: Path):
     assert "super-harness init:" in r.stderr
     # File left untouched (never spliced).
     assert gitignore.read_text() == before
+
+
+def test_every_skeleton_file_is_announced_in_the_frozen_plan() -> None:
+    """`init` must never write a file its reviewed plan did not announce.
+
+    The wizard shows a frozen plan ("Plan N files to write") and only then applies
+    it. That promise breaks silently if `_skeleton_files()` grows an entry while
+    `init_plan`'s path tuples do not: the file still lands, just unannounced. This
+    happened when `plan-paths.yaml` was added, so pin the invariant rather than the
+    one file.
+    """
+    from super_harness.cli.init import _skeleton_files
+    from super_harness.cli.init_plan import _REVIEW_PATHS, _SKELETON_PATHS
+
+    announced = {p.as_posix() for p in (*_SKELETON_PATHS, *_REVIEW_PATHS)}
+    written = {f".harness/{name}" for name in _skeleton_files()}
+    assert written <= announced, f"written but never announced: {sorted(written - announced)}"

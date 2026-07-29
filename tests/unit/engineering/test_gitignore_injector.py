@@ -35,6 +35,7 @@ _CANONICAL_PATHS = (
     ".harness/verification-results/",
     ".harness/operation-logs/",
     ".harness/pending-reviews/",
+    ".harness/scratch/",
     ".harness/review-profiles.local.yaml",
     ".harness/gate-disabled",
     ".harness/daemon.pid",
@@ -411,3 +412,14 @@ def test_canonical_block_covers_codex_hook_config():
     body = _render_block()
     assert ".codex/hooks.json" in body
     assert ".codex/*.super-harness-backup.*" in body
+
+
+def test_gitignore_covers_scratch() -> None:
+    """gate-authoring-space: PreToolUseGate allows writes under
+    `.harness/scratch/<change_id>/` in EVERY lifecycle state, so the directory
+    must be gitignored from this same change — otherwise a scratch file is an
+    ordinary untracked-but-not-ignored file that `git add -A` and review
+    tooling sweep in."""
+    from super_harness.engineering.gitignore_injector import _CANONICAL_PATHS
+
+    assert ".harness/scratch/" in _CANONICAL_PATHS

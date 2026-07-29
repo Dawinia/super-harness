@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from super_harness.daemon import hook_entry
+from super_harness.gates.decisions import SUGGESTIONS
 
 
 def _init_state(root: Path, change_id: str, state: str, at: str = "2026-07-02T00:00:00Z") -> None:
@@ -42,7 +43,7 @@ def test_blocking_state_returns_suggestion(in_workspace: Path) -> None:
     decision, reason, suggested = hook_entry._decide("Edit", "f.py")
     assert decision == "block"
     assert "INTENT_DECLARED" in reason
-    assert suggested == "Draft a plan, then mark it ready, then retry the edit."
+    assert suggested == SUGGESTIONS["INTENT_DECLARED"]
 
 
 def test_allowing_state_allows(in_workspace: Path) -> None:
