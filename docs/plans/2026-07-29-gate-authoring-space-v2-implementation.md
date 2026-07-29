@@ -634,6 +634,7 @@ git commit -m "feat(gate): allow configured plan-document paths in INTENT_DECLAR
 ## Task 5: Wire the loader into both gate construction sites
 
 **Files:**
+- Modify: `src/super_harness/core/plan_paths.py` (add the shared `patterns_for_state` helper)
 - Modify: `src/super_harness/daemon/hook_entry.py:252` (`_decide`)
 - Modify: `src/super_harness/cli/gate.py` (the `gate check pre-tool-use` path)
 - Test: `tests/integration/daemon/test_hook_entry_plan_paths.py` (create)
@@ -822,9 +823,14 @@ def test_plan_path_config_read_only_where_it_is_consulted(
 
 Three things this test depends on, all easy to break later:
 
-- `hook_entry` imports `load_plan_paths` **inside** `_decide`, so the lookup
-  resolves against the module attribute at call time — patch
-  `plan_paths.load_plan_paths`, not a name bound at import.
+- The monkeypatch target is `plan_paths.load_plan_paths`, **not** anything bound in
+  `hook_entry`. After the helper extraction, `hook_entry` imports only
+  `patterns_for_state`; the call it makes to `load_plan_paths` is an intra-module
+  reference inside `core/plan_paths.py`, resolved through that module's own globals at
+  call time. That is what makes the patch work, and it stays robust whether the *outer*
+  import of `patterns_for_state` is function-local or hoisted. It would break if
+  `load_plan_paths` were moved to a different module or aliased — note that invariant
+  where it lives.
 - `monkeypatch.chdir` is required because `_decide` resolves the workspace from
   `Path.cwd()`.
 - `SUPER_HARNESS_CHANGE_ID` must be cleared (above). The unified shell-runner work
