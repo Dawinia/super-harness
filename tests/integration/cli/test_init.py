@@ -132,7 +132,7 @@ class _GuidedAnswers:
     def __init__(
         self,
         *,
-        checkboxes: list[tuple[str, ...] | None | BaseException],
+        checkboxes: list[tuple[str, ...] | BaseException | None],
         selects: list[str | None],
         texts: list[str] | None = None,
         before_review: Callable[[], None] | None = None,
