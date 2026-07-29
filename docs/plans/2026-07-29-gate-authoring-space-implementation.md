@@ -705,16 +705,27 @@ Apply the identical change at the `cli/gate.py` construction site so `gate check
 and the hook can never disagree (`d-single-gate-policy`: one policy, all readers).
 
 Add a test asserting the deferral holds — otherwise a later refactor silently
-reintroduces the cost:
+reintroduces the cost. **Do not use `monkeypatch` here**: every test in this module
+drives the gate through `_hook()`, which is `subprocess.run` of a *child*
+interpreter, so patching in the parent process has no effect. Assert on observable
+behaviour instead — a **corrupt** config must be harmless in states that never read
+it, and fail-closed in the one that does:
 
 ```python
-def test_config_is_not_read_outside_intent_declared(repo, monkeypatch):
-    """The YAML must not be touched in states that cannot use it."""
-    calls = []
-    import super_harness.core.plan_paths as pp
-    monkeypatch.setattr(pp, "load_plan_paths", lambda root: calls.append(root) or [])
-    # drive a non-INTENT_DECLARED state through _decide, assert calls == []
+def test_corrupt_config_is_not_read_outside_intent_declared(repo):
+    """Deferral is observable: a config that would fail-closed if parsed must not
+    affect a state that never consults it."""
+    (repo / ".harness" / "plan-paths.yaml").write_text("plan_paths: [oops\n", "utf-8")
+    _set_state(repo, "IMPLEMENTATION_IN_PROGRESS")
+    assert _hook(repo, "Edit", "src/api.py") == 0        # allowed by the table
+    _set_state(repo, "AWAITING_CODE_REVIEW")
+    assert _hook(repo, "Edit", "src/api.py") == 2        # blocked by the table
+    # Same corrupt file DOES fail-closed where it is read (already covered by
+    # test_corrupt_config_fails_closed).
 ```
+
+Add `_set_state(repo, state)` as a small helper in the module that rewrites
+`current_state` in the fixture's `state.yaml`.
 
 **Step 4: Run to verify it passes**
 
@@ -783,13 +794,20 @@ Add to `_skeleton_files()`:
             "version: 1\n"
             "plan_paths:\n"
             '  - "docs/plans/*{slug}*.md"\n'
-            "# openspec layout (openspec/changes/<slug>/proposal.md, tasks.md):\n"
-            '#  - "openspec/changes/{slug}/**/*.md"\n'
-            "# superpowers layouts (marked .md under its candidate dirs):\n"
-            '#  - "docs/superpowers/plans/*{slug}*.md"\n'
-            '#  - "docs/superpowers/specs/*{slug}*.md"\n'
+            '  - "openspec/changes/{slug}/**/*.md"\n'
+            '  - "docs/superpowers/plans/*{slug}*.md"\n'
+            '  - "docs/superpowers/specs/*{slug}*.md"\n'
         ),
 ```
+
+**All four ship enabled, none commented out.** `init --framework` is a documented
+no-op placeholder and `_skeleton_files()` takes no framework argument, so a
+commented-out pattern would leave a fresh OpenSpec repo blocked after this change
+— the coverage claim would be false until the owner hand-edits a file nothing
+tells them to edit. Enabling all four costs nothing: each stays `{slug}`-bound and
+`.md`-bound, and a pattern whose directory does not exist simply never matches.
+Owners trim what they don't use; they should not have to uncomment to get the
+behaviour the docs promise.
 
 The superpowers lines matter: the design's motivation names **both** adapters'
 auto-`plan_ready` paths as dead, and `adapters/framework/superpowers.py` scans
@@ -847,17 +865,26 @@ ABANDONED and cannot be reused), so `docs/plans/*{slug}*.md` expands to
 `…-gate-authoring-space-design.md` nor `…-implementation.md`. The allowance would
 fail closed exactly where this plan claims it works.
 
-The repo convention is `<slug>-<suffix>.md` (slug already carries the date):
-`2026-07-20-init-wizard-progressive-disclosure-design.md` for slug
-`init-wizard-progressive-disclosure`. Renaming restores that convention rather
-than working around the matcher — do **not** loosen the pattern to paper over it,
-since the `{slug}` requirement is the guard rail that keeps `AGENTS.md` and
+The repo convention is `<date>-<slug>-<suffix>.md`, and the slug itself usually
+carries **no** date: `2026-07-20-init-wizard-progressive-disclosure-design.md` for
+slug `init-wizard-progressive-disclosure`. Either way the filename contains the
+slug, which is all `*{slug}*.md` needs. This change is the odd one out because its
+slug already begins with a date *and* gained a `-v2` suffix the filenames never
+got. Renaming restores the invariant (filename contains the slug) rather than
+working around the matcher — do **not** loosen the pattern to paper over it, since
+the `{slug}` requirement is the guard rail that keeps `AGENTS.md` and
 `docs/decisions/**` out.
 
 Do this in `IMPLEMENTATION_IN_PROGRESS`, where the gate allows all edits — it is
-not a bypass. Update every in-repo reference to the old filenames afterwards
-(`git grep -l gate-authoring-space`), then re-run `plan ready` per Task 10 with
-the new names in `--scope`.
+not a bypass. Use `git mv` so the rename is staged as such, and update every
+in-repo reference to the old filenames afterwards (`git grep -l gate-authoring-space`).
+
+**Then list BOTH the old and the new paths in Task 10's `--scope`.** A rename only
+appears as a rename in `git diff` when similarity detection succeeds; these two
+files are being edited substantially on the same branch, so detection can fall
+below the threshold and the diff degrades to *delete old + add new*. The old paths
+would then be out-of-scope changes at the merge boundary. Declaring both costs
+nothing and is robust either way.
 
 **Verify:**
 
@@ -1070,6 +1097,8 @@ omitting it silently empties `plan_artifacts`):
 
 ```bash
 super-harness plan ready 2026-07-29-gate-authoring-space-v2 --scope '[
+  "docs/plans/2026-07-29-gate-authoring-space-design.md",
+  "docs/plans/2026-07-29-gate-authoring-space-implementation.md",
   "docs/plans/2026-07-29-gate-authoring-space-v2-design.md",
   "docs/plans/2026-07-29-gate-authoring-space-v2-implementation.md",
   ".harness/plan-paths.yaml",

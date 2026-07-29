@@ -38,9 +38,15 @@ Being honest about coverage, since the motivation leans on both:
 
 | adapter | how it identifies plan artifacts | covered by a `{slug}` pattern? |
 |---|---|---|
-| OpenSpec | path convention `openspec/changes/<slug>/…` | **fully** — the slug is in the path by construction |
-| Superpowers | `change:` frontmatter marker; filename free-form | **partially** — only where the filename happens to carry the slug |
+| OpenSpec | path convention `openspec/changes/<slug>/…` | **yes, via a shipped-enabled default pattern** — the slug is in the path by construction |
+| Superpowers | `change:` frontmatter marker; filename free-form | **only where the filename carries the slug** — the shipped defaults cover its candidate dirs, but a slug-less filename is not covered |
 | plain / none | owner's own convention | by configuration |
+
+The shipped skeleton enables all of these patterns rather than commenting them
+out. `init --framework` is a no-op placeholder and `_skeleton_files()` is
+framework-blind, so a commented default would leave a fresh OpenSpec repo blocked
+while the docs claimed otherwise. An unused pattern whose directory does not exist
+never matches, so shipping them enabled costs nothing.
 
 Superpowers' residue is structural, not an oversight: allowing on the *marker*
 would let the agent mark any `.md` (including `AGENTS.md`) as this change's plan,
