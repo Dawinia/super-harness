@@ -57,3 +57,24 @@ def test_never_raises_on_unreadable_file(tmp_path, monkeypatch):
         Path, "read_text", lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))
     )
     assert load_plan_paths(tmp_path) == []
+
+
+def test_deeply_nested_yaml_fails_closed_instead_of_raising(tmp_path):
+    # yaml.safe_load raises RecursionError (an Exception subclass, not caught by the
+    # earlier narrow tuple) on deeply nested structures. This must not escape
+    # load_plan_paths — the PreToolUse hook treats an uncaught exception as
+    # non-blocking, i.e. fail-OPEN, which is the opposite of this module's contract.
+    depth = 600
+    body = "plan_paths: " + "[" * depth + "]" * depth + "\n"
+    _write(tmp_path, body)
+    assert load_plan_paths(tmp_path) == []
+
+
+def test_windows_drive_letter_pattern_is_dropped(tmp_path):
+    _write(tmp_path, 'version: 1\nplan_paths:\n  - "C:/Windows/{slug}.md"\n')
+    assert load_plan_paths(tmp_path) == []
+
+
+def test_windows_backslash_pattern_is_dropped(tmp_path):
+    _write(tmp_path, 'version: 1\nplan_paths:\n  - "\\\\server\\\\share\\\\{slug}.md"\n')
+    assert load_plan_paths(tmp_path) == []
