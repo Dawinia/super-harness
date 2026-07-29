@@ -29,7 +29,24 @@ convention in `core/anchor_scanner.py:45`), pytest.
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | Plan-path allowance fires **only in `INTENT_DECLARED`** | `PLAN_REJECTED` already has the `plan_artifacts` mechanism whose "full replacement on each `plan_ready` = revoke" semantics would be diluted by a second, pattern-based source. Two non-overlapping mechanisms keep both existing proofs intact. |
+| D1 | Plan-path allowance fires **only in `INTENT_DECLARED`** | `PLAN_REJECTED` already has the `plan_artifacts` mechanism whose "full replacement on each `plan_ready` = revoke" semantics would be diluted by a second, pattern-based source. Two non-overlapping mechanisms keep both existing proofs intact. **Known gap — see below.** |
+
+> **D1's known gap (raised by plan review, accepted, disclosed).** The argument above
+> holds only where `plan_artifacts` is actually populated, i.e. for the manual
+> `plan ready --scope` verb. The **OpenSpec adapter emits `plan_ready` with an empty
+> payload and no `scope` key at all** (`adapters/framework/openspec.py`, which
+> deliberately refuses to mine a file list out of a task checklist), so
+> `cs.scope` stays at its default and `plan_artifacts` is **always empty** for an
+> adapter-driven change. For those repos there is no plan-artifact mechanism to
+> dilute — and with `PLAN_REJECTED` excluded here, an OpenSpec user still cannot
+> revise a rejected plan in-gate. This change fixes their `INTENT_DECLARED` authoring
+> and leaves their reject loop where it was.
+>
+> Not fixed here because the sound repair is a new decision, not a one-line widening:
+> plan-path patterns would have to apply in `PLAN_REJECTED` *only when
+> `plan_artifacts` is empty*, so the two mechanisms still never overlap. That is
+> defensible (the emptiness is set by the flow, not by the agent) but it is a design
+> change with its own review surface. Recorded in `docs/limitations.md`.
 | D2 | **No `change start --plan` flag** | That value would be supplied by the governed agent at `change start` — self-declared identity, the exact thing rejected in design §Design/1. The tracked config file already covers per-repo layout, and editing it is itself a gated edit. |
 | D3 | Config loader is **fail-CLOSED** (unlike `core/source_scope.py`) | `source_scope` degrades to permissive defaults because a typo there must not brick doc scanning. Here a corrupt file degrading to the default would *grant* an allowance the owner may have narrowed. Corrupt/missing-key → `[]` → nothing allowed → the state table blocks, i.e. today's behaviour. A **missing file** is different: it means "never configured" → the built-in default applies. |
 | D4 | Matching via `fnmatch.fnmatchcase` on the POSIX repo-relative path | Consistent with `anchor_scanner`. **`fnmatch` is not glob**: `*` crosses `/` and `**` carries no recursive meaning. Both consequences are load-bearing — see the measurements below the table. Not worth a bespoke segment-aware matcher (YAGNI). |
@@ -721,8 +738,14 @@ cost, `state_snapshot`'s single parse with CSafeLoader):
     )
 ```
 
-Apply the identical change at the `cli/gate.py` construction site so `gate check`
-and the hook can never disagree (`d-single-gate-policy`: one policy, all readers).
+**Do not copy the predicate into `cli/gate.py`.** Spreading the read-skip decision
+across two call sites is exactly the drift `d-single-gate-policy` exists to prevent,
+and this project already built `core/state_snapshot.py` to collapse duplicated re-read
+logic across these same two sites. Extract a shared helper — `patterns_for_state(root,
+state, allow_states)` in `core/plan_paths.py` — and have both sites call it. Pass the
+allow-states set in as a **parameter**: `PLAN_PATH_ALLOW_STATES` lives in
+`gates/decisions.py`, and `core` importing `gates` would break the `core-is-base`
+contract, while copying the frozenset into `core` would fork the single source.
 
 Add a test asserting the deferral holds — otherwise a later refactor silently
 reintroduces the cost. Two traps to avoid, both of which produced a test that
@@ -1066,7 +1089,8 @@ Add to the AGENTS.md subsection, next to the existing `PLAN_REJECTED` paragraph:
 
 Correct `docs/getting-started.md:315` to state that plan authoring in
 `INTENT_DECLARED` requires the path to be covered by `plan-paths.yaml`, and that the
-OpenSpec layout needs the commented-out pattern enabled. Add the scratch area and the
+OpenSpec pattern ships enabled by default (Task 6), so that layout works out of the
+box and owners trim what they do not use. Add the scratch area and the
 one-sentence rule to `docs/concepts.md`. Update `docs/limitations.md`'s plan-artifact
 section.
 
@@ -1120,17 +1144,22 @@ Body must record the load-bearing evidence: `.harness/gate-disabled`,
 gitignored, so a gitignore-derived allowance would let a blocked agent disable the
 gate.
 
-**Step 3: Arm it if — and only if — a non-hollow check exists**
+**Step 3: Arm it if — and only if — a non-hollow check exists. RESOLVED: it does not.**
 
-Candidate `check` block (verify it actually bites before keeping it):
+The idea was a probe asserting, against the real `PreToolUseGate`, that
+`.harness/gate-disabled` and `.claude/settings.local.json` BLOCK in every state. It does
+not survive contact with the bite-test rules:
 
-```check
-python -m tests.probes.gate_kill_switch_probe
-```
+- A `counterexample` block can only **ADD a file**. Making the gate allow one of those
+  paths requires *changing an existing constant* (the whitelists), which no added file
+  can do. The counterexample could therefore never flip the verdict, so `decision ratify`
+  would reject it — and if it somehow passed, it would pass for the wrong reason.
+- The sketch also assumed a `tests.probes` package that does not exist (and `tests/`
+  ships no `__init__.py`), so the armed path could not have run as written.
 
-The probe must assert, against the real `PreToolUseGate`, that `.harness/gate-disabled`
-and `.claude/settings.local.json` BLOCK in every state. Required `counterexample`: add
-`".harness"` to a whitelist constant and confirm the probe fails.
+**Ship it tier-2 with a `review` block instead**, and say inside the record *why* it is
+not armed, so a later reader does not re-litigate it. An armed-but-hollow check is worse
+than none: it claims mechanical enforcement that is not there.
 
 **If no honest check can be written, leave it tier-2 with a `review` block** — an
 armed-but-hollow check is worse than none (`decision ratify` will refuse it anyway:
