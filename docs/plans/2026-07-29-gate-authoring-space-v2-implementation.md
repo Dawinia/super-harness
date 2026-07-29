@@ -845,7 +845,8 @@ Expected: PASS
 **Step 5: Commit**
 
 ```bash
-git add src/super_harness/daemon/hook_entry.py src/super_harness/cli/gate.py \
+git add src/super_harness/core/plan_paths.py \
+        src/super_harness/daemon/hook_entry.py src/super_harness/cli/gate.py \
         tests/integration/daemon/test_hook_entry_plan_paths.py \
         tests/unit/daemon/test_hook_entry_decide.py
 git commit -m "feat(gate): load plan-path config at both gate construction sites"
