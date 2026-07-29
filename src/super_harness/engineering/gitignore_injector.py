@@ -66,7 +66,11 @@ GITIGNORE_END_MARKER = "# <<< super-harness gitignore"
 #     transient flock sentinels (`.harness/.state.lock`, `.harness/.events.lock`,
 #     any future `.harness/.<name>.lock`) are covered by the `.harness/.*.lock`
 #     glob below (F4 — previously `.state.lock` was ignored by a hand-written
-#     line outside this block, an init gap for downstream repos).
+#     line outside this block, an init gap for downstream repos). `.harness/scratch/`
+#     is the per-change scratch area the gate allows writes to in every lifecycle
+#     state (gate-authoring-space); it must be ignored from the moment the gate
+#     allows writes there, not just once its own review/merge tooling exists,
+#     or an ordinary `git add -A` sweeps a scratch file into a commit.
 #  2. Per-agent local settings + their backups. `adapter install claude-code`
 #     installs the gate hook into `.claude/settings.local.json` (which carries
 #     a machine-specific absolute path, so it must never be committed) and
@@ -88,6 +92,7 @@ _CANONICAL_PATHS: tuple[str, ...] = (
     ".harness/verification-results/",
     ".harness/operation-logs/",
     ".harness/pending-reviews/",
+    ".harness/scratch/",
     ".harness/review-profiles.local.yaml",
     ".harness/gate-disabled",
     ".harness/daemon.pid",

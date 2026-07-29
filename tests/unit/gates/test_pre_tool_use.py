@@ -182,3 +182,37 @@ def test_gate_disabled_path_is_never_allowed_via_scratch():
     # real target and must block it.
     r = _decide(_state("INTENT_DECLARED"), ".harness/gate-disabled")
     assert r.decision is GateDecision.BLOCK
+
+
+def test_traversal_out_of_scratch_resolves_and_blocks(tmp_path):
+    # Proves the actual composition (canonical_relpath -> gate), not just that
+    # the gate blocks an already-resolved string. A raw `..` traversal out of
+    # the scratch tree must canonicalize to its real target BEFORE the gate
+    # ever sees it, and that real target (the gate's own kill switch) blocks.
+    from super_harness.core.paths import canonical_relpath
+
+    rp = canonical_relpath(tmp_path, ".harness/scratch/my-change/../../gate-disabled")
+    assert rp == ".harness/gate-disabled"  # canonicalization did its job
+    r = _decide(_state("INTENT_DECLARED"), rp)
+    assert r.decision is GateDecision.BLOCK  # and the gate blocks the real target
+
+
+# --- Forged `change_id` (state.yaml is gitignored + agent-writable) ---
+
+
+@pytest.mark.parametrize("forged", [None, 0, 42, [], {}, True, "", "..", "../..", "a/../.."])
+def test_forged_change_id_never_raises_and_never_widens(forged):
+    # A forged non-str/empty/traversal-shaped change_id must never raise (the
+    # gate fails OPEN on exceptions) and must never turn into a widened ALLOW
+    # for an ordinary source path outside any scratch tree.
+    r = _decide(_state("INTENT_DECLARED", change_id=forged), "src/api.py")
+    assert r.decision is GateDecision.BLOCK
+
+
+@pytest.mark.parametrize("forged", [None, 0, 42, [], {}, True, "", "..", "../..", "a/../.."])
+def test_forged_change_id_cannot_allow_outside_scratch_tree(forged):
+    # Same forged ids, but this time the probe path lives under `.harness/scratch/`
+    # for a DIFFERENT, real-looking change id — a forged id must not accidentally
+    # match that prefix and widen the allowance to someone else's scratch area.
+    r = _decide(_state("INTENT_DECLARED", change_id=forged), ".harness/scratch/other-change/x.md")
+    assert r.decision is GateDecision.BLOCK
