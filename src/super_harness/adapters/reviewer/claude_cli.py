@@ -60,7 +60,16 @@ class ClaudeCliReviewerProtocol(ReviewerProtocolAdapter):
             ) from exc
         if not isinstance(schema, dict):
             raise ReviewerProtocolError("Claude verdict schema must be a JSON object")
-        compact_schema = json.dumps(schema, separators=(",", ":"), sort_keys=True)
+        # The installed Claude CLI validates `--json-schema` against its own registry
+        # and rejects the draft-2020-12 `$schema` URI outright ("no schema with key or
+        # ref https://json-schema.org/draft/2020-12/schema"), exiting non-zero with an
+        # EMPTY stdout — which then surfaces downstream as an unparseable result, not
+        # as the schema error it really is. The annotation is meaningless for a schema
+        # inlined on the command line anyway. The strip is protocol-local and operates
+        # on a copy: codex-cli passes the SAME file by path (`--output-schema`) and
+        # does accept `$schema`, so the on-disk artefact must keep it.
+        inlined = {k: v for k, v in schema.items() if k != "$schema"}
+        compact_schema = json.dumps(inlined, separators=(",", ":"), sort_keys=True)
         output_path = run_dir / "result.raw.json"
         argv = (
             self.executable,
