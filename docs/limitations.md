@@ -65,6 +65,16 @@ deliberately deferred to a later version; one is blocked by an upstream bug
   directories for the common case where the filename *does* carry the slug.
 - **OpenSpec is covered by default** (`openspec/changes/{slug}/*.md`, shipped enabled),
   because that layout puts the slug in the path by construction.
+- **An OpenSpec-driven change still cannot revise a *rejected* plan in-gate.** The
+  plan-path allowance is `INTENT_DECLARED`-only; `PLAN_REJECTED` is served by the older
+  `plan_artifacts` carve-out instead, and `plan_artifacts` is recorded from the manual
+  `plan ready --scope` submission. The OpenSpec adapter emits `plan_ready` with an empty
+  payload and no `scope` key (it deliberately refuses to mine a file list out of a task
+  checklist), so `plan_artifacts` is always empty for those changes and the carve-out
+  never fires. Their reject loop therefore still needs the
+  draft-before-`change start` path. The sound repair — apply plan-path patterns in
+  `PLAN_REJECTED` *only when `plan_artifacts` is empty*, keeping the two mechanisms
+  non-overlapping — is a design change with its own review surface and is not made here.
 - The same **Codex** and **hardlink** residuals listed above apply here unchanged: Codex
   supplies no `file_path`, so no path-based allowance can fire for it, and path
   resolution cannot see through a hardlink.
