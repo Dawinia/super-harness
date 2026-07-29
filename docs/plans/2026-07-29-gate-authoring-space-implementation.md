@@ -32,7 +32,8 @@ convention in `core/anchor_scanner.py:45`), pytest.
 | D1 | Plan-path allowance fires **only in `INTENT_DECLARED`** | `PLAN_REJECTED` already has the `plan_artifacts` mechanism whose "full replacement on each `plan_ready` = revoke" semantics would be diluted by a second, pattern-based source. Two non-overlapping mechanisms keep both existing proofs intact. |
 | D2 | **No `change start --plan` flag** | That value would be supplied by the governed agent at `change start` — self-declared identity, the exact thing rejected in design §Design/1. The tracked config file already covers per-repo layout, and editing it is itself a gated edit. |
 | D3 | Config loader is **fail-CLOSED** (unlike `core/source_scope.py`) | `source_scope` degrades to permissive defaults because a typo there must not brick doc scanning. Here a corrupt file degrading to the default would *grant* an allowance the owner may have narrowed. Corrupt/missing-key → `[]` → nothing allowed → the state table blocks, i.e. today's behaviour. A **missing file** is different: it means "never configured" → the built-in default applies. |
-| D4 | Matching via `fnmatch.fnmatchcase` on the POSIX repo-relative path | Consistent with `anchor_scanner`. **`fnmatch` is not glob**: `*` crosses `/` and `**` carries no recursive meaning. Both consequences are load-bearing — see below. Not worth a bespoke segment-aware matcher (YAGNI). |
+| D4 | Matching via `fnmatch.fnmatchcase` on the POSIX repo-relative path | Consistent with `anchor_scanner`. **`fnmatch` is not glob**: `*` crosses `/` and `**` carries no recursive meaning. Both consequences are load-bearing — see the measurements below the table. Not worth a bespoke segment-aware matcher (YAGNI). |
+| D5 | Scratch dir is `.harness/scratch/<slug>/`, compared **after** `canonical_relpath` | `canonical_relpath` resolves `..` and symlinks before the gate sees the path, so `.harness/scratch/x/../../gate-disabled` resolves to `.harness/gate-disabled`, fails the prefix test, and blocks. Same defence #85 used against symlink laundering. |
 
 ### `fnmatch` semantics — measured, because they cut both ways
 
@@ -52,7 +53,6 @@ openspec/changes/<slug>/*.md     vs  openspec/changes/<slug>/specs/a.md    -> Tr
   watches. Every pattern in this plan therefore uses a single `*`, never `**`.
   Write `openspec/changes/{slug}/*.md`; because `*` spans `/`, it covers the
   nested `specs/` layout too.
-| D5 | Scratch dir is `.harness/scratch/<slug>/`, compared **after** `canonical_relpath` | `canonical_relpath` resolves `..` and symlinks before the gate sees the path, so `.harness/scratch/x/../../gate-disabled` resolves to `.harness/gate-disabled`, fails the prefix test, and blocks. Same defence #85 used against symlink laundering. |
 
 ---
 
@@ -619,6 +619,7 @@ git commit -m "feat(gate): allow configured plan-document paths in INTENT_DECLAR
 - Modify: `src/super_harness/daemon/hook_entry.py:252` (`_decide`)
 - Modify: `src/super_harness/cli/gate.py` (the `gate check pre-tool-use` path)
 - Test: `tests/integration/daemon/test_hook_entry_plan_paths.py` (create)
+- Test: `tests/unit/daemon/test_hook_entry_decide.py` (create — the deferral assertion)
 
 **Step 1: Write the failing test**
 
@@ -737,13 +738,35 @@ guards nothing:
   is vacuous.
 
 The deferral is a **performance** property, so assert it where it lives: in-process,
-on the call itself. Put this in `tests/unit/daemon/test_hook_entry_decide.py`,
-calling `_decide` directly (no subprocess):
+on the call itself. Create `tests/unit/daemon/test_hook_entry_decide.py` calling
+`_decide` directly (no subprocess). Neither `tmp_repo` nor a state-writing helper
+exists anywhere in `tests/` today — `tests/conftest.py` declares no fixtures and
+`tests/unit/daemon/` holds only `test_smoke.py` and `test_hook_entry.py` — so the
+file must define both itself:
 
 ```python
 import pytest
+import yaml
+
 import super_harness.core.plan_paths as plan_paths
 from super_harness.daemon import hook_entry
+
+
+def _repo(tmp_path, change_id: str, state: str):
+    """Minimal workspace: .harness/ plus one change in the requested state."""
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".harness" / "state.yaml").write_text(
+        yaml.safe_dump(
+            {"changes": {change_id: {
+                "change_id": change_id,
+                "current_state": state,
+                "last_event_at": "2026-07-29T00:00:00Z",
+                "plan_artifacts": [],
+            }}}
+        ),
+        encoding="utf-8",
+    )
+    return tmp_path
 
 
 @pytest.mark.parametrize(
@@ -752,25 +775,26 @@ from super_harness.daemon import hook_entry
      ("AWAITING_CODE_REVIEW", False), ("READY_TO_MERGE", False)],
 )
 def test_plan_path_config_read_only_where_it_is_consulted(
-    tmp_repo, monkeypatch, state, expect_read
+    tmp_path, monkeypatch, state, expect_read
 ):
+    root = _repo(tmp_path, "my-change", state)
     calls: list = []
     monkeypatch.setattr(
-        plan_paths, "load_plan_paths", lambda root: calls.append(root) or []
+        plan_paths, "load_plan_paths", lambda r: calls.append(r) or []
     )
-    monkeypatch.chdir(tmp_repo)
-    _write_state(tmp_repo, "my-change", state)
+    monkeypatch.chdir(root)
     hook_entry._decide("Edit", "src/api.py")
     assert bool(calls) is expect_read
 ```
 
-`hook_entry` imports `load_plan_paths` inside `_decide`, so patching the module
-attribute is what the lookup resolves against — patch `plan_paths.load_plan_paths`,
-not a name bound at import time.
+`hook_entry` imports `load_plan_paths` **inside** `_decide`, so the lookup resolves
+against the module attribute at call time — patch `plan_paths.load_plan_paths`, not
+a name bound at import. `monkeypatch.chdir` is required because `_decide` resolves
+the workspace from `Path.cwd()`.
 
 **Step 4: Run to verify it passes**
 
-Run: `.venv/bin/pytest tests/integration/daemon/ tests/unit/gates/ -v`
+Run: `.venv/bin/pytest tests/integration/daemon/ tests/unit/daemon/ tests/unit/gates/ -v`
 Expected: PASS
 
 **Step 5: Commit**
