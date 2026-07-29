@@ -739,10 +739,10 @@ guards nothing:
 
 The deferral is a **performance** property, so assert it where it lives: in-process,
 on the call itself. Create `tests/unit/daemon/test_hook_entry_decide.py` calling
-`_decide` directly (no subprocess). Neither `tmp_repo` nor a state-writing helper
-exists anywhere in `tests/` today — `tests/conftest.py` declares no fixtures and
-`tests/unit/daemon/` holds only `test_smoke.py` and `test_hook_entry.py` — so the
-file must define both itself:
+`_decide` directly (no subprocess). Before writing it, check what is actually
+available (`ls tests/unit/daemon/`, `grep -n "^def \|fixture" tests/conftest.py`)
+and reuse anything that fits; the sketch below defines its own workspace builder
+because nothing named `tmp_repo` exists to borrow:
 
 ```python
 import pytest
@@ -777,6 +777,10 @@ def _repo(tmp_path, change_id: str, state: str):
 def test_plan_path_config_read_only_where_it_is_consulted(
     tmp_path, monkeypatch, state, expect_read
 ):
+    # `_decide` honours SUPER_HARNESS_CHANGE_ID as a change-id override; a value
+    # leaking in from the ambient environment would resolve a different (or no)
+    # change and silently invalidate the parametrisation. Same hazard #60 fixed.
+    monkeypatch.delenv("SUPER_HARNESS_CHANGE_ID", raising=False)
     root = _repo(tmp_path, "my-change", state)
     calls: list = []
     monkeypatch.setattr(
@@ -787,10 +791,16 @@ def test_plan_path_config_read_only_where_it_is_consulted(
     assert bool(calls) is expect_read
 ```
 
-`hook_entry` imports `load_plan_paths` **inside** `_decide`, so the lookup resolves
-against the module attribute at call time — patch `plan_paths.load_plan_paths`, not
-a name bound at import. `monkeypatch.chdir` is required because `_decide` resolves
-the workspace from `Path.cwd()`.
+Three things this test depends on, all easy to break later:
+
+- `hook_entry` imports `load_plan_paths` **inside** `_decide`, so the lookup
+  resolves against the module attribute at call time — patch
+  `plan_paths.load_plan_paths`, not a name bound at import.
+- `monkeypatch.chdir` is required because `_decide` resolves the workspace from
+  `Path.cwd()`.
+- `SUPER_HARNESS_CHANGE_ID` must be cleared (above). The unified shell-runner work
+  scrubs `SUPER_HARNESS_*` for subprocess paths, but this test calls `_decide`
+  in-process, so it must clear the variable itself.
 
 **Step 4: Run to verify it passes**
 
@@ -801,7 +811,8 @@ Expected: PASS
 
 ```bash
 git add src/super_harness/daemon/hook_entry.py src/super_harness/cli/gate.py \
-        tests/integration/daemon/test_hook_entry_plan_paths.py
+        tests/integration/daemon/test_hook_entry_plan_paths.py \
+        tests/unit/daemon/test_hook_entry_decide.py
 git commit -m "feat(gate): load plan-path config at both gate construction sites"
 ```
 
