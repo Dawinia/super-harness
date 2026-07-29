@@ -145,6 +145,16 @@ def test_never_raises_on_unreadable_file(tmp_path, monkeypatch):
     assert load_plan_paths(tmp_path) == []
 ```
 
+> **The default must equal the shipped skeleton, not a subset.** `init` writes those
+> four patterns for *new* repos, but a repo initialized before this version has no
+> `plan-paths.yaml` at all and falls through to this constant. If the constant carried
+> only the `docs/plans` entry, every existing adopter would silently get one quarter of
+> the documented coverage — the OpenSpec and Superpowers layouts the design promises
+> would stay blocked, with nothing telling them to create a file. Keeping the two in
+> lockstep is also what lets `test_plan_paths_skeleton_survives_its_own_loader` mean
+> something. Widening costs nothing: each entry is still `{slug}`-bound and `.md`-bound,
+> and a pattern whose directory does not exist never matches.
+
 **Step 2: Run to verify it fails**
 
 Run: `.venv/bin/pytest tests/unit/core/test_plan_paths.py -v`
@@ -184,7 +194,12 @@ import yaml
 # Matches this repo's own convention: `<date>-<slug>-<suffix>.md`, and one change
 # routinely has both a `-design.md` and an `-implementation.md`, so the slug sits in
 # the middle and an exact `{slug}.md` would match none of them.
-DEFAULT_PLAN_PATHS: tuple[str, ...] = ("docs/plans/*{slug}*.md",)
+DEFAULT_PLAN_PATHS: tuple[str, ...] = (
+    "docs/plans/*{slug}*.md",
+    "openspec/changes/{slug}/*.md",
+    "docs/superpowers/plans/*{slug}*.md",
+    "docs/superpowers/specs/*{slug}*.md",
+)
 
 SLUG_PLACEHOLDER = "{slug}"
 
@@ -915,6 +930,15 @@ def test_skeleton_openspec_pattern_matches_the_files_openspec_watches(tmp_path):
 def test_gitignore_covers_scratch():
     from super_harness.engineering.gitignore_injector import _CANONICAL_PATHS
     assert ".harness/scratch/" in _CANONICAL_PATHS
+
+
+def test_every_skeleton_file_is_announced_in_the_frozen_plan():
+    """`init` must never write a file its reviewed plan did not announce."""
+    from super_harness.cli.init import _skeleton_files
+    from super_harness.cli.init_plan import _REVIEW_PATHS, _SKELETON_PATHS
+    announced = {p.as_posix() for p in (*_SKELETON_PATHS, *_REVIEW_PATHS)}
+    written = {f".harness/{name}" for name in _skeleton_files()}
+    assert written <= announced, f"written but never announced: {sorted(written - announced)}"
 ```
 
 **Step 2: Run to verify it fails**
@@ -1271,6 +1295,7 @@ super-harness plan ready 2026-07-29-gate-authoring-space-v2 --scope '[
   "docs/plans/2026-07-29-gate-authoring-space-v2-design.md",
   "docs/plans/2026-07-29-gate-authoring-space-v2-implementation.md",
   ".harness/plan-paths.yaml",
+  ".harness/attestations/2026-07-29-gate-authoring-space-v2.jsonl",
   "src/super_harness/core/plan_paths.py",
   "src/super_harness/gates/decisions.py",
   "src/super_harness/gates/pre_tool_use.py",
