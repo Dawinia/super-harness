@@ -15,7 +15,13 @@ the policy never drags in the CLI or observer stacks.
 """
 from __future__ import annotations
 
-__all__ = ["PLAN_ARTIFACT_ALLOW_STATES", "PRE_TOOL_USE_DECISIONS", "SUGGESTIONS"]
+__all__ = [
+    "PLAN_ARTIFACT_ALLOW_STATES",
+    "PLAN_PATH_ALLOW_STATES",
+    "PRE_TOOL_USE_DECISIONS",
+    "SCRATCH_ROOT",
+    "SUGGESTIONS",
+]
 
 # 10-state decision table from lifecycle-event-model §3.7. Verbatim copy —
 # every (decision, reason) pair must match the spec's Gate 矩阵 exactly.
@@ -48,6 +54,26 @@ PRE_TOOL_USE_DECISIONS: dict[str, tuple[str, str]] = {
 # edits, so the carve-out is moot there).
 # @decision:d-single-gate-policy
 PLAN_ARTIFACT_ALLOW_STATES: frozenset[str] = frozenset({"PLAN_REJECTED"})
+
+# States whose default is `block` but where an edit to a path matching the owner's
+# configured plan-path patterns (`.harness/plan-paths.yaml`, validated in
+# `core.plan_paths`) is ALLOWED. INTENT_DECLARED only, by design: it is the state with
+# no recorded `plan_artifacts` yet (nothing to narrow to), and it is where first
+# authoring happens. PLAN_REJECTED deliberately does NOT appear here — it already has
+# the `plan_artifacts` carve-out above, whose "replaced wholesale on each plan_ready"
+# revocation semantics a second pattern-based source would dilute.
+# @decision:d-single-gate-policy
+PLAN_PATH_ALLOW_STATES: frozenset[str] = frozenset({"INTENT_DECLARED"})
+
+# Per-change scratch area, allowed in EVERY state (including terminal ones). It is
+# gitignored, never enters a review bundle, and never reaches a merge gate — blocking
+# it prevents nothing and only pushes the agent toward the shell. Allowing it
+# unconditionally is what lets the gate keep one rule ("the gate governs files that
+# will enter git as product") instead of a second per-state table. The gate appends
+# `/<change_id>/` and compares against the CANONICALIZED path, so `..` and symlink
+# escapes out of this prefix resolve elsewhere and block.
+# @decision:d-single-gate-policy
+SCRATCH_ROOT: str = ".harness/scratch"
 
 # Imperative "what to do next" line for each BLOCKING state. The reason string
 # tells the agent WHY the edit was blocked; the suggestion tells it the next

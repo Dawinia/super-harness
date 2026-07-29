@@ -9,7 +9,12 @@ guarantees the rest of the code relies on.
 from __future__ import annotations
 
 from super_harness.core.state import STATES
-from super_harness.gates.decisions import PRE_TOOL_USE_DECISIONS, SUGGESTIONS
+from super_harness.gates.decisions import (
+    PLAN_PATH_ALLOW_STATES,
+    PRE_TOOL_USE_DECISIONS,
+    SCRATCH_ROOT,
+    SUGGESTIONS,
+)
 
 
 def test_matrix_covers_all_states() -> None:
@@ -25,3 +30,13 @@ def test_suggestions_cover_exactly_blocking_states() -> None:
         state for state, (d, _) in PRE_TOOL_USE_DECISIONS.items() if d == "block"
     }
     assert set(SUGGESTIONS) == blocking
+
+
+def test_plan_path_allow_states_is_intent_declared_only() -> None:
+    # D1: PLAN_REJECTED keeps the plan_artifacts mechanism; the two never overlap.
+    assert PLAN_PATH_ALLOW_STATES == frozenset({"INTENT_DECLARED"})
+
+
+def test_scratch_root_is_under_harness_and_posix() -> None:
+    assert SCRATCH_ROOT == ".harness/scratch"
+    assert "\\" not in SCRATCH_ROOT
