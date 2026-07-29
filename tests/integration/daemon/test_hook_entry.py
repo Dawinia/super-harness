@@ -8,6 +8,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from super_harness.gates.decisions import SUGGESTIONS
+
 
 def _init(root: Path, change_id: str | None = None, state: str | None = None) -> None:
     harness = root / ".harness"
@@ -33,7 +35,7 @@ def test_positional_block_carries_suggestion(tmp_path: Path) -> None:
     res = _run(tmp_path, "Edit", "f.py")
     assert res.returncode == 1
     assert "BLOCK (INTENT_DECLARED" in res.stderr
-    assert "Draft a plan" in res.stderr
+    assert SUGGESTIONS["INTENT_DECLARED"] in res.stderr
 
 
 def test_positional_allow(tmp_path: Path) -> None:

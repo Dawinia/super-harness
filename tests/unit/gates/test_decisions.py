@@ -49,3 +49,14 @@ def test_allow_state_sets_are_disjoint() -> None:
     # precedent: tests/unit/core/test_events.py asserts
     # CORE_EVENT_TYPES.isdisjoint(EXTENSION_EVENT_TYPES).
     assert PLAN_PATH_ALLOW_STATES.isdisjoint(PLAN_ARTIFACT_ALLOW_STATES)
+
+
+def test_intent_declared_suggestion_names_the_authoring_space() -> None:
+    # The old suggestion ("draft a plan, then mark it ready, then retry the
+    # edit") told the agent to do the exact thing the gate itself blocks —
+    # that loop is what pushed agents to the shell. The suggestion must name
+    # the actual in-gate authoring space: the plan-paths.yaml-configured plan
+    # document, plus the always-writable scratch area for working notes.
+    s = SUGGESTIONS["INTENT_DECLARED"]
+    assert "plan-paths.yaml" in s or "plan document" in s
+    assert "scratch" in s

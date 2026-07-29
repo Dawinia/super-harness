@@ -94,6 +94,28 @@ inspection metadata plus a short-lived, TTY-confirmed nonce. The caller owns
 process execution, while occurrence, scope, receipts, independence, and round
 closure are enforced mechanically.
 
+## What the gate governs
+
+> The gate governs files that will enter git as product. It does not govern the
+> change's own thinking artifacts.
+
+That one sentence explains every narrowing in the state table:
+
+- **Source stays blocked** until a plan is approved — that is the whole point.
+- **The change's plan document is writable in `INTENT_DECLARED`**, at any path
+  matching `.harness/plan-paths.yaml` (default `docs/plans/*<slug>*.md`). Every
+  pattern must contain `{slug}`, so the allowance is bound to the active change and
+  can never name `AGENTS.md` or a ratified decision record. That file is *tracked*,
+  so widening the allowance is itself a gated edit.
+- **The change's scratch area `.harness/scratch/<slug>/` is writable in every
+  state**, including terminal ones. It is gitignored, never enters a review bundle,
+  and never reaches a merge gate — blocking it would prevent nothing and would only
+  push an agent toward the shell to get around the gate.
+
+Blocking a file the reviewer will never see buys no safety; it only makes the
+harness something to route around. See [Limitations](limitations.md) for the
+residuals.
+
 ## Two gate paths
 
 - **Hot path** — the PreToolUse gate, decided in-process from a single

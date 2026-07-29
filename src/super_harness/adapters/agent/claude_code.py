@@ -84,6 +84,11 @@ When a tool call is blocked by the gate:
   ALLOWED through the normal `Edit`/`Write` tools — that is the intended reject-loop
   path, not a bypass. Source files stay blocked. Do not write plan revisions through
   the shell to dodge the gate.
+- **Authoring is allowed in-gate:** in `INTENT_DECLARED`, writing the change's plan
+  document is ALLOWED at any path matching `.harness/plan-paths.yaml` (default
+  `docs/plans/*<slug>*.md`). Scratch notes are ALLOWED in `.harness/scratch/<slug>/`
+  in **every** state — it is gitignored and never reviewed. Source files stay blocked
+  until the plan is approved. Never write these through the shell to dodge the gate.
 - **If a tool call is blocked by the gate:** stop, and surface the block plus the
   next valid step (`super-harness status`) to the human. Do **not** try to disable
   or work around the gate yourself — overriding it is a **human-only** decision, and

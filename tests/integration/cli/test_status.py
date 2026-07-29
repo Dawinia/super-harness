@@ -23,6 +23,7 @@ from click.testing import CliRunner
 
 from super_harness.cli import main
 from super_harness.core.review_verdict import read_change_events
+from super_harness.gates.decisions import SUGGESTIONS
 
 
 def _init(tmp_path: Path) -> None:
@@ -174,13 +175,13 @@ def test_status_shows_next_step_for_blocking_state(tmp_path: Path) -> None:
     human = CliRunner().invoke(main, ["--workspace", str(tmp_path), "status", "ch1"])
     assert human.exit_code == 0, human.output
     assert "next:" in human.output.lower()
-    assert "Draft a plan" in human.output  # from SUGGESTIONS["INTENT_DECLARED"]
+    assert SUGGESTIONS["INTENT_DECLARED"] in human.output
     js = CliRunner().invoke(
         main, ["--workspace", str(tmp_path), "--json", "status", "ch1"]
     )
     assert js.exit_code == 0, js.output
     changes = json.loads(js.output)["data"]["changes"]
-    assert any("Draft a plan" in str(e.get("next", "")) for e in changes)
+    assert any(SUGGESTIONS["INTENT_DECLARED"] in str(e.get("next", "")) for e in changes)
 
 
 # --- HG-02.C: status surfaces the reviewer strategy in review states ----------

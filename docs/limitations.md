@@ -49,6 +49,26 @@ deliberately deferred to a later version; one is blocked by an upstream bug
   and the content still passes plan + code review + attestation — it is not a new
   capability beyond the conceded shell primitive.
 
+**Plan-path authoring allowance (`INTENT_DECLARED`):**
+- Coverage is **path-shaped**. A pattern in `.harness/plan-paths.yaml` must contain
+  `{slug}`, so the allowance is always bound to the active change. That guard rail is
+  what keeps `AGENTS.md`, `README.md` and `docs/decisions/**` out of it — and it is
+  also the source of the gap below.
+- **Superpowers artifacts are not fully covered.** That framework identifies its
+  artifacts by a `change:` frontmatter *marker*, and its filenames are free-form. A
+  repo whose superpowers plan filenames do not contain the slug matches no
+  `{slug}`-bearing pattern, so authoring them in `INTENT_DECLARED` stays blocked and
+  falls back to drafting before `change start`. Allowing on the marker instead was
+  deliberately rejected: the agent can add a marker to any `.md`, which would make the
+  governed party the author of its own permission. This is an accepted structural
+  trade-off, not an oversight. The shipped skeleton covers superpowers' candidate
+  directories for the common case where the filename *does* carry the slug.
+- **OpenSpec is covered by default** (`openspec/changes/{slug}/*.md`, shipped enabled),
+  because that layout puts the slug in the path by construction.
+- The same **Codex** and **hardlink** residuals listed above apply here unchanged: Codex
+  supplies no `file_path`, so no path-based allowance can fire for it, and path
+  resolution cannot see through a hardlink.
+
 **Gates not yet wired:**
 - Cold-path pre-commit / pre-push gates — need git-hook install infrastructure.
 - `gate check pr-open` / `gate check pr-merge` — the underlying machinery ships

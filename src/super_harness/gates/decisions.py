@@ -80,7 +80,11 @@ SCRATCH_ROOT: str = ".harness/scratch"
 # concrete step. Only blocking states appear here — allowed states need no
 # remediation. PreToolUseGate surfaces these via GateResult.suggested_action.
 SUGGESTIONS: dict[str, str] = {
-    "INTENT_DECLARED": "Draft a plan, then mark it ready, then retry the edit.",
+    "INTENT_DECLARED": (
+        "Author the plan document at a path configured in .harness/plan-paths.yaml "
+        "(default docs/plans/*<slug>*.md), then `plan ready`. Working notes go in "
+        ".harness/scratch/<slug>/, which is writable in any state."
+    ),
     "AWAITING_PLAN_REVIEW": "Wait for the plan reviewer; `super-harness status` shows progress.",
     "PLAN_REJECTED": "Revise the plan and re-submit, then retry.",
     "AWAITING_CODE_REVIEW": "Code is frozen during review; address feedback once it lands.",
