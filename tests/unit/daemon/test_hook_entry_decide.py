@@ -5,6 +5,15 @@ allow/block one — `load_plan_paths` fails closed to `[]` and the gate re-check
 `PLAN_PATH_ALLOW_STATES` itself, so reading or not reading yields the same
 verdict either way. Assert directly on whether the read happened, not on the
 exit code / decision.
+
+The deferral now lives inside `core.plan_paths.patterns_for_state`, which
+`_decide` calls unconditionally — `patterns_for_state` itself decides whether
+to call `load_plan_paths`. The monkeypatch below therefore patches
+`super_harness.core.plan_paths.load_plan_paths` directly: `patterns_for_state`
+calls it as a bare name in the SAME module, resolved via that module's
+`__globals__` at call time, so patching the module attribute is what the
+lookup actually resolves against — see the "do not hoist" note in
+`patterns_for_state`'s docstring for the failure mode this guards against.
 """
 from __future__ import annotations
 

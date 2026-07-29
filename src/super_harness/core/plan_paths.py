@@ -41,6 +41,8 @@ from pathlib import Path, PurePosixPath
 
 import yaml
 
+from super_harness.core.state import ChangeState
+
 _DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:")
 
 # Matches this repo's own convention: `<date>-<slug>-<suffix>.md`, and one change
@@ -91,3 +93,37 @@ def load_plan_paths(workspace_root: Path) -> list[str]:
         return [p for p in raw if _is_valid_pattern(p)]
     except Exception:
         return []
+
+
+def patterns_for_state(
+    workspace_root: Path, state: ChangeState | None, allow_states: frozenset[str]
+) -> list[str]:
+    """Plan-path patterns for `state`, or `[]` when the state cannot use them.
+
+    Deferred on purpose: this runs on the PreToolUse hot path (every agent file
+    edit, fresh process), and the patterns are consulted in `allow_states` only
+    (in production, `gates.decisions.PLAN_PATH_ALLOW_STATES`), so the YAML read
+    below is skipped entirely elsewhere. Both gate construction sites
+    (`daemon.hook_entry._decide` and `cli.gate.gate_check`) call this rather
+    than repeating the condition inline — d-single-gate-policy: one policy, all
+    readers, so the hook and `gate check` can never disagree.
+
+    `allow_states` is a parameter, not an import, so this module can stay in
+    `core`: `core-is-base` forbids `core` importing `gates`, and the canonical
+    `PLAN_PATH_ALLOW_STATES` set is single-sourced in `gates/decisions.py` (it
+    must NOT be copied here). Callers import it from `gates.decisions` and pass
+    it through.
+
+    The `load_plan_paths` call below is an intra-module reference (both
+    functions live in this file), resolved dynamically via this module's own
+    namespace at call time — this is what lets
+    `tests/unit/daemon/test_hook_entry_decide.py` monkeypatch
+    `super_harness.core.plan_paths.load_plan_paths` and observe whether this
+    function reached it. Do not hoist that reference behind a re-export or an
+    aliased import in another module without re-checking that test; doing so
+    would let it keep passing for the wrong reason (patching a name the call
+    site no longer looks up) instead of failing.
+    """
+    if state is None or state.current_state not in allow_states:
+        return []
+    return load_plan_paths(workspace_root)
