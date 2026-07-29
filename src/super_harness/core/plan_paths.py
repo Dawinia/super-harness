@@ -45,10 +45,21 @@ from super_harness.core.state import ChangeState
 
 _DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:")
 
+# MUST stay equal to the `plan-paths.yaml` skeleton `init` writes. A repo
+# initialized before this constant existed has no config file and falls through
+# here, so a narrower default would silently give every existing adopter a subset
+# of the documented coverage, with nothing telling them to create the file.
+# `test_default_plan_paths_matches_the_shipped_skeleton` pins the equality.
+#
 # Matches this repo's own convention: `<date>-<slug>-<suffix>.md`, and one change
 # routinely has both a `-design.md` and an `-implementation.md`, so the slug sits in
 # the middle and an exact `{slug}.md` would match none of them.
-DEFAULT_PLAN_PATHS: tuple[str, ...] = ("docs/plans/*{slug}*.md",)
+DEFAULT_PLAN_PATHS: tuple[str, ...] = (
+    "docs/plans/*{slug}*.md",
+    "openspec/changes/{slug}/*.md",
+    "docs/superpowers/plans/*{slug}*.md",
+    "docs/superpowers/specs/*{slug}*.md",
+)
 
 SLUG_PLACEHOLDER = "{slug}"
 

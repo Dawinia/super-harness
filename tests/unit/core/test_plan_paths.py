@@ -78,3 +78,19 @@ def test_windows_drive_letter_pattern_is_dropped(tmp_path):
 def test_windows_backslash_pattern_is_dropped(tmp_path):
     _write(tmp_path, 'version: 1\nplan_paths:\n  - "\\\\server\\\\share\\\\{slug}.md"\n')
     assert load_plan_paths(tmp_path) == []
+
+
+def test_default_plan_paths_matches_the_shipped_skeleton() -> None:
+    """The built-in default and what `init` writes must not drift apart.
+
+    A repo initialized before this constant existed has no `plan-paths.yaml` and
+    falls through to `DEFAULT_PLAN_PATHS`. If the default were narrower than the
+    skeleton, every existing adopter would silently get a subset of the coverage
+    the docs promise, with nothing telling them to create the file.
+    """
+    import yaml
+
+    from super_harness.cli.init import _skeleton_files
+
+    shipped = yaml.safe_load(_skeleton_files()["plan-paths.yaml"])["plan_paths"]
+    assert list(DEFAULT_PLAN_PATHS) == shipped
