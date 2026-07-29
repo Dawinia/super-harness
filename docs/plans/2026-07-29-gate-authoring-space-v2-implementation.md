@@ -21,7 +21,7 @@ never name a product file. The `PLAN_REJECTED` `plan_artifacts` carve-out is unt
 **Tech Stack:** Python 3.10+, PyYAML, `fnmatch` (matching this repo's existing glob
 convention in `core/anchor_scanner.py:45`), pytest.
 
-**Design doc:** `docs/plans/2026-07-29-gate-authoring-space-design.md`
+**Design doc:** `docs/plans/2026-07-29-gate-authoring-space-v2-design.md`
 
 ---
 

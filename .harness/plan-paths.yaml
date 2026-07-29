@@ -1,0 +1,12 @@
+# Where this repo's plan documents live. Commit this file — the gate
+# reads it, so widening it is itself a gated edit.
+#
+# Every pattern MUST contain {slug} (binds the allowance to the active
+# change) and MUST end in .md. Patterns failing either rule are dropped.
+# A corrupt file yields NO allowance (fail-closed), not the default.
+version: 1
+plan_paths:
+  - "docs/plans/*{slug}*.md"
+  - "openspec/changes/{slug}/*.md"
+  - "docs/superpowers/plans/*{slug}*.md"
+  - "docs/superpowers/specs/*{slug}*.md"
