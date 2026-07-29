@@ -243,13 +243,27 @@ def _decide(
 
     import os
 
+    from super_harness.core.plan_paths import load_plan_paths
     from super_harness.core.state_snapshot import load_state_snapshot
     from super_harness.gates import GateDecision, ProposedAction
+    from super_harness.gates.decisions import PLAN_PATH_ALLOW_STATES
     from super_harness.gates.pre_tool_use import PreToolUseGate
 
     override = os.environ.get("SUPER_HARNESS_CHANGE_ID")
     snapshot = load_state_snapshot(root, change_id_override=override)
-    result = PreToolUseGate().decide(
+    # Deferred (design 2026-07-29): skip the `.harness/plan-paths.yaml` read
+    # entirely unless the active state can actually use it — this is the
+    # PreToolUse hot path invoked on every agent file edit, and this project has
+    # deliberately optimised cold-start cost here before (import-light
+    # `gates.decisions`, the daemon demoted to an observer, `state_snapshot`
+    # doing exactly one parse). An unconditional YAML read on every edit would
+    # undo that.
+    patterns = (
+        load_plan_paths(root)
+        if snapshot.state and snapshot.state.current_state in PLAN_PATH_ALLOW_STATES
+        else []
+    )
+    result = PreToolUseGate(plan_path_patterns=patterns).decide(
         ProposedAction(
             kind="edit", file=file, resolved_path=canonical_relpath(root, file)
         ),
