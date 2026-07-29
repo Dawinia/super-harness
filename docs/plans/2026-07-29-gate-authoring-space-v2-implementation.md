@@ -858,8 +858,17 @@ git commit -m "feat(gate): load plan-path config at both gate construction sites
 
 **Files:**
 - Modify: `src/super_harness/cli/init.py:197-232` (`_skeleton_files`)
+- Modify: `src/super_harness/cli/init_plan.py` (`_SKELETON_PATHS`)
 - Modify: `src/super_harness/engineering/gitignore_injector.py:83` (`_CANONICAL_PATHS`)
 - Test: `tests/unit/cli/test_init_skeleton.py`, `tests/unit/engineering/test_gitignore_injector.py`
+
+> **Two places, not one.** `_skeleton_files()` decides what `init` *writes*;
+> `init_plan._SKELETON_PATHS` decides what the wizard *announces* in the frozen plan it
+> asks the user to approve. Adding to only the first makes `init` write a file its own
+> reviewed plan never mentioned — breaking the write-before-you-look promise that wizard
+> exists for. Add to both, and pin the invariant with a test asserting every
+> `_skeleton_files()` key appears in the announced path tuples (`_SKELETON_PATHS` +
+> `_REVIEW_PATHS`), so the next addition cannot drift the same way.
 
 **Step 1: Write the failing tests**
 
@@ -1229,7 +1238,14 @@ probe /tmp/outside.md                             # expect 2  (unchanged)
 ```
 
 All six must match. Paste the output into the change's scratch dir; it becomes the
-code-review evidence that the gate behaves as designed with a real agent adapter.
+evidence that the gate behaves as designed with a real agent adapter.
+
+**Where it goes matters.** `.harness/scratch/` is gitignored, so anything left only
+there is invisible to a reviewer and to the merge boundary — writing "the code-review
+evidence" into a directory the code reviewer cannot see would be self-defeating. Keep
+the scratch copy as the working record, and put the six probe results and the
+cross-state table into the **PR description and the `review skip --override` reason**,
+which are what a reviewer and the merge gate actually read.
 
 ---
 
@@ -1261,11 +1277,12 @@ super-harness plan ready 2026-07-29-gate-authoring-space-v2 --scope '[
   "src/super_harness/daemon/hook_entry.py",
   "src/super_harness/cli/gate.py",
   "src/super_harness/cli/init.py",
+  "src/super_harness/cli/init_plan.py",
   "src/super_harness/engineering/gitignore_injector.py",
   "src/super_harness/adapters/agent/claude_code.py",
   "src/super_harness/adapters/agent/codex.py",
   "docs/getting-started.md", "docs/concepts.md", "docs/limitations.md",
-  "docs/cli-reference.md", "docs/decisions/d-single-gate-policy.md",
+  "docs/decisions/d-single-gate-policy.md",
   "docs/decisions/d-gate-governs-git-product.md",
   "AGENTS.md", ".gitignore", "tests/"
 ]' --tier-hint Normal
