@@ -231,6 +231,20 @@ def _skeleton_files() -> dict[str, str]:
         "derived-docs.yaml": _derived_docs_default(),
         "verification.yaml": _verification_default(),
         "conventions.md": "# Project conventions (referenced by reviewer sensors)\n",
+        "plan-paths.yaml": (
+            "# Where this repo's plan documents live. Commit this file — the gate\n"
+            "# reads it, so widening it is itself a gated edit.\n"
+            "#\n"
+            "# Every pattern MUST contain {slug} (binds the allowance to the active\n"
+            "# change) and MUST end in .md. Patterns failing either rule are dropped.\n"
+            "# A corrupt file yields NO allowance (fail-closed), not the default.\n"
+            "version: 1\n"
+            "plan_paths:\n"
+            '  - "docs/plans/*{slug}*.md"\n'
+            '  - "openspec/changes/{slug}/*.md"\n'
+            '  - "docs/superpowers/plans/*{slug}*.md"\n'
+            '  - "docs/superpowers/specs/*{slug}*.md"\n'
+        ),
     }
 
 

@@ -1085,6 +1085,48 @@ def test_init_scaffolds_derived_docs_skeleton(tmp_path: Path):
     assert errors == []
 
 
+def test_init_writes_plan_paths_skeleton(tmp_path: Path):
+    from super_harness.cli.init import _skeleton_files
+
+    assert "plan-paths.yaml" in _skeleton_files()
+
+
+def test_plan_paths_skeleton_survives_its_own_loader(tmp_path: Path):
+    """Every shipped pattern must pass validation — one that fails silently ships
+    a narrower allowance than the docs promise."""
+    from super_harness.cli.init import _skeleton_files
+    from super_harness.core.plan_paths import load_plan_paths
+
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".harness" / "plan-paths.yaml").write_text(
+        _skeleton_files()["plan-paths.yaml"], encoding="utf-8"
+    )
+    assert load_plan_paths(tmp_path) == [
+        "docs/plans/*{slug}*.md",
+        "openspec/changes/{slug}/*.md",
+        "docs/superpowers/plans/*{slug}*.md",
+        "docs/superpowers/specs/*{slug}*.md",
+    ]
+
+
+def test_skeleton_openspec_pattern_matches_the_files_openspec_watches(tmp_path: Path):
+    """Regression anchor for the `**` trap: fnmatch gives `**` no recursive
+    meaning, so a glob-style pattern would miss proposal.md / tasks.md — exactly
+    the files the OpenSpec adapter emits plan_ready from."""
+    from fnmatch import fnmatchcase
+
+    from super_harness.cli.init import _skeleton_files
+
+    patterns = yaml.safe_load(_skeleton_files()["plan-paths.yaml"])["plan_paths"]
+    openspec = [p for p in patterns if p.startswith("openspec/")]
+    assert openspec, "skeleton must ship an openspec pattern"
+    for name in ("proposal.md", "tasks.md", "specs/nested.md"):
+        target = f"openspec/changes/my-change/{name}"
+        assert any(
+            fnmatchcase(target, p.replace("{slug}", "my-change")) for p in openspec
+        ), target
+
+
 def test_init_idempotent_without_force(tmp_path: Path):
     runner = CliRunner()
     runner.invoke(main, ["--workspace", str(tmp_path), "init"])
