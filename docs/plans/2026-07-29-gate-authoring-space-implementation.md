@@ -1,0 +1,972 @@
+---
+change: 2026-07-29-gate-authoring-space-v2
+stage: plan
+---
+
+# Gate authoring space — Implementation Plan
+
+> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
+
+**Goal:** Let a change author its plan documents and scratch notes through normal
+editing tools inside gated lifecycle states, without widening the gate for source.
+
+**Architecture:** Two narrowings are added to the single gate policy module and read
+by the one pure `PreToolUseGate`. (1) A **scratch whitelist** — `.harness/scratch/<slug>/**`
+is allowed in every state, because it never enters git. (2) A **plan-path allowance** —
+in `INTENT_DECLARED` only, a path matching an owner-configured pattern from the new
+tracked `.harness/plan-paths.yaml` is allowed. Every pattern must contain `{slug}` and
+resolve to `.md`, so the allowance is structurally bound to the active change and can
+never name a product file. The `PLAN_REJECTED` `plan_artifacts` carve-out is untouched.
+
+**Tech Stack:** Python 3.10+, PyYAML, `fnmatch` (matching this repo's existing glob
+convention in `core/anchor_scanner.py:45`), pytest.
+
+**Design doc:** `docs/plans/2026-07-29-gate-authoring-space-design.md`
+
+---
+
+## Decisions this plan locks (do not re-open during execution)
+
+| # | Decision | Why |
+|---|---|---|
+| D1 | Plan-path allowance fires **only in `INTENT_DECLARED`** | `PLAN_REJECTED` already has the `plan_artifacts` mechanism whose "full replacement on each `plan_ready` = revoke" semantics would be diluted by a second, pattern-based source. Two non-overlapping mechanisms keep both existing proofs intact. |
+| D2 | **No `change start --plan` flag** | That value would be supplied by the governed agent at `change start` — self-declared identity, the exact thing rejected in design §Design/1. The tracked config file already covers per-repo layout, and editing it is itself a gated edit. |
+| D3 | Config loader is **fail-CLOSED** (unlike `core/source_scope.py`) | `source_scope` degrades to permissive defaults because a typo there must not brick doc scanning. Here a corrupt file degrading to the default would *grant* an allowance the owner may have narrowed. Corrupt/missing-key → `[]` → nothing allowed → the state table blocks, i.e. today's behaviour. A **missing file** is different: it means "never configured" → the built-in default applies. |
+| D4 | Matching via `fnmatch.fnmatchcase` on the POSIX repo-relative path | Consistent with `anchor_scanner`. Known looseness: `*` crosses `/`, so `docs/plans/*{slug}*.md` also matches `docs/plans/sub/x-<slug>-y.md`. Harmless — still under `docs/plans/`, still contains the slug, still `.md`. Not worth a bespoke segment-aware matcher (YAGNI). |
+| D5 | Scratch dir is `.harness/scratch/<slug>/`, compared **after** `canonical_relpath` | `canonical_relpath` resolves `..` and symlinks before the gate sees the path, so `.harness/scratch/x/../../gate-disabled` resolves to `.harness/gate-disabled`, fails the prefix test, and blocks. Same defence #85 used against symlink laundering. |
+
+---
+
+## Task 1: `plan-paths.yaml` loader (pure, fail-closed)
+
+**Files:**
+- Create: `src/super_harness/core/plan_paths.py`
+- Test: `tests/unit/core/test_plan_paths.py`
+
+**Step 1: Write the failing tests**
+
+```python
+# tests/unit/core/test_plan_paths.py
+from pathlib import Path
+
+from super_harness.core.plan_paths import DEFAULT_PLAN_PATHS, load_plan_paths
+
+
+def _write(root: Path, body: str) -> None:
+    (root / ".harness").mkdir(parents=True, exist_ok=True)
+    (root / ".harness" / "plan-paths.yaml").write_text(body, encoding="utf-8")
+
+
+def test_missing_file_uses_builtin_default(tmp_path):
+    (tmp_path / ".harness").mkdir()
+    assert load_plan_paths(tmp_path) == list(DEFAULT_PLAN_PATHS)
+
+
+def test_valid_patterns_are_returned(tmp_path):
+    _write(tmp_path, 'version: 1\nplan_paths:\n  - "specs/{slug}/design.md"\n')
+    assert load_plan_paths(tmp_path) == ["specs/{slug}/design.md"]
+
+
+def test_pattern_without_slug_placeholder_is_dropped(tmp_path):
+    _write(tmp_path, 'version: 1\nplan_paths:\n  - "AGENTS.md"\n  - "docs/{slug}.md"\n')
+    assert load_plan_paths(tmp_path) == ["docs/{slug}.md"]
+
+
+def test_pattern_not_ending_in_md_is_dropped(tmp_path):
+    _write(tmp_path, 'version: 1\nplan_paths:\n  - "src/{slug}/**"\n')
+    assert load_plan_paths(tmp_path) == []
+
+
+def test_absolute_and_traversal_patterns_are_dropped(tmp_path):
+    _write(
+        tmp_path,
+        'version: 1\nplan_paths:\n  - "/etc/{slug}.md"\n  - "../{slug}.md"\n',
+    )
+    assert load_plan_paths(tmp_path) == []
+
+
+def test_corrupt_yaml_fails_closed_to_empty(tmp_path):
+    _write(tmp_path, "plan_paths: [unclosed\n")
+    assert load_plan_paths(tmp_path) == []
+
+
+def test_non_list_value_fails_closed_to_empty(tmp_path):
+    _write(tmp_path, 'version: 1\nplan_paths: "docs/{slug}.md"\n')
+    assert load_plan_paths(tmp_path) == []
+
+
+def test_non_string_entries_are_dropped(tmp_path):
+    _write(tmp_path, 'version: 1\nplan_paths:\n  - 42\n  - "docs/{slug}.md"\n')
+    assert load_plan_paths(tmp_path) == ["docs/{slug}.md"]
+
+
+def test_never_raises_on_unreadable_file(tmp_path, monkeypatch):
+    _write(tmp_path, 'version: 1\nplan_paths: ["docs/{slug}.md"]\n')
+    monkeypatch.setattr(
+        Path, "read_text", lambda *a, **k: (_ for _ in ()).throw(OSError("boom"))
+    )
+    assert load_plan_paths(tmp_path) == []
+```
+
+**Step 2: Run to verify it fails**
+
+Run: `.venv/bin/pytest tests/unit/core/test_plan_paths.py -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'super_harness.core.plan_paths'`
+
+**Step 3: Write the implementation**
+
+```python
+# src/super_harness/core/plan_paths.py
+"""Loader for ``.harness/plan-paths.yaml`` — the owner-controlled patterns naming
+where a change's plan documents live (design 2026-07-29).
+
+Fail-CLOSED, deliberately unlike `core/source_scope.py`: this list *grants* a gate
+allowance, so a corrupt or malformed file yields `[]` (nothing allowed → the state
+table blocks, today's behaviour) rather than falling back to a permissive default
+the owner may have narrowed away. A **missing** file is not corruption — it means
+"never configured" — and gets the built-in default.
+
+Two guard rails are enforced here, not at the gate, so an invalid pattern can never
+reach the decision path:
+
+1. every pattern must contain the literal ``{slug}`` — this is what binds the
+   allowance to the active change; without it a pattern could name `AGENTS.md`,
+   `README.md`, or `**/*.md`;
+2. every pattern must end in ``.md`` (case-insensitive) and be a relative path with
+   no ``..`` segment.
+
+The gate re-checks the `.md` suffix on the *resolved* path afterwards — the pattern
+check here cannot see through a symlink.
+"""
+from __future__ import annotations
+
+from pathlib import Path, PurePosixPath
+
+import yaml
+
+# Matches this repo's own convention: `<date>-<slug>-<suffix>.md`, and one change
+# routinely has both a `-design.md` and an `-implementation.md`, so the slug sits in
+# the middle and an exact `{slug}.md` would match none of them.
+DEFAULT_PLAN_PATHS: tuple[str, ...] = ("docs/plans/*{slug}*.md",)
+
+SLUG_PLACEHOLDER = "{slug}"
+
+
+def plan_paths_file(workspace_root: Path) -> Path:
+    return workspace_root / ".harness" / "plan-paths.yaml"
+
+
+def _is_valid_pattern(pattern: object) -> bool:
+    if not isinstance(pattern, str) or not pattern:
+        return False
+    if SLUG_PLACEHOLDER not in pattern:
+        return False
+    if not pattern.lower().endswith(".md"):
+        return False
+    pp = PurePosixPath(pattern)
+    return not pp.is_absolute() and ".." not in pp.parts
+
+
+def load_plan_paths(workspace_root: Path) -> list[str]:
+    """Return the validated plan-path patterns. NEVER raises.
+
+    Missing file → built-in default. Anything else that is not a well-formed list of
+    valid patterns → `[]` (fail-closed).
+    """
+    f = plan_paths_file(workspace_root)
+    try:
+        if not f.is_file():
+            return list(DEFAULT_PLAN_PATHS)
+        data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+    except (yaml.YAMLError, OSError, UnicodeDecodeError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    raw = data.get("plan_paths")
+    if not isinstance(raw, list):
+        return []
+    return [p for p in raw if _is_valid_pattern(p)]
+```
+
+**Step 4: Run to verify it passes**
+
+Run: `.venv/bin/pytest tests/unit/core/test_plan_paths.py -v`
+Expected: PASS (9 passed)
+
+**Step 5: Commit**
+
+```bash
+git add src/super_harness/core/plan_paths.py tests/unit/core/test_plan_paths.py
+git commit -m "feat(plan-paths): fail-closed loader for owner-configured plan document patterns"
+```
+
+---
+
+## Task 2: Gate policy constants
+
+**Files:**
+- Modify: `src/super_harness/gates/decisions.py:52` (after `PLAN_ARTIFACT_ALLOW_STATES`)
+- Test: `tests/unit/gates/test_decisions.py`
+
+The gate policy must stay in ONE module — `d-single-gate-policy` is a ratified tier-1
+decision anchored at `gates/decisions.py`. Adding the constants here (not in the gate)
+is what keeps that decision true. Its *body text* still needs updating in Task 8.
+
+**Step 1: Write the failing test**
+
+```python
+# append to tests/unit/gates/test_decisions.py
+from super_harness.gates.decisions import (
+    PLAN_PATH_ALLOW_STATES,
+    SCRATCH_ROOT,
+)
+
+
+def test_plan_path_allow_states_is_intent_declared_only():
+    # D1: PLAN_REJECTED keeps the plan_artifacts mechanism; the two never overlap.
+    assert PLAN_PATH_ALLOW_STATES == frozenset({"INTENT_DECLARED"})
+
+
+def test_scratch_root_is_under_harness_and_posix():
+    assert SCRATCH_ROOT == ".harness/scratch"
+    assert "\\" not in SCRATCH_ROOT
+```
+
+**Step 2: Run to verify it fails**
+
+Run: `.venv/bin/pytest tests/unit/gates/test_decisions.py -v`
+Expected: FAIL — `ImportError: cannot import name 'PLAN_PATH_ALLOW_STATES'`
+
+**Step 3: Implement**
+
+Add to `src/super_harness/gates/decisions.py`, after `PLAN_ARTIFACT_ALLOW_STATES`, and
+extend `__all__`:
+
+```python
+# States whose default is `block` but where an edit to a path matching the owner's
+# configured plan-path patterns (`.harness/plan-paths.yaml`, validated in
+# `core.plan_paths`) is ALLOWED. INTENT_DECLARED only, by design: it is the state with
+# no recorded `plan_artifacts` yet (nothing to narrow to), and it is where first
+# authoring happens. PLAN_REJECTED deliberately does NOT appear here — it already has
+# the `plan_artifacts` carve-out above, whose "replaced wholesale on each plan_ready"
+# revocation semantics a second pattern-based source would dilute.
+# @decision:d-single-gate-policy
+PLAN_PATH_ALLOW_STATES: frozenset[str] = frozenset({"INTENT_DECLARED"})
+
+# Per-change scratch area, allowed in EVERY state (including terminal ones). It is
+# gitignored, never enters a review bundle, and never reaches a merge gate — blocking
+# it prevents nothing and only pushes the agent toward the shell. Allowing it
+# unconditionally is what lets the gate keep one rule ("the gate governs files that
+# will enter git as product") instead of a second per-state table. The gate appends
+# `/<change_id>/` and compares against the CANONICALIZED path, so `..` and symlink
+# escapes out of this prefix resolve elsewhere and block.
+# @decision:d-single-gate-policy
+SCRATCH_ROOT: str = ".harness/scratch"
+```
+
+**Step 4: Run to verify it passes**
+
+Run: `.venv/bin/pytest tests/unit/gates/test_decisions.py -v`
+Expected: PASS
+
+**Step 5: Commit**
+
+```bash
+git add src/super_harness/gates/decisions.py tests/unit/gates/test_decisions.py
+git commit -m "feat(gate): declare plan-path + scratch allowances in the single policy module"
+```
+
+---
+
+## Task 3: Scratch-area allowance in the gate
+
+**Files:**
+- Modify: `src/super_harness/gates/pre_tool_use.py:60` (before the existing carve-out)
+- Test: `tests/unit/gates/test_pre_tool_use.py`
+
+**Step 1: Write the failing tests**
+
+```python
+# append to tests/unit/gates/test_pre_tool_use.py
+import pytest
+
+from super_harness.core.state import ChangeState
+from super_harness.gates import GateDecision, ProposedAction
+from super_harness.gates.pre_tool_use import PreToolUseGate
+
+
+def _state(current: str, change_id: str = "my-change") -> ChangeState:
+    return ChangeState(change_id=change_id, current_state=current)
+
+
+def _decide(state, resolved, **kw):
+    return PreToolUseGate(**kw).decide(
+        ProposedAction(kind="edit", file=resolved, resolved_path=resolved), state, []
+    )
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        "INTENT_DECLARED",
+        "AWAITING_PLAN_REVIEW",
+        "PLAN_REJECTED",
+        "AWAITING_CODE_REVIEW",
+        "READY_TO_MERGE",
+        "ARCHIVED",
+        "ABANDONED",
+    ],
+)
+def test_scratch_area_allowed_in_every_blocking_state(current):
+    r = _decide(_state(current), ".harness/scratch/my-change/notes.md")
+    assert r.decision is GateDecision.ALLOW
+
+
+def test_scratch_area_allows_any_extension():
+    # It never enters git, so there is no reason to restrict it to .md.
+    r = _decide(_state("READY_TO_MERGE"), ".harness/scratch/my-change/probe.py")
+    assert r.decision is GateDecision.ALLOW
+
+
+def test_other_changes_scratch_is_blocked():
+    r = _decide(_state("INTENT_DECLARED"), ".harness/scratch/other-change/notes.md")
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_scratch_sibling_prefix_is_not_a_match():
+    # `.harness/scratch/my-change-evil/` must NOT satisfy the `my-change` prefix.
+    r = _decide(_state("INTENT_DECLARED"), ".harness/scratch/my-change-evil/x.md")
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_scratch_bare_directory_path_is_blocked():
+    r = _decide(_state("INTENT_DECLARED"), ".harness/scratch/my-change")
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_gate_disabled_path_is_never_allowed_via_scratch():
+    # Post-canonicalization the traversal has already resolved; the gate sees the
+    # real target and must block it.
+    r = _decide(_state("INTENT_DECLARED"), ".harness/gate-disabled")
+    assert r.decision is GateDecision.BLOCK
+```
+
+**Step 2: Run to verify it fails**
+
+Run: `.venv/bin/pytest tests/unit/gates/test_pre_tool_use.py -v -k scratch`
+Expected: FAIL — the blocking-state cases return BLOCK
+
+**Step 3: Implement**
+
+In `src/super_harness/gates/pre_tool_use.py`, import `SCRATCH_ROOT` and insert
+immediately after `rp = action.resolved_path` (before the plan-artifact carve-out):
+
+```python
+        # Scratch-area allowance (design 2026-07-29): the change's own scratch dir is
+        # allowed in EVERY state. `rp` is already canonicalized by the caller, so a
+        # `..`/symlink escape has resolved to its real target and fails this prefix.
+        # The trailing `/` makes the test segment-aware: `.harness/scratch/my-change`
+        # must not admit `.harness/scratch/my-change-evil/x`.
+        if rp and state.change_id:
+            scratch_prefix = f"{SCRATCH_ROOT}/{state.change_id}/"
+            if rp.startswith(scratch_prefix):
+                return GateResult(
+                    decision=GateDecision.ALLOW,
+                    reason=f"{state.current_state}: scratch area ({rp})",
+                )
+```
+
+**Step 4: Run to verify it passes**
+
+Run: `.venv/bin/pytest tests/unit/gates/test_pre_tool_use.py -v`
+Expected: PASS (all pre-existing tests still green)
+
+**Step 5: Commit**
+
+```bash
+git add src/super_harness/gates/pre_tool_use.py tests/unit/gates/test_pre_tool_use.py
+git commit -m "feat(gate): allow the change's scratch area in every lifecycle state"
+```
+
+---
+
+## Task 4: Plan-path allowance in the gate
+
+**Files:**
+- Modify: `src/super_harness/gates/pre_tool_use.py` (constructor + after the scratch block)
+- Test: `tests/unit/gates/test_pre_tool_use.py`
+
+The gate stays pure: patterns are injected at construction, never read from disk here.
+
+**Step 1: Write the failing tests**
+
+```python
+# append to tests/unit/gates/test_pre_tool_use.py
+PATTERNS = ["docs/plans/*{slug}*.md"]
+
+
+def test_plan_path_allowed_in_intent_declared():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.ALLOW
+
+
+def test_plan_path_not_allowed_in_awaiting_plan_review():
+    # D1 + design non-goal: the reviewer's frozen target must not move.
+    r = _decide(
+        _state("AWAITING_PLAN_REVIEW"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_plan_path_not_allowed_in_plan_rejected():
+    # D1: PLAN_REJECTED keeps using the recorded plan_artifacts list only.
+    r = _decide(
+        _state("PLAN_REJECTED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_plan_path_for_a_different_slug_is_blocked():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-other-change-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_non_md_resolved_path_is_blocked_even_if_pattern_matches():
+    # Symlink laundering: `docs/plans/x-my-change.md` -> `src/evil.py` canonicalizes
+    # to the .py, which must fail the post-resolution suffix check.
+    r = _decide(
+        _state("INTENT_DECLARED"), "src/evil.py", plan_path_patterns=PATTERNS
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_no_patterns_configured_blocks_as_before():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=[],
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_forged_non_list_patterns_block_cleanly():
+    # Defence in depth: a non-list must not raise (the hook would fail-open).
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns="docs/plans/*{slug}*.md",  # type: ignore[arg-type]
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_source_file_never_allowed_in_intent_declared():
+    r = _decide(
+        _state("INTENT_DECLARED"), "src/api.py", plan_path_patterns=PATTERNS
+    )
+    assert r.decision is GateDecision.BLOCK
+```
+
+**Step 2: Run to verify it fails**
+
+Run: `.venv/bin/pytest tests/unit/gates/test_pre_tool_use.py -v -k plan_path`
+Expected: FAIL — `TypeError: PreToolUseGate() takes no arguments`
+
+**Step 3: Implement**
+
+Add a constructor and the allowance block to `PreToolUseGate`:
+
+```python
+from fnmatch import fnmatchcase
+
+from super_harness.gates.decisions import (
+    PLAN_ARTIFACT_ALLOW_STATES,
+    PLAN_PATH_ALLOW_STATES,
+    PRE_TOOL_USE_DECISIONS,
+    SCRATCH_ROOT,
+    SUGGESTIONS,
+)
+
+
+class PreToolUseGate(Gate):
+    def __init__(self, plan_path_patterns: list[str] | None = None) -> None:
+        """`plan_path_patterns` come from `core.plan_paths.load_plan_paths` (already
+        validated: each contains `{slug}` and ends in `.md`). Injected rather than
+        read here so the gate stays pure and testable. Default `None` keeps every
+        existing construction site (and every pre-existing test) behaving exactly as
+        before: no patterns → no plan-path allowance."""
+        self._plan_path_patterns = plan_path_patterns or []
+```
+
+and, after the scratch block:
+
+```python
+        # Plan-path allowance (design 2026-07-29). Guards, in order: state opted in;
+        # a canonicalized path exists; the RESOLVED path is `.md` (so a symlinked
+        # `docs/plans/x-<slug>.md` -> `src/evil.py` cannot launder); the pattern list
+        # is really a list (a forged config must BLOCK, never raise — the hook treats
+        # an exception as non-blocking); and the slug-substituted pattern matches.
+        if (
+            state.current_state in PLAN_PATH_ALLOW_STATES
+            and rp
+            and rp.lower().endswith(".md")
+            and state.change_id
+            and isinstance(self._plan_path_patterns, list)
+        ):
+            for pattern in self._plan_path_patterns:
+                if not isinstance(pattern, str):
+                    continue
+                if fnmatchcase(rp, pattern.replace("{slug}", state.change_id)):
+                    return GateResult(
+                        decision=GateDecision.ALLOW,
+                        reason=(
+                            f"{state.current_state}: plan-document authoring "
+                            f"authorized ({rp})"
+                        ),
+                    )
+```
+
+**Step 4: Run to verify it passes**
+
+Run: `.venv/bin/pytest tests/unit/gates/ -v`
+Expected: PASS (new + all pre-existing)
+
+**Step 5: Commit**
+
+```bash
+git add src/super_harness/gates/pre_tool_use.py tests/unit/gates/test_pre_tool_use.py
+git commit -m "feat(gate): allow configured plan-document paths in INTENT_DECLARED"
+```
+
+---
+
+## Task 5: Wire the loader into both gate construction sites
+
+**Files:**
+- Modify: `src/super_harness/daemon/hook_entry.py:252` (`_decide`)
+- Modify: `src/super_harness/cli/gate.py` (the `gate check pre-tool-use` path)
+- Test: `tests/integration/daemon/test_hook_entry_plan_paths.py` (create)
+
+**Step 1: Write the failing test**
+
+```python
+# tests/integration/daemon/test_hook_entry_plan_paths.py
+"""End-to-end through the real hook entry point: config on disk → allow/block."""
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+
+def _hook(root: Path, tool: str, file: str) -> int:
+    payload = json.dumps({"tool_name": tool, "tool_input": {"file_path": file}})
+    proc = subprocess.run(
+        [sys.executable, "-c",
+         "from super_harness.daemon.hook_entry import main; main()",
+         "--agent", "claude-code"],
+        cwd=root, input=payload, capture_output=True, text=True,
+    )
+    return proc.returncode
+
+
+@pytest.fixture
+def repo(tmp_path):
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / "docs" / "plans").mkdir(parents=True)
+    (tmp_path / ".harness" / "state.yaml").write_text(
+        yaml.safe_dump({
+            "changes": {
+                "my-change": {
+                    "change_id": "my-change",
+                    "current_state": "INTENT_DECLARED",
+                    "last_event_at": "2026-07-29T00:00:00Z",
+                    "plan_artifacts": [],
+                }
+            }
+        }),
+        encoding="utf-8",
+    )
+    return tmp_path
+
+
+def test_default_config_allows_docs_plans(repo):
+    assert _hook(repo, "Write", "docs/plans/2026-07-29-my-change-design.md") == 0
+
+
+def test_default_config_still_blocks_source(repo):
+    assert _hook(repo, "Edit", "src/api.py") == 2
+
+
+def test_corrupt_config_fails_closed(repo):
+    (repo / ".harness" / "plan-paths.yaml").write_text("plan_paths: [oops\n", "utf-8")
+    assert _hook(repo, "Write", "docs/plans/2026-07-29-my-change-design.md") == 2
+
+
+def test_scratch_area_allowed(repo):
+    (repo / ".harness" / "scratch" / "my-change").mkdir(parents=True)
+    assert _hook(repo, "Write", ".harness/scratch/my-change/notes.md") == 0
+
+
+def test_kill_switch_path_still_blocked(repo):
+    assert _hook(repo, "Write", ".harness/gate-disabled") == 2
+```
+
+**Step 2: Run to verify it fails**
+
+Run: `.venv/bin/pytest tests/integration/daemon/test_hook_entry_plan_paths.py -v`
+Expected: FAIL — the allow cases return 2 (loader not wired)
+
+**Step 3: Implement**
+
+In `hook_entry._decide`, add the import and pass the patterns:
+
+```python
+    from super_harness.core.plan_paths import load_plan_paths
+    ...
+    result = PreToolUseGate(plan_path_patterns=load_plan_paths(root)).decide(
+        ProposedAction(
+            kind="edit", file=file, resolved_path=canonical_relpath(root, file)
+        ),
+        snapshot.state,
+        [],
+    )
+```
+
+Apply the identical change at the `cli/gate.py` construction site so `gate check`
+and the hook can never disagree (`d-single-gate-policy`: one policy, all readers).
+
+**Step 4: Run to verify it passes**
+
+Run: `.venv/bin/pytest tests/integration/daemon/ tests/unit/gates/ -v`
+Expected: PASS
+
+**Step 5: Commit**
+
+```bash
+git add src/super_harness/daemon/hook_entry.py src/super_harness/cli/gate.py \
+        tests/integration/daemon/test_hook_entry_plan_paths.py
+git commit -m "feat(gate): load plan-path config at both gate construction sites"
+```
+
+---
+
+## Task 6: `init` skeleton + gitignore
+
+**Files:**
+- Modify: `src/super_harness/cli/init.py:197-232` (`_skeleton_files`)
+- Modify: `src/super_harness/engineering/gitignore_injector.py:83` (`_CANONICAL_PATHS`)
+- Test: `tests/unit/cli/test_init_skeleton.py`, `tests/unit/engineering/test_gitignore_injector.py`
+
+**Step 1: Write the failing tests**
+
+```python
+def test_init_writes_plan_paths_skeleton(tmp_path):
+    from super_harness.cli.init import _skeleton_files
+    assert "plan-paths.yaml" in _skeleton_files()
+
+
+def test_plan_paths_skeleton_loads_to_the_default(tmp_path):
+    """The shipped skeleton must survive its own loader — a skeleton that
+    fails validation would silently ship a fail-closed empty list."""
+    from super_harness.cli.init import _skeleton_files
+    from super_harness.core.plan_paths import load_plan_paths
+    (tmp_path / ".harness").mkdir()
+    (tmp_path / ".harness" / "plan-paths.yaml").write_text(
+        _skeleton_files()["plan-paths.yaml"], encoding="utf-8"
+    )
+    assert load_plan_paths(tmp_path) == ["docs/plans/*{slug}*.md"]
+
+
+def test_gitignore_covers_scratch():
+    from super_harness.engineering.gitignore_injector import _CANONICAL_PATHS
+    assert ".harness/scratch/" in _CANONICAL_PATHS
+```
+
+**Step 2: Run to verify it fails**
+
+Run: `.venv/bin/pytest tests/unit/cli/test_init_skeleton.py tests/unit/engineering/test_gitignore_injector.py -v`
+Expected: FAIL — KeyError / assertion
+
+**Step 3: Implement**
+
+Add to `_skeleton_files()`:
+
+```python
+        "plan-paths.yaml": (
+            "# Where this repo's plan documents live. Commit this file — the gate\n"
+            "# reads it, so widening it is itself a gated edit.\n"
+            "#\n"
+            "# Every pattern MUST contain {slug} (binds the allowance to the active\n"
+            "# change) and MUST end in .md. Patterns failing either rule are dropped.\n"
+            "# A corrupt file yields NO allowance (fail-closed), not the default.\n"
+            "version: 1\n"
+            "plan_paths:\n"
+            '  - "docs/plans/*{slug}*.md"\n'
+            "# openspec layout:\n"
+            '#  - "openspec/changes/{slug}/**/*.md"\n'
+        ),
+```
+
+Add `".harness/scratch/",` to `_CANONICAL_PATHS` (next to the other runtime dirs).
+
+**Step 4: Run to verify it passes**
+
+Run: `.venv/bin/pytest tests/unit/cli/ tests/unit/engineering/ -v`
+Expected: PASS
+
+**Step 5: Commit + resync this repo's own managed files**
+
+```bash
+.venv/bin/super-harness sync
+git add src/super_harness/cli/init.py \
+        src/super_harness/engineering/gitignore_injector.py \
+        .gitignore tests/
+git commit -m "feat(init): ship plan-paths.yaml skeleton and gitignore the scratch area"
+```
+
+---
+
+## Task 7: Fix the guidance that currently sends the agent into a loop
+
+**Files:**
+- Modify: `src/super_harness/gates/decisions.py` (`SUGGESTIONS["INTENT_DECLARED"]`)
+- Modify: `src/super_harness/adapters/agent/claude_code.py:64` (`_AGENTS_MD_SUBSECTION`)
+- Modify: `src/super_harness/adapters/agent/codex.py` (same subsection, keep symmetric)
+- Modify: `docs/getting-started.md:315`, `docs/limitations.md`, `docs/concepts.md`
+- Test: `tests/unit/gates/test_decisions.py`, `tests/unit/engineering/test_agents_md_render.py`
+
+This is the half that made pothole ⑩ a documented procedure. Today the block says
+"Draft a plan" — an action the same gate then blocks.
+
+**Step 1: Write the failing tests**
+
+```python
+def test_intent_declared_suggestion_names_the_authoring_space():
+    from super_harness.gates.decisions import SUGGESTIONS
+    s = SUGGESTIONS["INTENT_DECLARED"]
+    assert "plan-paths.yaml" in s or "plan document" in s
+    assert "scratch" in s
+
+
+def test_agents_md_documents_the_authoring_space():
+    from super_harness.adapters.agent.claude_code import ClaudeCodeAdapter
+    text = ClaudeCodeAdapter().agents_md_subsection()
+    assert ".harness/scratch/" in text
+    assert "INTENT_DECLARED" in text
+```
+
+(Adjust the second test to whatever accessor `test_agents_md_render.py` already uses
+for the subsection — do not invent a new one.)
+
+**Step 2: Run to verify it fails**
+
+Run: `.venv/bin/pytest tests/unit/gates/test_decisions.py tests/unit/engineering/test_agents_md_render.py -v`
+Expected: FAIL
+
+**Step 3: Implement**
+
+`SUGGESTIONS["INTENT_DECLARED"]` →
+
+```python
+    "INTENT_DECLARED": (
+        "Author the plan document at a path configured in .harness/plan-paths.yaml "
+        "(default docs/plans/*<slug>*.md), then `plan ready`. Working notes go in "
+        ".harness/scratch/<slug>/, which is writable in any state."
+    ),
+```
+
+Add to the AGENTS.md subsection, next to the existing `PLAN_REJECTED` paragraph:
+
+```
+- **Authoring is allowed in-gate:** in `INTENT_DECLARED`, writing the change's plan
+  document is ALLOWED at any path matching `.harness/plan-paths.yaml` (default
+  `docs/plans/*<slug>*.md`). Scratch notes are ALLOWED in `.harness/scratch/<slug>/`
+  in **every** state — it is gitignored and never reviewed. Source files stay blocked
+  until the plan is approved. Never write these through the shell to dodge the gate.
+```
+
+Correct `docs/getting-started.md:315` to state that plan authoring in
+`INTENT_DECLARED` requires the path to be covered by `plan-paths.yaml`, and that the
+OpenSpec layout needs the commented-out pattern enabled. Add the scratch area and the
+one-sentence rule to `docs/concepts.md`. Update `docs/limitations.md`'s plan-artifact
+section.
+
+**Step 4: Run to verify it passes**
+
+```bash
+.venv/bin/pytest tests/unit/ -v
+.venv/bin/super-harness sync --agents-md && .venv/bin/super-harness doc check
+.venv/bin/super-harness doc refs --gate
+```
+Expected: all PASS, `doc check: clean`, `doc refs: clean`
+
+**Step 5: Commit**
+
+```bash
+git add src/super_harness/gates/decisions.py src/super_harness/adapters/agent/ \
+        docs/ AGENTS.md tests/
+git commit -m "docs(gate): tell the agent where it may author, and stop the block-loop"
+```
+
+---
+
+## Task 8: Re-ratify `d-single-gate-policy` and record the new decision
+
+**Files:**
+- Modify: `docs/decisions/d-single-gate-policy.md`
+- Create: `docs/decisions/d-gate-governs-git-product.md`
+
+**Step 1: Update the ratified body**
+
+`gates/decisions.py` now holds **four** policy literals, not two. The ratified text
+says two. Editing the body trips the text lock, so:
+
+```bash
+# edit the body to describe all four literals, then:
+.venv/bin/super-harness decision ratify d-single-gate-policy
+.venv/bin/super-harness decision check
+```
+Expected: `bite-test: bites` then `decision check: clean`
+
+**Step 2: Draft the new decision**
+
+```bash
+.venv/bin/super-harness decision new d-gate-governs-git-product \
+  --text "The pre-tool-use gate governs files that will enter git as product; \
+allowances are hard-coded path whitelists, never derived from gitignore status."
+```
+
+Body must record the load-bearing evidence: `.harness/gate-disabled`,
+`.claude/settings.local.json`, `.codex/hooks.json`, and `.harness/state.yaml` are all
+gitignored, so a gitignore-derived allowance would let a blocked agent disable the
+gate.
+
+**Step 3: Arm it if — and only if — a non-hollow check exists**
+
+Candidate `check` block (verify it actually bites before keeping it):
+
+```check
+python -m tests.probes.gate_kill_switch_probe
+```
+
+The probe must assert, against the real `PreToolUseGate`, that `.harness/gate-disabled`
+and `.claude/settings.local.json` BLOCK in every state. Required `counterexample`: add
+`".harness"` to a whitelist constant and confirm the probe fails.
+
+**If no honest check can be written, leave it tier-2 with a `review` block** — an
+armed-but-hollow check is worse than none (`decision ratify` will refuse it anyway:
+the bite-test fails when the counterexample does not flip the verdict).
+
+**Step 4: Verify**
+
+```bash
+.venv/bin/super-harness decision check --gate-reconcile
+```
+Expected: exit 0, `clean`
+
+**Step 5: Commit**
+
+```bash
+git add docs/decisions/ tests/probes/
+git commit -m "docs(decisions): record the gate's scope rule; re-ratify d-single-gate-policy"
+```
+
+---
+
+## Task 9: Live end-to-end proof (not a unit test)
+
+**Files:**
+- Create: `.harness/scratch/2026-07-29-gate-authoring-space/live-proof.md` (throwaway)
+
+A green unit suite is not evidence the installed hook behaves. Reproduce the exact
+probe from the design doc against a temp repo with the **real** adapter installed:
+
+```bash
+D=$(mktemp -d); cd "$D" && git init -q . && git config user.email t@e.com
+mkdir -p src docs/plans && echo x > src/api.py && git add -A && git commit -qm i
+super-harness init --no-agent --yes >/dev/null
+super-harness adapter install claude-code >/dev/null
+super-harness change start my-change >/dev/null
+
+probe() { echo "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$1\"}}" \
+  | super-harness-hook --agent claude-code >/dev/null 2>&1; echo "$1 → $?"; }
+
+probe docs/plans/2026-07-29-my-change-design.md   # expect 0  (was 2)
+probe .harness/scratch/my-change/notes.md         # expect 0  (was 2)
+probe src/api.py                                  # expect 2  (unchanged)
+probe AGENTS.md                                   # expect 2  (unchanged)
+probe .harness/gate-disabled                      # expect 2  (unchanged)
+probe /tmp/outside.md                             # expect 2  (unchanged)
+```
+
+All six must match. Paste the output into the change's scratch dir; it becomes the
+code-review evidence that the gate behaves as designed with a real agent adapter.
+
+---
+
+## Task 10: Full suite, CI parity, and the lifecycle close-out
+
+```bash
+.venv/bin/pytest -q                       # expect: all green (2098+ baseline)
+.venv/bin/ruff check .
+.venv/bin/super-harness doc check
+.venv/bin/super-harness doc refs --gate
+.venv/bin/super-harness sync --check
+.venv/bin/super-harness decision check --gate-reconcile
+PYTHONPATH=src .venv/bin/lint-imports --config .importlinter
+```
+
+Then the self-host lifecycle. **`--scope` must list every file touched** (pothole ⑱ —
+omitting it silently empties `plan_artifacts`):
+
+```bash
+super-harness plan ready 2026-07-29-gate-authoring-space --scope '[
+  "docs/plans/2026-07-29-gate-authoring-space-design.md",
+  "docs/plans/2026-07-29-gate-authoring-space-implementation.md",
+  "src/super_harness/core/plan_paths.py",
+  "src/super_harness/gates/decisions.py",
+  "src/super_harness/gates/pre_tool_use.py",
+  "src/super_harness/daemon/hook_entry.py",
+  "src/super_harness/cli/gate.py",
+  "src/super_harness/cli/init.py",
+  "src/super_harness/engineering/gitignore_injector.py",
+  "src/super_harness/adapters/agent/claude_code.py",
+  "src/super_harness/adapters/agent/codex.py",
+  "docs/getting-started.md", "docs/concepts.md", "docs/limitations.md",
+  "docs/cli-reference.md", "docs/decisions/d-single-gate-policy.md",
+  "docs/decisions/d-gate-governs-git-product.md",
+  "AGENTS.md", ".gitignore", "tests/"
+]' --tier-hint Normal
+```
+
+**Review:** two independent sources for both plan and code review. This change edits
+the gate decision table — the one place where a single-source miss has previously
+been caught only by the second reviewer (PR #82: all 7 real findings came from the
+second source; PR #85: the fail-open hole was caught by Codex alone). Do not thin it.
+
+Close with `attest write` covering the full scope, then `on-merge` — and if this
+branch carries more than one change, run `on-merge` for **each** (pothole ㉑).
+
+---
+
+## Deliberately NOT in scope
+
+- Relaxing `AWAITING_PLAN_REVIEW` (would desync the reviewer's frozen target).
+- `change start --plan` (D2 — agent-supplied identity).
+- Framework-adapter auto-recording of `plan_artifacts` (still deferred from #85).
+- Relaxing out-of-repo paths (fail-safe by design; the scratch area is the answer).
+- Any change to what `PLAN_REJECTED` allows.
