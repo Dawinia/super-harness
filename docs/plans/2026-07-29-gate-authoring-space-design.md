@@ -32,6 +32,23 @@ This is not a documentation typo. **Both framework adapters' automatic
 (path convention, no marker), Superpowers watches marked `.md` under its candidate
 dirs. In any repo with the hot-path gate installed, that line is dead.
 
+### How far the fix reaches, per adapter
+
+Being honest about coverage, since the motivation leans on both:
+
+| adapter | how it identifies plan artifacts | covered by a `{slug}` pattern? |
+|---|---|---|
+| OpenSpec | path convention `openspec/changes/<slug>/…` | **fully** — the slug is in the path by construction |
+| Superpowers | `change:` frontmatter marker; filename free-form | **partially** — only where the filename happens to carry the slug |
+| plain / none | owner's own convention | by configuration |
+
+Superpowers' residue is structural, not an oversight: allowing on the *marker*
+would let the agent mark any `.md` (including `AGENTS.md`) as this change's plan,
+which is precisely the identity source §Design/1 rejects. A superpowers repo whose
+plan filenames omit the slug must configure a pattern that captures them, or keep
+using draft-before-`change start`. Recorded in `docs/limitations.md`; the shipped
+skeleton carries commented patterns for both superpowers candidate dirs.
+
 The escape hatch that exists today — draft-before-`change start` — is real and is
 named in the design docs, but it appears **nowhere in `getting-started.md` and
 nowhere in the injected `AGENTS.md` section**. The agent that has to walk it is

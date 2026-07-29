@@ -476,6 +476,38 @@ def test_source_file_never_allowed_in_intent_declared():
         _state("INTENT_DECLARED"), "src/api.py", plan_path_patterns=PATTERNS
     )
     assert r.decision is GateDecision.BLOCK
+
+
+def test_forged_glob_metachars_in_change_id_do_not_widen_the_pattern():
+    """`change_id` comes from the gitignored state.yaml, which the agent can write
+    in any ALLOW state. A `*` in it must NOT turn `docs/plans/*{slug}*.md` into a
+    match for every plan document."""
+    r = _decide(
+        _state("INTENT_DECLARED", change_id="*"),
+        "docs/plans/2026-07-29-somebody-elses-plan.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_forged_bracket_class_in_change_id_is_literal():
+    r = _decide(
+        _state("INTENT_DECLARED", change_id="[a-z]"),
+        "docs/plans/x-a-y.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_literal_metachar_slug_still_matches_its_own_document():
+    """Escaping must not break the legitimate case: a change_id containing a
+    metachar still matches the file literally named after it."""
+    r = _decide(
+        _state("INTENT_DECLARED", change_id="odd*name"),
+        "docs/plans/2026-07-29-odd*name-design.md",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.ALLOW
 ```
 
 **Step 2: Run to verify it fails**
@@ -488,6 +520,7 @@ Expected: FAIL — `TypeError: PreToolUseGate() takes no arguments`
 Add a constructor and the allowance block to `PreToolUseGate`:
 
 ```python
+import glob
 from fnmatch import fnmatchcase
 
 from super_harness.gates.decisions import (
@@ -517,17 +550,27 @@ and, after the scratch block:
         # `docs/plans/x-<slug>.md` -> `src/evil.py` cannot launder); the pattern list
         # is really a list (a forged config must BLOCK, never raise — the hook treats
         # an exception as non-blocking); and the slug-substituted pattern matches.
+        #
+        # `change_id` is ESCAPED before substitution. It is read from
+        # `.harness/state.yaml`, which is gitignored and writable by the agent in
+        # every ALLOW state, and `change start`'s slug validation does not protect
+        # that path — so a forged `change_id` containing `*`, `?` or `[...]` would
+        # otherwise widen the pattern past the active change (e.g. `*` turning
+        # `docs/plans/*{slug}*.md` into a match for every doc). `glob.escape` renders
+        # those characters literal, keeping the binding the guard rail promises.
         if (
             state.current_state in PLAN_PATH_ALLOW_STATES
             and rp
             and rp.lower().endswith(".md")
             and state.change_id
+            and isinstance(state.change_id, str)
             and isinstance(self._plan_path_patterns, list)
         ):
+            safe_slug = glob.escape(state.change_id)
             for pattern in self._plan_path_patterns:
                 if not isinstance(pattern, str):
                     continue
-                if fnmatchcase(rp, pattern.replace("{slug}", state.change_id)):
+                if fnmatchcase(rp, pattern.replace("{slug}", safe_slug)):
                     return GateResult(
                         decision=GateDecision.ALLOW,
                         reason=(
@@ -632,12 +675,24 @@ Expected: FAIL — the allow cases return 2 (loader not wired)
 
 **Step 3: Implement**
 
-In `hook_entry._decide`, add the import and pass the patterns:
+In `hook_entry._decide`, add the import and pass the patterns — **only when the
+state can actually use them**. Every `Edit`/`Write` in every state goes through
+this path, and the patterns are consulted in `INTENT_DECLARED` alone; an
+unconditional YAML read+parse would tax a hot path this project has deliberately
+optimised elsewhere (import-light `gates.decisions`, daemon demoted for cold-start
+cost, `state_snapshot`'s single parse with CSafeLoader):
 
 ```python
     from super_harness.core.plan_paths import load_plan_paths
+    from super_harness.gates.decisions import PLAN_PATH_ALLOW_STATES
     ...
-    result = PreToolUseGate(plan_path_patterns=load_plan_paths(root)).decide(
+    # Deferred: skip the config read entirely unless the active state opts in.
+    patterns = (
+        load_plan_paths(root)
+        if snapshot.state and snapshot.state.current_state in PLAN_PATH_ALLOW_STATES
+        else []
+    )
+    result = PreToolUseGate(plan_path_patterns=patterns).decide(
         ProposedAction(
             kind="edit", file=file, resolved_path=canonical_relpath(root, file)
         ),
@@ -648,6 +703,18 @@ In `hook_entry._decide`, add the import and pass the patterns:
 
 Apply the identical change at the `cli/gate.py` construction site so `gate check`
 and the hook can never disagree (`d-single-gate-policy`: one policy, all readers).
+
+Add a test asserting the deferral holds — otherwise a later refactor silently
+reintroduces the cost:
+
+```python
+def test_config_is_not_read_outside_intent_declared(repo, monkeypatch):
+    """The YAML must not be touched in states that cannot use it."""
+    calls = []
+    import super_harness.core.plan_paths as pp
+    monkeypatch.setattr(pp, "load_plan_paths", lambda root: calls.append(root) or [])
+    # drive a non-INTENT_DECLARED state through _decide, assert calls == []
+```
 
 **Step 4: Run to verify it passes**
 
@@ -716,10 +783,27 @@ Add to `_skeleton_files()`:
             "version: 1\n"
             "plan_paths:\n"
             '  - "docs/plans/*{slug}*.md"\n'
-            "# openspec layout:\n"
+            "# openspec layout (openspec/changes/<slug>/proposal.md, tasks.md):\n"
             '#  - "openspec/changes/{slug}/**/*.md"\n'
+            "# superpowers layouts (marked .md under its candidate dirs):\n"
+            '#  - "docs/superpowers/plans/*{slug}*.md"\n'
+            '#  - "docs/superpowers/specs/*{slug}*.md"\n'
         ),
 ```
+
+The superpowers lines matter: the design's motivation names **both** adapters'
+auto-`plan_ready` paths as dead, and `adapters/framework/superpowers.py` scans
+three candidate dirs (`docs/plans`, `docs/superpowers/plans`,
+`docs/superpowers/specs`). Only the first is covered by the default, so the other
+two must at least be discoverable in the skeleton — otherwise half the stated
+breakage silently stays broken. Task 7 states the same in `docs/adapters/`.
+
+**Known limitation to state, not paper over:** superpowers identifies its artifacts
+by the `change:` *marker*, and filenames are free-form. A repo whose superpowers
+plan filenames do not contain the slug is not covered by any `{slug}`-bearing
+pattern. Marker-based allowance was rejected in design (the agent can add a marker
+to any `.md`), so this is a real gap, not an oversight — record it in
+`docs/limitations.md`.
 
 Add `".harness/scratch/",` to `_CANONICAL_PATHS` (next to the other runtime dirs).
 
@@ -736,6 +820,51 @@ git add src/super_harness/cli/init.py \
         src/super_harness/engineering/gitignore_injector.py \
         .gitignore tests/
 git commit -m "feat(init): ship plan-paths.yaml skeleton and gitignore the scratch area"
+```
+
+---
+
+## Task 6b: Make this repo eat its own config — and fix the slug/filename mismatch
+
+**Files:**
+- Create: `.harness/plan-paths.yaml` (tracked)
+- Rename: `docs/plans/2026-07-29-gate-authoring-space-{design,implementation}.md`
+  → `…-gate-authoring-space-v2-{design,implementation}.md`
+
+Two defects the plan review caught, with one shared root.
+
+**The config file does not exist here.** The design designates
+`.harness/plan-paths.yaml` as tracked config whose edits are themselves gated, and
+Task 6 ships a skeleton for *new* repos — but nothing creates it in this
+repository. Without it this repo silently runs on `DEFAULT_PLAN_PATHS`, and the
+"widening the allowance is itself a gated edit" property is never demonstrated on
+the project that ships it. Write it with the same content as the skeleton.
+
+**The default pattern does not match this change's own plan documents.** This
+change's slug is `2026-07-29-gate-authoring-space-v2` (the un-suffixed slug is
+ABANDONED and cannot be reused), so `docs/plans/*{slug}*.md` expands to
+`docs/plans/*2026-07-29-gate-authoring-space-v2*.md` — which matches **neither**
+`…-gate-authoring-space-design.md` nor `…-implementation.md`. The allowance would
+fail closed exactly where this plan claims it works.
+
+The repo convention is `<slug>-<suffix>.md` (slug already carries the date):
+`2026-07-20-init-wizard-progressive-disclosure-design.md` for slug
+`init-wizard-progressive-disclosure`. Renaming restores that convention rather
+than working around the matcher — do **not** loosen the pattern to paper over it,
+since the `{slug}` requirement is the guard rail that keeps `AGENTS.md` and
+`docs/decisions/**` out.
+
+Do this in `IMPLEMENTATION_IN_PROGRESS`, where the gate allows all edits — it is
+not a bypass. Update every in-repo reference to the old filenames afterwards
+(`git grep -l gate-authoring-space`), then re-run `plan ready` per Task 10 with
+the new names in `--scope`.
+
+**Verify:**
+
+```bash
+.venv/bin/super-harness doc refs --gate     # no dead references to the old names
+git grep -n "gate-authoring-space-design\|gate-authoring-space-implementation"
+# expect: no hits outside historical attestations/event logs
 ```
 
 ---
@@ -890,7 +1019,13 @@ git commit -m "docs(decisions): record the gate's scope rule; re-ratify d-single
 ## Task 9: Live end-to-end proof (not a unit test)
 
 **Files:**
-- Create: `.harness/scratch/2026-07-29-gate-authoring-space/live-proof.md` (throwaway)
+- Create: `.harness/scratch/2026-07-29-gate-authoring-space-v2/live-proof.md` (throwaway)
+
+> The directory MUST carry this change's own slug (`…-v2`). The un-suffixed
+> `2026-07-29-gate-authoring-space` is a **different, ABANDONED** record still
+> present in `.harness/state.yaml`; writing under it would neither be allowed by
+> the gate (the scratch prefix is keyed on the *active* change) nor prove anything
+> about this change. Same hazard as pothole ④ (stale-change hijack).
 
 A green unit suite is not evidence the installed hook behaves. Reproduce the exact
 probe from the design doc against a temp repo with the **real** adapter installed:
@@ -934,9 +1069,10 @@ Then the self-host lifecycle. **`--scope` must list every file touched** (pothol
 omitting it silently empties `plan_artifacts`):
 
 ```bash
-super-harness plan ready 2026-07-29-gate-authoring-space --scope '[
-  "docs/plans/2026-07-29-gate-authoring-space-design.md",
-  "docs/plans/2026-07-29-gate-authoring-space-implementation.md",
+super-harness plan ready 2026-07-29-gate-authoring-space-v2 --scope '[
+  "docs/plans/2026-07-29-gate-authoring-space-v2-design.md",
+  "docs/plans/2026-07-29-gate-authoring-space-v2-implementation.md",
+  ".harness/plan-paths.yaml",
   "src/super_harness/core/plan_paths.py",
   "src/super_harness/gates/decisions.py",
   "src/super_harness/gates/pre_tool_use.py",
