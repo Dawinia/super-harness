@@ -123,3 +123,62 @@ def test_carveout_awaiting_never_allows() -> None:
         PreToolUseGate().decide(_act("docs/plans/c.md", "docs/plans/c.md"), st, []).decision
         is GateDecision.BLOCK
     )
+
+
+# --- Scratch-area allowance (design 2026-07-29) ---
+
+
+def _state(current: str, change_id: str = "my-change") -> ChangeState:
+    return ChangeState(change_id=change_id, current_state=current)
+
+
+def _decide(state, resolved, **kw):
+    return PreToolUseGate(**kw).decide(
+        ProposedAction(kind="edit", file=resolved, resolved_path=resolved), state, []
+    )
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        "INTENT_DECLARED",
+        "AWAITING_PLAN_REVIEW",
+        "PLAN_REJECTED",
+        "AWAITING_CODE_REVIEW",
+        "READY_TO_MERGE",
+        "ARCHIVED",
+        "ABANDONED",
+    ],
+)
+def test_scratch_area_allowed_in_every_blocking_state(current):
+    r = _decide(_state(current), ".harness/scratch/my-change/notes.md")
+    assert r.decision is GateDecision.ALLOW
+
+
+def test_scratch_area_allows_any_extension():
+    # It never enters git, so there is no reason to restrict it to .md.
+    r = _decide(_state("READY_TO_MERGE"), ".harness/scratch/my-change/probe.py")
+    assert r.decision is GateDecision.ALLOW
+
+
+def test_other_changes_scratch_is_blocked():
+    r = _decide(_state("INTENT_DECLARED"), ".harness/scratch/other-change/notes.md")
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_scratch_sibling_prefix_is_not_a_match():
+    # `.harness/scratch/my-change-evil/` must NOT satisfy the `my-change` prefix.
+    r = _decide(_state("INTENT_DECLARED"), ".harness/scratch/my-change-evil/x.md")
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_scratch_bare_directory_path_is_blocked():
+    r = _decide(_state("INTENT_DECLARED"), ".harness/scratch/my-change")
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_gate_disabled_path_is_never_allowed_via_scratch():
+    # Post-canonicalization the traversal has already resolved; the gate sees the
+    # real target and must block it.
+    r = _decide(_state("INTENT_DECLARED"), ".harness/gate-disabled")
+    assert r.decision is GateDecision.BLOCK

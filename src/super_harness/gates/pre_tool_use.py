@@ -24,6 +24,7 @@ from super_harness.gates import (
 from super_harness.gates.decisions import (
     PLAN_ARTIFACT_ALLOW_STATES,
     PRE_TOOL_USE_DECISIONS,
+    SCRATCH_ROOT,
     SUGGESTIONS,
 )
 
@@ -58,6 +59,18 @@ class PreToolUseGate(Gate):
         # clean BLOCK instead of a `TypeError` the hook would fail-open on. Everything
         # else falls through to the table below (BLOCK).
         rp = action.resolved_path
+        # Scratch-area allowance (design 2026-07-29): the change's own scratch dir is
+        # allowed in EVERY state. `rp` is already canonicalized by the caller, so a
+        # `..`/symlink escape has resolved to its real target and fails this prefix.
+        # The trailing `/` makes the test segment-aware: `.harness/scratch/my-change`
+        # must not admit `.harness/scratch/my-change-evil/x`.
+        if rp and state.change_id:
+            scratch_prefix = f"{SCRATCH_ROOT}/{state.change_id}/"
+            if rp.startswith(scratch_prefix):
+                return GateResult(
+                    decision=GateDecision.ALLOW,
+                    reason=f"{state.current_state}: scratch area ({rp})",
+                )
         if (
             state.current_state in PLAN_ARTIFACT_ALLOW_STATES
             and rp
