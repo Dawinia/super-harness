@@ -954,7 +954,7 @@ class InteractiveInitUI:
 
     def _collect_integrations(
         self, request: InitRequest, preflight: InitPreflight, initial: InitChoices
-    ) -> tuple[str, ...] | None | object:
+    ) -> tuple[str, ...] | object | None:
         if request.integrations:
             return initial.integrations
         if request.no_agent:
@@ -975,7 +975,7 @@ class InteractiveInitUI:
 
     def _collect_producers(
         self, request: InitRequest, preflight: InitPreflight, initial: InitChoices
-    ) -> tuple[str, ...] | None | object:
+    ) -> tuple[str, ...] | object | None:
         if request.review_producers:
             return initial.review_producers
         defaults = (

@@ -1011,9 +1011,9 @@ class _FakePromptAdapter:
     def __init__(
         self,
         *,
-        checkboxes: Sequence[tuple[str, ...] | None | BaseException] = (),
-        texts: Sequence[str | None | BaseException] = (),
-        selects: Sequence[str | None | BaseException] = (),
+        checkboxes: Sequence[tuple[str, ...] | BaseException | None] = (),
+        texts: Sequence[str | BaseException | None] = (),
+        selects: Sequence[str | BaseException | None] = (),
         before_prompt: Callable[[], None] | None = None,
     ) -> None:
         self._checkboxes = iter(checkboxes)

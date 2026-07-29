@@ -52,7 +52,7 @@ dev = [
   "pytest-asyncio>=0.23",
   "pytest-rerunfailures>=14.0",
   "pyfakefs>=5.4",
-  "ruff>=0.4",
+  "ruff>=0.15,<0.16",
   "mypy>=1.10",
   "types-PyYAML>=6.0",
   # Architecture-fitness engine for tier-1 architecture decisions (G-FITNESS).
