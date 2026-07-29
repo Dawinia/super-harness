@@ -30,27 +30,28 @@ convention in `core/anchor_scanner.py:45`), pytest.
 | # | Decision | Why |
 |---|---|---|
 | D1 | Plan-path allowance fires **only in `INTENT_DECLARED`** | `PLAN_REJECTED` already has the `plan_artifacts` mechanism whose "full replacement on each `plan_ready` = revoke" semantics would be diluted by a second, pattern-based source. Two non-overlapping mechanisms keep both existing proofs intact. **Known gap — see below.** |
-
-> **D1's known gap (raised by plan review, accepted, disclosed).** The argument above
-> holds only where `plan_artifacts` is actually populated, i.e. for the manual
-> `plan ready --scope` verb. The **OpenSpec adapter emits `plan_ready` with an empty
-> payload and no `scope` key at all** (`adapters/framework/openspec.py`, which
-> deliberately refuses to mine a file list out of a task checklist), so
-> `cs.scope` stays at its default and `plan_artifacts` is **always empty** for an
-> adapter-driven change. For those repos there is no plan-artifact mechanism to
-> dilute — and with `PLAN_REJECTED` excluded here, an OpenSpec user still cannot
-> revise a rejected plan in-gate. This change fixes their `INTENT_DECLARED` authoring
-> and leaves their reject loop where it was.
->
-> Not fixed here because the sound repair is a new decision, not a one-line widening:
-> plan-path patterns would have to apply in `PLAN_REJECTED` *only when
-> `plan_artifacts` is empty*, so the two mechanisms still never overlap. That is
-> defensible (the emptiness is set by the flow, not by the agent) but it is a design
-> change with its own review surface. Recorded in `docs/limitations.md`.
 | D2 | **No `change start --plan` flag** | That value would be supplied by the governed agent at `change start` — self-declared identity, the exact thing rejected in design §Design/1. The tracked config file already covers per-repo layout, and editing it is itself a gated edit. |
 | D3 | Config loader is **fail-CLOSED** (unlike `core/source_scope.py`) | `source_scope` degrades to permissive defaults because a typo there must not brick doc scanning. Here a corrupt file degrading to the default would *grant* an allowance the owner may have narrowed. Corrupt/missing-key → `[]` → nothing allowed → the state table blocks, i.e. today's behaviour. A **missing file** is different: it means "never configured" → the built-in default applies. |
 | D4 | Matching via `fnmatch.fnmatchcase` on the POSIX repo-relative path | Consistent with `anchor_scanner`. **`fnmatch` is not glob**: `*` crosses `/` and `**` carries no recursive meaning. Both consequences are load-bearing — see the measurements below the table. Not worth a bespoke segment-aware matcher (YAGNI). |
 | D5 | Scratch dir is `.harness/scratch/<slug>/`, compared **after** `canonical_relpath` | `canonical_relpath` resolves `..` and symlinks before the gate sees the path, so `.harness/scratch/x/../../gate-disabled` resolves to `.harness/gate-disabled`, fails the prefix test, and blocks. Same defence #85 used against symlink laundering. |
+
+### D1's known gap (raised by plan review, accepted, disclosed)
+
+D1's argument holds only where `plan_artifacts` is actually populated, i.e. for the
+manual `plan ready --scope` verb. The **OpenSpec adapter emits `plan_ready` with an
+empty payload and no `scope` key at all** (`adapters/framework/openspec.py`, which
+deliberately refuses to mine a file list out of a task checklist), so `cs.scope` stays
+at its default and `plan_artifacts` is **always empty** for an adapter-driven change.
+For those repos there is no plan-artifact mechanism to dilute — and with
+`PLAN_REJECTED` excluded here, an OpenSpec user still cannot revise a rejected plan
+in-gate. This change fixes their `INTENT_DECLARED` authoring and leaves their reject
+loop where it was.
+
+Not fixed here because the sound repair is a new decision, not a one-line widening:
+plan-path patterns would have to apply in `PLAN_REJECTED` *only when `plan_artifacts`
+is empty*, so the two mechanisms still never overlap. That is defensible (the emptiness
+is set by the flow, not by the agent) but it is a design change with its own review
+surface. Task 7 records it in `docs/limitations.md`.
 
 ### `fnmatch` semantics — measured, because they cut both ways
 
@@ -719,16 +720,13 @@ unconditional YAML read+parse would tax a hot path this project has deliberately
 optimised elsewhere (import-light `gates.decisions`, daemon demoted for cold-start
 cost, `state_snapshot`'s single parse with CSafeLoader):
 
+The deferral itself lives in the shared helper (below), so each call site reduces to:
+
 ```python
-    from super_harness.core.plan_paths import load_plan_paths
+    from super_harness.core.plan_paths import patterns_for_state
     from super_harness.gates.decisions import PLAN_PATH_ALLOW_STATES
     ...
-    # Deferred: skip the config read entirely unless the active state opts in.
-    patterns = (
-        load_plan_paths(root)
-        if snapshot.state and snapshot.state.current_state in PLAN_PATH_ALLOW_STATES
-        else []
-    )
+    patterns = patterns_for_state(root, snapshot.state, PLAN_PATH_ALLOW_STATES)
     result = PreToolUseGate(plan_path_patterns=patterns).decide(
         ProposedAction(
             kind="edit", file=file, resolved_path=canonical_relpath(root, file)
@@ -736,6 +734,14 @@ cost, `state_snapshot`'s single parse with CSafeLoader):
         snapshot.state,
         [],
     )
+```
+
+with the skip condition written **once**, inside `patterns_for_state`:
+
+```python
+    if state is None or state.current_state not in allow_states:
+        return []
+    return load_plan_paths(workspace_root)
 ```
 
 **Do not copy the predicate into `cli/gate.py`.** Spreading the read-skip decision
@@ -1092,7 +1098,9 @@ Correct `docs/getting-started.md:315` to state that plan authoring in
 OpenSpec pattern ships enabled by default (Task 6), so that layout works out of the
 box and owners trim what they do not use. Add the scratch area and the
 one-sentence rule to `docs/concepts.md`. Update `docs/limitations.md`'s plan-artifact
-section.
+section, and record D1's known gap there by name: an OpenSpec-driven change has an empty
+`plan_artifacts`, so the PLAN_REJECTED carve-out never fires for it and this cut leaves
+its reject loop unchanged.
 
 **Step 4: Run to verify it passes**
 
@@ -1175,7 +1183,7 @@ Expected: exit 0, `clean`
 **Step 5: Commit**
 
 ```bash
-git add docs/decisions/ tests/probes/
+git add docs/decisions/
 git commit -m "docs(decisions): record the gate's scope rule; re-ratify d-single-gate-policy"
 ```
 
