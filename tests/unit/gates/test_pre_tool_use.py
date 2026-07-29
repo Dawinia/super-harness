@@ -326,3 +326,86 @@ def test_literal_metachar_slug_still_matches_its_own_document():
         plan_path_patterns=PATTERNS,
     )
     assert r.decision is GateDecision.ALLOW
+
+
+# --- Critical fixes: pattern-content validation + exception containment ---
+
+
+def test_pattern_without_slug_placeholder_blocks_unrelated_md():
+    # Critical-1: a pattern lacking `{slug}` must not degrade the allowance from
+    # "this change's plan document" to "any .md anywhere". Defence in depth even
+    # though core.plan_paths already rejects such patterns at load time — the gate
+    # is injected patterns and must not trust the loader's guarantee blindly.
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "AGENTS.md",
+        plan_path_patterns=["*.md"],
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_pattern_without_slug_placeholder_blocks_even_a_legitimate_looking_path():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=["*.md"],
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_non_str_pattern_in_list_does_not_block_a_valid_pattern_alongside_it():
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=[123, "docs/plans/*{slug}*.md"],  # type: ignore[list-item]
+    )
+    assert r.decision is GateDecision.ALLOW
+
+
+class _HostileStr(str):
+    """A str subclass whose `.replace` raises — isinstance(pattern, str) is True,
+    so only a try/except around the per-pattern work (not a type check) can
+    contain this."""
+
+    def replace(self, *args: object, **kwargs: object) -> str:  # type: ignore[override]
+        raise RuntimeError("hostile pattern")
+
+
+def test_pattern_whose_replace_raises_blocks_instead_of_raising():
+    # Critical-2: an exception here must not propagate — the hook treats a
+    # non-returning gate as non-blocking, i.e. fails OPEN.
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.md",
+        plan_path_patterns=[_HostileStr("docs/plans/*{slug}*.md")],
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_uppercase_md_resolved_suffix_falls_through_to_block_on_case_mismatch():
+    # `.lower()` on the resolved-path suffix check is a defense-in-depth guard
+    # against a non-`.md` symlink target laundering through (mirroring the
+    # PLAN_ARTIFACT_ALLOW_STATES carve-out) — it does not promise the pattern MATCH
+    # itself is case-insensitive. `fnmatchcase` compares exact case, so a resolved
+    # path ending in `.MD` against a pattern authored in lowercase (this repo's own
+    # convention) correctly falls through to the block-by-default table. This is
+    # fail-closed, not a defect.
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.MD",
+        plan_path_patterns=PATTERNS,
+    )
+    assert r.decision is GateDecision.BLOCK
+
+
+def test_uppercase_md_resolved_suffix_matches_when_pattern_case_agrees():
+    # Same resolved path as above, but now the pattern's own extension is also
+    # uppercase — proving the `.lower()` suffix pre-check does accept an uppercase
+    # `.MD` resolved path (it isn't rejected outright); whether the allowance
+    # actually fires is left to `fnmatchcase`'s exact-case comparison.
+    r = _decide(
+        _state("INTENT_DECLARED"),
+        "docs/plans/2026-07-29-my-change-design.MD",
+        plan_path_patterns=["docs/plans/*{slug}*.MD"],
+    )
+    assert r.decision is GateDecision.ALLOW

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from super_harness.core.state import STATES
 from super_harness.gates.decisions import (
+    PLAN_ARTIFACT_ALLOW_STATES,
     PLAN_PATH_ALLOW_STATES,
     PRE_TOOL_USE_DECISIONS,
     SCRATCH_ROOT,
@@ -40,3 +41,11 @@ def test_plan_path_allow_states_is_intent_declared_only() -> None:
 def test_scratch_root_is_under_harness_and_posix() -> None:
     assert SCRATCH_ROOT == ".harness/scratch"
     assert "\\" not in SCRATCH_ROOT
+
+
+def test_allow_state_sets_are_disjoint() -> None:
+    # What makes PreToolUseGate's branch ordering between the two carve-outs
+    # irrelevant: they never fire for the same state. Enforced, not incidental —
+    # precedent: tests/unit/core/test_events.py asserts
+    # CORE_EVENT_TYPES.isdisjoint(EXTENSION_EVENT_TYPES).
+    assert PLAN_PATH_ALLOW_STATES.isdisjoint(PLAN_ARTIFACT_ALLOW_STATES)

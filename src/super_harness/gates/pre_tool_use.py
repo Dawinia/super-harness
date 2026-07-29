@@ -15,6 +15,7 @@ from fnmatch import fnmatchcase
 from typing import ClassVar
 
 from super_harness.core.events import Event
+from super_harness.core.plan_paths import SLUG_PLACEHOLDER
 from super_harness.core.state import ChangeState
 from super_harness.gates import (
     Gate,
@@ -51,8 +52,16 @@ class PreToolUseGate(Gate):
         validated: each contains `{slug}` and ends in `.md`). Injected rather than
         read here so the gate stays pure and testable. Default `None` keeps every
         existing construction site (and every pre-existing test) behaving exactly as
-        before: no patterns → no plan-path allowance."""
-        self._plan_path_patterns = plan_path_patterns or []
+        before: no patterns → no plan-path allowance.
+
+        Copied into a new `list` (not stored by reference) so a caller mutating the
+        list it passed in afterwards cannot silently change this gate's policy after
+        construction. A non-`list` input (forged/corrupt config) becomes `[]` here —
+        the `isinstance(self._plan_path_patterns, list)` check in `decide()` is kept
+        anyway as belt-and-braces, since the attribute remains reachable."""
+        self._plan_path_patterns = (
+            list(plan_path_patterns) if isinstance(plan_path_patterns, list) else []
+        )
 
     def decide(
         self,
@@ -83,10 +92,21 @@ class PreToolUseGate(Gate):
                     reason=f"{state.current_state}: scratch area ({rp})",
                 )
         # Plan-path allowance (design 2026-07-29). Guards, in order: state opted in;
-        # a canonicalized path exists; the RESOLVED path is `.md` (so a symlinked
-        # `docs/plans/x-<slug>.md` -> `src/evil.py` cannot launder); the pattern list
-        # is really a list (a forged config must BLOCK, never raise — the hook treats
-        # an exception as non-blocking); and the slug-substituted pattern matches.
+        # a canonicalized path exists; the RESOLVED path is `.md` (so a *symlinked*
+        # `docs/plans/x-<slug>.md` -> `src/evil.py` cannot launder — a hardlink is a
+        # separate, known, pre-existing gap shared with the PLAN_ARTIFACT_ALLOW_STATES
+        # carve-out and is out of scope here); the pattern list is really a list (a
+        # forged config must BLOCK, never raise — the hook treats an exception as
+        # non-blocking); and, per pattern, that it is a `str` CONTAINING the literal
+        # `{slug}` placeholder before it is ever substituted into or matched.
+        #
+        # The `{slug}` check is defence in depth: `core.plan_paths.load_plan_paths`
+        # already rejects a pattern lacking it at load time, but patterns are
+        # INJECTED here (the gate never reads the file itself), so the gate must not
+        # assume the loader's guarantee holds for whatever list it was constructed
+        # with. Without this check a pattern like `"*.md"` would silently degrade the
+        # allowance from "this change's plan document" to "any `.md` anywhere in the
+        # repo" in INTENT_DECLARED — defeating the very binding this design exists for.
         #
         # `change_id` is ESCAPED before substitution. It is read from
         # `.harness/state.yaml`, which is gitignored and writable by the agent in
@@ -95,6 +115,13 @@ class PreToolUseGate(Gate):
         # otherwise widen the pattern past the active change (e.g. `*` turning
         # `docs/plans/*{slug}*.md` into a match for every doc). `glob.escape` renders
         # those characters literal, keeping the binding the guard rail promises.
+        #
+        # The `.replace`/`fnmatchcase` call is wrapped in `try/except Exception` (not
+        # `BaseException`): `isinstance(pattern, str)` is true for a `str` subclass,
+        # which could override `.replace` to raise. An exception escaping `decide()`
+        # is indistinguishable, to the hook, from a gate that allows — it is treated
+        # as non-blocking. A hostile pattern must degrade to "does not match", never
+        # to "gate bypassed".
         if (
             state.current_state in PLAN_PATH_ALLOW_STATES
             and rp
@@ -105,9 +132,13 @@ class PreToolUseGate(Gate):
         ):
             safe_slug = glob.escape(state.change_id)
             for pattern in self._plan_path_patterns:
-                if not isinstance(pattern, str):
+                if not isinstance(pattern, str) or SLUG_PLACEHOLDER not in pattern:
                     continue
-                if fnmatchcase(rp, pattern.replace("{slug}", safe_slug)):
+                try:
+                    matched = fnmatchcase(rp, pattern.replace(SLUG_PLACEHOLDER, safe_slug))
+                except Exception:
+                    continue
+                if matched:
                     return GateResult(
                         decision=GateDecision.ALLOW,
                         reason=(
