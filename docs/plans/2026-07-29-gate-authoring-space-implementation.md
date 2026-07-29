@@ -987,13 +987,21 @@ below the threshold and the diff degrades to *delete old + add new*. The old pat
 would then be out-of-scope changes at the merge boundary. Declaring both costs
 nothing and is robust either way.
 
-**Verify:**
+**Verify + commit:**
 
 ```bash
 .venv/bin/super-harness doc refs --gate     # no dead references to the old names
 git grep -n "gate-authoring-space-design\|gate-authoring-space-implementation"
 # expect: no hits outside historical attestations/event logs
+
+git add .harness/plan-paths.yaml
+git add -A docs/plans/                      # stages the renames as renames
+git commit -m "chore(harness): adopt plan-paths.yaml here and align plan filenames with the slug"
 ```
+
+`git add -A docs/plans/` rather than naming both paths: the delete side of a
+rename is not staged by `git add <newpath>` alone, and leaving it unstaged makes
+the old file look untouched while the new one appears as an addition.
 
 ---
 

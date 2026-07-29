@@ -121,6 +121,14 @@ Config lives in the **tracked** family (`source-paths.yaml`, `gates.yaml`,
 (`review-profiles.local.yaml`, `state.yaml`) — so widening the allowance is itself
 a gated edit.
 
+**Failure mode is fail-CLOSED, unlike its nearest sibling.** `core/source_scope.py`
+degrades to permissive defaults on a corrupt file, because a typo there must not
+brick doc scanning. Here the list *grants* a gate allowance, so degrading to the
+built-in default could re-grant something the owner deliberately narrowed away: a
+corrupt or malformed file therefore yields **no patterns at all**, and the state
+table blocks exactly as it does today. A *missing* file is different — it means
+"never configured", and gets the built-in default.
+
 ### 2. A scratch area, allowed in every state
 
 `.harness/scratch/<slug>/**` is allowed regardless of lifecycle state.
