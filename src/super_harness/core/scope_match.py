@@ -1,12 +1,23 @@
 # src/super_harness/core/scope_match.py
 """Shared scope matcher + fail-closed git helpers for review bundling.
 
-`covered_by_scope` is the segment-aware matcher extracted from
-`sensors.verification_runner._covered_by_scope` (Task 2 re-points the baseline at
-this copy). Unlike the advisory `scope-vs-plan-final` baseline (which fails OPEN
-on git error so it never cries wolf), the helpers here that back the review
-freshness gate fail CLOSED: a git error raises `GitScopeError` so the emit-time
-check rejects rather than waving a stale review through.
+`covered_by_scope` is a segment-aware **prefix** matcher, so a declared `tests/`
+entry covers `tests/unit/x.py`. Its one remaining caller is `core.review_bundle`,
+which uses it to pick which `.md` files enter a review bundle — a convenience, not
+a safety property, so the loose semantics are appropriate there.
+
+**It is deliberately NOT the scope matcher used for verdicts.** The merge gate
+(`engineering.attestation.verify_attestations`) matches changed files against
+`scope.files` by canonical-path SET MEMBERSHIP, where `tests/` covers only a file
+literally named `tests/`, and the advisory `scope-vs-plan-final` baseline in
+`sensors.verification_runner` uses that same set membership so a clean local
+`verify` cannot promise something the merge boundary then refuses. Two semantics
+with different jobs: do not "unify" them.
+
+Unlike that baseline (which fails OPEN on git error so it never cries wolf), the
+helpers here that back the review freshness gate fail CLOSED: a git error raises
+`GitScopeError` so the emit-time check rejects rather than waving a stale review
+through.
 """
 from __future__ import annotations
 

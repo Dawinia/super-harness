@@ -54,8 +54,8 @@ from super_harness.core.paths import (
     verification_yaml_path,
 )
 from super_harness.core.reducer import derive_state
-from super_harness.core.scope_match import covered_by_scope as _covered_by_scope
 from super_harness.core.shell_runner import run_shell, scrubbed_environ
+from super_harness.engineering.attestation import canonical_path
 from super_harness.engineering.verification_config import (
     CheckSpec,
     VerificationConfig,
@@ -460,11 +460,21 @@ def _baseline_scope_vs_plan(
             archive=archive,
         )
 
-    drifted = [f for f in changed if not _covered_by_scope(f, declared_files)]
+    # Canonical-path SET MEMBERSHIP, deliberately identical to the merge gate
+    # (`engineering.attestation.verify_attestations`), not the segment-aware prefix
+    # matcher in `core.scope_match`. The point of this advisory check is to report
+    # exactly what `attest verify` will block on: with prefix matching a declared
+    # `tests/` covered `tests/unit/x.py` here while the gate produced one blocker per
+    # file, so a clean local `verify` promised something the merge boundary refused.
+    # Aligning the loose side to the strict one — never the reverse, which would be a
+    # fail-open widening of the gate.
+    declared_set = {canonical_path(d) for d in declared_files}
+    drifted = [f for f in changed if canonical_path(f) not in declared_set]
     report = None
     if drifted:
         report = (
-            f"Out-of-scope files changed (not covered by declared scope.files) "
+            f"Out-of-scope files changed (not in declared scope.files; the merge gate "
+            f"matches by exact path, so a directory entry does not cover files under it) "
             f"for change {change_id}:\n"
             + "\n".join(f"  - {f}" for f in drifted)
             + "\ndeclared scope.files:\n"
