@@ -112,6 +112,54 @@ def test_ready_records_tier_hint(tmp_path: Path) -> None:
     assert derive_state(events_path(tmp_path)).get("c").tier == "Normal"
 
 
+def _seed_plan_artifact(ws: Path, slug: str, rel: str) -> None:
+    """Drive the real `plan ready --scope` so `cs.plan_artifacts` holds `rel`.
+
+    `_seed` emits empty payloads, so the artifacts can only be recorded the way
+    production records them: a marked `.md` (frontmatter `change: <slug>`) inside
+    the declared scope.
+    """
+    doc = ws / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(f"---\nchange: {slug}\n---\n\n# plan\n", encoding="utf-8")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(ws), "plan", "ready", slug, "--scope", f"[{rel}]"]
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert derive_state(events_path(ws)).get(slug).plan_artifacts == [rel]
+
+
+def test_ready_without_scope_warns_that_plan_artifacts_lose_carve_out(tmp_path: Path) -> None:
+    # `plan_ready` without `--scope` preserves the previous scope but ALWAYS
+    # replaces `plan_artifacts` (reducer.py — a deliberate revocation). That
+    # silently drops the PLAN_REJECTED gate carve-out authorizing revision of
+    # those plan docs, so the command must say so out loud — and still succeed,
+    # because revoking on purpose is legitimate.
+    _seed(tmp_path, "c", "intent_declared")
+    _seed_plan_artifact(tmp_path, "c", "docs/plans/c.md")
+    _seed(tmp_path, "c", "plan_rejected")
+    assert _state(tmp_path, "c") == "PLAN_REJECTED"
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "plan", "ready", "c"])
+
+    assert r.exit_code == EXIT_OK, r.output
+    assert "warning" in r.stderr
+    assert "docs/plans/c.md" in r.stderr
+    assert "--scope" in r.stderr
+    assert "PLAN_REJECTED" in r.stderr
+    # It is a warning, not a refusal: the event landed and the artifacts are gone.
+    assert _events(tmp_path)[-1]["type"] == "plan_ready"
+    assert derive_state(events_path(tmp_path)).get("c").plan_artifacts == []
+
+
+def test_ready_without_scope_silent_when_no_plan_artifacts(tmp_path: Path) -> None:
+    # Nothing to lose → no noise.
+    _seed(tmp_path, "c", "intent_declared")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "plan", "ready", "c"])
+    assert r.exit_code == EXIT_OK, r.output
+    assert "warning" not in r.stderr
+
+
 def test_ready_illegal_state_rejected_no_event(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_approved")  # PLAN_APPROVED
     before = len(_events(tmp_path))
