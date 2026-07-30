@@ -62,14 +62,23 @@ duplication, so the fix is not to make `--source` scope.
 
 **Fix, two parts.** Teeth first:
 
-- **Refuse `skip` when the role has automated participants and no round has been frozen in
-  the current epoch.** You cannot pass a role no reviewer was ever asked to perform. *This
-  is the arm that catches the mistake actually made* — `skip` was called before
-  `review begin`. The automated-participant condition is load-bearing, not a hedge:
-  `review begin` refuses a role whose participants are all human
-  (`cli/review.py:725-734`), so no round can ever be frozen for it. An unconditional refusal
-  would leave such a role unable to pass at all, and with no CLI-reachable recovery from
-  `AWAITING_CODE_REVIEW` a human-only code-reviewer could then only ever be rejected.
+- **Refuse `skip` whenever no round has been frozen in the current epoch — unconditionally.**
+  You cannot pass a role no reviewer was ever asked to perform. *This is the arm that
+  catches the mistake actually made* — `skip` was called before `review begin`.
+
+  An earlier draft carved out roles whose participants are all human, on the theory that
+  `review begin` refuses such a role (`cli/review.py:725-734`) so no round could ever exist
+  for it and the role would become unpassable. **That premise is false and the carve-out is
+  dropped.** `review human confirm` mints its own `round_id` / `run_id`
+  (`cli/review.py:2319-2320`) and emits the full round sequence without requiring
+  `review begin`, so a human-only role has its own CLI-reachable pass path.
+
+  Dropping the carve-out also closes a hole. `review human confirm` demands an interactive
+  TTY and refuses agent self-confirmation outright — "A code agent must not self-confirm;
+  ask the human to run this command" (`cli/review.py:2189-2196`). Today an agent can sidestep
+  that by passing the same role with `review skip --override`. With Arm A unconditional it
+  cannot: a human-only role has no frozen round to point at, so `skip` refuses and the human
+  path is the only way through. That is the behaviour the human-review guard already intends.
 - **Refuse `skip` while the latest round is open with `pending` runs**, naming them and
   pointing at `review result import` / `review run fail`.
 
