@@ -273,6 +273,51 @@ exits 0. It is a CI gate.
 
 ---
 
+### Task 4b: Corrections from code review round 2
+
+Three findings, all in files already declared. One is a regression this cut must not ship.
+
+**Step 1 — `--override` must be able to override Arm A (SRI-004, the regression).**
+`_guard_skip_round_evidence_or_exit` is called at `cli/review.py:640`, while `--override` is
+not consulted until `:659`. So Arm A refuses regardless of `--override`, and its silent
+carve-outs cover only `ReviewProfilesError`. Every other reason a round cannot be frozen — a
+non-git workspace, an absent base branch, an unresolvable `target_head`, a `BundleError` the
+author cannot clear — now blocks `review prepare`, `review begin` **and**
+`skip --override --reason` alike. Combined with `d-no-recovery-from-awaiting-code-review`
+that is a dead end, and it is the **third** variant of the stranding family this cut exists
+to prevent: variant one was the human-only role (caught in plan review round 3), variant two
+was the unresolvable profile (caught in code review round 1).
+
+Fix: a disclosed `--override --reason` is the author deliberately accepting a no-evidence
+pass, which is exactly the escape hatch. Let it through — skip the guard when `override` is
+set. Arm A keeps its teeth for the case that produced this cut: a bare `skip`, no override,
+no round ever frozen. Test both: bare `skip` still refused, `skip --override --reason` allowed
+with zero rounds.
+
+**Step 2 — distinguish a missing profile from a broken one (SRI-003).** The carve-out catches
+`ReviewProfilesError` wholesale, so a malformed `.harness/review-profiles.local.yaml` (bad
+YAML, wrong `version`, duplicate key) silently disables the guard. That is the mirror image
+of the asymmetry deliberately built one screen up, where a malformed *tracked* governance file
+fails CLOSED precisely so corrupting one token cannot remove the guard.
+
+Fix: keep the silent carve-out for the genuinely-absent case (no profiles file, or no entry
+for this role's producers) and fail closed on a file that exists but cannot be parsed. Test
+both branches; the existing profile test passes either way, so it cannot distinguish them.
+
+**Step 3 — correct the rename claim (SRI-002).** The comment at
+`sensors/verification_runner.py:463` says the matcher is "deliberately identical to the merge
+gate" and that the residual gap's direction is "the safe one (stricter here)". Both are false
+for renames: `git diff --name-only` emits only a rename's destination path, while
+`cli/attest.py` runs `git diff --name-status` and `verify_attestations` makes **both** paths
+of an `R` entry subjects. So for a rename the baseline is *looser* than the gate — the
+opposite of the claim. Reword to state the true relationship: same matcher, different diff
+surfaces, so the baseline is neither identical nor uniformly stricter, and a rename can still
+surprise you at the merge boundary.
+
+**Step 4.** Gates, then commit.
+
+---
+
 ### Task 5: `is_error` payloads are rejected outright
 
 **Files:** `src/super_harness/adapters/reviewer/claude_cli.py`,
