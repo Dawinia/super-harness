@@ -43,7 +43,7 @@ tier-2 anchor on that set comprehension, so the norm cannot silently rot if it c
 **Four decision documents, only one of them the point.**
 `d-pitfall-is-proposed-decision` is what this cut ratifies. `d-dangling-check` is
 collateral (Task 4 Step 6). `d-tier2-reconcile-touches-scope` (Task 4 Step 7) and
-`d-no-recovery-from-awaiting-code-review` (Task 4 Step 8b) are traps this cut hit while
+`d-no-recovery-from-awaiting-code-review` (Task 4 Step 8) are traps this cut hit while
 building, filed as `proposed` records — the mechanism used on itself, and neither is
 anchored.
 
@@ -185,16 +185,31 @@ Append to `tests/unit/engineering/test_agents_md_render.py`, modelled on the exi
 
 ```python
 def test_section_states_where_negative_knowledge_goes(tmp_path: Path) -> None:
-    text = _render_fresh(tmp_path)
+    agents = tmp_path / "AGENTS.md"
+
+    render_super_harness_section(tmp_path, agents, "0.1.0")
+
+    text = agents.read_text()
     # The vessel's address is stated as a constraint, not as accumulated content.
     assert "super-harness decision new" in text
     assert "proposed" in text
+    # No parallel corpus is offered as an alternative home.
+    assert "pitfall directory" in text
+    # The caveat must survive: filing is free, anchoring is not.
+    assert "until it is ratified" in text
+    # It lives in the managed outer block, not an agent-specific subsection.
     assert text.index("super-harness decision new") < text.index(
         "<!-- super-harness section end -->"
     )
 ```
 
-Reuse whatever fresh-render helper the neighbouring tests use; do not invent a second one.
+There is no shared fresh-render helper in this file — the neighbouring tests each call
+`render_super_harness_section(tmp_path, agents, "0.1.0")` directly and read the file
+back. Follow that; do not introduce a helper for one test.
+
+The `until it is ratified` assertion is not decoration: without it the template can
+silently lose the caveat that Step 3 adds, and the caveat is the part that keeps the
+bullet from being actively wrong (see Task 4 Step 2's second wording constraint).
 
 **Step 2: Run test to verify it fails**
 
@@ -208,14 +223,23 @@ bullet list, after the "Don't hand-edit the body of a ratified decision" bullet:
 
 ```markdown
 - **Hit a trap worth remembering?** Record it with
-  `super-harness decision new <id> --text "..."`. A `proposed` decision gates
-  nothing, so it costs no one anything, and it has an exit: `ratify` once you can
-  state the rule (arm it with a check if you can), `retire` once it stops being
-  true. Do not start a separate notes file or pitfall directory — a record with no
+  `super-harness decision new <id> --text "..."`. Filing costs nothing — a
+  `proposed` record is skipped by `decision check` — and unlike a note it has an
+  exit: `ratify` once you can state the rule (arm it with a check if you can),
+  `retire` once it stops being true. **Do not anchor it with a `@decision:`
+  sentinel until it is ratified**: a sentinel naming a proposed id is a dangling-up
+  reference, which is a hard CI failure. Filing is free; anchoring is not. Do not
+  start a separate notes file or pitfall directory either — a record with no
   lifecycle has no way to stop being wrong.
 ```
 
 One bullet. Do not add a pitfall list, and do not add a new `###` heading.
+
+**The caveat is load-bearing, not hedging.** An earlier draft of this bullet said a
+proposed decision "gates nothing, so it costs no one anything". That is false in a way
+an agent will hit: anchoring a record at the site it describes is standing practice in
+this repo, so an agent that files a trap per this bullet and then anchors it gets the CI
+failure the bullet had called impossible.
 
 **Step 4: Run the test to verify it passes**
 
@@ -253,7 +277,10 @@ passing at `:108`). Add a section after `## The lifecycle state machine`, titled
 pitfalls:
 
 - A `proposed` decision is the home for "we got burned, we haven't settled the rule".
-  It gates nothing and stays out of the tier tally.
+  Filing one costs nothing — `decision check` skips it — and it stays out of the tier
+  tally. **With one exception that must be stated here too:** anchoring it with a
+  `@decision:` sentinel before it is ratified is a dangling-up reference and a hard CI
+  failure. Filing is free; anchoring is not.
 - Its value over a notes file is the **exit**: `ratify` or `retire`. A note has no
   exit, so it cannot stop being wrong.
 - Two shapes and where each lands: a *defect* ("the current code has this hole")
@@ -294,7 +321,7 @@ git commit -m "docs(concepts): explain proposed decisions as the home for pitfal
 super-harness decision check   # record the `hard:context = H:C` line
 ```
 
-Write the numbers down. Step 8 asserts a delta against them, and `decision check`
+Write the numbers down. Step 9 asserts a delta against them, and `decision check`
 prints one aggregate line with no per-record breakdown (`cli/decision.py:451`) — a
 single post-change reading cannot tell you anything on its own.
 
@@ -312,9 +339,10 @@ doc's "Tier: why tier-2, not tier-1" section — that reasoning belongs in the b
 condensed. The `review` block must tell a reviewer what to confirm and name both
 resolutions, matching the house style of `d-decision-records.md`:
 
-- what to confirm when `core/decision_check.py` changes: that `proposed` records are
-  still skipped by `decision check`, i.e. recording a pitfall as a proposed decision
-  still costs nothing and cannot break CI;
+- what to confirm when `core/decision_check.py` changes: that a `proposed` record is
+  still absent from the `ratified` set comprehension and therefore still free to file
+  — phrase it that way, never as "cannot break CI" (see the second wording constraint
+  below, which this bullet must not contradict);
 - still holds → `decision reconcile d-pitfall-is-proposed-decision`;
 - broken → `decision betray d-pitfall-is-proposed-decision` with a justification.
 
@@ -392,7 +420,7 @@ catch.)
 ```bash
 super-harness decision reconcile d-pitfall-is-proposed-decision \
   --kind self \
-  --justification "Anchor established at the status filter that keeps proposed records out of the gate."
+  --justification "Anchor established at the ratified set comprehension — the line whose result feeds dangling_down, effective_ratified and the tier-2 suspect loop, and therefore the line that keeps proposed records free to file."
 ```
 Expected: `reconciled ... (1 file(s), kind=self, ...)`.
 
@@ -445,7 +473,30 @@ naming files; canonical paths both sides; never exit 2), the rejected alternativ
 its reason, and the note that this record **must be retired when the warning ships** —
 exercising that exit is the point.
 
-**Step 8: Confirm the decision system is green**
+**Step 8: File the `AWAITING_CODE_REVIEW` recovery gap**
+
+```bash
+super-harness decision new d-no-recovery-from-awaiting-code-review \
+  --text "PROPOSED (unsettled): AWAITING_CODE_REVIEW freezes decisions and source, and none of the state machine's exits out of it has a CLI verb."
+```
+
+Body: `docs/state-machine.md:12-14` lists three non-review exits from
+`AWAITING_CODE_REVIEW` — `implementation_invalidated` → `IMPLEMENTATION_IN_PROGRESS` and
+`implementation_restarted` → `PLAN_APPROVED`, both of which reach an editable state, plus
+`implementation_withdrawn`, which goes to `READY_TO_MERGE` and so is **not** a recovery
+path at all. None of the three is emitted by anything in `src/super_harness/cli/`. The
+only non-bypass recovery is `plan redeclare` into a full plan cycle. The actionable rule:
+**finish every edit and run every gate before `done`** — `pytest -q`, `verify`,
+`decision check`, `doc check`, and `doc refs --gate` (a separate CI job that `doc check`
+does not cover). Unsettled because the fix is probably a CLI verb for
+`implementation_invalidated`, which is its own cut; retire this record when that ships.
+
+Leave it `proposed` and **do not anchor it** — a sentinel naming a proposed id is
+dangling-up and exits 2. Register the two fixable defects from the same round (dead-ref
+negative-context detection; `review result import` accepting an `is_error` payload) in
+`private/OPEN-ITEMS.md` instead, per Task 1 Step 1's register-where-it-arose rule.
+
+**Step 9: Confirm the decision system is green**
 
 Run: `super-harness decision check`
 Expected: exit 0, `decision check: clean` — no dangling-up (the sentinel resolves to a
@@ -459,39 +510,20 @@ records were excluded. A `context +2` or `+3` reading would mean proposed record
 being counted, which contradicts the decision's load-bearing precondition and must be
 investigated before proceeding. The delta is the evidence; the single reading is not.
 
-**Step 8b: File the `AWAITING_CODE_REVIEW` recovery gap**
-
-```bash
-super-harness decision new d-no-recovery-from-awaiting-code-review \
-  --text "PROPOSED (unsettled): AWAITING_CODE_REVIEW freezes decisions and source, and none of the state machine's three exits back to an editable state has a CLI verb."
-```
-
-Body: `docs/state-machine.md:12-14` lists `implementation_invalidated` →
-`IMPLEMENTATION_IN_PROGRESS`, `implementation_restarted` → `PLAN_APPROVED`, and
-`implementation_withdrawn`; none is emitted by anything in `src/super_harness/cli/`. The
-only non-bypass recovery is `plan redeclare` into a full plan cycle. The actionable rule:
-**finish every edit and run every gate before `done`** — `pytest -q`, `verify`,
-`decision check`, `doc check`, and `doc refs --gate` (a separate CI job that `doc check`
-does not cover). Unsettled because the fix is probably a CLI verb for
-`implementation_invalidated`, which is its own cut; retire this record when that ships.
-
-Leave it `proposed` and **do not anchor it** — a sentinel naming a proposed id is
-dangling-up and exits 2. Register the two fixable defects from the same round (dead-ref
-negative-context detection; `review result import` accepting an `is_error` payload) in
-`private/OPEN-ITEMS.md` instead, per Task 1 Step 1's register-where-it-arose rule.
-
-**Step 9: Commit**
+**Step 10: Commit**
 
 ```bash
 git add docs/decisions/d-pitfall-is-proposed-decision.md \
         docs/decisions/d-dangling-check.md \
         docs/decisions/d-tier2-reconcile-touches-scope.md \
+        docs/decisions/d-no-recovery-from-awaiting-code-review.md \
         src/super_harness/core/decision_check.py
 git commit -m "feat(decisions): ratify d-pitfall-is-proposed-decision (tier-2)"
 ```
 
-All three decision documents go in this commit. Leaving the Step 6 reconcile rewrite
-uncommitted makes the next `review prepare` refuse a dirty in-scope tree.
+**All four decision documents go in this commit** — the one ratified in Step 3, the
+collateral rewritten by Step 6, and the two proposed records from Steps 7 and 8. Leaving
+any of them uncommitted makes the next `review prepare` refuse a dirty in-scope tree.
 
 ---
 
@@ -512,6 +544,19 @@ sentinel cannot be fixed by re-running Task 4.
    `decision reconcile` it, then `decision reconcile d-dangling-check` — the second
    `decision_check.py` edit makes it suspect again. Re-review its up=block / down=warn
    criterion for real before stamping.
+5. **Run Task 4 Step 8 as written** — `d-no-recovery-from-awaiting-code-review` does not
+   exist yet, and it is a declared-scope artifact the design document already claims is
+   filed. Leave it `proposed` and unanchored.
+6. **Register the two fixable defects from the first code review** in
+   `private/OPEN-ITEMS.md` via Bash: the dead-reference checker has no negative-context
+   detection (backticked prose naming an anti-pattern trips it), and
+   `review result import` accepts an `is_error` producer payload as a review result. Both
+   are mechanically fixable, so both belong in the fix backlog rather than as records.
+7. Commit everything named in Task 4 Step 10 plus `AGENTS.md`,
+   `src/super_harness/engineering/agents_md_render.py`,
+   `tests/unit/engineering/test_agents_md_render.py` and `docs/concepts.md`, then run
+   Task 5 in full — including its Step 0 `doc refs --gate` exit-code check, which is what
+   caught the defect that made this recovery necessary.
 
 ### Task 5: Full verification
 
@@ -539,12 +584,20 @@ directory prefix.
 
 **Step 1: Verify — do not defer — the deferral register**
 
-Every deferral is registered at the point it arose, never here: Cut 2 at Task 1 Step 1,
-the `review skip --source` defect at Task 1 Step 4, the `plan ready` warning direction at
-Task 4 Step 7. This step only confirms all three are present in
-`private/OPEN-ITEMS.md` with their statuses. If any is missing, that is a process
-failure to note, not a gap to quietly close here — postponing registration to close-out
-is the failure mode Task 1 Step 1 exists to prevent.
+Every deferral is registered at the point it arose, never here. There are **five**:
+
+| Deferral | Registered at |
+| --- | --- |
+| Cut 2 (`applies_to` + delivery at `plan ready`) | Task 1 Step 1 |
+| `review skip --source` is an audit label, not a scoped skip | Task 1 Step 4 |
+| `plan ready` should warn on undeclared anchoring decisions | Task 4 Step 7 |
+| dead-reference checker has no negative-context detection | Task 4 Step 8 |
+| `review result import` accepts an `is_error` producer payload | Task 4 Step 8 |
+
+This step only confirms all five are present in `private/OPEN-ITEMS.md` with their
+statuses. If any is missing, that is a process failure to note, not a gap to quietly
+close here — postponing registration to close-out is the failure mode Task 1 Step 1
+exists to prevent.
 
 **Step 2: Finish every edit BEFORE `done` — there is no way back**
 
@@ -592,7 +645,6 @@ change — exactly one change on this branch, but confirm with
   until ratified, and the render test asserts the caveat.
 - The generated AGENTS.md section states where negative knowledge goes, in one bullet.
 - `docs/concepts.md` explains the norm and the two pitfall shapes.
-- `private/OPEN-ITEMS.md` registers all three deferrals: Cut 2 with its unverified
-  premise, the `review skip --source` defect, and the `plan ready` warning cut whose
-  direction this change decided.
+- `private/OPEN-ITEMS.md` registers all **five** deferrals listed in the Task 6 Step 1
+  table, each with a status.
 - Attestation written; change reaches `merged`.

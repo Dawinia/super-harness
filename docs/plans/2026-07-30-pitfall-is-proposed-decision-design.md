@@ -122,9 +122,11 @@ consequences are in scope:
   record when the warning ships.
 
 **A fourth record, from the first code review.** `AWAITING_CODE_REVIEW` freezes
-`docs/decisions/*.md` and `src/`, and the three state-machine exits back to an editable
-state (`implementation_invalidated`, `implementation_restarted`,
-`implementation_withdrawn`) have **no CLI verb** — verified, zero hits across
+`docs/decisions/*.md` and `src/`, and none of its three non-review exits helps: only
+`implementation_invalidated` (→ `IMPLEMENTATION_IN_PROGRESS`) and
+`implementation_restarted` (→ `PLAN_APPROVED`) reach an editable state at all —
+`implementation_withdrawn` goes to `READY_TO_MERGE`, so it is not a recovery path — and
+**none of the three has a CLI verb**, verified as zero hits across
 `src/super_harness/cli/`. The only non-bypass recovery is `plan redeclare` into a full
 plan cycle, which this change paid once for a one-word fix. Filed as
 `d-no-recovery-from-awaiting-code-review`, `proposed`, and deliberately **not anchored**
