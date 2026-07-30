@@ -1053,13 +1053,15 @@ super-harness review skip [OPTIONS] CHANGE
 | `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
 | `--reason` | text | — | Audit reason recorded on the event (default: manual_skip; REQUIRED with --override). |
 | `--override` | flag | `False` | Deliberate, disclosed override: a bare skip blocks at the merge gate; --override (with --reason) passes-with-disclosure. |
-| `--source` | text | — | Reviewer source label from review-governance.yaml. |
+| `--stuck-source` | text | — | Audit label only: which configured participant was stuck. It does NOT narrow the skip — skip always passes the whole role. To retire a single producer, use `review run fail --run-id <id> --reason "<why>"`. |
 | `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
 - `0` skip recorded (`code_review_passed` / `plan_approved` emitted, `skipped=True`)
 - `2` --override without --reason
+- `2` no round was ever frozen for a role whose automated producers resolve (nobody was asked, so there is no stuck reviewer to skip)
+- `2` the latest round is still open with pending run(s) — retire them with `review result import` or `review run fail --run-id <id>`
 - `3` no `.harness/`
 
 ## super-harness sensor

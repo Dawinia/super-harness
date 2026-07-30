@@ -107,6 +107,27 @@ class ClaudeCliReviewerProtocol(ReviewerProtocolAdapter):
 
         del telemetry_path
         raw = self._read_json_object(output_path)
+        # A `claude --print` failure still exits 0 and still writes well-formed JSON,
+        # only with `is_error: true` and the error text in `result`. The observed
+        # transient shape (HTTP 529) also drops `structured_output` and so is already
+        # rejected below; this guard closes the residual case where a producer reports
+        # failure AND emits a complete-looking verdict, which would otherwise be
+        # recorded as a genuine review result.
+        if raw.get("is_error"):
+            reported = raw.get("result")
+            detail = (
+                f": {reported}"
+                if isinstance(reported, str) and reported.strip()
+                else ""
+            )
+            raise ReviewerProtocolError(
+                "claude-cli reported is_error, so its output is not a review "
+                f"verdict{detail}. If the failure was transient (e.g. HTTP 529 "
+                "Overloaded), re-run the producer against the same frozen "
+                "invocation.json — a retry does not consume a review round. If the "
+                "producer is permanently unavailable (e.g. no API quota), record the "
+                "attempt with `review run fail --run-id <id> --reason \"<why>\"`."
+            )
         verdict = raw.get("structured_output")
         if not isinstance(verdict, dict):
             raise ReviewerProtocolError(

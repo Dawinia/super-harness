@@ -112,6 +112,113 @@ def test_ready_records_tier_hint(tmp_path: Path) -> None:
     assert derive_state(events_path(tmp_path)).get("c").tier == "Normal"
 
 
+def _seed_plan_artifact(ws: Path, slug: str, rel: str) -> None:
+    """Drive the real `plan ready --scope` so `cs.plan_artifacts` holds `rel`.
+
+    `_seed` emits empty payloads, so the artifacts can only be recorded the way
+    production records them: a marked `.md` (frontmatter `change: <slug>`) inside
+    the declared scope.
+    """
+    doc = ws / rel
+    doc.parent.mkdir(parents=True, exist_ok=True)
+    doc.write_text(f"---\nchange: {slug}\n---\n\n# plan\n", encoding="utf-8")
+    r = CliRunner().invoke(
+        main, ["--workspace", str(ws), "plan", "ready", slug, "--scope", f"[{rel}]"]
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert derive_state(events_path(ws)).get(slug).plan_artifacts == [rel]
+
+
+def test_ready_without_scope_warns_that_plan_artifacts_lose_carve_out(tmp_path: Path) -> None:
+    # `plan_ready` without `--scope` preserves the previous scope but ALWAYS
+    # replaces `plan_artifacts` (reducer.py — a deliberate revocation). That
+    # silently drops the PLAN_REJECTED gate carve-out authorizing revision of
+    # those plan docs, so the command must say so out loud — and still succeed,
+    # because revoking on purpose is legitimate.
+    _seed(tmp_path, "c", "intent_declared")
+    _seed_plan_artifact(tmp_path, "c", "docs/plans/c.md")
+    _seed(tmp_path, "c", "plan_rejected")
+    assert _state(tmp_path, "c") == "PLAN_REJECTED"
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "plan", "ready", "c"])
+
+    assert r.exit_code == EXIT_OK, r.output
+    assert "warning" in r.stderr
+    assert "docs/plans/c.md" in r.stderr
+    assert "--scope" in r.stderr
+    assert "PLAN_REJECTED" in r.stderr
+    # The remedy must be executable FROM HERE. The emit has landed, so the change is
+    # in AWAITING_PLAN_REVIEW where `plan ready` itself is illegal (exit 2) — telling
+    # the reader to "re-run" this command would be a dead end, so the warning names
+    # the verb that reopens the change instead.
+    assert "plan redeclare c" in r.stderr
+    assert "re-run with `--scope`" not in r.stderr  # the old, unexecutable remedy
+    reblocked = CliRunner().invoke(main, ["--workspace", str(tmp_path), "plan", "ready", "c"])
+    assert reblocked.exit_code == EXIT_VALIDATION, reblocked.output
+    # It is a warning, not a refusal: the event landed and the artifacts are gone.
+    assert _events(tmp_path)[-1]["type"] == "plan_ready"
+    assert derive_state(events_path(tmp_path)).get("c").plan_artifacts == []
+
+
+def test_ready_with_scope_lacking_plan_doc_warns_that_artifacts_lose_carve_out(
+    tmp_path: Path,
+) -> None:
+    # The second, likelier route to the same silent revocation: `--scope` IS passed,
+    # but nothing in it is a frontmatter-marked plan doc, so no `plan_artifacts` goes
+    # into the payload and the reducer still clears the stored list. The warning keys
+    # off the outcome (this emit records none) rather than off a missing flag.
+    _seed(tmp_path, "c", "intent_declared")
+    _seed_plan_artifact(tmp_path, "c", "docs/plans/c.md")
+    _seed(tmp_path, "c", "plan_rejected")
+
+    # src/a.py can never be an artifact (not `.md`); docs/other.md is `.md` but its
+    # frontmatter names a different change, so `_detect_plan_artifacts` skips it too.
+    (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "docs" / "other.md").write_text(
+        "---\nchange: some-other-change\n---\n\n# not ours\n", encoding="utf-8"
+    )
+    r = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(tmp_path), "plan", "ready", "c",
+            "--scope", "[src/a.py, docs/other.md]",
+        ],
+    )
+
+    assert r.exit_code == EXIT_OK, r.output
+    assert "warning" in r.stderr
+    assert "docs/plans/c.md" in r.stderr  # names what is losing authorization
+    assert "PLAN_REJECTED" in r.stderr
+    # Still a warning, not a refusal: the emit landed, sans plan_artifacts.
+    assert "plan_artifacts" not in _events(tmp_path)[-1]["payload"]
+    cs = derive_state(events_path(tmp_path)).get("c")
+    assert cs.plan_artifacts == []
+    assert cs.scope == {"files": ["src/a.py", "docs/other.md"]}
+
+
+def test_ready_with_scope_naming_plan_doc_does_not_warn(tmp_path: Path) -> None:
+    # Re-passing the plan doc keeps the carve-out → nothing to warn about.
+    _seed(tmp_path, "c", "intent_declared")
+    _seed_plan_artifact(tmp_path, "c", "docs/plans/c.md")
+    _seed(tmp_path, "c", "plan_rejected")
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "plan", "ready", "c", "--scope", "[docs/plans/c.md]"],
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert "warning" not in r.stderr
+    assert derive_state(events_path(tmp_path)).get("c").plan_artifacts == ["docs/plans/c.md"]
+
+
+def test_ready_without_scope_silent_when_no_plan_artifacts(tmp_path: Path) -> None:
+    # Nothing to lose → no noise.
+    _seed(tmp_path, "c", "intent_declared")
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "plan", "ready", "c"])
+    assert r.exit_code == EXIT_OK, r.output
+    assert "warning" not in r.stderr
+
+
 def test_ready_illegal_state_rejected_no_event(tmp_path: Path) -> None:
     _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_approved")  # PLAN_APPROVED
     before = len(_events(tmp_path))

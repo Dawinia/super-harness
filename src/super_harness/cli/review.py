@@ -56,7 +56,9 @@ from super_harness.engineering.review_contract import ReviewContractError, compi
 from super_harness.engineering.review_governance import (
     ReviewGovernance,
     ReviewGovernanceError,
+    automated_participants,
     load_review_governance,
+    review_governance_path,
 )
 from super_harness.engineering.review_profiles import (
     ReviewProducerProfile,
@@ -499,6 +501,94 @@ def reject(ctx: click.Context, change: str, reviewer: str, reason: str,
     _block_direct_verdict_protocol(root, "review reject")
 
 
+def _guard_skip_round_evidence_or_exit(
+    root: Path, change: str, reviewer: str
+) -> None:
+    """Refuse a skip that would pass a role nobody was asked to review.
+
+    ``skip`` emits the WHOLE role's PASS event, and the event stream is
+    append-only: a ``plan_approved`` written before any reviewer ran can never be
+    retracted. Two arms, both keyed on derivable round evidence:
+
+    (a) an automated role with zero rounds in the current epoch — no producer was
+        ever asked, so there is no stuck reviewer to skip;
+    (b) the latest round is still open with pending runs — the round is mid-flight,
+        and retiring one producer is ``review result import`` / ``review run fail``,
+        not passing the whole role.
+
+    Both arms need evidence to fire, and arm (a) only fires when a round COULD
+    have been frozen:
+
+    * No governance file at all → an ungoverned workspace, which ``skip`` has
+      always supported; stay silent. A governance file that is present but
+      unloadable is NOT that case — it fails closed through
+      ``_load_governance_or_exit`` (same posture as the ``--stuck-source`` branch
+      one screen down), because otherwise corrupting the tracked config would
+      delete this guard.
+    * A human-only role (``super-harness init`` ships ``participants: [human]``)
+      never freezes rounds, so "no rounds" says nothing there.
+    * The role's producers cannot be resolved to profiles — the very error
+      ``review prepare`` / ``review begin`` exit 2 on, e.g. an automated
+      participant with no entry in the gitignored
+      ``.harness/review-profiles.local.yaml``. No round can ever be frozen in
+      such a workspace, so firing here would strand the change with no path
+      forward; a producer that cannot be resolved is genuinely unavailable, which
+      is precisely what a disclosed ``skip --override`` is for.
+
+    What is left is the case that matters: the producers ARE resolvable and you
+    simply never asked them.
+    """
+
+    execution = derive_review_execution(_change_events(root, change), reviewer)
+    if not execution.rounds:
+        if not review_governance_path(root).is_file():
+            return
+        governance = _load_governance_or_exit(root, "review skip")
+        if not automated_participants(governance, reviewer):
+            return
+        try:
+            resolve_role_profiles(governance, load_review_profiles(root), reviewer)
+        except ReviewProfilesError:
+            return
+        click.echo(
+            format_error(
+                subcommand="review skip",
+                message=(
+                    f"no review round has been frozen for {reviewer} in this epoch; "
+                    "there is no stuck reviewer to skip"
+                ),
+                hint=(
+                    f"Ask for the review first: `super-harness review prepare {change} "
+                    f"--reviewer {reviewer}` then `super-harness review begin {change} "
+                    f"--reviewer {reviewer}`."
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    latest = execution.rounds[-1]
+    pending = sorted(
+        run.run_id for run in latest.runs.values() if run.status == "pending"
+    )
+    if latest.status == "open" and pending:
+        click.echo(
+            format_error(
+                subcommand="review skip",
+                message=(
+                    f"review round {latest.round_id} is still open with pending "
+                    f"run(s): {', '.join(pending)}"
+                ),
+                hint=(
+                    "Retire each pending run first — `super-harness review result "
+                    "import` for a producer that ran, or `super-harness review run "
+                    "fail --run-id <id> --reason \"<why>\"` for one that could not."
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+
+
 @review_group.command("skip")
 @click.argument("change")
 @_reviewer_opt
@@ -507,17 +597,26 @@ def reject(ctx: click.Context, change: str, reviewer: str, reason: str,
 @click.option("--override", is_flag=True, default=False,
               help="Deliberate, disclosed override: a bare skip blocks at the merge "
                    "gate; --override (with --reason) passes-with-disclosure.")
-@_source_opt
+@click.option(
+    "--stuck-source",
+    default=None,
+    help="Audit label only: which configured participant was stuck. It does NOT "
+         "narrow the skip — skip always passes the whole role. To retire a single "
+         "producer, use `review run fail --run-id <id> --reason \"<why>\"`.",
+)
 @_as_opt
 @click.pass_context
 def skip(ctx: click.Context, change: str, reviewer: str, reason: str | None,
-         override: bool, source: str | None, as_identity: str | None) -> None:
+         override: bool, stuck_source: str | None, as_identity: str | None) -> None:
     """Escape hatch — PASS a stuck reviewer (== approve with reason=manual_skip).
 
     Stamps ``payload["skipped"]=True`` so the merge-boundary disclosure can tell a
     skipped review from a real one. A bare skip of ``code-reviewer`` is a merge-gate
     blocker (``attest verify``); ``--override --reason "<why>"`` stamps
     ``payload["override"]=True`` and is treated as pass-with-disclosure (slice-2 E).
+
+    Refuses when the round evidence says no reviewer was ever asked, or is still
+    mid-flight — see ``_guard_skip_round_evidence_or_exit``.
     """
     if override and not reason:
         click.echo(format_error(subcommand="review skip",
@@ -525,27 +624,38 @@ def skip(ctx: click.Context, change: str, reviewer: str, reason: str | None,
             hint='e.g. review skip <c> --reviewer code-reviewer --override --reason "why".'),
             err=True)
         sys.exit(EXIT_VALIDATION)
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as e:
+        click.echo(format_error(subcommand="review skip", message=e.message, hint=e.hint),
+                   err=True)
+        sys.exit(EXIT_NO_CONFIG)
+    # State first: from a state where no reviewer verdict is legal at all, the
+    # accurate complaint is the wrong state, not "no round was frozen".
+    _validate_reviewer_state_or_exit(
+        derive_state(events_path(root)).get(change),
+        reviewer=reviewer,
+        subcommand="review skip",
+    )
+    _guard_skip_round_evidence_or_exit(root, change, reviewer)
     extra: dict[str, object] = {"skipped": True}
-    if source:
-        try:
-            root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
-        except HarnessNotInitialized as e:
-            click.echo(format_error(subcommand="review skip", message=e.message, hint=e.hint),
-                       err=True)
-            sys.exit(EXIT_NO_CONFIG)
+    if stuck_source:
         governance = _load_governance_or_exit(root, "review skip")
         participants = governance.roles[reviewer].participants
-        if source not in participants:
+        if stuck_source not in participants:
             click.echo(
                 format_error(
                     subcommand="review skip",
-                    message=f"source {source!r} is not a participant for {reviewer}",
+                    message=f"source {stuck_source!r} is not a participant for {reviewer}",
                     hint=f"Configured participants: {', '.join(participants)}",
                 ),
                 err=True,
             )
             sys.exit(EXIT_VALIDATION)
-        extra["source"] = source
+        # Audit payload key stays "source": renaming an event payload key is an
+        # event-schema decision, and a rename here would split the append-only
+        # record across two keys. This task renames a CLI flag only.
+        extra["source"] = stuck_source
     if override:
         extra["override"] = True
     _emit_verdict(
@@ -717,11 +827,7 @@ def begin(
         and assignment.get("kind") == "automated"
     }
     role = governance.roles[reviewer]
-    automated = tuple(
-        source
-        for source in role.participants
-        if governance.sources[source].kind == "automated"
-    )
+    automated = automated_participants(governance, reviewer)
     if not automated:
         click.echo(
             format_error(
@@ -1090,11 +1196,7 @@ def authorize_round(
         )
         sys.exit(EXIT_VALIDATION)
     role = governance.roles[reviewer]
-    automated = tuple(
-        source
-        for source in role.participants
-        if governance.sources[source].kind == "automated"
-    )
+    automated = automated_participants(governance, reviewer)
     same_contract = bool(
         execution.rounds
         and execution.rounds[-1].contract_digest == packet["contract_digest"]

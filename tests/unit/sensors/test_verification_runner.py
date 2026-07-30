@@ -13,6 +13,7 @@ import pytest
 
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import events_path
+from super_harness.core.scope_match import covered_by_scope as _covered_by_scope
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
 from super_harness.engineering.verification_config import (
@@ -32,7 +33,6 @@ from super_harness.sensors.verification_runner import (
     _all_pass_must,
     _baseline_lifecycle_ordering,
     _baseline_scope_vs_plan,
-    _covered_by_scope,
     baseline_check_tasks,
     build_variables,
     collect_checks,
@@ -1048,7 +1048,9 @@ def _git_repo_with_main(root: Path) -> None:
 def test_baseline_scope_no_drift_passes(tmp_path: Path) -> None:
     root = _harness_root(tmp_path)
     _git_repo_with_main(root)
-    _seed_events(root, "ch", _plan_items(scope_files=["src/"], tier="Normal"))
+    # Declares the exact path, as the merge gate requires: a bare `src/` entry would
+    # NOT cover `src/f.py` now that the baseline matches by set membership.
+    _seed_events(root, "ch", _plan_items(scope_files=["src/f.py"], tier="Normal"))
     # Change a file WITHIN declared scope on a new branch.
     _git(root, "checkout", "-b", "feature")
     (root / "src").mkdir()
@@ -1095,7 +1097,35 @@ def test_baseline_scope_git_unavailable_passes_with_note(tmp_path: Path) -> None
     assert "skipped" in Path(res.output_path).read_text()
 
 
+def test_baseline_scope_directory_entry_no_longer_covers_files_under_it(
+    tmp_path: Path,
+) -> None:
+    """The baseline now matches the merge gate: canonical-path SET MEMBERSHIP.
+
+    A declared `tests/` entry used to cover `tests/unit/x.py` by segment-aware prefix,
+    so `verify` reported clean while `attest verify` — which matches by set membership
+    (`engineering/attestation.verify_attestations`) — produced one blocker per file.
+    The advisory local check now reports exactly what the merge gate will block on.
+    """
+    root = _harness_root(tmp_path)
+    _git_repo_with_main(root)
+    _seed_events(root, "ch", _plan_items(scope_files=["tests/"], tier="Normal"))
+    _git(root, "checkout", "-b", "feature")
+    (root / "tests" / "unit").mkdir(parents=True)
+    (root / "tests" / "unit" / "x.py").write_text("x\n")
+    _git(root, "add", "tests/unit/x.py")
+    _git(root, "commit", "-m", "file under a declared directory entry")
+    res = _baseline_scope_vs_plan("ch", context=_ctx(root), archive=tmp_path / "arch")
+    assert res.status == "fail"
+    assert res.must_pass is False  # still advisory
+    assert res.output_path is not None
+    assert "tests/unit/x.py" in Path(res.output_path).read_text()
+
+
 def test_covered_by_scope_prefix_is_segment_aware() -> None:
+    # `core.scope_match.covered_by_scope` survives for its remaining caller,
+    # `core/review_bundle.py` (.md selection for the review bundle) — a convenience,
+    # not a safety property. The verification baseline no longer uses it.
     # A declared entry `src/foo` (no trailing slash) is treated as a directory:
     # it covers everything UNDER it on a path boundary...
     assert _covered_by_scope("src/foo/x.py", ["src/foo"]) is True

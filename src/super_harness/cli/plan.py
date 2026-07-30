@@ -61,6 +61,7 @@ from super_harness.core.paths import (
 )
 from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.reducer import derive_state
+from super_harness.core.state import ChangeState
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
@@ -134,6 +135,38 @@ def _detect_plan_artifacts(root: Path, slug: str, scope_files: list[str]) -> lis
     return out
 
 
+def _warn_revoked_plan_artifacts(outgoing: list[str], prev: ChangeState | None) -> None:
+    """Say out loud when this emit leaves `plan_artifacts` empty after it held entries.
+
+    The reducer PRESERVES the previous `scope` when a `plan_ready` payload omits it,
+    but ALWAYS REPLACES `plan_artifacts` — an empty re-submit revokes prior
+    authorization on purpose (reducer.py). The asymmetry is easy to miss: while a
+    change sits in PLAN_REJECTED the gate grants a carve-out letting exactly those
+    recorded plan docs be edited, so an emit carrying no artifacts silently removes
+    the permission needed to revise the plan the reject loop asked you to revise.
+
+    The trigger is deliberately about the OUTCOME, not about how it was reached:
+    `--scope` omitted entirely and `--scope` passed without any frontmatter-marked
+    plan doc land on the identical empty list, so one condition covers both.
+
+    A deliberate revocation is legitimate, so this warns rather than refuses.
+    """
+    if outgoing or prev is None or not prev.plan_artifacts:
+        return
+    click.echo(
+        "warning: this `plan ready` records no plan artifacts, revoking the previously "
+        f"recorded ones ({', '.join(prev.plan_artifacts)}) — the PLAN_REJECTED gate "
+        "carve-out that authorizes revising those plan docs is now gone (the declared "
+        "scope itself is unaffected). This emit has already landed, so there is no "
+        "re-run of this command from here: the carve-out returns the next time you "
+        "emit `plan ready` with `--scope` naming those plan document(s), each carrying "
+        "`change:` frontmatter naming this change — reach that point either through "
+        "the next plan reject, or immediately via `super-harness plan redeclare "
+        f"{prev.change_id}`.",
+        err=True,
+    )
+
+
 @plan_group.command("ready")
 @click.argument("slug")
 @click.option(
@@ -165,7 +198,13 @@ def ready(
         )
         sys.exit(EXIT_NO_CONFIG)
 
+    cs = derive_state(events_path(root)).get(slug)
+
     payload: dict[str, object] = {}
+    # The artifacts THIS emit will carry. Stays `[]` when `--scope` is omitted, and
+    # also when a passed scope happens to contain no marked plan doc — the reducer
+    # replaces the stored list either way, so both are the same revocation.
+    artifacts: list[str] = []
     if scope_raw is not None:
         try:
             files = _resolve_scope_files(scope_raw)
@@ -188,7 +227,6 @@ def ready(
     if tier_hint is not None:
         payload["tier_hint"] = tier_hint
 
-    cs = derive_state(events_path(root)).get(slug)
     framework = cs.framework if cs is not None else "plain"  # like the sibling emitters
     ev = Event(
         event_id=new_event_id(),
@@ -212,6 +250,7 @@ def ready(
         )
         sys.exit(EXIT_VALIDATION)
     refresh_state_after_emit(root)
+    _warn_revoked_plan_artifacts(artifacts, cs)
 
     new_cs = derive_state(events_path(root)).get(slug)
     new_state = new_cs.current_state if new_cs is not None else None

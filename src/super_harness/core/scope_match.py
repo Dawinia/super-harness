@@ -1,12 +1,38 @@
 # src/super_harness/core/scope_match.py
 """Shared scope matcher + fail-closed git helpers for review bundling.
 
-`covered_by_scope` is the segment-aware matcher extracted from
-`sensors.verification_runner._covered_by_scope` (Task 2 re-points the baseline at
-this copy). Unlike the advisory `scope-vs-plan-final` baseline (which fails OPEN
-on git error so it never cries wolf), the helpers here that back the review
-freshness gate fail CLOSED: a git error raises `GitScopeError` so the emit-time
-check rejects rather than waving a stale review through.
+`covered_by_scope` is a segment-aware **prefix** matcher, so a declared `tests/`
+entry covers `tests/unit/x.py`. Callers:
+
+* `core.review_bundle` (line ~84) picks which `.md` files enter a review bundle.
+  There the loose semantics really are a convenience — a wider `.md` selection only
+  gives the reviewer more to read.
+* `split_changed_by_scope` / `split_changed_by_scope_between` below, which back
+  `review_bundle.assemble_bundle` and `engineering.review_contract`. Their
+  `in_scope` half feeds the frozen inspection ranges and the review digest; their
+  `out_of_scope` half is printed by `cli.review` (`review prepare`) as the
+  reviewer's scope-drift warning.
+
+That last one is NOT merely a convenience: because the matcher is loose, a declared
+`tests/` entry keeps `tests/unit/x.py` out of the `out_of_scope` list, so `review
+prepare` still UNDER-REPORTS drift the merge gate would block on — the same
+under-report this module's strict-side alignment removed from the `verify` baseline.
+That is a known residual, deliberately not fixed here (changing it changes the
+frozen inspection ranges and every stored bundle digest); it is not something this
+docstring may assert away.
+
+**It is deliberately NOT the scope matcher used for verdicts.** The merge gate
+(`engineering.attestation.verify_attestations`) matches changed files against
+`scope.files` by canonical-path SET MEMBERSHIP, where `tests/` covers only a file
+literally named `tests/`, and the advisory `scope-vs-plan-final` baseline in
+`sensors.verification_runner` uses that same set membership so a clean local
+`verify` cannot promise something the merge boundary then refuses. Two semantics
+with different jobs: do not "unify" them.
+
+Unlike that baseline (which fails OPEN on git error so it never cries wolf), the
+helpers here that back the review freshness gate fail CLOSED: a git error raises
+`GitScopeError` so the emit-time check rejects rather than waving a stale review
+through.
 """
 from __future__ import annotations
 

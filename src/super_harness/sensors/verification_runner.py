@@ -54,8 +54,8 @@ from super_harness.core.paths import (
     verification_yaml_path,
 )
 from super_harness.core.reducer import derive_state
-from super_harness.core.scope_match import covered_by_scope as _covered_by_scope
 from super_harness.core.shell_runner import run_shell, scrubbed_environ
+from super_harness.engineering.attestation import canonical_path
 from super_harness.engineering.verification_config import (
     CheckSpec,
     VerificationConfig,
@@ -460,11 +460,33 @@ def _baseline_scope_vs_plan(
             archive=archive,
         )
 
-    drifted = [f for f in changed if not _covered_by_scope(f, declared_files)]
+    # Canonical-path SET MEMBERSHIP — the same matcher the merge gate uses
+    # (`engineering.attestation.verify_attestations`), not the segment-aware prefix
+    # matcher in `core.scope_match`. Under prefix matching a declared `tests/` covered
+    # `tests/unit/x.py` here while the gate produced one blocker per file, so a clean
+    # local `verify` promised something the merge boundary refused. The loose side was
+    # aligned to the strict one, never the reverse: loosening the gate so a `src/`
+    # entry covered everything beneath it would be a fail-open widening.
+    #
+    # Same matcher, DIFFERENT VERDICT, and the difference runs both ways — do not read
+    # this check as a preview of `attest verify`:
+    #
+    # - stricter here: the gate unions the coverage of every newly added attestation
+    #   and exempts `.harness/attestations/*.jsonl` from subjects, so this baseline can
+    #   report drift the gate would let through;
+    # - LOOSER here, on renames: `git diff --name-only` above emits only a rename's
+    #   destination path, while `cli.attest` runs `git diff --name-status` and the gate
+    #   makes BOTH paths of an `R` entry subjects. A rename whose source path is
+    #   undeclared passes this check and is refused at the merge boundary.
+    #
+    # So a clean report is not a promise about the gate in either direction.
+    declared_set = {canonical_path(d) for d in declared_files}
+    drifted = [f for f in changed if canonical_path(f) not in declared_set]
     report = None
     if drifted:
         report = (
-            f"Out-of-scope files changed (not covered by declared scope.files) "
+            f"Out-of-scope files changed (not in declared scope.files; the merge gate "
+            f"matches by exact path, so a directory entry does not cover files under it) "
             f"for change {change_id}:\n"
             + "\n".join(f"  - {f}" for f in drifted)
             + "\ndeclared scope.files:\n"
