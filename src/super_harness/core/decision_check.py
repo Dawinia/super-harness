@@ -76,6 +76,11 @@ def run_check(workspace_root: Path) -> CheckResult:
 
     integrity_violations: list[IntegrityViolation] = []
     for d in decisions:
+        # A non-ratified record is skipped entirely: this is what makes a `proposed`
+        # decision free to file, and therefore the usable home for a trap you have
+        # hit but not yet turned into a rule. Narrow this filter and that home
+        # becomes advice that breaks CI.
+        # @decision:d-pitfall-is-proposed-decision
         if d.status != "ratified" or d.ratified_text_hash is None:
             continue  # missing hash → lazy-warn path (Task 5), not a violation
         if compute_body_hash(d.body) != d.ratified_text_hash:
