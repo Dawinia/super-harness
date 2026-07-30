@@ -47,12 +47,24 @@ change sits in a pre-approval state (`INTENT_DECLARED` / `PLAN_REJECTED`). An ex
 who starts at the AGENTS.md template is blocked on its first `Write`. Scope must be
 declared and the plan approved **before** Task 2.
 
-**Step 1: Register the deferred Cut 2**
+**Step 1: Register the deferred Cut 2 — via Bash, not `Write`**
 
-Add to `private/OPEN-ITEMS.md` (gitignored, not a scope subject), status
-`DOABLE-NOW-BUT-UNVERIFIED`: `applies_to: [glob]` + delivery at `plan ready --scope`;
-the premise to verify first (does an agent read `docs/decisions/` unaided?); and the
-constraint that the matcher must reuse `core/scope_match.py` — never `fnmatch`.
+Append to `private/OPEN-ITEMS.md`, status `DOABLE-NOW-BUT-UNVERIFIED`:
+`applies_to: [glob]` + delivery at `plan ready --scope`; the premise to verify first
+(does an agent read `docs/decisions/` unaided?); and the constraint that the matcher
+must reuse `core/scope_match.py` — never `fnmatch`.
+
+**The `Write` tool is BLOCKed here, and that is correct.** The gate's allowances are
+hard-coded path whitelists compared after canonicalization, and are **never derived
+from gitignore status** (`gates/pre_tool_use.py:79-80`). `private/OPEN-ITEMS.md`
+matches no `plan-paths.yaml` pattern (all four are under `docs/plans`, `openspec`, or
+`docs/superpowers`) and is not a `plan_artifact` — this plan declares it out of scope.
+Being gitignored buys it nothing.
+
+Use a Bash heredoc instead. That is the sanctioned route for an untracked,
+out-of-scope note in a gated state rather than a gate bypass: the file is not a
+product artifact, so there is nothing here for the gate to govern. Registration stays
+in Task 1 on purpose — postponing it is how deferred work goes missing.
 
 **Step 2: Commit the plan documents**
 
@@ -93,15 +105,28 @@ with reason=manual_skip"). Using it while another source is still pending approv
 the plan before anyone has reviewed it. The two sibling verbs read alike and behave
 differently.
 
-Iterate `PLAN_REJECTED` → revise → `plan ready --scope` → re-review until the round
-passes. Do not proceed to Task 2 until the state is `PLAN_APPROVED`.
+Iterate until the round passes, committing **inside** the loop — `review prepare`
+refuses a dirty in-scope tree, so an uncommitted revision stalls the next round:
 
-**Step 5: Commit any plan revisions**
+```
+PLAN_REJECTED
+  → revise the plan documents        (only PLAN_REJECTED grants the carve-out;
+                                      AWAITING_PLAN_REVIEW blocks these edits)
+  → git commit                       ← before prepare, not after the loop
+  → plan ready --scope <same list>
+  → review prepare / begin / run / result import
+  → repeat
+```
 
 ```bash
 git add docs/plans/2026-07-30-pitfall-is-proposed-decision-*.md
 git commit -m "docs(plan): address plan review round N"
 ```
+
+Automatic rounds are capped (2 for this reviewer). A producer that cannot run
+consumes a round exactly as a genuine rejection does, so budget accordingly; further
+rounds need `review authorize`. Do not proceed to Task 2 until the state is
+`PLAN_APPROVED`.
 
 ---
 
@@ -241,10 +266,16 @@ resolutions, matching the house style of `d-decision-records.md`:
 - still holds → `decision reconcile d-pitfall-is-proposed-decision`;
 - broken → `decision betray d-pitfall-is-proposed-decision` with a justification.
 
-Record the ceiling explicitly: the un-anchored secondary precondition is
-`cli/decision.py:133` (`ratify` accepts `proposed`). It is deliberately left
-un-anchored because that file churns for unrelated reasons and would spend the
-reconcile budget on noise.
+Record the ceiling explicitly, and record **both** deliberate omissions — the body is
+hash-locked at `ratify`, so a narrower account than the design's cannot be corrected
+without a re-ratify:
+
+- `core/decisions.py` (four-state lifecycle, `decision_tier` ladder) — already
+  anchored by `d-decision-records`, whose subject *is* that shape; a second anchor
+  would spend reconcile budget without adding a signal the first does not raise.
+- `cli/decision.py:133` (`ratify` accepts `proposed` — the exit path out of proposed)
+  — churns for unrelated reasons; anchoring it would spend the reconcile budget on
+  noise.
 
 **Step 3: Ratify**
 
