@@ -92,6 +92,23 @@ human or agent — knows the vessel exists.
 **In scope (Cut 1):** state the norm where it binds — one ratified decision record,
 one line in the generated AGENTS.md section, one paragraph in the narrative docs.
 
+**Also shipped, discovered during execution.** Adding the anchor sentinel made
+`d-dangling-check` suspect and forced a reconcile that rewrote its own `.md`, a file
+nobody had planned to touch and which `attest verify` matches by set membership. Two
+consequences are in scope:
+
+- `d-dangling-check` is re-reconciled (its criterion re-reviewed, not rubber-stamped).
+- The trap is filed as a second record, `d-tier2-reconcile-touches-scope` — **left
+  `proposed`**, which is the first real use of the vessel this cut establishes. Its body
+  carries the decided direction: `plan ready` should warn and name the exact decision
+  documents to declare, while having `attest verify` treat a reconcile stamp as implied
+  in-scope is **rejected** — telling a stamp-only change from a body change needs a
+  semantic frontmatter diff, which adds a laundering vector to a gate whose rule is
+  "every changed file is in `scope.files`, no exceptions". That rejected alternative is
+  recorded in the decision body, not here, because a plan document is a snapshot and the
+  decision record is what survives. Registered in `private/OPEN-ITEMS.md`; retire the
+  record when the warning ships.
+
 **Deferred (Cut 2): active delivery.** The research points at a second half: an
 `applies_to: [glob]` frontmatter field matched against the declared `scope.files`
 at `plan ready`, so a relevant record is pushed at authoring time instead of

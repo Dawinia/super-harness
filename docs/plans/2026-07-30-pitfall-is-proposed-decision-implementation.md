@@ -269,6 +269,16 @@ git commit -m "docs(concepts): explain proposed decisions as the home for pitfal
 - Create: `docs/decisions/d-pitfall-is-proposed-decision.md`
 - Modify: `src/super_harness/core/decision_check.py` (anchor sentinel only)
 
+**Step 0: Capture the `hard:context` baseline**
+
+```bash
+super-harness decision check   # record the `hard:context = H:C` line
+```
+
+Write the numbers down. Step 8 asserts a delta against them, and `decision check`
+prints one aggregate line with no per-record breakdown (`cli/decision.py:450`) — a
+single post-change reading cannot tell you anything on its own.
+
 **Step 1: Create the record**
 
 ```bash
@@ -382,9 +392,15 @@ proposed record gates nothing, which is the whole point being demonstrated.
 
 Run: `super-harness decision check`
 Expected: exit 0, `decision check: clean` — no dangling-up (the sentinel resolves to a
-ratified record), no suspect tier-2 (Step 6 cleared it). The `hard:context` tally must
-still count only ratified records, so the new `proposed` record does not move `hard`;
-this is the live confirmation of the decision's load-bearing precondition.
+ratified record), no suspect tier-2 (Step 6 cleared it).
+
+**Then assert the delta against the Step 0 baseline: exactly `context +1`, `hard +0`.**
+This task added two records — one ratified tier-2 (no check → counts as `context`) and
+one `proposed` (must count as neither). `hard` is ratified-with-a-check and `context` is
+ratified-without, so `context +1` is the ratified tier-2 alone and proves the proposed
+record was excluded. A `context +2` reading would mean proposed records are being
+counted, which contradicts the decision's load-bearing precondition and must be
+investigated before proceeding. The delta is the evidence; the single reading is not.
 
 **Step 9: Commit**
 
@@ -420,7 +436,31 @@ directory prefix.
 
 ### Task 6: Close-out
 
-**Step 1: Implementation complete, code review, attest, PR**
+**Step 1: Register the two deferrals that could not exist at Task 1 time**
+
+Task 1 Step 1 registered Cut 2. The other two could not be written then — one is only
+described as prose in Task 1 Step 4, and the other's direction is not decided until
+Task 4 Step 7. Append both to `private/OPEN-ITEMS.md` now, via Bash (still untracked, so
+still not a scope subject; `Write` remains blocked in gated states):
+
+- **`review skip --source` is an audit label, not a scoped skip** — status OPEN.
+  `cli/review.py` `skip` sets `extra["source"]` and then emits the role's full PASS
+  ("== approve with reason=manual_skip"), while its sibling `review begin --source`
+  genuinely scopes the round. Same flag name, opposite semantics, same command group.
+  Live cost during this change: it PASSed the plan review before any reviewer had run;
+  recovered with `plan redeclare`, but the erroneous `plan_approved` is permanent in the
+  append-only stream. Candidate fix: make `--source` on `skip` actually scope, or drop
+  the flag. Same defect family as the `scope.files` prefix-vs-set-membership divergence.
+- **`plan ready` should warn when declared scope touches an anchored file without
+  declaring the anchoring decision** — status DOABLE-NOW, direction decided by this
+  change. Record the accepted design (intersect each ratified tier-2's
+  `reconciled_anchors` with the declared scope; warn, naming files; canonical paths both
+  sides; never exit 2) *and* the rejected alternative with its reason (an
+  `attest verify` exemption needs a semantic frontmatter diff → laundering vector).
+  Note that `d-tier2-reconcile-touches-scope` is the in-product tracker and **must be
+  retired when this ships** — exercising that exit is the point.
+
+**Step 2: Implementation complete, code review, attest, PR**
 
 `done` → `review prepare` (freezes the plan documents) → cross-actor code review →
 `review approve --verdict-file ...` → `attest write` → PR. Then `on-merge` for this
