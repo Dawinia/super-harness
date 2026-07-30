@@ -277,22 +277,39 @@ exits 0. It is a CI gate.
 
 Three findings, all in files already declared. One is a regression this cut must not ship.
 
-**Step 1 — `--override` must be able to override Arm A (SRI-004, the regression).**
-`_guard_skip_round_evidence_or_exit` is called at `cli/review.py:640`, while `--override` is
-not consulted until `:659`. So Arm A refuses regardless of `--override`, and its silent
-carve-outs cover only `ReviewProfilesError`. Every other reason a round cannot be frozen — a
-non-git workspace, an absent base branch, an unresolvable `target_head`, a `BundleError` the
-author cannot clear — now blocks `review prepare`, `review begin` **and**
-`skip --override --reason` alike. Combined with `d-no-recovery-from-awaiting-code-review`
-that is a dead end, and it is the **third** variant of the stranding family this cut exists
-to prevent: variant one was the human-only role (caught in plan review round 3), variant two
-was the unresolvable profile (caught in code review round 1).
+**Step 1 — broaden the carve-out to "a round is not freezable"; do NOT exempt `--override`
+(SRI-004, and SRI-005 which killed the first attempt at fixing it).**
 
-Fix: a disclosed `--override --reason` is the author deliberately accepting a no-evidence
-pass, which is exactly the escape hatch. Let it through — skip the guard when `override` is
-set. Arm A keeps its teeth for the case that produced this cut: a bare `skip`, no override,
-no round ever frozen. Test both: bare `skip` still refused, `skip --override --reason` allowed
-with zero rounds.
+`_guard_skip_round_evidence_or_exit` is called at `cli/review.py:640` while `--override` is
+not consulted until `:659`, and its silent carve-outs cover only `ReviewProfilesError`. So
+every other reason a round cannot be frozen — a non-git workspace, an absent base branch, an
+unresolvable `target_head`, a `BundleError` the author cannot clear — blocks
+`review prepare`, `review begin` **and** `skip --override --reason` alike. Under
+`d-no-recovery-from-awaiting-code-review` that is a dead end, and it is the third variant of
+the stranding family this cut exists to prevent.
+
+**The obvious fix is wrong and must not be taken.** Exempting `--override` would restore the
+exact hole this cut closes: the erroneous `plan_approved` that motivated all of it
+(`.harness/events.jsonl:1354`) carries `"skipped": true, "override": true` with zero rounds
+frozen. The mistake was made *with* `--override --reason`, so an override bypass is a
+no-op guard.
+
+The real distinction is not who is asking but whether asking was possible:
+
+| Situation | Behaviour |
+| --- | --- |
+| A round **could** have been frozen and none was | **Refuse**, `--override` included — this is the original defect |
+| A round **cannot** be frozen for an environmental reason | Silent — this is the case `skip` exists for |
+
+Fix: attempt what `begin` needs in order to freeze, and stay silent when that attempt fails
+for a reason the author cannot clear (unresolvable profiles, no git repository, missing base
+branch, `BundleError`). Refuse only when freezing is genuinely available. Keep the guard
+before `--override`, deliberately.
+
+Tests: bare `skip` with a freezable round refused; `skip --override --reason` with a freezable
+round **also refused** (this is the pin against SRI-005 — it must fail if anyone exempts
+override later); `skip --override --reason` in a workspace where freezing is impossible
+allowed.
 
 **Step 2 — distinguish a missing profile from a broken one (SRI-003).** The carve-out catches
 `ReviewProfilesError` wholesale, so a malformed `.harness/review-profiles.local.yaml` (bad
@@ -386,17 +403,21 @@ that arrived while fixing review findings.
   test — that is `init`'s default for both roles, so Arm A must not fire there.
 - The automated-participant predicate is a single helper,
   `engineering/review_governance.automated_participants`, returning `tuple[str, ...]` and
-  called by all four sites (`review begin`, `skip`'s Arm A, `authorize-round`, and
-  `cli/status.py`); `begin`'s existing behaviour is unchanged, pinned by a test.
+  called by all four sites — `review begin`, `skip`'s Arm A, `authorize-round`, and
+  `cli/status.py`; Task 4 Step 2 names the first two, the other two were folded in while
+  fixing the duplication findings; `begin`'s existing behaviour is unchanged, pinned by a test.
 - Every error hint names a first step that succeeds — the human path is
   `review prepare` → `review human draft` → `review human confirm`.
 - `plan ready` warns (exit still success) whenever the emit will leave `plan_artifacts`
   empty while the previous state had them — both the no-`--scope` path and the
   `--scope`-without-a-marked-plan-doc path; reducer unchanged; the message names
   `plan redeclare` as the executable remedy.
-- `review skip` refuses when the role has automated participants, its producers resolve to
-  profiles, and no round has been frozen (Arm A) — silent for an absent governance file, a
-  human-only role, or unresolvable producers; fail-CLOSED for a malformed governance file, and refuses while the latest round is open with pending runs (Arm B); the
+- `review skip` refuses (Arm A) exactly when freezing a round was available and none was
+  frozen — **including under `--override`**, pinned by a test, because the mistake that
+  motivated this cut was made with `--override`. Silent when freezing is impossible: absent
+  governance file, human-only role, or an environmental failure the author cannot clear
+  (missing profile entry, no git repository, missing base branch, `BundleError`). Fail-CLOSED
+  for a malformed *tracked* governance file and a malformed *local* profiles file alike, and refuses while the latest round is open with pending runs (Arm B); the
   post-recording override path still works.
 - `skip` alone takes `--stuck-source`, whose help says "audit label, not a scope selector";
   `review approve` and `review reject` keep `--source`. Pinned by a **structural** test over

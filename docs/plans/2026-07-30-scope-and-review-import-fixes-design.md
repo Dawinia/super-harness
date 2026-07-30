@@ -98,8 +98,19 @@ duplication, so the fix is not to make `--source` scope.
      the missing profile. Without this carve-out the guard strands the change in
      `AWAITING_CODE_REVIEW`, which is precisely the stuck-reviewer case `skip` exists for.
 
-  What remains after the three is the case worth refusing: producers resolve, and you simply
-  never asked. *That is the mistake actually made* — `skip` was called before `review begin`.
+  What remains after the carve-outs is the case worth refusing: **freezing a round was
+  available and you simply never asked.** *That is the mistake actually made* — `skip` was
+  called before `review begin`.
+
+  **The refusal binds `--override` too, and that is the point.** The erroneous
+  `plan_approved` that motivated this cut was itself emitted with `--override --reason` and
+  zero rounds frozen (`.harness/events.jsonl:1354` carries `"skipped": true,
+  "override": true`). A guard that any `--override` can bypass would not have stopped it, so
+  the guard sits deliberately ahead of the override check. The escape hatch is preserved by
+  widening the *silent* cases to every reason freezing is impossible — unresolvable profiles,
+  no git repository, a missing base branch, a `BundleError` the author cannot clear — not by
+  trusting the flag. A malformed local profiles file is not such a case: like a malformed
+  tracked governance file, it fails CLOSED, so corrupting one token cannot remove the guard.
 
   **Why the condition, stated correctly.** For an automated role, "a reviewer was asked" has
   a mechanical trace: a frozen round. For a human-only role it has none until
