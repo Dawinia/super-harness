@@ -75,9 +75,21 @@ pitfall file has no exit, which is why such files sit at `draft` forever.
 
 Read before designing; all three hold on `3e9014f`:
 
-- `core/decision_check.py:79` — `if d.status != "ratified" or d.ratified_text_hash is None: continue`.
-  A `proposed` decision is skipped, so it **cannot fail `decision check`** and
-  cannot block CI.
+- `core/decision_check.py` — the `ratified = {d.id for d in decisions if d.status == "ratified"}`
+  set comprehension is the load-bearing line. Its result feeds `dangling_down`,
+  `effective_ratified`, and the tier-2 suspect/unreconciled loop, so a `proposed` record
+  is absent from all three: **filing one is free.** (The body-hash integrity filter
+  further down reads as if it were the guard, but it is *redundant* for a proposed
+  record — `ratified_text_hash` is `None`, so its second clause already skips it. It
+  carries no invariant, and anchoring there would aim a re-reviewer at the wrong line.)
+
+  **One reachable exception, and it must be stated wherever this norm is:** `dangling_up`
+  is computed against `effective_ratified`, so a `# @decision:<id>` sentinel naming a
+  **proposed** id is dangling-up, which maps to `EXIT_VALIDATION` — a hard CI failure.
+  Filing a proposed record costs nothing; **anchoring** one is what costs. The rule that
+  follows: do not attach a `@decision:` sentinel to a record until it is ratified. The
+  unqualified claim "a proposed record cannot fail `decision check`" is false and must
+  not appear in the decision body, the AGENTS.md bullet, or the narrative docs.
 - `cli/decision.py:354,366` — the `hard:context` tally counts only `status == "ratified"`.
   Proposed records do not distort the tier ratio.
 - `cli/decision.py:133` — `ratify` accepts `proposed` and `ratified`. The exit path
@@ -108,6 +120,23 @@ consequences are in scope:
   recorded in the decision body, not here, because a plan document is a snapshot and the
   decision record is what survives. Registered in `private/OPEN-ITEMS.md`; retire the
   record when the warning ships.
+
+**A fourth record, from the first code review.** `AWAITING_CODE_REVIEW` freezes
+`docs/decisions/*.md` and `src/`, and the three state-machine exits back to an editable
+state (`implementation_invalidated`, `implementation_restarted`,
+`implementation_withdrawn`) have **no CLI verb** — verified, zero hits across
+`src/super_harness/cli/`. The only non-bypass recovery is `plan redeclare` into a full
+plan cycle, which this change paid once for a one-word fix. Filed as
+`d-no-recovery-from-awaiting-code-review`, `proposed`, and deliberately **not anchored**
+(anchoring a proposed record is dangling-up).
+
+It earns a record rather than a backlog entry by the test this cut sets: knowing it
+**changes what you do before you act** — finish every edit and run every gate, including
+`doc refs --gate`, before `done`. Two other defects surfaced in the same round (the
+dead-reference checker has no negative-context detection, so backticked prose naming an
+anti-pattern trips it; `review result import` accepts an `is_error` producer payload as a
+review). Both are mechanically fixable, so both go to the fix backlog — recording a bug
+you intend to fix as durable guidance is the failure mode this cut exists to avoid.
 
 **Deferred (Cut 2): active delivery.** The research points at a second half: an
 `applies_to: [glob]` frontmatter field matched against the declared `scope.files`
@@ -148,13 +177,16 @@ ways this decision can break:
 
 1. Someone grows a parallel negative-knowledge corpus. **Visible in any PR diff** —
    a new directory of prose is not a subtle change.
-2. `core/decision_check.py`'s status filter changes so `proposed` records begin to
+2. `core/decision_check.py`'s `ratified` set comprehension changes so `proposed` records begin to
    gate. Then "record the pitfall as a proposed decision" becomes advice that
    **breaks CI** — the norm turns actively harmful while still reading as true.
 
 (2) is the failure this whole cut exists to prevent, and it is silent. Only an
 anchor catches it. So: tier-2, `review` block, **exactly one anchor — on
-`core/decision_check.py`**, at the status filter itself.
+`core/decision_check.py`**, at the `ratified` set comprehension named in "Verified
+preconditions". Not at the body-hash integrity filter: that one is redundant for a
+proposed record and carries no invariant, so a sentinel there would aim a future
+re-reviewer away from the line that actually decides the question.
 
 **Why one anchor and not more.** Two other files carry preconditions and are
 deliberately left un-anchored:

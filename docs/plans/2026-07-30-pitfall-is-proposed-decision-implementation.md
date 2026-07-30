@@ -11,11 +11,13 @@ stage: plan
 as a `proposed` decision record, and state that norm where it binds — the generated
 AGENTS.md section and the narrative docs.
 
-**Architecture:** No lifecycle code changes. `status: proposed` already gates nothing
-(`core/decision_check.py:79`), already stays out of the `hard:context` tally
-(`cli/decision.py:354,366`), and already has an open exit to `ratified`
-(`cli/decision.py:133`). This cut adds the *statement* of the norm plus a tier-2
-anchor so the norm cannot silently rot if that status filter changes.
+**Architecture:** No lifecycle code changes. Filing a `status: proposed` record is free —
+it is absent from the `ratified` set comprehension in `core/decision_check.py` that feeds
+`dangling_down`, `effective_ratified`, and the tier-2 suspect loop — and it stays out of
+the `hard:context` tally (`cli/decision.py:365-366`) with an open exit to `ratified`
+(`cli/decision.py:133`). **Anchoring** one is not free: a `@decision:` sentinel naming a
+proposed id is dangling-up and exits 2. This cut adds the *statement* of the norm plus a
+tier-2 anchor on that set comprehension, so the norm cannot silently rot if it changes.
 
 **Tech Stack:** Python 3.10+, pytest, click; `super-harness decision` verbs.
 
@@ -38,8 +40,15 @@ anchor so the norm cannot silently rot if that status filter changes.
 - .harness/attestations/2026-07-30-pitfall-is-proposed-decision.jsonl
 ```
 
-**Two of those decision documents are collateral, and missing them costs a full
-re-review.** `d-dangling-check` already anchors `core/decision_check.py`, so adding the
+**Four decision documents, only one of them the point.**
+`d-pitfall-is-proposed-decision` is what this cut ratifies. `d-dangling-check` is
+collateral (Task 4 Step 6). `d-tier2-reconcile-touches-scope` (Task 4 Step 7) and
+`d-no-recovery-from-awaiting-code-review` (Task 4 Step 8b) are traps this cut hit while
+building, filed as `proposed` records — the mechanism used on itself, and neither is
+anchored.
+
+**Missing the collateral costs a full re-review.** `d-dangling-check` already anchors
+`core/decision_check.py`, so adding the
 `@decision:` sentinel in Task 4 Step 4 — one comment, no logic — makes it suspect, and
 clearing the suspicion with `decision reconcile` **rewrites its own `.md`**. That file
 is then a changed file, and `attest verify` matches changed files against `scope.files`
@@ -310,7 +319,22 @@ resolutions, matching the house style of `d-decision-records.md`:
 - broken → `decision betray d-pitfall-is-proposed-decision` with a justification.
 
 The body is hash-locked at `ratify`, so anything omitted here needs a re-ratify to add
-later. Record **all three** of the following.
+later.
+
+**Two hard constraints on the wording, both learned the expensive way:**
+
+- **No backticked identifier that does not resolve in source.** `doc refs --gate` reads a
+  backticked snake_case token as a pointer to a real symbol and exits 2 on a
+  high-confidence `DEAD-REF`, even where the prose is naming an anti-pattern *not* to
+  adopt. It has no negative-context detection, and its bias toward false positives over
+  missed dead links is the correct bias. Say "hand-maintained maturity labels or usage
+  counters" in prose; do not backtick the field names.
+- **Never claim a proposed record "cannot fail `decision check`" unqualified.** It can:
+  `dangling_up` is computed against `effective_ratified`, so a `@decision:` sentinel
+  naming a proposed id is a hard CI failure. State the rule instead: **filing is free,
+  anchoring is not — do not anchor a record until it is ratified.**
+
+Record **all three** of the following.
 
 **(a) The mechanism ceiling.** A general check for this decision is impossible, not
 merely inconvenient: `counterexample` can only *add* a file, so a check can only ever
@@ -336,16 +360,32 @@ super-harness decision ratify d-pitfall-is-proposed-decision
 Expected: success. Tier-2 has no check, so there is no bite-test to pass.
 **The body is hash-locked from here — any later wording change requires re-ratify.**
 
-**Step 4: Add the anchor sentinel**
+**Step 4: Add the anchor sentinel — on the `ratified` set comprehension**
 
-In `src/super_harness/core/decision_check.py`, immediately above the status filter at
-`:79` (`if d.status != "ratified" or d.ratified_text_hash is None:`), add:
+In `src/super_harness/core/decision_check.py`, immediately above
+
+```python
+ratified = {d.id for d in decisions if d.status == "ratified"}
+```
+
+add a comment naming what the line guards, then:
 
 ```python
 # @decision:d-pitfall-is-proposed-decision
 ```
 
-This is the load-bearing line: it is what makes a `proposed` record cost nothing.
+**This is the load-bearing line**, because its result feeds `dangling_down`,
+`effective_ratified`, and the tier-2 suspect/unreconciled loop — a `proposed` record is
+absent from all three, which is what makes filing one free.
+
+**Do not anchor the body-hash integrity filter further down.** It reads like the guard
+and is not: `ratified_text_hash` is `None` for a proposed record, so that filter's second
+clause already skips it. It carries no invariant, and a sentinel there aims a future
+re-reviewer away from the line that decides the question. (Widening the `ratified`
+comprehension to admit `proposed`, by contrast, would drop a proposed record carrying a
+review block into `unreconciled_tier2`, which exits 2 under
+`decision check --gate-reconcile` — which is exactly the failure this anchor exists to
+catch.)
 
 **Step 5: Reconcile to stamp the baseline**
 
@@ -412,12 +452,33 @@ Expected: exit 0, `decision check: clean` — no dangling-up (the sentinel resol
 ratified record), no suspect tier-2 (Step 6 cleared it).
 
 **Then assert the delta against the Step 0 baseline: exactly `context +1`, `hard +0`.**
-This task added two records — one ratified tier-2 (no check → counts as `context`) and
-one `proposed` (must count as neither). `hard` is ratified-with-a-check and `context` is
-ratified-without, so `context +1` is the ratified tier-2 alone and proves the proposed
-record was excluded. A `context +2` reading would mean proposed records are being
-counted, which contradicts the decision's load-bearing precondition and must be
+This task added three records — one ratified tier-2 (no check → counts as `context`) and
+two `proposed` (must count as neither). `hard` is ratified-with-a-check and `context` is
+ratified-without, so `context +1` is the ratified tier-2 alone and proves both proposed
+records were excluded. A `context +2` or `+3` reading would mean proposed records are
+being counted, which contradicts the decision's load-bearing precondition and must be
 investigated before proceeding. The delta is the evidence; the single reading is not.
+
+**Step 8b: File the `AWAITING_CODE_REVIEW` recovery gap**
+
+```bash
+super-harness decision new d-no-recovery-from-awaiting-code-review \
+  --text "PROPOSED (unsettled): AWAITING_CODE_REVIEW freezes decisions and source, and none of the state machine's three exits back to an editable state has a CLI verb."
+```
+
+Body: `docs/state-machine.md:12-14` lists `implementation_invalidated` →
+`IMPLEMENTATION_IN_PROGRESS`, `implementation_restarted` → `PLAN_APPROVED`, and
+`implementation_withdrawn`; none is emitted by anything in `src/super_harness/cli/`. The
+only non-bypass recovery is `plan redeclare` into a full plan cycle. The actionable rule:
+**finish every edit and run every gate before `done`** — `pytest -q`, `verify`,
+`decision check`, `doc check`, and `doc refs --gate` (a separate CI job that `doc check`
+does not cover). Unsettled because the fix is probably a CLI verb for
+`implementation_invalidated`, which is its own cut; retire this record when that ships.
+
+Leave it `proposed` and **do not anchor it** — a sentinel naming a proposed id is
+dangling-up and exits 2. Register the two fixable defects from the same round (dead-ref
+negative-context detection; `review result import` accepting an `is_error` payload) in
+`private/OPEN-ITEMS.md` instead, per Task 1 Step 1's register-where-it-arose rule.
 
 **Step 9: Commit**
 
@@ -434,88 +495,23 @@ uncommitted makes the next `review prepare` refuse a dirty in-scope tree.
 
 ---
 
-### Task 4b: Corrections found after the first code review
+### Task 4b: Recovering THIS change only — skip on a fresh execution
 
-Three defects in what Task 2–4 produced. All three touch the hash-locked decision body,
-so they share **one** re-ratify.
+A fresh execution of Task 4 produces the correct end state and needs nothing here. This
+section exists because this particular change ratified the body and placed the sentinel
+before the first code review found both defects, and a hash-locked body plus a misplaced
+sentinel cannot be fixed by re-running Task 4.
 
-**Step 1: `doc refs --gate` blocker — the backticked identifier in the body**
-
-`super-harness doc refs --gate` exits 2 (`DEAD-REF`, high confidence) on
-`` `ref_count` `` in `d-pitfall-is-proposed-decision.md`: the dead-reference checker reads
-a backticked snake_case token as a pointer to a real symbol, even where the prose is
-naming an anti-pattern *not* to adopt. It has no negative-context detection, and its
-bias toward false positives over missed dead links is the right bias — so this is a
-ceiling to work around, not a bug to argue with.
-
-Fix: drop the backticks and say it in prose — "no hand-maintained maturity labels or
-usage counters". Do not keep any backticked identifier that does not resolve in source.
-
-**Step 2: Move the anchor sentinel to the filter that actually carries the invariant**
-
-Task 4 Step 4 put the sentinel on the body-hash integrity filter. That filter is
-**redundant** for a proposed record — `ratified_text_hash` is `None`, so its second
-clause already skips it. The line that actually keeps proposed records out of the gate is
-the `ratified = {d.id for d in decisions if d.status == "ratified"}` set comprehension,
-whose result feeds `dangling_down`, `effective_ratified`, and the tier-2
-suspect/unreconciled loop. Widening *that* to admit `proposed` would put a proposed
-record with a review block into `unreconciled_tier2`, which exits 2 under
-`decision check --gate-reconcile`.
-
-Move the `# @decision:d-pitfall-is-proposed-decision` sentinel and its comment onto that
-set comprehension, and rewrite the comment to name what it guards. The file-level anchor
-worked either way; the point of the sentinel is to aim a future re-reviewer at the
-load-bearing line, and aimed at the wrong line it is worse than absent.
-
-**Step 3: Qualify the "gates nothing" claim — it has a reachable counterexample**
-
-The decision body, the AGENTS.md bullet, and the `docs/concepts.md` section all assert a
-proposed record cannot fail `decision check`. It can: `dangling_up` is computed against
-`effective_ratified`, so a `# @decision:<id>` sentinel naming a **proposed** id is
-dangling-up, which maps to `EXIT_VALIDATION`. Anchoring a record at the site it describes
-is standing practice in this repo, so an agent that files a trap per the AGENTS.md bullet
-and then anchors it hits a CI failure the guidance calls impossible.
-
-State the actionable rule in all three places: **a proposed record must not be anchored
-with a `@decision:` sentinel until it is ratified.** Filing costs nothing; anchoring is
-what costs. Update the render test to assert the caveat is present, so the template
-cannot lose it silently.
-
-**Step 4: Re-ratify, then re-reconcile both anchored decisions**
-
-```bash
-super-harness decision ratify d-pitfall-is-proposed-decision   # body changed → new hash
-super-harness decision reconcile d-pitfall-is-proposed-decision --kind self --justification "..."
-super-harness decision reconcile d-dangling-check --kind self --justification "..."
-```
-
-`d-dangling-check` is suspect again because Step 2 edits `core/decision_check.py` a
-second time. Re-review its up=block / down=warn criterion for real before stamping.
-
-**Step 5: Record the recovery-path gap — and only that one**
-
-Three defects surfaced in this round. Applying this cut's own taxonomy: all three are
-mechanically fixable, so the fix backlog (`private/OPEN-ITEMS.md`) is where two of them
-belong — the dead-ref checker's missing negative-context detection, and
-`review skip --source`. Recording a bug you intend to fix as durable guidance is the
-failure mode this cut exists to avoid.
-
-The exception is the **`AWAITING_CODE_REVIEW` recovery gap**, which meets the bar for a
-`proposed` record because knowing it *changes what you do before you act*: finish every
-edit and run every gate before `done`, because there is no CLI way back. File it as
-`d-no-recovery-from-awaiting-code-review`, leave it `proposed`, and **do not anchor it**
-(Step 3's rule). Add it to the declared scope.
-
-**Step 6: Commit**
-
-```bash
-git add docs/decisions/ src/super_harness/core/decision_check.py \
-        src/super_harness/engineering/agents_md_render.py AGENTS.md \
-        docs/concepts.md tests/unit/engineering/test_agents_md_render.py
-git commit -m "fix: correct the anchor line, the gates-nothing claim, and the dead-ref"
-```
-
----
+1. Reword the ratified body per Task 4 Step 2's two wording constraints (no unresolved
+   backticked identifier; no unqualified "cannot fail `decision check`").
+2. Move the sentinel from the body-hash filter to the `ratified` set comprehension per
+   Task 4 Step 4, and rewrite its comment.
+3. Qualify the claim in `AGENTS.md` (via the template, then `sync --agents-md`) and in
+   `docs/concepts.md`; extend the render test to assert the caveat survives.
+4. `decision ratify d-pitfall-is-proposed-decision` (body changed → new hash), then
+   `decision reconcile` it, then `decision reconcile d-dangling-check` — the second
+   `decision_check.py` edit makes it suspect again. Re-review its up=block / down=warn
+   criterion for real before stamping.
 
 ### Task 5: Full verification
 
