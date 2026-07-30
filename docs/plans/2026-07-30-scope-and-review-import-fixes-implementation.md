@@ -159,7 +159,7 @@ property (`core/reducer.py`, commented); only the silence is the defect.
   keep working).
 
 **Step 2 — extract the automated-participant predicate first.** `begin` computes it as an
-inline generator expression at `cli/review.py:720-724`; there is no helper to reuse. Lift it
+inline generator expression at `cli/review.py:720-723`; there is no helper to reuse. Lift it
 to a module-level function taking `(governance, reviewer)` and returning `bool`, then call it
 from **both** `begin`'s existing check and the new Arm A. Two call sites deciding "is this
 role automated?" must not be able to drift apart. Assert `begin`'s existing
@@ -190,7 +190,7 @@ CLI change to two commands outside this cut's intent. Instead, drop `_source_opt
 **The regression pin must be structural, not exit-code-based.** Asserting that
 `review approve --source …` "still works" cannot fail: `EXIT_VALIDATION` is 2
 (`exit_codes.py:14`), click also exits 2 on `No such option`, and `approve` / `reject` exit 2
-unconditionally through `_block_direct_verdict_protocol` (`cli/review.py:458-467`, `:484-492`)
+unconditionally through `_block_direct_verdict_protocol` (`cli/review.py:472`, `:499`)
 because direct verdict evidence is disabled. Such a test passes whether or not the option
 exists — a hollow check of exactly the kind `ratify`'s bite-test refuses.
 
@@ -199,23 +199,33 @@ Assert on the command's declared parameters instead, which can actually fail:
 ```python
 from super_harness.cli.review import review_group
 
+
 def test_stuck_source_rename_is_scoped_to_skip() -> None:
-    names = lambda cmd: {p.name for p in review_group.commands[cmd].params}
+    def names(cmd: str) -> set[str]:
+        return {p.name for p in review_group.commands[cmd].params}
+
     assert "stuck_source" in names("skip")
     assert "source" not in names("skip")
     assert "source" in names("approve")   # shared _source_opt must be untouched
     assert "source" in names("reject")
 ```
 
+Use a nested `def`, not a lambda assigned to a name: `pyproject.toml:120` selects `E`, so
+ruff flags `E731` and a verbatim lambda gives a green `pytest -q` with a red `ruff check`.
+
 **Rethread the three things the rename forces inside `skip`**, and change nothing else:
 
 - the parameter click derives is `stuck_source`, so `skip`'s signature
-  (`cli/review.py:509-512`) and its governance-participant validation block (`:530-548`)
+  (`cli/review.py:513`) and its governance-participant validation block (`:530-548`)
   take the new name;
-- **the emitted audit payload key stays `"source"`.** `extra["source"] = source` at `:548` is
-  event-schema data, not UI: `engineering/value_report.py:275` reads `payload.get("source")`
-  for the report's per-source attribution, so renaming the key would silently distort
-  attribution for every historical event. Only the flag is renamed.
+- **the emitted audit payload key stays `"source"`.** No current consumer reads it on these
+  events — verified: `engineering/value_report.py` filters to `review_result_imported`
+  (`:271`) before reading `payload.get("source")` (`:275`), while `skip` emits
+  `_REVIEWER_PASS[reviewer]`, i.e. `plan_approved` / `code_review_passed` (`:553`). That is
+  exactly why the key must not be renamed here: the change would be **silent today** and
+  would leave a permanent, append-only record where old events carry one key and new ones
+  another. Renaming an event payload key is an event-schema decision needing its own
+  justification; this cut renames a CLI flag. Only the flag is renamed.
 
 Its help text must say
 it is an audit label recording which participant was stuck, **not** a scope selector, and
