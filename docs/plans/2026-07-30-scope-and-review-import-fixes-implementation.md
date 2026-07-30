@@ -179,7 +179,14 @@ The hint must not send anyone down a first step that fails. The human path is
 `human draft` reads the prepared packet and hard-fails without it
 (`_read_packet_or_exit`, `cli/review.py:2057`).
 
-**Step 4 — rename `--source` to `--stuck-source`** on `skip` only. Its help text must say
+**Step 4 — give `skip` its own `--stuck-source` option; do not rename the shared one.**
+`skip` does not define `--source`: it applies the module-level `_source_opt` decorator
+(`cli/review.py:167-171`), which `review approve` (`:458`) and `review reject` (`:484`) also
+apply. Renaming at the definition would silently rename the flag on all three — a breaking
+CLI change to two commands outside this cut's intent. Instead, drop `_source_opt` from
+`skip`'s decorator stack and give it an inline `click.option("--stuck-source", ...)`, leaving
+`_source_opt` and its other two users untouched. Add a test asserting `approve` and `reject`
+still accept `--source`. Its help text must say
 it is an audit label recording which participant was stuck, **not** a scope selector, and
 point at `review run fail` for retiring one producer. Leave `review begin --source` alone —
 there it genuinely scopes.
@@ -251,9 +258,11 @@ must be green first: `pytest -q`, `super-harness verify <change>`, `decision che
   `review prepare` → `review human draft` → `review human confirm`.
 - `plan ready` warns (exit still success) when `--scope` is omitted while `plan_artifacts`
   is non-empty; reducer unchanged.
-- `review skip` refuses with no frozen round, and refuses while the latest round is open
-  with pending runs; the post-recording override path still works; the flag is
-  `--stuck-source` and its help says "audit label, not a scope selector".
+- `review skip` refuses when the role **has automated participants** and no round has been
+  frozen (Arm A), and refuses while the latest round is open with pending runs (Arm B); the
+  post-recording override path still works.
+- `skip` alone takes `--stuck-source`, whose help says "audit label, not a scope selector";
+  `review approve` and `review reject` keep `--source` unchanged, pinned by a test.
 - `parse_result` rejects any `is_error` payload; the no-`structured_output` case is pinned
   by a test.
 - `d-no-backticked-nonexistent-identifiers` exists, is `proposed`, and is unanchored.
