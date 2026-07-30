@@ -149,9 +149,16 @@ one — someone re-passes scope but drops the plan document from the list). Comp
 artifacts the payload will carry, then warn when the previous state's list was non-empty and
 the outgoing one is empty. One condition, two paths, no second branch.
 
-In `ready()` (`cli/plan.py`), before emitting: derive the change's current state and, if `cs.plan_artifacts` is non-empty, print a
-warning via the project's existing warning path. Say what is lost — the `PLAN_REJECTED`
-carve-out that authorizes revising those files — and how to keep it (re-pass `--scope`).
+In `ready()` (`cli/plan.py`), before emitting: derive the change's current state and warn only
+when **both** halves hold — the previous state's `plan_artifacts` was non-empty **and** the
+outgoing list is empty. Dropping the second half would warn on every `plan ready` that
+re-declares the same artifacts, i.e. the normal case. Use the project's existing warning path.
+
+Say what is lost — the `PLAN_REJECTED` carve-out that authorizes revising those files — and
+give a remedy that can actually be run. By the time the warning prints the emit has landed
+and `plan ready` is illegal from the resulting state, so name
+`super-harness plan redeclare <slug>` before re-emitting with `--scope`, or phrase the remedy
+forward-looking.
 
 Do **not** change the reducer. The always-replace behaviour is a deliberate revocation
 property (`core/reducer.py`, commented); only the silence is the defect.
