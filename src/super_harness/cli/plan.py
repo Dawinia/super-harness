@@ -135,25 +135,31 @@ def _detect_plan_artifacts(root: Path, slug: str, scope_files: list[str]) -> lis
     return out
 
 
-def _warn_revoked_plan_artifacts(scope_raw: str | None, prev: ChangeState | None) -> None:
-    """Say out loud that an omitted `--scope` just revoked the plan-artifact carve-out.
+def _warn_revoked_plan_artifacts(outgoing: list[str], prev: ChangeState | None) -> None:
+    """Say out loud when this emit leaves `plan_artifacts` empty after it held entries.
 
     The reducer PRESERVES the previous `scope` when a `plan_ready` payload omits it,
     but ALWAYS REPLACES `plan_artifacts` — an empty re-submit revokes prior
     authorization on purpose (reducer.py). The asymmetry is easy to miss: while a
     change sits in PLAN_REJECTED the gate grants a carve-out letting exactly those
-    recorded plan docs be edited, so a no-`--scope` re-submit silently removes the
-    permission needed to revise the plan the reject loop asked you to revise.
+    recorded plan docs be edited, so an emit carrying no artifacts silently removes
+    the permission needed to revise the plan the reject loop asked you to revise.
+
+    The trigger is deliberately about the OUTCOME, not about how it was reached:
+    `--scope` omitted entirely and `--scope` passed without any frontmatter-marked
+    plan doc land on the identical empty list, so one condition covers both.
 
     A deliberate revocation is legitimate, so this warns rather than refuses.
     """
-    if scope_raw is not None or prev is None or not prev.plan_artifacts:
+    if outgoing or prev is None or not prev.plan_artifacts:
         return
     click.echo(
-        "warning: `plan ready` without `--scope` revoked the recorded plan artifacts "
-        f"({', '.join(prev.plan_artifacts)}) — the PLAN_REJECTED gate carve-out that "
-        "authorizes revising those plan docs is now gone (the declared scope itself is "
-        "kept). Re-pass `--scope` listing them to keep the carve-out.",
+        "warning: this `plan ready` records no plan artifacts, revoking the previously "
+        f"recorded ones ({', '.join(prev.plan_artifacts)}) — the PLAN_REJECTED gate "
+        "carve-out that authorizes revising those plan docs is now gone (the declared "
+        "scope itself is unaffected). To keep the carve-out, re-run with `--scope` "
+        "listing those plan document(s), each carrying `change:` frontmatter naming "
+        "this change.",
         err=True,
     )
 
@@ -192,6 +198,10 @@ def ready(
     cs = derive_state(events_path(root)).get(slug)
 
     payload: dict[str, object] = {}
+    # The artifacts THIS emit will carry. Stays `[]` when `--scope` is omitted, and
+    # also when a passed scope happens to contain no marked plan doc — the reducer
+    # replaces the stored list either way, so both are the same revocation.
+    artifacts: list[str] = []
     if scope_raw is not None:
         try:
             files = _resolve_scope_files(scope_raw)
@@ -237,7 +247,7 @@ def ready(
         )
         sys.exit(EXIT_VALIDATION)
     refresh_state_after_emit(root)
-    _warn_revoked_plan_artifacts(scope_raw, cs)
+    _warn_revoked_plan_artifacts(artifacts, cs)
 
     new_cs = derive_state(events_path(root)).get(slug)
     new_state = new_cs.current_state if new_cs is not None else None

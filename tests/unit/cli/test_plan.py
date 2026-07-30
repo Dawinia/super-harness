@@ -152,6 +152,57 @@ def test_ready_without_scope_warns_that_plan_artifacts_lose_carve_out(tmp_path: 
     assert derive_state(events_path(tmp_path)).get("c").plan_artifacts == []
 
 
+def test_ready_with_scope_lacking_plan_doc_warns_that_artifacts_lose_carve_out(
+    tmp_path: Path,
+) -> None:
+    # The second, likelier route to the same silent revocation: `--scope` IS passed,
+    # but nothing in it is a frontmatter-marked plan doc, so no `plan_artifacts` goes
+    # into the payload and the reducer still clears the stored list. The warning keys
+    # off the outcome (this emit records none) rather than off a missing flag.
+    _seed(tmp_path, "c", "intent_declared")
+    _seed_plan_artifact(tmp_path, "c", "docs/plans/c.md")
+    _seed(tmp_path, "c", "plan_rejected")
+
+    # src/a.py can never be an artifact (not `.md`); docs/other.md is `.md` but its
+    # frontmatter names a different change, so `_detect_plan_artifacts` skips it too.
+    (tmp_path / "src").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "src" / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "docs" / "other.md").write_text(
+        "---\nchange: some-other-change\n---\n\n# not ours\n", encoding="utf-8"
+    )
+    r = CliRunner().invoke(
+        main,
+        [
+            "--workspace", str(tmp_path), "plan", "ready", "c",
+            "--scope", "[src/a.py, docs/other.md]",
+        ],
+    )
+
+    assert r.exit_code == EXIT_OK, r.output
+    assert "warning" in r.stderr
+    assert "docs/plans/c.md" in r.stderr  # names what is losing authorization
+    assert "PLAN_REJECTED" in r.stderr
+    # Still a warning, not a refusal: the emit landed, sans plan_artifacts.
+    assert "plan_artifacts" not in _events(tmp_path)[-1]["payload"]
+    cs = derive_state(events_path(tmp_path)).get("c")
+    assert cs.plan_artifacts == []
+    assert cs.scope == {"files": ["src/a.py", "docs/other.md"]}
+
+
+def test_ready_with_scope_naming_plan_doc_does_not_warn(tmp_path: Path) -> None:
+    # Re-passing the plan doc keeps the carve-out → nothing to warn about.
+    _seed(tmp_path, "c", "intent_declared")
+    _seed_plan_artifact(tmp_path, "c", "docs/plans/c.md")
+    _seed(tmp_path, "c", "plan_rejected")
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "plan", "ready", "c", "--scope", "[docs/plans/c.md]"],
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert "warning" not in r.stderr
+    assert derive_state(events_path(tmp_path)).get("c").plan_artifacts == ["docs/plans/c.md"]
+
+
 def test_ready_without_scope_silent_when_no_plan_artifacts(tmp_path: Path) -> None:
     # Nothing to lose → no noise.
     _seed(tmp_path, "c", "intent_declared")
