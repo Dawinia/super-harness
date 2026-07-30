@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from super_harness.adapters.reviewer.base import ReviewerProtocolError
 from super_harness.adapters.reviewer.claude_cli import ClaudeCliReviewerProtocol
 
 
@@ -73,6 +76,77 @@ def test_parses_claude_structured_output_and_optional_telemetry(tmp_path: Path) 
     assert result.actual_model == "claude-review"
     assert result.usage == {"input_tokens": 120, "output_tokens": 30}
     assert result.duration_ms == 4500
+
+
+def test_rejects_is_error_even_with_well_formed_structured_output(
+    tmp_path: Path,
+) -> None:
+    """A producer that reports failure must never be recorded as a genuine result,
+    even if it also emitted a complete-looking verdict object."""
+    output = tmp_path / "result.raw.json"
+    output.write_text(
+        """{
+  "is_error": true,
+  "result": "API Error: 529 Overloaded",
+  "structured_output": {
+    "bundle_digest": "digest",
+    "checklist": [],
+    "findings": []
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    adapter = ClaudeCliReviewerProtocol(executable="/opt/bin/claude")
+
+    with pytest.raises(ReviewerProtocolError) as excinfo:
+        adapter.parse_result(output)
+
+    message = str(excinfo.value)
+    assert "529 Overloaded" in message
+    assert "invocation.json" in message
+    assert "review run fail" in message
+
+
+def test_rejects_is_error_without_structured_output(tmp_path: Path) -> None:
+    """Pins the empirically observed 529 shape (no structured_output at all) so a
+    later refactor cannot silently start accepting it.
+
+    Asserting on the message is load-bearing: this shape ALSO trips the older
+    "missing object structured_output" guard, so a bare `pytest.raises` would keep
+    passing if the is_error guard were deleted. The remedy text is the stable marker
+    that the diagnosis was "the producer failed", not "the payload was malformed"."""
+    output = tmp_path / "result.raw.json"
+    output.write_text(
+        '{"is_error": true, "result": "API Error: 529 Overloaded"}\n',
+        encoding="utf-8",
+    )
+    adapter = ClaudeCliReviewerProtocol(executable="/opt/bin/claude")
+
+    with pytest.raises(ReviewerProtocolError) as excinfo:
+        adapter.parse_result(output)
+
+    assert "review run fail" in str(excinfo.value)
+
+
+def test_parses_clean_payload_with_is_error_false(tmp_path: Path) -> None:
+    output = tmp_path / "result.raw.json"
+    output.write_text(
+        """{
+  "is_error": false,
+  "result": "done",
+  "structured_output": {
+    "bundle_digest": "digest",
+    "checklist": [],
+    "findings": []
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    adapter = ClaudeCliReviewerProtocol(executable="/opt/bin/claude")
+
+    assert adapter.parse_result(output).verdict["bundle_digest"] == "digest"
 
 
 def _compile(tmp_path: Path, schema_json: str):
