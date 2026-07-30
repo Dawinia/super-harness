@@ -143,42 +143,51 @@ property (`core/reducer.py`, commented); only the silence is the defect.
 
 **Step 1 — failing tests, three of them.**
 
-- **Arm A (unconditional):** no round has been frozen in the current epoch → exits
-  validation error. *This is the arm that catches the mistake actually made.*
-- **Pin the human-only consequence with a test, and treat it as intended.** A role whose
-  participants are all human has no frozen round, so Arm A refuses `skip` for it. That is
-  correct, not a deadlock: `review human draft` → `review human confirm` is its pass path,
-  and `confirm` mints its own round/run without `review begin`
-  (`cli/review.py:2319-2320`). It also closes a hole — `confirm` requires an interactive TTY
-  and refuses agent self-confirmation (`cli/review.py:2189-2196`), which today an agent can
-  sidestep via `review skip --override`. Add a test asserting `skip` refuses a human-only
-  role with no rounds, and name the human path in the error hint.
+- **Arm A:** the role **has at least one automated participant** and no round has been frozen
+  in the current epoch → exits validation error. *This is the arm that catches the mistake
+  actually made.*
+- **A human-only role must still be skippable — pin it with a test.** `init` ships
+  `participants: [human]` for both roles (`cli/init.py:207-215`, wizard fallback `:309`), so
+  this is the default for every fresh install, not an exotic configuration. For such a role
+  "no rounds" carries no information about whether a reviewer was asked, so Arm A must not
+  fire. Test: a human-only role with no rounds is still passed by
+  `review skip --override --reason`.
 - **Arm B:** `review skip` while the latest round is open with a `pending` run → exits
   validation error, and the message names the pending `run_id`s.
 - **Still allowed:** `review skip` after every run is `imported` or `failed` → succeeds
   (this is the disclosed-override path the previous cut relied on twelve times; it must
   keep working).
 
-**Step 2 — implement the guards.** Derive `engineering.review_runs.derive_review_execution`
-for the change + reviewer. Refuse when (a) the epoch has no rounds at all, or (b) the latest
-round has `status == "open"` and any run has `status == "pending"`. Use `format_error` with a
-`hint` per the project's error contract: for (a) point at `review prepare` + `review begin`,
-and at `review human draft` / `review human confirm` for a human-owned role; for (b) name
-the pending `run_id`s and point at `review result import` / `review run fail --reason`.
+**Step 2 — extract the automated-participant predicate first.** `begin` computes it as an
+inline generator expression at `cli/review.py:720-724`; there is no helper to reuse. Lift it
+to a module-level function taking `(governance, reviewer)` and returning `bool`, then call it
+from **both** `begin`'s existing check and the new Arm A. Two call sites deciding "is this
+role automated?" must not be able to drift apart. Assert `begin`'s existing
+"no automated participants" behaviour is unchanged by the extraction.
 
-No shared automated-participant predicate is needed now that Arm A is unconditional. (There
-is no such helper to reuse in any case — `begin`'s check is an inline generator expression
-at `cli/review.py:720-724`; extracting it is out of scope for this cut.)
+**Step 3 — implement the guards.** Derive
+`engineering.review_runs.derive_review_execution` for the change + reviewer. Refuse when
+(a) the role is automated (per Step 2's predicate) and the epoch has no rounds, or (b) the
+latest round has `status == "open"` and any run has `status == "pending"`. Use `format_error`
+per the project's error contract:
 
-**Step 3 — rename `--source` to `--stuck-source`** on `skip` only. Its help text must say
+- for (a): hint `review prepare` then `review begin`;
+- for (b): name the pending `run_id`s and hint `review result import` / `review run fail --reason`.
+
+The hint must not send anyone down a first step that fails. The human path is
+`review prepare` → `review human draft` → `review human confirm`, in that order —
+`human draft` reads the prepared packet and hard-fails without it
+(`_read_packet_or_exit`, `cli/review.py:2057`).
+
+**Step 4 — rename `--source` to `--stuck-source`** on `skip` only. Its help text must say
 it is an audit label recording which participant was stuck, **not** a scope selector, and
 point at `review run fail` for retiring one producer. Leave `review begin --source` alone —
 there it genuinely scopes.
 
-**Step 4 — regenerate `docs/cli-reference.md`** and confirm `super-harness doc check`
+**Step 5 — regenerate `docs/cli-reference.md`** and confirm `super-harness doc check`
 exits 0. It is a CI gate.
 
-**Step 5.** Tests, then commit.
+**Step 6.** Tests, then commit.
 
 ---
 
@@ -234,10 +243,12 @@ must be green first: `pytest -q`, `super-harness verify <change>`, `decision che
   merge gate; `must_pass=False` unchanged; `core/review_bundle.py` left on prefix matching
   and untouched; `core/scope_match.py`'s docstring no longer claims the baseline points at
   it.
-- `review skip` refuses a human-only reviewer role that has no frozen round, pinned by a
-  test, with the error hint naming `review human draft` / `review human confirm` as its pass
-  path. This is intended: it also stops an agent from sidestepping `confirm`'s
-  no-self-confirmation guard via `--override`.
+- `review skip` still passes a **human-only** reviewer role with no frozen round, pinned by a
+  test — that is `init`'s default for both roles, so Arm A must not fire there.
+- The automated-participant predicate is a single module-level helper called by both
+  `review begin` and Arm A; `begin`'s existing behaviour is unchanged, pinned by a test.
+- Every error hint names a first step that succeeds — the human path is
+  `review prepare` → `review human draft` → `review human confirm`.
 - `plan ready` warns (exit still success) when `--scope` is omitted while `plan_artifacts`
   is non-empty; reducer unchanged.
 - `review skip` refuses with no frozen round, and refuses while the latest round is open

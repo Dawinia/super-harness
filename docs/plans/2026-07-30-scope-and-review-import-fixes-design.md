@@ -62,23 +62,30 @@ duplication, so the fix is not to make `--source` scope.
 
 **Fix, two parts.** Teeth first:
 
-- **Refuse `skip` whenever no round has been frozen in the current epoch — unconditionally.**
-  You cannot pass a role no reviewer was ever asked to perform. *This is the arm that
-  catches the mistake actually made* — `skip` was called before `review begin`.
+- **Refuse `skip` when the role has automated participants and no round has been frozen in
+  the current epoch.** You cannot pass a role no reviewer was ever asked to perform. *This
+  is the arm that catches the mistake actually made* — `skip` was called before
+  `review begin`.
 
-  An earlier draft carved out roles whose participants are all human, on the theory that
-  `review begin` refuses such a role (`cli/review.py:725-734`) so no round could ever exist
-  for it and the role would become unpassable. **That premise is false and the carve-out is
-  dropped.** `review human confirm` mints its own `round_id` / `run_id`
-  (`cli/review.py:2319-2320`) and emits the full round sequence without requiring
-  `review begin`, so a human-only role has its own CLI-reachable pass path.
+  **Why the condition, stated correctly.** For an automated role, "a reviewer was asked" has
+  a mechanical trace: a frozen round. For a human-only role it has none until
+  `review human confirm` mints one (`cli/review.py:2319-2320`), so "no rounds" there cannot
+  distinguish *nobody was asked* from *the human has not confirmed yet* — and the guard must
+  not guess. The blast radius makes this decisive rather than academic: `init`'s skeleton
+  governance ships `participants: [human]` for **both** plan-reviewer and code-reviewer
+  (`cli/init.py:207-215`; the wizard falls back to `["human"]` at `:309`), so every fresh
+  install is human-only on both roles. An unconditional guard would change behaviour for
+  every new adopter and strand an agent-driven lifecycle behind a flow that needs an
+  interactive TTY (`cli/review.py:2189-2196`) and a prepared packet
+  (`_read_packet_or_exit`, `cli/review.py:2057`).
 
-  Dropping the carve-out also closes a hole. `review human confirm` demands an interactive
-  TTY and refuses agent self-confirmation outright — "A code agent must not self-confirm;
-  ask the human to run this command" (`cli/review.py:2189-2196`). Today an agent can sidestep
-  that by passing the same role with `review skip --override`. With Arm A unconditional it
-  cannot: a human-only role has no frozen round to point at, so `skip` refuses and the human
-  path is the only way through. That is the behaviour the human-review guard already intends.
+  Two earlier framings of this were wrong and are recorded so they are not re-derived. It is
+  **not** true that an unconditional guard would leave a human-only role unpassable — the
+  `review prepare` → `review human draft` → `review human confirm` path exists. And an
+  unconditional guard would **not** close a self-bypass hole: `skip --override` records a
+  *disclosed* no-evidence pass (`skipped: true`, `override: true`, reason in the event stream
+  and printed by the merge gate), whereas `confirm`'s TTY guard exists to stop *fabricated
+  human evidence*. Those are different acts, and conflating them overstated the benefit.
 - **Refuse `skip` while the latest round is open with `pending` runs**, naming them and
   pointing at `review result import` / `review run fail`.
 
