@@ -477,15 +477,20 @@ exercising that exit is the point.
 
 ```bash
 super-harness decision new d-no-recovery-from-awaiting-code-review \
-  --text "PROPOSED (unsettled): AWAITING_CODE_REVIEW freezes decisions and source, and none of the state machine's exits out of it has a CLI verb."
+  --text "PROPOSED (unsettled): AWAITING_CODE_REVIEW freezes decisions and source, and neither implementation_* exit that reaches an editable state has a CLI verb, so the only recovery is plan redeclare into a full plan cycle."
 ```
 
-Body: `docs/state-machine.md:12-14` lists three non-review exits from
-`AWAITING_CODE_REVIEW` — `implementation_invalidated` → `IMPLEMENTATION_IN_PROGRESS` and
-`implementation_restarted` → `PLAN_APPROVED`, both of which reach an editable state, plus
-`implementation_withdrawn`, which goes to `READY_TO_MERGE` and so is **not** a recovery
-path at all. None of the three is emitted by anything in `src/super_harness/cli/`. The
-only non-bypass recovery is `plan redeclare` into a full plan cycle. The actionable rule:
+Body — state the scope of the claim precisely, because a wider version of it is false.
+`AWAITING_CODE_REVIEW` has nine exits in `docs/state-machine.md`, and several *do* have
+CLI verbs: `plan_redeclared` from `plan redeclare` (`cli/plan.py`), and
+`code_review_passed` / `code_review_failed` from the reviewer verdict map
+(`cli/review.py:76-84`). The gap is narrower and specific: of the three
+`implementation_*` exits (`:12-14`), only `implementation_invalidated` →
+`IMPLEMENTATION_IN_PROGRESS` and `implementation_restarted` → `PLAN_APPROVED` reach an
+editable state — `implementation_withdrawn` goes to `READY_TO_MERGE`, so it is not a
+recovery path — and **neither of those two is emitted by anything in
+`src/super_harness/cli/`**. So the only CLI-reachable recovery is `plan redeclare`, which
+rewinds to `INTENT_DECLARED` and costs a full plan cycle. The actionable rule:
 **finish every edit and run every gate before `done`** — `pytest -q`, `verify`,
 `decision check`, `doc check`, and `doc refs --gate` (a separate CI job that `doc check`
 does not cover). Unsettled because the fix is probably a CLI verb for

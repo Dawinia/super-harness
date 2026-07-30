@@ -122,12 +122,14 @@ consequences are in scope:
   record when the warning ships.
 
 **A fourth record, from the first code review.** `AWAITING_CODE_REVIEW` freezes
-`docs/decisions/*.md` and `src/`, and none of its three non-review exits helps: only
-`implementation_invalidated` (→ `IMPLEMENTATION_IN_PROGRESS`) and
+`docs/decisions/*.md` and `src/`, and none of its three `implementation_*` exits helps:
+only `implementation_invalidated` (→ `IMPLEMENTATION_IN_PROGRESS`) and
 `implementation_restarted` (→ `PLAN_APPROVED`) reach an editable state at all —
 `implementation_withdrawn` goes to `READY_TO_MERGE`, so it is not a recovery path — and
-**none of the three has a CLI verb**, verified as zero hits across
-`src/super_harness/cli/`. The only non-bypass recovery is `plan redeclare` into a full
+**neither of those two has a CLI verb**, verified as zero hits across
+`src/super_harness/cli/`. (The state has other exits that do have verbs —
+`plan redeclare`, the reviewer verdicts — which is why the claim has to be scoped to the
+`implementation_*` set rather than stated as "no exit has a verb".) The only non-bypass recovery is `plan redeclare` into a full
 plan cycle, which this change paid once for a one-word fix. Filed as
 `d-no-recovery-from-awaiting-code-review`, `proposed`, and deliberately **not anchored**
 (anchoring a proposed record is dangling-up).
