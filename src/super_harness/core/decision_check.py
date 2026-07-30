@@ -72,15 +72,21 @@ def run_check(workspace_root: Path) -> CheckResult:
     decisions, errors = load_decisions(workspace_root)
     if errors:
         return CheckResult(dangling_up=[], dangling_down=[], errors=errors)
+    # This set is what makes a `proposed` record free to file: it drives dangling_down,
+    # effective_ratified, and the tier-2 suspect/unreconciled loops, so a record that is
+    # not ratified reaches none of them. That is what makes `proposed` the usable home
+    # for a trap you have hit but not yet turned into a rule. Admit `proposed` here and
+    # such a record — carrying a review block and no anchors — lands in
+    # unreconciled_tier2, which exits 2 under `--gate-reconcile`: the home becomes advice
+    # that breaks CI. (Filing stays free either way; anchoring never was — a sentinel
+    # naming a non-ratified id is dangling-up.)
+    # @decision:d-pitfall-is-proposed-decision
     ratified = {d.id for d in decisions if d.status == "ratified"}
 
     integrity_violations: list[IntegrityViolation] = []
     for d in decisions:
-        # A non-ratified record is skipped entirely: this is what makes a `proposed`
-        # decision free to file, and therefore the usable home for a trap you have
-        # hit but not yet turned into a rule. Narrow this filter and that home
-        # becomes advice that breaks CI.
-        # @decision:d-pitfall-is-proposed-decision
+        # Not the guard for the above: a proposed record has no ratified_text_hash, so
+        # the second clause already skips it. This filter carries no invariant for it.
         if d.status != "ratified" or d.ratified_text_hash is None:
             continue  # missing hash → lazy-warn path (Task 5), not a violation
         if compute_body_hash(d.body) != d.ratified_text_hash:

@@ -35,12 +35,17 @@ doing X also requires Y. super-harness has no separate place for that. A `propos
 decision record *is* the place.
 
 A proposed record is the state for "we got burned, we haven't settled the rule yet".
-It gates nothing — `decision check` skips anything not yet ratified, so it cannot
-fail CI or block a teammate — and it stays out of the tier tally. Its advantage over
-a notes file is the **exit**: `ratify` it once you can state the rule (arm it with a
-check if the violation has a mechanical signature), or `retire` it once it stops
-being true. A note has no exit, which is why notes files fill up with entries nobody
-can tell are still valid.
+Filing one costs nothing — `decision check` excludes anything not yet ratified from every
+verdict, so it cannot block a teammate — and it stays out of the tier tally. Its
+advantage over a notes file is the **exit**: `ratify` it once you can state the rule (arm
+it with a check if the violation has a mechanical signature), or `retire` it once it stops
+being true. A note has no exit, which is why notes files fill up with entries nobody can
+tell are still valid.
+
+One exception, worth knowing before you act on the above: **filing is free, anchoring is
+not.** Attaching a `@decision:` sentinel to a record that is not yet ratified makes it a
+dangling-up reference, which is a hard CI failure. Anchoring a record at the site it
+describes is otherwise good practice — just wait until the record is ratified.
 
 Two shapes turn up, and only one of them lasts. A **defect** record says "the current
 code has this hole"; it names the fix and dies when the fix ships — as a proposed

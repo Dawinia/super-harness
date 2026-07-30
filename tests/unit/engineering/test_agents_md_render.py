@@ -207,6 +207,9 @@ def test_section_states_where_negative_knowledge_goes(tmp_path: Path) -> None:
     assert "proposed" in text
     # No parallel corpus is offered as an alternative home.
     assert "pitfall directory" in text
+    # The caveat must survive: filing is free, anchoring is not. Without it the bullet
+    # sends an agent that files a trap and anchors it into a dangling-up CI failure.
+    assert "until it is ratified" in text
     # It lives in the managed outer block, not an agent-specific subsection.
     assert text.index("super-harness decision new") < text.index(
         "<!-- super-harness section end -->"
