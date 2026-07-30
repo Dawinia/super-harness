@@ -460,20 +460,26 @@ def _baseline_scope_vs_plan(
             archive=archive,
         )
 
-    # Canonical-path SET MEMBERSHIP, deliberately identical to the merge gate
+    # Canonical-path SET MEMBERSHIP — the same matcher the merge gate uses
     # (`engineering.attestation.verify_attestations`), not the segment-aware prefix
-    # matcher in `core.scope_match`. The point is that this advisory check must not
-    # be LOOSER than `attest verify`: with prefix matching, a declared `tests/`
-    # covered `tests/unit/x.py` here while the gate produced one blocker per file, so
-    # a clean local `verify` promised something the merge boundary refused. Aligning
-    # the loose side to the strict one — never the reverse, which would be a
-    # fail-open widening of the gate.
+    # matcher in `core.scope_match`. Under prefix matching a declared `tests/` covered
+    # `tests/unit/x.py` here while the gate produced one blocker per file, so a clean
+    # local `verify` promised something the merge boundary refused. The loose side was
+    # aligned to the strict one, never the reverse: loosening the gate so a `src/`
+    # entry covered everything beneath it would be a fail-open widening.
     #
-    # Same matcher, not the same verdict: the gate unions the coverage of every newly
-    # added attestation and exempts `.harness/attestations/*.jsonl` from subjects, so
-    # this baseline can still report drift the gate would let through. The direction
-    # of that gap is the safe one (stricter here), but it is not identity — do not
-    # read a report below as a promise that `attest verify` will block.
+    # Same matcher, DIFFERENT VERDICT, and the difference runs both ways — do not read
+    # this check as a preview of `attest verify`:
+    #
+    # - stricter here: the gate unions the coverage of every newly added attestation
+    #   and exempts `.harness/attestations/*.jsonl` from subjects, so this baseline can
+    #   report drift the gate would let through;
+    # - LOOSER here, on renames: `git diff --name-only` above emits only a rename's
+    #   destination path, while `cli.attest` runs `git diff --name-status` and the gate
+    #   makes BOTH paths of an `R` entry subjects. A rename whose source path is
+    #   undeclared passes this check and is refused at the merge boundary.
+    #
+    # So a clean report is not a promise about the gate in either direction.
     declared_set = {canonical_path(d) for d in declared_files}
     drifted = [f for f in changed if canonical_path(f) not in declared_set]
     report = None
