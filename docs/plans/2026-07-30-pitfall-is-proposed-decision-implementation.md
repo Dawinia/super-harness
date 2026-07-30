@@ -56,7 +56,7 @@ must reuse `core/scope_match.py` — never `fnmatch`.
 
 **The `Write` tool is BLOCKed here, and that is correct.** The gate's allowances are
 hard-coded path whitelists compared after canonicalization, and are **never derived
-from gitignore status** (`gates/pre_tool_use.py:79-80`). `private/OPEN-ITEMS.md`
+from gitignore status** (`gates/pre_tool_use.py:81-82`). `private/OPEN-ITEMS.md`
 matches no `plan-paths.yaml` pattern (all four are under `docs/plans`, `openspec`, or
 `docs/superpowers`) and is not a `plan_artifact` — this plan declares it out of scope.
 Being gitignored buys it nothing.
@@ -123,10 +123,16 @@ git add docs/plans/2026-07-30-pitfall-is-proposed-decision-*.md
 git commit -m "docs(plan): address plan review round N"
 ```
 
-Automatic rounds are capped (2 for this reviewer). A producer that cannot run
-consumes a round exactly as a genuine rejection does, so budget accordingly; further
-rounds need `review authorize`. Do not proceed to Task 2 until the state is
-`PLAN_APPROVED`.
+**The automatic-round cap does not bite in this loop, and reaching for
+`review authorize` here is a mistake.** The plan-reviewer epoch boundary is the
+`plan_ready` event itself (`engineering/review_runs.py:11-13`), and only rounds
+appended after the latest boundary are counted — so every iteration's
+`plan ready --scope` re-emission opens a fresh epoch with `automatic_rounds_used`
+back at 0. Iterate as many times as convergence needs; `review authorize` is a
+governance escape hatch for a genuinely over-budget round, not the way past this
+loop.
+
+Do not proceed to Task 2 until the state is `PLAN_APPROVED`.
 
 ---
 
@@ -266,9 +272,17 @@ resolutions, matching the house style of `d-decision-records.md`:
 - still holds → `decision reconcile d-pitfall-is-proposed-decision`;
 - broken → `decision betray d-pitfall-is-proposed-decision` with a justification.
 
-Record the ceiling explicitly, and record **both** deliberate omissions — the body is
-hash-locked at `ratify`, so a narrower account than the design's cannot be corrected
-without a re-ratify:
+The body is hash-locked at `ratify`, so anything omitted here needs a re-ratify to add
+later. Record **all three** of the following.
+
+**(a) The mechanism ceiling.** A general check for this decision is impossible, not
+merely inconvenient: `counterexample` can only *add* a file, so a check can only ever
+be "no file contains/creates X". A behavioural invariant such as "proposed decisions
+do not gate" cannot be bite-tested by that mechanism, and an un-bite-tested check is
+exactly what `ratify` refuses. This is a ceiling of the counterexample design, not a
+shortcoming of this record.
+
+**(b) and (c) The two deliberate anchor omissions:**
 
 - `core/decisions.py` (four-state lifecycle, `decision_tier` ladder) — already
   anchored by `d-decision-records`, whose subject *is* that shape; a second anchor
