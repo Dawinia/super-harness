@@ -28,6 +28,9 @@ abstraction, no new module, no new CLI verb. Rationale for each in the design do
 - src/super_harness/cli/plan.py
 - src/super_harness/cli/review.py
 - src/super_harness/adapters/reviewer/claude_cli.py
+- src/super_harness/cli/status.py
+- src/super_harness/engineering/review_governance.py
+- scripts/gen_cli_reference.py
 - tests/unit/sensors/test_verification_runner.py
 - tests/unit/cli/test_plan.py
 - tests/unit/cli/test_review.py
@@ -42,6 +45,20 @@ abstraction, no new module, no new CLI verb. Rationale for each in the design do
 `core/decision_check.py`, untouched here). So no decision document is rewritten by a
 reconcile and none needs declaring. The previous cut skipped this check and paid a
 `plan redeclare` plus a full review round for it.
+
+**Checking anchor collateral once is not enough — scope has to be re-declared whenever the
+work widens.** This cut paid a second `plan redeclare` anyway. Fixing the code-review
+findings needed three files nobody had planned for: `scripts/gen_cli_reference.py` (the
+hand-maintained exit-code table), and `cli/status.py` + `engineering/review_governance.py`
+(a fourth verbatim copy of the automated-participant predicate turned up in `status.py`, so
+the shared helper had to live somewhere both CLI modules could reach). They were authorised
+in the fix brief and never added here, and `attest verify` matches by set membership — the
+very semantics Task 2 aligns — so all three would have been merge-gate blockers.
+
+The lesson is about *when* to check, not *whether*: a scope declaration is a claim about
+the whole change, and every review round that produces fixes is a chance for the fix to
+reach past it. Re-run `git diff --name-only main...HEAD` against the declared list before
+`done`, not just before the first `plan ready`.
 
 `docs/cli-reference.md` is **generated** — Task 4 renames a CLI flag, so it must be
 regenerated with `super-harness doc check --fix` (or its generator) and committed, or the
@@ -279,7 +296,19 @@ dangling-up and fails CI.
 **Step 2 — full gate set, by exit code, before `done`.** There is no CLI-reachable recovery
 from `AWAITING_CODE_REVIEW` (see `d-no-recovery-from-awaiting-code-review`), so all of these
 must be green first: `pytest -q`, `super-harness verify <change>`, `decision check`,
-`doc check`, and **`doc refs --gate` — check its exit code, not its output.**
+`doc check`, `lint-imports`, and **`doc refs --gate` — check its exit code, not its output.**
+
+**And reconcile the scope, which no gate does for you.** Run
+
+```bash
+git diff --name-only main...HEAD
+```
+
+and compare it against the declared list above, item by item. `verify`'s scope baseline is
+advisory (`must_pass=False`), so a green `verify` says nothing about this; only
+`attest verify` at the merge boundary refuses, and by then `done` has frozen the tree. This
+cut skipped the comparison and paid a `plan redeclare` plus a review round for three files
+that arrived while fixing review findings.
 
 **Step 3.** `done` → code review → `attest write` → PR → `on-merge`.
 
