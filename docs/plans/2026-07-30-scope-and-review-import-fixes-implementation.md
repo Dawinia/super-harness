@@ -406,9 +406,10 @@ that arrived while fixing review findings.
   frozen — **including under `--override`**, pinned by a test, because the mistake that
   motivated this cut was made with `--override`. Silent when freezing is impossible: absent
   governance file, human-only role, or an environmental failure the author cannot clear
-  (a profile that does not resolve). Fail-CLOSED
-  for a malformed *tracked* governance file and a malformed *local* profiles file alike, and refuses while the latest round is open with pending runs (Arm B); the
-  post-recording override path still works.
+  (a profile that does not resolve — including, per residual SRI-003, a *malformed* local
+  profiles file, which is silent rather than fail-closed and is what that residual records).
+  Fail-CLOSED for a malformed **tracked** governance file. Arm B refuses while the latest
+  round is open with pending runs; the post-recording override path still works.
 - `skip` alone takes `--stuck-source`, whose help says "audit label, not a scope selector";
   `review approve` and `review reject` keep `--source`. Pinned by a **structural** test over
   `review_group.commands[...].params` — an exit-code test cannot fail here and would be
