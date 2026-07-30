@@ -28,18 +28,27 @@ authoritative list.
 
 ## Why this is proposed and not ratified
 
-The rule above is a workaround, and it is not settled that it is the right one. Two
-candidate resolutions, and this record does not pick between them:
+The rule above is an interim discipline, not the intended end state. The direction is
+decided; the implementation is not built yet, so the rule this record states is not the
+rule that should be true. Ratifying it would freeze the workaround.
 
-1. **Keep it a discipline.** The author declares the decision documents up front. Cheap
-   to state, but it is knowledge the tool already has and the human must remember —
-   the shape that reliably gets forgotten, as it was here.
-2. **Make the tooling absorb it.** Treat a reconcile stamp on an already-ratified
-   decision as an implied in-scope artifact, the way `plan_artifacts` already carves
-   out plan documents, or have `plan ready` warn when the declared scope touches an
-   anchored file without declaring the anchoring decision.
+**Decided: `plan ready` warns, naming the exact files.** At `plan ready`, intersect every
+ratified tier-2 decision's `reconciled_anchors` keys with the declared `scope.files`; for
+each hit whose own `.md` is absent from the scope, warn and name the file(s) to add. Both
+sides go through `engineering/attestation.canonical_path`, so the comparison is
+spelling-independent. Warning only, never exit 2 — at `plan ready` time the edit that
+would trigger the reconcile has not happened yet, so a hard failure would block a
+legitimate declaration. The information is already on hand at that moment: the anchors
+are authoritative and the scope is declared, so the tool can say precisely what is
+missing instead of leaving a human to remember.
 
-Option 2 is more likely correct — it removes the class rather than documenting it — but
-it changes merge-gate semantics and deserves its own cut. Until that is decided, this
-record exists so the next person does not rediscover the blocker at the merge gate.
-Ratify it if the discipline is chosen; retire it if the tooling absorbs the case.
+**Rejected: have `attest verify` treat a reconcile stamp as implied in-scope.** It reads
+as the tidier fix and it is the more dangerous one. Telling a stamp-only change from a
+body change requires semantically diffing the decision's frontmatter, which adds a new
+trust surface — and with it a laundering vector: disguise a body edit as a stamp edit —
+to a merge gate whose entire rule today is "every changed file is in `scope.files`, no
+exceptions". That is the same defect family as the symlink-whitewash and forged-state
+fail-open holes this project has already had to close. Fail-safe beats fail-open here: a
+warning nobody reads leaves today's status quo intact, while an exempted file is a hole.
+
+**Exit:** retire this record when the `plan ready` warning ships.

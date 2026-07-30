@@ -122,6 +122,15 @@ with reason=manual_skip"). Using it while another source is still pending approv
 the plan before anyone has reviewed it. The two sibling verbs read alike and behave
 differently.
 
+**Register that defect here, where it bites** (Bash, per Step 1). Append to
+`private/OPEN-ITEMS.md`, status OPEN: `review skip --source` is an audit label while
+`review begin --source` genuinely scopes — same flag name, opposite semantics, same
+command group. Candidate fix: make `--source` on `skip` actually scope (retire one
+participant, leave the round open), or drop the flag. Same defect family as the
+`scope.files` prefix-vs-set-membership divergence between the `verify` baseline and
+`attest verify`. Registering it at the point of pain is the rule Step 1 states;
+postponing it to close-out is how it goes missing.
+
 Iterate until the round passes, committing **inside** the loop — `review prepare`
 refuses a dirty in-scope tree, so an uncommitted revision stalls the next round:
 
@@ -276,7 +285,7 @@ super-harness decision check   # record the `hard:context = H:C` line
 ```
 
 Write the numbers down. Step 8 asserts a delta against them, and `decision check`
-prints one aggregate line with no per-record breakdown (`cli/decision.py:450`) — a
+prints one aggregate line with no per-record breakdown (`cli/decision.py:451`) — a
 single post-change reading cannot tell you anything on its own.
 
 **Step 1: Create the record**
@@ -388,6 +397,13 @@ exceptions". Retire this record when the `plan ready` warning ships.
 Leave it `proposed`. Do **not** ratify it — the rule it wants is not true yet, and a
 proposed record gates nothing, which is the whole point being demonstrated.
 
+**Register the decided direction here too**, now that it exists (Bash, per Task 1
+Step 1). Append to `private/OPEN-ITEMS.md`, status DOABLE-NOW: the accepted design
+(intersect each ratified tier-2's `reconciled_anchors` with the declared scope; warn,
+naming files; canonical paths both sides; never exit 2), the rejected alternative with
+its reason, and the note that this record **must be retired when the warning ships** —
+exercising that exit is the point.
+
 **Step 8: Confirm the decision system is green**
 
 Run: `super-harness decision check`
@@ -436,29 +452,14 @@ directory prefix.
 
 ### Task 6: Close-out
 
-**Step 1: Register the two deferrals that could not exist at Task 1 time**
+**Step 1: Verify — do not defer — the deferral register**
 
-Task 1 Step 1 registered Cut 2. The other two could not be written then — one is only
-described as prose in Task 1 Step 4, and the other's direction is not decided until
-Task 4 Step 7. Append both to `private/OPEN-ITEMS.md` now, via Bash (still untracked, so
-still not a scope subject; `Write` remains blocked in gated states):
-
-- **`review skip --source` is an audit label, not a scoped skip** — status OPEN.
-  `cli/review.py` `skip` sets `extra["source"]` and then emits the role's full PASS
-  ("== approve with reason=manual_skip"), while its sibling `review begin --source`
-  genuinely scopes the round. Same flag name, opposite semantics, same command group.
-  Live cost during this change: it PASSed the plan review before any reviewer had run;
-  recovered with `plan redeclare`, but the erroneous `plan_approved` is permanent in the
-  append-only stream. Candidate fix: make `--source` on `skip` actually scope, or drop
-  the flag. Same defect family as the `scope.files` prefix-vs-set-membership divergence.
-- **`plan ready` should warn when declared scope touches an anchored file without
-  declaring the anchoring decision** — status DOABLE-NOW, direction decided by this
-  change. Record the accepted design (intersect each ratified tier-2's
-  `reconciled_anchors` with the declared scope; warn, naming files; canonical paths both
-  sides; never exit 2) *and* the rejected alternative with its reason (an
-  `attest verify` exemption needs a semantic frontmatter diff → laundering vector).
-  Note that `d-tier2-reconcile-touches-scope` is the in-product tracker and **must be
-  retired when this ships** — exercising that exit is the point.
+Every deferral is registered at the point it arose, never here: Cut 2 at Task 1 Step 1,
+the `review skip --source` defect at Task 1 Step 4, the `plan ready` warning direction at
+Task 4 Step 7. This step only confirms all three are present in
+`private/OPEN-ITEMS.md` with their statuses. If any is missing, that is a process
+failure to note, not a gap to quietly close here — postponing registration to close-out
+is the failure mode Task 1 Step 1 exists to prevent.
 
 **Step 2: Implementation complete, code review, attest, PR**
 
