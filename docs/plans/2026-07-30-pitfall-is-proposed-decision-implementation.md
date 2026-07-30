@@ -336,19 +336,68 @@ super-harness decision reconcile d-pitfall-is-proposed-decision \
 ```
 Expected: `reconciled ... (1 file(s), kind=self, ...)`.
 
-**Step 6: Confirm the decision system is green**
+**Step 6: Re-reconcile `d-dangling-check` — the sentinel made it suspect**
+
+`d-dangling-check` already anchors `core/decision_check.py`
+(`docs/decisions/d-dangling-check.md`, `reconciled_anchors`). Step 4 changed that
+file's bytes, so it is now suspect tier-2 — and CI runs
+`decision check --gate-reconcile`, which exits 2 on a suspect tier-2
+(`cli/decision.py:373`). This step is not optional.
+
+Re-review it for real before stamping: its criterion is that the referential-integrity
+check keeps **up = block / down = warn**. Confirm at HEAD (`cli/decision.py:371` maps
+`dangling_up` to `EXIT_VALIDATION`; `:375-376` maps `dangling_down` to `EXIT_OK`
+"warning"; `CheckResult.ok` excludes `dangling_down`), then:
+
+```bash
+super-harness decision reconcile d-dangling-check --kind self \
+  --justification "Re-reviewed after adding a @decision sentinel + comment to decision_check.py. No logic touched; up=block / down=warn verified at cli/decision.py:371 vs :375-376."
+```
+
+**Step 7: File the trap this step just revealed, as a `proposed` record**
+
+Step 6 rewrote `docs/decisions/d-dangling-check.md` — a file no one planned to touch,
+which `attest verify` would reject as undeclared. That is the trap the "Declared scope"
+prose describes, and this cut's own norm says where it goes:
+
+```bash
+super-harness decision new d-tier2-reconcile-touches-scope \
+  --text "PROPOSED (unsettled): reconciling a tier-2 decision rewrites its own .md, so that file must be in the change's declared scope or the merge gate blocks it."
+```
+
+Author the body with: what happens (a one-line sentinel is enough to trigger it); the
+interim rule (read every ratified tier-2 decision's `reconciled_anchors` before
+declaring scope, and declare the anchoring decisions' `.md` files too); and **why it
+stays proposed** — the decided direction is to have `plan ready` warn, naming the exact
+files to add, rather than to have `attest verify` treat a reconcile stamp as implied
+in-scope. The latter was rejected: telling a stamp-only change from a body change
+requires semantically diffing the decision's frontmatter, which adds a laundering
+vector to a merge gate whose rule is "every changed file is in `scope.files`, no
+exceptions". Retire this record when the `plan ready` warning ships.
+
+Leave it `proposed`. Do **not** ratify it — the rule it wants is not true yet, and a
+proposed record gates nothing, which is the whole point being demonstrated.
+
+**Step 8: Confirm the decision system is green**
 
 Run: `super-harness decision check`
-Expected: exit 0, no dangling-up (the sentinel resolves to a ratified record) and no
-suspect tier-2.
+Expected: exit 0, `decision check: clean` — no dangling-up (the sentinel resolves to a
+ratified record), no suspect tier-2 (Step 6 cleared it). The `hard:context` tally must
+still count only ratified records, so the new `proposed` record does not move `hard`;
+this is the live confirmation of the decision's load-bearing precondition.
 
-**Step 7: Commit**
+**Step 9: Commit**
 
 ```bash
 git add docs/decisions/d-pitfall-is-proposed-decision.md \
+        docs/decisions/d-dangling-check.md \
+        docs/decisions/d-tier2-reconcile-touches-scope.md \
         src/super_harness/core/decision_check.py
 git commit -m "feat(decisions): ratify d-pitfall-is-proposed-decision (tier-2)"
 ```
+
+All three decision documents go in this commit. Leaving the Step 6 reconcile rewrite
+uncommitted makes the next `review prepare` refuse a dirty in-scope tree.
 
 ---
 
@@ -383,8 +432,16 @@ change — exactly one change on this branch, but confirm with
 ## Definition of done
 
 - `d-pitfall-is-proposed-decision` is `ratified`, tier-2, with one reconciled anchor.
-- `super-harness decision check` and `super-harness doc check` both exit 0.
+- `d-dangling-check` is re-reconciled after the sentinel edit, with a justification that
+  records the up=block / down=warn re-review.
+- `d-tier2-reconcile-touches-scope` exists and is still `proposed` — its body records the
+  interim rule and the decided direction (`plan ready` warns; `attest verify` exemption
+  rejected).
+- `super-harness decision check` exits 0 with `clean`, `hard:context` unchanged in its
+  `hard` term by the new proposed record, and `super-harness doc check` exits 0.
 - The generated AGENTS.md section states where negative knowledge goes, in one bullet.
 - `docs/concepts.md` explains the norm and the two pitfall shapes.
-- Cut 2 is registered in `private/OPEN-ITEMS.md` with its unverified premise named.
+- `private/OPEN-ITEMS.md` registers all three deferrals: Cut 2 with its unverified
+  premise, the `review skip --source` defect, and the `plan ready` warning cut whose
+  direction this change decided.
 - Attestation written; change reaches `merged`.
