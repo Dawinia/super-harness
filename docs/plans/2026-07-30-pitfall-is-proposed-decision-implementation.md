@@ -27,6 +27,7 @@ anchor so the norm cannot silently rot if that status filter changes.
 - docs/decisions/d-pitfall-is-proposed-decision.md
 - docs/decisions/d-dangling-check.md
 - docs/decisions/d-tier2-reconcile-touches-scope.md
+- docs/decisions/d-no-recovery-from-awaiting-code-review.md
 - docs/plans/2026-07-30-pitfall-is-proposed-decision-design.md
 - docs/plans/2026-07-30-pitfall-is-proposed-decision-implementation.md
 - src/super_harness/core/decision_check.py
@@ -433,7 +434,95 @@ uncommitted makes the next `review prepare` refuse a dirty in-scope tree.
 
 ---
 
+### Task 4b: Corrections found after the first code review
+
+Three defects in what Task 2–4 produced. All three touch the hash-locked decision body,
+so they share **one** re-ratify.
+
+**Step 1: `doc refs --gate` blocker — the backticked identifier in the body**
+
+`super-harness doc refs --gate` exits 2 (`DEAD-REF`, high confidence) on
+`` `ref_count` `` in `d-pitfall-is-proposed-decision.md`: the dead-reference checker reads
+a backticked snake_case token as a pointer to a real symbol, even where the prose is
+naming an anti-pattern *not* to adopt. It has no negative-context detection, and its
+bias toward false positives over missed dead links is the right bias — so this is a
+ceiling to work around, not a bug to argue with.
+
+Fix: drop the backticks and say it in prose — "no hand-maintained maturity labels or
+usage counters". Do not keep any backticked identifier that does not resolve in source.
+
+**Step 2: Move the anchor sentinel to the filter that actually carries the invariant**
+
+Task 4 Step 4 put the sentinel on the body-hash integrity filter. That filter is
+**redundant** for a proposed record — `ratified_text_hash` is `None`, so its second
+clause already skips it. The line that actually keeps proposed records out of the gate is
+the `ratified = {d.id for d in decisions if d.status == "ratified"}` set comprehension,
+whose result feeds `dangling_down`, `effective_ratified`, and the tier-2
+suspect/unreconciled loop. Widening *that* to admit `proposed` would put a proposed
+record with a review block into `unreconciled_tier2`, which exits 2 under
+`decision check --gate-reconcile`.
+
+Move the `# @decision:d-pitfall-is-proposed-decision` sentinel and its comment onto that
+set comprehension, and rewrite the comment to name what it guards. The file-level anchor
+worked either way; the point of the sentinel is to aim a future re-reviewer at the
+load-bearing line, and aimed at the wrong line it is worse than absent.
+
+**Step 3: Qualify the "gates nothing" claim — it has a reachable counterexample**
+
+The decision body, the AGENTS.md bullet, and the `docs/concepts.md` section all assert a
+proposed record cannot fail `decision check`. It can: `dangling_up` is computed against
+`effective_ratified`, so a `# @decision:<id>` sentinel naming a **proposed** id is
+dangling-up, which maps to `EXIT_VALIDATION`. Anchoring a record at the site it describes
+is standing practice in this repo, so an agent that files a trap per the AGENTS.md bullet
+and then anchors it hits a CI failure the guidance calls impossible.
+
+State the actionable rule in all three places: **a proposed record must not be anchored
+with a `@decision:` sentinel until it is ratified.** Filing costs nothing; anchoring is
+what costs. Update the render test to assert the caveat is present, so the template
+cannot lose it silently.
+
+**Step 4: Re-ratify, then re-reconcile both anchored decisions**
+
+```bash
+super-harness decision ratify d-pitfall-is-proposed-decision   # body changed → new hash
+super-harness decision reconcile d-pitfall-is-proposed-decision --kind self --justification "..."
+super-harness decision reconcile d-dangling-check --kind self --justification "..."
+```
+
+`d-dangling-check` is suspect again because Step 2 edits `core/decision_check.py` a
+second time. Re-review its up=block / down=warn criterion for real before stamping.
+
+**Step 5: Record the recovery-path gap — and only that one**
+
+Three defects surfaced in this round. Applying this cut's own taxonomy: all three are
+mechanically fixable, so the fix backlog (`private/OPEN-ITEMS.md`) is where two of them
+belong — the dead-ref checker's missing negative-context detection, and
+`review skip --source`. Recording a bug you intend to fix as durable guidance is the
+failure mode this cut exists to avoid.
+
+The exception is the **`AWAITING_CODE_REVIEW` recovery gap**, which meets the bar for a
+`proposed` record because knowing it *changes what you do before you act*: finish every
+edit and run every gate before `done`, because there is no CLI way back. File it as
+`d-no-recovery-from-awaiting-code-review`, leave it `proposed`, and **do not anchor it**
+(Step 3's rule). Add it to the declared scope.
+
+**Step 6: Commit**
+
+```bash
+git add docs/decisions/ src/super_harness/core/decision_check.py \
+        src/super_harness/engineering/agents_md_render.py AGENTS.md \
+        docs/concepts.md tests/unit/engineering/test_agents_md_render.py
+git commit -m "fix: correct the anchor line, the gates-nothing claim, and the dead-ref"
+```
+
+---
+
 ### Task 5: Full verification
+
+**Step 0:** `super-harness doc refs --gate` — expected exit 0. Check the **exit code**,
+not the printed text: it prints its findings and the `DEAD-REF` line looks like a
+warning, but a high-confidence hit exits 2 and fails
+`.github/workflows/doc-check.yml:20`. `doc check` passing does not cover this.
 
 **Step 1:** `pytest -q` — expected: all pass.
 Note the 300s default check timeout: the full suite runs 2–4 minutes under load, and
@@ -461,10 +550,27 @@ Task 4 Step 7. This step only confirms all three are present in
 failure to note, not a gap to quietly close here — postponing registration to close-out
 is the failure mode Task 1 Step 1 exists to prevent.
 
-**Step 2: Implementation complete, code review, attest, PR**
+**Step 2: Finish every edit BEFORE `done` — there is no way back**
 
-`done` → `review prepare` (freezes the plan documents) → cross-actor code review →
-`review approve --verdict-file ...` → `attest write` → PR. Then `on-merge` for this
+`done` emits `implementation_complete` and lands in `AWAITING_CODE_REVIEW`, where the
+gate freezes `docs/decisions/*.md` and `src/`. The state machine lists three exits back
+to an editable state — `implementation_invalidated` → `IMPLEMENTATION_IN_PROGRESS`,
+`implementation_restarted` → `PLAN_APPROVED`, `implementation_withdrawn`
+(`docs/state-machine.md:12-14`) — and **no CLI verb emits any of them** (verified: zero
+hits across `src/super_harness/cli/`). The only non-bypass recovery is
+`plan redeclare` → a full plan cycle, which this change has now paid once for a
+one-word fix. Editing through Bash would be a self-bypass the gate explicitly names
+("Do NOT bypass the gate yourself") and is not an option.
+
+So: run the full local gate set — `pytest -q`, `super-harness verify`,
+`decision check`, `doc check`, **and `doc refs --gate`** — and confirm all are green
+*before* `done`. `doc refs --gate` is the one most easily missed: it is a separate CI
+job (`.github/workflows/doc-check.yml:20`) that `doc check` does not cover.
+
+**Step 3: Code review, attest, PR**
+
+`review prepare` (freezes the plan documents) → cross-actor code review →
+`review result import` → `attest write` → PR. Then `on-merge` for this
 change — exactly one change on this branch, but confirm with
 `super-harness status --all` that nothing else sits at `READY_TO_MERGE`.
 
@@ -478,8 +584,16 @@ change — exactly one change on this branch, but confirm with
 - `d-tier2-reconcile-touches-scope` exists and is still `proposed` — its body records the
   interim rule and the decided direction (`plan ready` warns; `attest verify` exemption
   rejected).
+- `d-no-recovery-from-awaiting-code-review` exists, is `proposed`, and is **not**
+  anchored by any `@decision:` sentinel.
 - `super-harness decision check` exits 0 with `clean`, `hard:context` unchanged in its
-  `hard` term by the new proposed record, and `super-harness doc check` exits 0.
+  `hard` term by the new proposed records, and `super-harness doc check` exits 0.
+- **`super-harness doc refs --gate` exits 0** — checked by exit code, not by reading its
+  output.
+- The anchor sentinel sits on the `ratified` set comprehension, not the body-hash filter.
+- The "gates nothing" claim is qualified in all three places (decision body, AGENTS.md
+  template, `docs/concepts.md`) with the rule that a proposed record must not be anchored
+  until ratified, and the render test asserts the caveat.
 - The generated AGENTS.md section states where negative knowledge goes, in one bullet.
 - `docs/concepts.md` explains the norm and the two pitfall shapes.
 - `private/OPEN-ITEMS.md` registers all three deferrals: Cut 2 with its unverified
