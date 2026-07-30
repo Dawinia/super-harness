@@ -185,8 +185,39 @@ The hint must not send anyone down a first step that fails. The human path is
 apply. Renaming at the definition would silently rename the flag on all three — a breaking
 CLI change to two commands outside this cut's intent. Instead, drop `_source_opt` from
 `skip`'s decorator stack and give it an inline `click.option("--stuck-source", ...)`, leaving
-`_source_opt` and its other two users untouched. Add a test asserting `approve` and `reject`
-still accept `--source`. Its help text must say
+`_source_opt` and its other two users untouched.
+
+**The regression pin must be structural, not exit-code-based.** Asserting that
+`review approve --source …` "still works" cannot fail: `EXIT_VALIDATION` is 2
+(`exit_codes.py:14`), click also exits 2 on `No such option`, and `approve` / `reject` exit 2
+unconditionally through `_block_direct_verdict_protocol` (`cli/review.py:458-467`, `:484-492`)
+because direct verdict evidence is disabled. Such a test passes whether or not the option
+exists — a hollow check of exactly the kind `ratify`'s bite-test refuses.
+
+Assert on the command's declared parameters instead, which can actually fail:
+
+```python
+from super_harness.cli.review import review_group
+
+def test_stuck_source_rename_is_scoped_to_skip() -> None:
+    names = lambda cmd: {p.name for p in review_group.commands[cmd].params}
+    assert "stuck_source" in names("skip")
+    assert "source" not in names("skip")
+    assert "source" in names("approve")   # shared _source_opt must be untouched
+    assert "source" in names("reject")
+```
+
+**Rethread the three things the rename forces inside `skip`**, and change nothing else:
+
+- the parameter click derives is `stuck_source`, so `skip`'s signature
+  (`cli/review.py:509-512`) and its governance-participant validation block (`:530-548`)
+  take the new name;
+- **the emitted audit payload key stays `"source"`.** `extra["source"] = source` at `:548` is
+  event-schema data, not UI: `engineering/value_report.py:275` reads `payload.get("source")`
+  for the report's per-source attribution, so renaming the key would silently distort
+  attribution for every historical event. Only the flag is renamed.
+
+Its help text must say
 it is an audit label recording which participant was stuck, **not** a scope selector, and
 point at `review run fail` for retiring one producer. Leave `review begin --source` alone —
 there it genuinely scopes.
@@ -262,7 +293,11 @@ must be green first: `pytest -q`, `super-harness verify <change>`, `decision che
   frozen (Arm A), and refuses while the latest round is open with pending runs (Arm B); the
   post-recording override path still works.
 - `skip` alone takes `--stuck-source`, whose help says "audit label, not a scope selector";
-  `review approve` and `review reject` keep `--source` unchanged, pinned by a test.
+  `review approve` and `review reject` keep `--source`. Pinned by a **structural** test over
+  `review_group.commands[...].params` — an exit-code test cannot fail here and would be
+  hollow.
+- The audit payload key emitted by `skip` remains `"source"`; only the flag is renamed, so
+  `value_report`'s per-source attribution keeps reading historical events correctly.
 - `parse_result` rejects any `is_error` payload; the no-`structured_output` case is pinned
   by a test.
 - `d-no-backticked-nonexistent-identifiers` exists, is `proposed`, and is unanchored.
