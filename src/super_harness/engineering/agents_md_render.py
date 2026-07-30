@@ -103,6 +103,12 @@ you work — CI runs it too as the un-bypassable floor, so keep it green locally
 - **Don't hand-edit the body of a ratified decision.** Its text is hash-locked;
   re-ratifying (`super-harness decision ratify <id>`) is the only unlock, and is
   a deliberate, recorded act.
+- **Hit a trap worth remembering?** Record it with
+  `super-harness decision new <id> --text "..."`. A `proposed` decision gates
+  nothing — it cannot fail `decision check` and costs no one anything — and unlike
+  a note it has an exit: `ratify` once you can state the rule (arm it with a check
+  if you can), `retire` once it stops being true. Do not open a scratch notes file
+  or a pitfall directory; a record with no lifecycle has no way to stop being wrong.
 - **Attaching an executable check to a decision?** Before you propose it, run
   `super-harness decision ratify <id> --dry-run` to confirm the check actually
   bites (runs the bite-test without ratifying).
