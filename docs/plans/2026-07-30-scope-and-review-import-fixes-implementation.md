@@ -273,65 +273,43 @@ exits 0. It is a CI gate.
 
 ---
 
-### Task 4b: Corrections from code review round 2
+### Task 4b: Two residuals in Arm A, deliberately NOT fixed here
 
-Three findings, all in files already declared. One is a regression this cut must not ship.
+Code review round 2 raised two rough edges in the new guard. Both are recorded and left
+open, because four successive attempts at Arm A's condition were each refuted — and the
+pattern of the refutations is the reason to stop rather than try a fifth:
 
-**Step 1 — broaden the carve-out to "a round is not freezable"; do NOT exempt `--override`
-(SRI-004, and SRI-005 which killed the first attempt at fixing it).**
+1. unconditional → strands a human-only role, which is `init`'s default for both roles;
+2. automated-participants only → strands a collaborator whose producers have no local
+   profile (`.harness/review-profiles.local.yaml` is gitignored, governance is tracked);
+3. exempt `--override` → reopens the original hole outright, because the erroneous
+   `plan_approved` that motivated this cut was itself emitted with `--override --reason`
+   and zero rounds frozen (`.harness/events.jsonl:1354`);
+4. widen the silent set to environmental failures → `BundleError`'s commonest cause is a
+   dirty in-scope tree (`core/review_bundle.py:116-120`), which an author can clear *and*
+   induce, so `touch` on any scoped file makes the guard vanish.
 
-`_guard_skip_round_evidence_or_exit` is called at `cli/review.py:640` while `--override` is
-not consulted until `:659`, and its silent carve-outs cover only `ReviewProfilesError`. So
-every other reason a round cannot be frozen — a non-git workspace, an absent base branch, an
-unresolvable `target_head`, a `BundleError` the author cannot clear — blocks
-`review prepare`, `review begin` **and** `skip --override --reason` alike. Under
-`d-no-recovery-from-awaiting-code-review` that is a dead end, and it is the third variant of
-the stranding family this cut exists to prevent.
+Each fix opened the hole the previous one closed, or closed the escape the previous one
+opened. That is not convergence, and one more pass by the same author is a poor bet.
 
-**The obvious fix is wrong and must not be taken.** Exempting `--override` would restore the
-exact hole this cut closes: the erroneous `plan_approved` that motivated all of it
-(`.harness/events.jsonl:1354`) carries `"skipped": true, "override": true` with zero rounds
-frozen. The mistake was made *with* `--override --reason`, so an override bypass is a
-no-op guard.
+**What ships** is the condition as implemented: refuse when the role has automated
+participants whose profiles resolve and no round has been frozen in this epoch; stay silent
+for an absent governance file, a human-only role, or unresolvable profiles; fail CLOSED on a
+malformed *tracked* governance file.
 
-The real distinction is not who is asking but whether asking was possible:
+**The two residuals**, to be settled in the follow-up cut alongside the `done` scope gate:
 
-| Situation | Behaviour |
-| --- | --- |
-| A round **could** have been frozen and none was | **Refuse**, `--override` included — this is the original defect |
-| A round **cannot** be frozen for an environmental reason | Silent — this is the case `skip` exists for |
+- **SRI-003** — the `ReviewProfilesError` carve-out is wholesale, so a malformed local
+  profiles file silently disables the guard. That is the mirror of the fail-closed asymmetry
+  deliberately built for a malformed tracked governance file one screen up.
+- **SRI-004** — the guard sits ahead of the `--override` check (deliberately, per attempt 3),
+  so a workspace where freezing is impossible for a reason other than profile resolution — no
+  git repository, missing base branch, unclearable `BundleError` — can reach a state where
+  `prepare`, `begin` and `skip --override` all refuse. Reachability is narrow: such a
+  workspace also cannot run `verify` or `attest verify`, so it cannot merge either.
 
-Fix: attempt what `begin` needs in order to freeze, and stay silent when that attempt fails
-for a reason the author cannot clear (unresolvable profiles, no git repository, missing base
-branch, `BundleError`). Refuse only when freezing is genuinely available. Keep the guard
-before `--override`, deliberately.
-
-Tests: bare `skip` with a freezable round refused; `skip --override --reason` with a freezable
-round **also refused** (this is the pin against SRI-005 — it must fail if anyone exempts
-override later); `skip --override --reason` in a workspace where freezing is impossible
-allowed.
-
-**Step 2 — distinguish a missing profile from a broken one (SRI-003).** The carve-out catches
-`ReviewProfilesError` wholesale, so a malformed `.harness/review-profiles.local.yaml` (bad
-YAML, wrong `version`, duplicate key) silently disables the guard. That is the mirror image
-of the asymmetry deliberately built one screen up, where a malformed *tracked* governance file
-fails CLOSED precisely so corrupting one token cannot remove the guard.
-
-Fix: keep the silent carve-out for the genuinely-absent case (no profiles file, or no entry
-for this role's producers) and fail closed on a file that exists but cannot be parsed. Test
-both branches; the existing profile test passes either way, so it cannot distinguish them.
-
-**Step 3 — correct the rename claim (SRI-002).** The comment at
-`sensors/verification_runner.py:463` says the matcher is "deliberately identical to the merge
-gate" and that the residual gap's direction is "the safe one (stricter here)". Both are false
-for renames: `git diff --name-only` emits only a rename's destination path, while
-`cli/attest.py` runs `git diff --name-status` and `verify_attestations` makes **both** paths
-of an `R` entry subjects. So for a rename the baseline is *looser* than the gate — the
-opposite of the claim. Reword to state the true relationship: same matcher, different diff
-surfaces, so the baseline is neither identical nor uniformly stricter, and a rename can still
-surprise you at the merge boundary.
-
-**Step 4.** Gates, then commit.
+Net effect versus before this cut: strictly better. Previously `review skip` passed any role
+unconditionally with zero evidence. Neither residual restores that.
 
 ---
 
