@@ -41,6 +41,7 @@ from super_harness.core.scope_match import GitScopeError, resolve_commit
 from super_harness.engineering.review_governance import (
     ReviewGovernance,
     ReviewGovernanceError,
+    automated_participants,
     load_review_governance,
 )
 from super_harness.engineering.review_profiles import (
@@ -263,11 +264,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                     }
                 )
             source_profiles[source] = profile_payload
-        automated = [
-            source
-            for source in role.participants
-            if governance.sources[source].kind == "automated"
-        ]
+        automated = list(automated_participants(governance, reviewer))
         human_participants = [
             source
             for source in role.participants

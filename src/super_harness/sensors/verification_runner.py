@@ -462,12 +462,18 @@ def _baseline_scope_vs_plan(
 
     # Canonical-path SET MEMBERSHIP, deliberately identical to the merge gate
     # (`engineering.attestation.verify_attestations`), not the segment-aware prefix
-    # matcher in `core.scope_match`. The point of this advisory check is to report
-    # exactly what `attest verify` will block on: with prefix matching a declared
-    # `tests/` covered `tests/unit/x.py` here while the gate produced one blocker per
-    # file, so a clean local `verify` promised something the merge boundary refused.
-    # Aligning the loose side to the strict one — never the reverse, which would be a
+    # matcher in `core.scope_match`. The point is that this advisory check must not
+    # be LOOSER than `attest verify`: with prefix matching, a declared `tests/`
+    # covered `tests/unit/x.py` here while the gate produced one blocker per file, so
+    # a clean local `verify` promised something the merge boundary refused. Aligning
+    # the loose side to the strict one — never the reverse, which would be a
     # fail-open widening of the gate.
+    #
+    # Same matcher, not the same verdict: the gate unions the coverage of every newly
+    # added attestation and exempts `.harness/attestations/*.jsonl` from subjects, so
+    # this baseline can still report drift the gate would let through. The direction
+    # of that gap is the safe one (stricter here), but it is not identity — do not
+    # read a report below as a promise that `attest verify` will block.
     declared_set = {canonical_path(d) for d in declared_files}
     drifted = [f for f in changed if canonical_path(f) not in declared_set]
     report = None

@@ -1060,6 +1060,8 @@ super-harness review skip [OPTIONS] CHANGE
 
 - `0` skip recorded (`code_review_passed` / `plan_approved` emitted, `skipped=True`)
 - `2` --override without --reason
+- `2` no round was ever frozen for a role whose automated producers resolve (nobody was asked, so there is no stuck reviewer to skip)
+- `2` the latest round is still open with pending run(s) — retire them with `review result import` or `review run fail --run-id <id>`
 - `3` no `.harness/`
 
 ## super-harness sensor

@@ -126,7 +126,7 @@ class ClaudeCliReviewerProtocol(ReviewerProtocolAdapter):
                 "Overloaded), re-run the producer against the same frozen "
                 "invocation.json — a retry does not consume a review round. If the "
                 "producer is permanently unavailable (e.g. no API quota), record the "
-                'attempt with `review run fail --reason "<why>"`.'
+                "attempt with `review run fail --run-id <id> --reason \"<why>\"`."
             )
         verdict = raw.get("structured_output")
         if not isinstance(verdict, dict):
