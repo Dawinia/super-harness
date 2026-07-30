@@ -147,6 +147,14 @@ def test_ready_without_scope_warns_that_plan_artifacts_lose_carve_out(tmp_path: 
     assert "docs/plans/c.md" in r.stderr
     assert "--scope" in r.stderr
     assert "PLAN_REJECTED" in r.stderr
+    # The remedy must be executable FROM HERE. The emit has landed, so the change is
+    # in AWAITING_PLAN_REVIEW where `plan ready` itself is illegal (exit 2) — telling
+    # the reader to "re-run" this command would be a dead end, so the warning names
+    # the verb that reopens the change instead.
+    assert "plan redeclare c" in r.stderr
+    assert "re-run with `--scope`" not in r.stderr  # the old, unexecutable remedy
+    reblocked = CliRunner().invoke(main, ["--workspace", str(tmp_path), "plan", "ready", "c"])
+    assert reblocked.exit_code == EXIT_VALIDATION, reblocked.output
     # It is a warning, not a refusal: the event landed and the artifacts are gone.
     assert _events(tmp_path)[-1]["type"] == "plan_ready"
     assert derive_state(events_path(tmp_path)).get("c").plan_artifacts == []

@@ -488,9 +488,32 @@ _GOVERNANCE = (
 )
 
 
+_PROFILES = (
+    "version: 1\n"
+    "sources:\n"
+    "  codex:\n"
+    "    protocol: codex-cli\n"
+    "    model: gpt-review\n"
+    "    agent_options:\n"
+    "      reasoning_effort: medium\n"
+    "      sandbox: read-only\n"
+)
+
+
 def _write_governance(ws: Path, text: str = _GOVERNANCE) -> None:
     (ws / ".harness").mkdir(parents=True, exist_ok=True)
     (ws / ".harness" / "review-governance.yaml").write_text(text, encoding="utf-8")
+
+
+def _write_profiles(ws: Path, text: str = _PROFILES) -> None:
+    """Write the gitignored user-local producer profiles.
+
+    Arm A only fires when a round COULD have been frozen, which needs the role's
+    automated producers to resolve — exactly what `review prepare` / `review begin`
+    require. Without this file both of them exit 2, so skip must stay open.
+    """
+    (ws / ".harness").mkdir(parents=True, exist_ok=True)
+    (ws / ".harness" / "review-profiles.local.yaml").write_text(text, encoding="utf-8")
 
 
 def _emit_payload(ws: Path, evt_type: str, slug: str, payload: dict) -> None:
@@ -534,6 +557,7 @@ def _freeze_round(
 def test_skip_refuses_automated_role_with_no_frozen_round(tmp_path: Path) -> None:
     _seed(tmp_path, "c", *_PREFIX)  # → AWAITING_CODE_REVIEW
     _write_governance(tmp_path)     # code-reviewer participant `codex` is automated
+    _write_profiles(tmp_path)       # …and it resolves, so a round could have run
     before = _event_types(tmp_path)
     r = CliRunner().invoke(main, [
         "--workspace", str(tmp_path), "review", "skip", "c",
@@ -542,6 +566,72 @@ def test_skip_refuses_automated_role_with_no_frozen_round(tmp_path: Path) -> Non
     assert "no review round" in r.output
     assert "review prepare" in r.output and "review begin" in r.output
     assert _event_types(tmp_path) == before  # nothing appended
+
+
+def test_skip_allowed_when_automated_producer_has_no_local_profile(
+    tmp_path: Path,
+) -> None:
+    # `.harness/review-profiles.local.yaml` is gitignored while
+    # `review-governance.yaml` is tracked, so a collaborator (or anyone without the
+    # reviewer CLIs) has an automated participant that cannot be resolved. No round
+    # can EVER be frozen there — both steps of Arm A's hint exit 2 — so firing would
+    # strand the change in AWAITING_CODE_REVIEW with no way out. Skip must pass.
+    _seed(tmp_path, "c", *_PREFIX)  # → AWAITING_CODE_REVIEW
+    _write_governance(tmp_path)     # names automated `codex`…
+    # …and deliberately NO _write_profiles: the hinted path is genuinely closed.
+    for hinted in ("prepare", "begin"):
+        blocked = CliRunner().invoke(main, [
+            "--workspace", str(tmp_path), "review", hinted, "c",
+            "--reviewer", "code-reviewer"])
+        assert blocked.exit_code == EXIT_VALIDATION, blocked.output
+        assert "review-profiles.local.yaml" in blocked.output
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--override", "--reason", "no codex here"])
+    assert r.exit_code == EXIT_OK, r.output
+    assert _state(tmp_path, "c") == "READY_TO_MERGE"
+
+
+def test_skip_allowed_when_no_governance_file_exists(tmp_path: Path) -> None:
+    # An ungoverned workspace: no governance file at all. Skip has always been
+    # allowed here, and there is nothing to derive a "nobody was asked" claim from.
+    _seed(tmp_path, "c", *_PREFIX)
+    assert not (tmp_path / ".harness" / "review-governance.yaml").exists()
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--override", "--reason", "ungoverned repo"])
+    assert r.exit_code == EXIT_OK, r.output
+    assert _state(tmp_path, "c") == "READY_TO_MERGE"
+
+
+def test_skip_fails_closed_when_governance_file_is_malformed(tmp_path: Path) -> None:
+    # Present-but-unloadable is NOT "ungoverned": if a malformed tracked config made
+    # the guard return, editing one line of `review-governance.yaml` would delete it.
+    _seed(tmp_path, "c", *_PREFIX)
+    _write_governance(tmp_path, _GOVERNANCE.replace("version: 1", "version: 2"))
+    _write_profiles(tmp_path)
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--override", "--reason", "producer wedged"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert _event_types(tmp_path) == before  # nothing appended
+
+
+def test_skip_reports_wrong_state_before_round_evidence(tmp_path: Path) -> None:
+    # From a state where no code-reviewer verdict is legal at all, the accurate
+    # complaint is the state — not "no review round has been frozen".
+    _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_approved")
+    _write_governance(tmp_path)
+    _write_profiles(tmp_path)
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--override", "--reason", "producer wedged"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "cannot record a verdict from state" in r.output
+    assert "no review round" not in r.output
+    assert _event_types(tmp_path) == before
 
 
 def test_skip_allowed_for_human_only_role_with_no_rounds(tmp_path: Path) -> None:

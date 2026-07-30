@@ -56,7 +56,9 @@ from super_harness.engineering.review_contract import ReviewContractError, compi
 from super_harness.engineering.review_governance import (
     ReviewGovernance,
     ReviewGovernanceError,
+    automated_participants,
     load_review_governance,
+    review_governance_path,
 )
 from super_harness.engineering.review_profiles import (
     ReviewProducerProfile,
@@ -211,35 +213,6 @@ def _load_governance_or_exit(root: Path, subcommand: str) -> ReviewGovernance:
     except ReviewGovernanceError as exc:
         click.echo(format_error(subcommand=subcommand, message=str(exc)), err=True)
         sys.exit(EXIT_VALIDATION)
-
-
-def _automated_participants(
-    governance: ReviewGovernance, reviewer: str
-) -> tuple[str, ...]:
-    """The role's participants whose configured source kind is ``automated``."""
-
-    role = governance.roles.get(reviewer)
-    if role is None:
-        return ()
-    return tuple(
-        source
-        for source in role.participants
-        if source in governance.sources
-        and governance.sources[source].kind == "automated"
-    )
-
-
-def _role_has_automated_participants(
-    governance: ReviewGovernance, reviewer: str
-) -> bool:
-    """Single answer to "is this role reviewed by machines?".
-
-    ``review begin`` and ``review skip`` both branch on this; two independent
-    copies of the predicate could drift and let one command pass a role the
-    other refuses.
-    """
-
-    return bool(_automated_participants(governance, reviewer))
 
 
 def _resolve_profiles_or_exit(
@@ -543,19 +516,39 @@ def _guard_skip_round_evidence_or_exit(
         and retiring one producer is ``review result import`` / ``review run fail``,
         not passing the whole role.
 
-    Both arms need evidence to fire. A human-only role (``super-harness init``
-    ships ``participants: [human]``) never freezes rounds, so "no rounds" says
-    nothing there and arm (a) stays silent — likewise when governance is absent
-    or unreadable, which is the ungoverned workspace skip has always supported.
+    Both arms need evidence to fire, and arm (a) only fires when a round COULD
+    have been frozen:
+
+    * No governance file at all → an ungoverned workspace, which ``skip`` has
+      always supported; stay silent. A governance file that is present but
+      unloadable is NOT that case — it fails closed through
+      ``_load_governance_or_exit`` (same posture as the ``--stuck-source`` branch
+      one screen down), because otherwise corrupting the tracked config would
+      delete this guard.
+    * A human-only role (``super-harness init`` ships ``participants: [human]``)
+      never freezes rounds, so "no rounds" says nothing there.
+    * The role's producers cannot be resolved to profiles — the very error
+      ``review prepare`` / ``review begin`` exit 2 on, e.g. an automated
+      participant with no entry in the gitignored
+      ``.harness/review-profiles.local.yaml``. No round can ever be frozen in
+      such a workspace, so firing here would strand the change with no path
+      forward; a producer that cannot be resolved is genuinely unavailable, which
+      is precisely what a disclosed ``skip --override`` is for.
+
+    What is left is the case that matters: the producers ARE resolvable and you
+    simply never asked them.
     """
 
     execution = derive_review_execution(_change_events(root, change), reviewer)
     if not execution.rounds:
-        try:
-            governance = load_review_governance(root)
-        except ReviewGovernanceError:
+        if not review_governance_path(root).is_file():
             return
-        if not _role_has_automated_participants(governance, reviewer):
+        governance = _load_governance_or_exit(root, "review skip")
+        if not automated_participants(governance, reviewer):
+            return
+        try:
+            resolve_role_profiles(governance, load_review_profiles(root), reviewer)
+        except ReviewProfilesError:
             return
         click.echo(
             format_error(
@@ -637,6 +630,13 @@ def skip(ctx: click.Context, change: str, reviewer: str, reason: str | None,
         click.echo(format_error(subcommand="review skip", message=e.message, hint=e.hint),
                    err=True)
         sys.exit(EXIT_NO_CONFIG)
+    # State first: from a state where no reviewer verdict is legal at all, the
+    # accurate complaint is the wrong state, not "no round was frozen".
+    _validate_reviewer_state_or_exit(
+        derive_state(events_path(root)).get(change),
+        reviewer=reviewer,
+        subcommand="review skip",
+    )
     _guard_skip_round_evidence_or_exit(root, change, reviewer)
     extra: dict[str, object] = {"skipped": True}
     if stuck_source:
@@ -827,7 +827,7 @@ def begin(
         and assignment.get("kind") == "automated"
     }
     role = governance.roles[reviewer]
-    automated = _automated_participants(governance, reviewer)
+    automated = automated_participants(governance, reviewer)
     if not automated:
         click.echo(
             format_error(
@@ -1196,7 +1196,7 @@ def authorize_round(
         )
         sys.exit(EXIT_VALIDATION)
     role = governance.roles[reviewer]
-    automated = _automated_participants(governance, reviewer)
+    automated = automated_participants(governance, reviewer)
     same_contract = bool(
         execution.rounds
         and execution.rounds[-1].contract_digest == packet["contract_digest"]

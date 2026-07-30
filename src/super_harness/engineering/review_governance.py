@@ -100,10 +100,21 @@ def _positive_int(value: object, field: str) -> int:
     return value
 
 
+def review_governance_path(root: Path) -> Path:
+    """Where the tracked review governance file lives under ``root``.
+
+    Exposed so callers can tell "no governance file at all" (a legitimately
+    ungoverned workspace) apart from "governance file present but unloadable",
+    which must fail closed rather than be treated as ungoverned.
+    """
+
+    return root / ".harness" / "review-governance.yaml"
+
+
 def load_review_governance(root: Path) -> ReviewGovernance:
     """Load `.harness/review-governance.yaml` from ``root``."""
 
-    path = root / ".harness" / "review-governance.yaml"
+    path = review_governance_path(root)
     if not path.is_file():
         legacy = root / ".harness" / "policy.yaml"
         if legacy.is_file():
@@ -216,4 +227,26 @@ def load_review_governance(root: Path) -> ReviewGovernance:
         sources=sources,
         roles=roles,
         require_distinct_model_families=require_distinct,
+    )
+
+
+def automated_participants(
+    governance: ReviewGovernance, reviewer: str
+) -> tuple[str, ...]:
+    """The role's participants whose configured source kind is ``automated``.
+
+    One home for the derivation because several commands across layers branch on
+    it (``review begin`` / ``review skip`` / ``review authorize-round`` in
+    ``cli.review`` and the next-command hints in ``cli.status``); independent
+    copies drifted before. Loading already rejects a role naming a source that
+    ``review.sources`` does not define, so participants are known here.
+    """
+
+    role = governance.roles.get(reviewer)
+    if role is None:
+        return ()
+    return tuple(
+        source
+        for source in role.participants
+        if governance.sources[source].kind == "automated"
     )

@@ -157,9 +157,12 @@ def _warn_revoked_plan_artifacts(outgoing: list[str], prev: ChangeState | None) 
         "warning: this `plan ready` records no plan artifacts, revoking the previously "
         f"recorded ones ({', '.join(prev.plan_artifacts)}) — the PLAN_REJECTED gate "
         "carve-out that authorizes revising those plan docs is now gone (the declared "
-        "scope itself is unaffected). To keep the carve-out, re-run with `--scope` "
-        "listing those plan document(s), each carrying `change:` frontmatter naming "
-        "this change.",
+        "scope itself is unaffected). This emit has already landed, so there is no "
+        "re-run of this command from here: the carve-out returns the next time you "
+        "emit `plan ready` with `--scope` naming those plan document(s), each carrying "
+        "`change:` frontmatter naming this change — reach that point either through "
+        "the next plan reject, or immediately via `super-harness plan redeclare "
+        f"{prev.change_id}`.",
         err=True,
     )
 
