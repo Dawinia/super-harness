@@ -106,11 +106,15 @@ duplication, so the fix is not to make `--source` scope.
   `plan_approved` that motivated this cut was itself emitted with `--override --reason` and
   zero rounds frozen (`.harness/events.jsonl:1354` carries `"skipped": true,
   "override": true`). A guard that any `--override` can bypass would not have stopped it, so
-  the guard sits deliberately ahead of the override check. The escape hatch is preserved by
-  widening the *silent* cases to every reason freezing is impossible — unresolvable profiles,
-  no git repository, a missing base branch, a `BundleError` the author cannot clear — not by
-  trusting the flag. A malformed local profiles file is not such a case: like a malformed
-  tracked governance file, it fails CLOSED, so corrupting one token cannot remove the guard.
+  the guard sits deliberately ahead of the override check.
+
+  Widening the *silent* set to cover every reason freezing is impossible was tried and
+  refused: `BundleError`'s commonest cause is a dirty in-scope tree
+  (`core/review_bundle.py:116-120`), which an author can clear *and* induce, so `touch` on a
+  scoped file would erase the guard. **What ships is narrower** — silent only for an absent
+  governance file, a human-only role, or profiles that do not resolve. The remaining
+  stranding case is recorded as residual SRI-004 in the implementation plan rather than
+  papered over here.
 
   **Why the condition, stated correctly.** For an automated role, "a reviewer was asked" has
   a mechanical trace: a frozen round. For a human-only role it has none until

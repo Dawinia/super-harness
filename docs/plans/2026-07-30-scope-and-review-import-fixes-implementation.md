@@ -297,7 +297,19 @@ participants whose profiles resolve and no round has been frozen in this epoch; 
 for an absent governance file, a human-only role, or unresolvable profiles; fail CLOSED on a
 malformed *tracked* governance file.
 
-**The two residuals**, to be settled in the follow-up cut alongside the `done` scope gate:
+**One thing this task does still fix: the false rename claim (SRI-002).** The comment at
+`sensors/verification_runner.py:463` says the matcher is "deliberately identical to the merge
+gate" and that the residual gap's direction is "the safe one (stricter here)". Both are false
+for renames: `git diff --name-only` emits only a rename's destination, while `cli/attest.py`
+runs `git diff --name-status` and `verify_attestations` makes **both** paths of an `R` entry
+subjects — so for a rename the baseline is *looser* than the gate. Reword to state the true
+relationship: same matcher, different diff surfaces, therefore neither identical nor uniformly
+stricter, and a rename can still surprise you at the merge boundary. Comment only, no
+behaviour change; it is a knowingly-false statement in shipped code and is not a candidate for
+deferral.
+
+**The two behavioural residuals**, to be settled in the follow-up cut alongside the `done`
+scope gate:
 
 - **SRI-003** — the `ReviewProfilesError` carve-out is wholesale, so a malformed local
   profiles file silently disables the guard. That is the mirror of the fail-closed asymmetry
@@ -394,7 +406,7 @@ that arrived while fixing review findings.
   frozen — **including under `--override`**, pinned by a test, because the mistake that
   motivated this cut was made with `--override`. Silent when freezing is impossible: absent
   governance file, human-only role, or an environmental failure the author cannot clear
-  (missing profile entry, no git repository, missing base branch, `BundleError`). Fail-CLOSED
+  (a profile that does not resolve). Fail-CLOSED
   for a malformed *tracked* governance file and a malformed *local* profiles file alike, and refuses while the latest round is open with pending runs (Arm B); the
   post-recording override path still works.
 - `skip` alone takes `--stuck-source`, whose help says "audit label, not a scope selector";
