@@ -136,8 +136,22 @@ ways this decision can break:
    **breaks CI** — the norm turns actively harmful while still reading as true.
 
 (2) is the failure this whole cut exists to prevent, and it is silent. Only an
-anchor catches it. So: tier-2, `review` block, anchors on `core/decision_check.py`
-and `core/decisions.py`.
+anchor catches it. So: tier-2, `review` block, **exactly one anchor — on
+`core/decision_check.py`**, at the status filter itself.
+
+**Why one anchor and not more.** Two other files carry preconditions and are
+deliberately left un-anchored:
+
+- `core/decisions.py` (the four-state lifecycle and the `decision_tier` ladder) is
+  **already anchored by `d-decision-records`**, whose entire subject is that shape.
+  A second anchor on the same file would spend reconcile budget without adding a
+  signal the first anchor does not already raise.
+- `cli/decision.py:133` (`ratify` accepts `proposed`, i.e. the exit path out of
+  proposed) churns for unrelated reasons. Anchoring it would spend the reconcile
+  budget on noise, which is the tier-2 reconcile tax this project has already paid
+  once and learned from.
+
+One anchor, on the one line that makes a `proposed` record free.
 
 **Recorded ceiling.** A general check is impossible, not merely inconvenient:
 `counterexample` can only *add* a file, so a check can only ever be

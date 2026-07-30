@@ -36,11 +36,76 @@ anchor so the norm cannot silently rot if that status filter changes.
 ```
 
 `private/OPEN-ITEMS.md` (Cut 2 registration) is gitignored and therefore not a scope
-subject; it is still required by Task 5.
+subject; it is still required by Task 1 Step 1.
 
 ---
 
-### Task 1: AGENTS.md carries the vessel's address
+### Task 1: Lifecycle preflight — must precede every source edit
+
+**Why this is Task 1 and not close-out:** the gate blocks writes to `src/` while the
+change sits in a pre-approval state (`INTENT_DECLARED` / `PLAN_REJECTED`). An executor
+who starts at the AGENTS.md template is blocked on its first `Write`. Scope must be
+declared and the plan approved **before** Task 2.
+
+**Step 1: Register the deferred Cut 2**
+
+Add to `private/OPEN-ITEMS.md` (gitignored, not a scope subject), status
+`DOABLE-NOW-BUT-UNVERIFIED`: `applies_to: [glob]` + delivery at `plan ready --scope`;
+the premise to verify first (does an agent read `docs/decisions/` unaided?); and the
+constraint that the matcher must reuse `core/scope_match.py` — never `fnmatch`.
+
+**Step 2: Commit the plan documents**
+
+`review prepare` refuses a dirty in-scope tree — the review digest is taken over the
+committed HEAD diff. Commit both plan documents before preparing.
+
+**Step 3: Declare scope**
+
+```bash
+super-harness plan ready 2026-07-30-pitfall-is-proposed-decision \
+  --scope @<scope-file> --tier-hint Normal
+```
+
+Pass the "Declared scope" list above verbatim — every file individually, no directory
+prefixes. The `verify` scope baseline uses segment-aware **prefix** matching and is
+advisory, while `attest verify` at the merge gate uses **set membership**; a directory
+entry that satisfies the first produces one blocker per file at the second.
+
+Omitting `--scope` clears `plan_artifacts`, which removes the `PLAN_REJECTED`
+carve-out that lets these plan documents be revised. Never re-emit `plan_ready`
+without it.
+
+**Step 4: Plan review to convergence**
+
+```bash
+super-harness review prepare <change> --reviewer plan-reviewer
+super-harness review begin <change> --reviewer plan-reviewer --source <every required source>
+```
+
+`review begin --source` genuinely scopes the round and **requires the complete
+required set** — it rejects a partial selection. Run each producer per its
+`invocation.json`, import with `review result import`, and record any producer that
+cannot run with `review run fail --reason "<why>"`.
+
+**Do not reach for `review skip` to retire one source.** Its `--source` is an audit
+label only; the command PASSes the entire reviewer role (its docstring: "== approve
+with reason=manual_skip"). Using it while another source is still pending approves
+the plan before anyone has reviewed it. The two sibling verbs read alike and behave
+differently.
+
+Iterate `PLAN_REJECTED` → revise → `plan ready --scope` → re-review until the round
+passes. Do not proceed to Task 2 until the state is `PLAN_APPROVED`.
+
+**Step 5: Commit any plan revisions**
+
+```bash
+git add docs/plans/2026-07-30-pitfall-is-proposed-decision-*.md
+git commit -m "docs(plan): address plan review round N"
+```
+
+---
+
+### Task 2: AGENTS.md carries the vessel's address
 
 **Files:**
 - Modify: `src/super_harness/engineering/agents_md_render.py` (Decision conformance block)
@@ -108,7 +173,7 @@ git commit -m "feat(agents-md): state where negative knowledge is recorded"
 
 ---
 
-### Task 2: Narrative layer
+### Task 3: Narrative layer
 
 **Files:**
 - Modify: `docs/concepts.md`
@@ -150,7 +215,7 @@ git commit -m "docs(concepts): explain proposed decisions as the home for pitfal
 
 ---
 
-### Task 3: The decision record
+### Task 4: The decision record
 
 **Files:**
 - Create: `docs/decisions/d-pitfall-is-proposed-decision.md`
@@ -225,7 +290,7 @@ git commit -m "feat(decisions): ratify d-pitfall-is-proposed-decision (tier-2)"
 
 ---
 
-### Task 4: Full verification
+### Task 5: Full verification
 
 **Step 1:** `pytest -q` — expected: all pass.
 Note the 300s default check timeout: the full suite runs 2–4 minutes under load, and
@@ -235,39 +300,16 @@ pytest check failed, re-run `pytest -q` directly before believing it.
 **Step 2:** `super-harness verify 2026-07-30-pitfall-is-proposed-decision` — expected:
 verdict pass. The scope baseline is advisory (`must_pass=False`) and uses
 segment-aware prefix matching, whereas `attest verify` at the merge gate uses set
-membership; declare every file explicitly in Task 5 rather than relying on a
+membership; every file was declared explicitly in Task 1 Step 3 rather than by
 directory prefix.
 
 **Step 3:** Commit any fixes, then proceed.
 
 ---
 
-### Task 5: Lifecycle close-out
+### Task 6: Close-out
 
-**Step 1: Register the deferred Cut 2**
-
-Add to `private/OPEN-ITEMS.md` (gitignored), status `DOABLE-NOW-BUT-UNVERIFIED`:
-`applies_to: [glob]` + delivery at `plan ready --scope`; the premise to verify first
-(does an agent read `docs/decisions/` unaided?); and the constraint that the matcher
-must reuse `core/scope_match.py` — never `fnmatch`.
-
-**Step 2: Declare scope and request plan review**
-
-```bash
-super-harness plan ready 2026-07-30-pitfall-is-proposed-decision \
-  --scope @<(...) --tier-hint Normal
-```
-Pass the "Declared scope" list above verbatim — every file individually, no directory
-prefixes. Omitting `--scope` clears `plan_artifacts`, which removes the
-`PLAN_REJECTED` carve-out that lets these plan documents be revised.
-
-**Step 3: Plan review**
-
-Multi-round, cross-actor, per house norms: Claude subagent review plus Codex
-(`codex exec --sandbox read-only`, run from the repo root with `< /dev/null`). Iterate
-until convergence; do not ship-then-iterate.
-
-**Step 4: Implementation complete, code review, attest, PR**
+**Step 1: Implementation complete, code review, attest, PR**
 
 `done` → `review prepare` (freezes the plan documents) → cross-actor code review →
 `review approve --verdict-file ...` → `attest write` → PR. Then `on-merge` for this
