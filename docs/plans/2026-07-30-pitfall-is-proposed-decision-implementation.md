@@ -25,6 +25,8 @@ anchor so the norm cannot silently rot if that status filter changes.
 
 ```yaml
 - docs/decisions/d-pitfall-is-proposed-decision.md
+- docs/decisions/d-dangling-check.md
+- docs/decisions/d-tier2-reconcile-touches-scope.md
 - docs/plans/2026-07-30-pitfall-is-proposed-decision-design.md
 - docs/plans/2026-07-30-pitfall-is-proposed-decision-implementation.md
 - src/super_harness/core/decision_check.py
@@ -34,6 +36,21 @@ anchor so the norm cannot silently rot if that status filter changes.
 - AGENTS.md
 - .harness/attestations/2026-07-30-pitfall-is-proposed-decision.jsonl
 ```
+
+**Two of those decision documents are collateral, and missing them costs a full
+re-review.** `d-dangling-check` already anchors `core/decision_check.py`, so adding the
+`@decision:` sentinel in Task 4 Step 4 — one comment, no logic — makes it suspect, and
+clearing the suspicion with `decision reconcile` **rewrites its own `.md`**. That file
+is then a changed file, and `attest verify` matches changed files against `scope.files`
+by set membership. Scope cannot be widened from `PLAN_APPROVED`; recovering costs
+`plan redeclare` plus another review round.
+
+Before declaring scope, run `super-harness decision check` and read the
+`reconciled_anchors` frontmatter of every ratified tier-2 decision: any decision that
+anchors a file this change edits must have its own `.md` declared too. This trap is
+itself recorded as `d-tier2-reconcile-touches-scope` (proposed — the fix may belong in
+the tooling rather than in author discipline), which is the third decision document
+above.
 
 `private/OPEN-ITEMS.md` (Cut 2 registration) is gitignored and therefore not a scope
 subject; it is still required by Task 1 Step 1.
