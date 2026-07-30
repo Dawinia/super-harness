@@ -13,6 +13,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from super_harness.cli import main
+from super_harness.cli.review import review_group
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import events_path
 from super_harness.core.post_emit import refresh_state_after_emit
@@ -460,3 +461,176 @@ def test_legacy_independent_reject_cannot_record_new_evidence(tmp_path: Path) ->
     )
     assert r.exit_code == EXIT_VALIDATION, r.output
     assert "plan_rejected" not in _event_types(tmp_path)
+
+
+# --- skip cannot pass a role nobody was asked to review --------------------- #
+#
+# `review skip` emits the whole role's PASS. A false `plan_approved` is permanent
+# in the append-only stream, so skip refuses when the round evidence says no
+# reviewer was ever asked (Arm A) or is still mid-flight (Arm B).
+
+_GOVERNANCE = (
+    "version: 1\n"
+    "review:\n"
+    "  base_branch: main\n"
+    "  sources:\n"
+    "    codex:\n"
+    "      kind: automated\n"
+    "    human:\n"
+    "      kind: human\n"
+    "  roles:\n"
+    "    plan-reviewer:\n"          # human-only: the `super-harness init` default
+    "      participants: [human]\n"
+    "      min_independent: 1\n"
+    "    code-reviewer:\n"
+    "      participants: [codex]\n"
+    "      min_independent: 1\n"
+)
+
+
+def _write_governance(ws: Path, text: str = _GOVERNANCE) -> None:
+    (ws / ".harness").mkdir(parents=True, exist_ok=True)
+    (ws / ".harness" / "review-governance.yaml").write_text(text, encoding="utf-8")
+
+
+def _emit_payload(ws: Path, evt_type: str, slug: str, payload: dict) -> None:
+    EventWriter(events_path(ws)).emit(
+        Event(
+            event_id=new_event_id(),
+            type=evt_type,
+            change_id=slug,
+            timestamp="2026-06-02T00:00:00Z",
+            actor=Actor(type="human", identifier="cli"),
+            framework="plain",
+            payload=payload,
+        )
+    )
+
+
+def _freeze_round(
+    ws: Path, slug: str, *, reviewer: str, epoch_event_type: str,
+    round_id: str = "rnd_1", run_id: str = "run_1", source: str = "codex",
+) -> str:
+    """Append a frozen `review_round_started` with one pending run."""
+    epoch_id = _last(ws, type=epoch_event_type, change_id=slug)["event_id"]
+    _emit_payload(ws, "review_round_started", slug, {
+        "reviewer": reviewer,
+        "epoch_id": epoch_id,
+        "round_id": round_id,
+        "contract_digest": "cd",
+        "target_head": "th",
+        "profile_digest": "pd",
+        "runs": [{
+            "source": source,
+            "run_id": run_id,
+            "protocol": "codex-cli",
+            "requested_model": "gpt-review",
+            "requested_options": {},
+        }],
+    })
+    return epoch_id
+
+
+def test_skip_refuses_automated_role_with_no_frozen_round(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", *_PREFIX)  # → AWAITING_CODE_REVIEW
+    _write_governance(tmp_path)     # code-reviewer participant `codex` is automated
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--override", "--reason", "producer wedged"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "no review round" in r.output
+    assert "review prepare" in r.output and "review begin" in r.output
+    assert _event_types(tmp_path) == before  # nothing appended
+
+
+def test_skip_allowed_for_human_only_role_with_no_rounds(tmp_path: Path) -> None:
+    # plan-reviewer ships `participants: [human]`, so "no rounds" carries no
+    # signal about whether a reviewer was asked. Arm A must stay silent.
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")  # → AWAITING_PLAN_REVIEW
+    _write_governance(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "plan-reviewer", "--override", "--reason", "reviewer unavailable"])
+    assert r.exit_code == EXIT_OK, r.output
+    assert _state(tmp_path, "c") == "PLAN_APPROVED"
+
+
+def test_skip_refuses_while_latest_round_has_pending_run(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", *_PREFIX)
+    _write_governance(tmp_path)
+    _freeze_round(
+        tmp_path, "c", reviewer="code-reviewer",
+        epoch_event_type="implementation_complete", run_id="run_pending_1",
+    )
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--override", "--reason", "producer wedged"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "run_pending_1" in r.output
+    assert "review result import" in r.output
+    assert "review run fail" in r.output
+    assert _event_types(tmp_path) == before
+
+
+def test_skip_allowed_once_every_run_is_imported_or_failed(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", *_PREFIX)
+    _write_governance(tmp_path)
+    epoch_id = _freeze_round(
+        tmp_path, "c", reviewer="code-reviewer",
+        epoch_event_type="implementation_complete",
+    )
+    _emit_payload(tmp_path, "review_run_failed", "c", {
+        "reviewer": "code-reviewer",
+        "epoch_id": epoch_id,
+        "round_id": "rnd_1",
+        "run_id": "run_1",
+        "source": "codex",
+        "reason": "codex cli not installed",
+        "contract_digest": "cd",
+        "target_head": "th",
+    })
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--override", "--reason", "producer unavailable"])
+    assert r.exit_code == EXIT_OK, r.output
+    assert _state(tmp_path, "c") == "READY_TO_MERGE"
+    last = _last(tmp_path, type="code_review_passed", change_id="c")
+    assert last["payload"]["override"] is True
+
+
+def test_begin_still_refuses_role_without_automated_participants(
+    tmp_path: Path, monkeypatch
+) -> None:
+    # Pins `begin`'s refusal across the extraction of the shared predicate.
+    _seed(tmp_path, "c", "intent_declared", "plan_ready")
+    _write_governance(tmp_path)
+    packet = {
+        "contract_digest": "cd", "target_head": "th", "profile_digest": "pd",
+        "assignments": [],
+    }
+    monkeypatch.setattr(
+        "super_harness.cli.review._resolve_profiles_or_exit", lambda *a, **k: {}
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.review._read_packet_or_exit", lambda *a, **k: dict(packet)
+    )
+    monkeypatch.setattr(
+        "super_harness.cli.review._current_packet_or_exit", lambda *a, **k: dict(packet)
+    )
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "begin", "c",
+        "--reviewer", "plan-reviewer"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "has no automated participants" in r.output
+
+
+def test_stuck_source_is_scoped_to_skip() -> None:
+    def names(cmd: str) -> set[str]:
+        return {p.name for p in review_group.commands[cmd].params}
+
+    assert "stuck_source" in names("skip")
+    assert "source" not in names("skip")
+    assert "source" in names("approve")   # shared _source_opt untouched
+    assert "source" in names("reject")
