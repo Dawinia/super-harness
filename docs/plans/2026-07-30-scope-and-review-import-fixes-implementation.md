@@ -24,6 +24,7 @@ abstraction, no new module, no new CLI verb. Rationale for each in the design do
 - docs/plans/2026-07-30-scope-and-review-import-fixes-implementation.md
 - docs/decisions/d-no-backticked-nonexistent-identifiers.md
 - src/super_harness/sensors/verification_runner.py
+- src/super_harness/core/scope_match.py
 - src/super_harness/cli/plan.py
 - src/super_harness/cli/review.py
 - src/super_harness/adapters/reviewer/claude_cli.py
@@ -87,23 +88,30 @@ blocked it).
 
 Run it; expect FAIL (currently passes as covered).
 
-**Step 2 — implement.** Replace the `covered_by_scope` call at
-`verification_runner.py:463` with canonical-path set membership, reusing
-`engineering.attestation.canonical_path` on **both** sides so the comparison is
-spelling-independent (`./src/x` == `src/x`) exactly as the gate does it. Drop the now-unused
-`covered_by_scope` import.
+**Step 2 — implement.** Replace the call at `verification_runner.py:463` with
+canonical-path set membership, reusing `engineering.attestation.canonical_path` on **both**
+sides so the comparison is spelling-independent (`./src/x` == `src/x`) exactly as the gate
+does it. Drop the now-unused import — note it is aliased locally as `_covered_by_scope`
+(`verification_runner.py:57`), not `covered_by_scope`.
 
 `must_pass=False` is unchanged — this check stays advisory.
 
-**Step 3.** Run the file's tests; then `pytest -q` for the whole suite, since this check's
-report text appears in verification fixtures elsewhere.
+**Step 3 — fix the stale docstring in `core/scope_match.py`.** Its module docstring says
+`covered_by_scope` "is the segment-aware matcher extracted from
+`sensors.verification_runner._covered_by_scope` (Task 2 re-points the baseline at this
+copy)" — which stops being true the moment Step 2 lands. Reword it to state its actual
+remaining caller (`core/review_bundle.py`, `.md` selection for the review bundle) and that
+the verification baseline deliberately uses the merge gate's set-membership semantics
+instead. This is in scope precisely so the fix does not leave a stale claim behind.
 
 **Step 4 — do not touch `core/review_bundle.py`.** It calls the same primitive for `.md`
-selection into the review bundle, which is a convenience and not a safety property. Add a
-one-line comment at its call site recording that the divergence is intentional, so the next
-reader does not "unify" it.
+selection, which is a convenience and not a safety property. The rationale for keeping two
+semantics lives in the design document (§1) and now in the `scope_match.py` docstring;
+adding a third copy as a call-site comment would mean declaring another file in scope for
+no new information.
 
-**Step 5.** Commit.
+**Step 5.** Run the file's tests, then `pytest -q` for the whole suite (this check's report
+text appears in verification fixtures elsewhere). Commit.
 
 ---
 
@@ -135,8 +143,16 @@ property (`core/reducer.py`, commented); only the silence is the defect.
 
 **Step 1 — failing tests, three of them.**
 
-- **Arm A:** `review skip` with no frozen round in the current epoch → exits validation
-  error. *This is the arm that catches the mistake actually made.*
+- **Arm A:** the role **has automated participants** but no round has been frozen in the
+  current epoch → exits validation error. *This is the arm that catches the mistake
+  actually made.*
+- **Arm A must not fire for a role with no automated participants.** `review begin` refuses
+  such a role outright (`<reviewer> has no automated participants`,
+  `cli/review.py:725-734`), so no round can ever be frozen for it. An unconditional Arm A
+  would make `skip --override` unreachable there, and since there is no CLI-reachable
+  recovery from `AWAITING_CODE_REVIEW`, a human-only code-reviewer role could then only ever
+  be rejected — never passed. Gate the arm on the same automated-participant predicate
+  `review begin` uses, and add a test pinning that a human-only role can still be skipped.
 - **Arm B:** `review skip` while the latest round is open with a `pending` run → exits
   validation error, and the message names the pending `run_id`s.
 - **Still allowed:** `review skip` after every run is `imported` or `failed` → succeeds
@@ -144,10 +160,11 @@ property (`core/reducer.py`, commented); only the silence is the defect.
   keep working).
 
 **Step 2 — implement the guards.** Derive `engineering.review_runs.derive_review_execution`
-for the change + reviewer. Refuse when there are no rounds in the epoch, or when the latest
-round has `status == "open"` and any run has `status == "pending"`. Use `format_error` with
-a `hint` pointing at `review result import` and `review run fail --reason`, per the
-project's error contract.
+for the change + reviewer. Refuse when (a) the role has automated participants and the epoch
+has no rounds, or (b) the latest round has `status == "open"` and any run has
+`status == "pending"`. Reuse the automated-participant predicate from `review begin` rather
+than re-deriving it, so the two cannot drift. Use `format_error` with a `hint` pointing at
+`review result import` and `review run fail --reason`, per the project's error contract.
 
 **Step 3 — rename `--source` to `--stuck-source`** on `skip` only. Its help text must say
 it is an audit label recording which participant was stuck, **not** a scope selector, and
@@ -211,7 +228,10 @@ must be green first: `pytest -q`, `super-harness verify <change>`, `decision che
 
 - `verification_runner`'s scope baseline uses canonical-path set membership, matching the
   merge gate; `must_pass=False` unchanged; `core/review_bundle.py` left on prefix matching
-  with a comment recording why.
+  and untouched; `core/scope_match.py`'s docstring no longer claims the baseline points at
+  it.
+- `review skip` still passes a reviewer role that has **no** automated participants, pinned
+  by a test — Arm A must not deadlock that configuration.
 - `plan ready` warns (exit still success) when `--scope` is omitted while `plan_artifacts`
   is non-empty; reducer unchanged.
 - `review skip` refuses with no frozen round, and refuses while the latest round is open

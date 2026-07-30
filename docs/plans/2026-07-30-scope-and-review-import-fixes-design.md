@@ -28,8 +28,10 @@ sensor-gate §3.1.4, and changing verdict semantics is a separate governance que
 
 `core/review_bundle.py:84` also calls `covered_by_scope` and **stays on prefix matching**:
 it selects which `.md` files enter the review bundle, which is a convenience, not a safety
-property. Two callers with genuinely different needs — recorded so the next reader does
-not "unify" them into a bug.
+property. Two callers with genuinely different needs — recorded here and in the
+`core/scope_match.py` module docstring, so the next reader does not "unify" them into a bug.
+That docstring currently claims the verification baseline points at this matcher, which this
+change makes false, so it is corrected as part of the fix rather than left to rot.
 
 ## 2. Omitting `--scope` silently revokes `plan_artifacts`
 
@@ -60,9 +62,14 @@ duplication, so the fix is not to make `--source` scope.
 
 **Fix, two parts.** Teeth first:
 
-- **Refuse `skip` when no round has been frozen in the current epoch.** You cannot pass a
-  role no reviewer was ever asked to perform. *This is the arm that catches the mistake
-  actually made* — `skip` was called before `review begin`.
+- **Refuse `skip` when the role has automated participants and no round has been frozen in
+  the current epoch.** You cannot pass a role no reviewer was ever asked to perform. *This
+  is the arm that catches the mistake actually made* — `skip` was called before
+  `review begin`. The automated-participant condition is load-bearing, not a hedge:
+  `review begin` refuses a role whose participants are all human
+  (`cli/review.py:725-734`), so no round can ever be frozen for it. An unconditional refusal
+  would leave such a role unable to pass at all, and with no CLI-reachable recovery from
+  `AWAITING_CODE_REVIEW` a human-only code-reviewer could then only ever be rejected.
 - **Refuse `skip` while the latest round is open with `pending` runs**, naming them and
   pointing at `review result import` / `review run fail`.
 
