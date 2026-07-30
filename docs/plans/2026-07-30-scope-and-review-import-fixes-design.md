@@ -26,12 +26,25 @@ class of change rejected when `d-tier2-reconcile-touches-scope` considered exemp
 reconcile stamps. `must_pass=False` stays: the drift check is advisory per
 sensor-gate §3.1.4, and changing verdict semantics is a separate governance question.
 
-`core/review_bundle.py:84` also calls `covered_by_scope` and **stays on prefix matching**:
-it selects which `.md` files enter the review bundle, which is a convenience, not a safety
-property. Two callers with genuinely different needs — recorded here and in the
-`core/scope_match.py` module docstring, so the next reader does not "unify" them into a bug.
-That docstring currently claims the verification baseline points at this matcher, which this
-change makes false, so it is corrected as part of the fix rather than left to rot.
+`covered_by_scope` **stays on prefix matching**, and its caller census is wider than a
+first pass suggests — the census matters, because "leave it loose" is only defensible for
+the callers where loose is harmless:
+
+- `core/review_bundle.py:84` picks which `.md` files enter a review bundle. Loose really is
+  a convenience there: a wider `.md` selection only gives the reviewer more to read.
+- `split_changed_by_scope` and `split_changed_by_scope_between`, in `core/scope_match.py`
+  itself, back `review_bundle.assemble_bundle` and `engineering/review_contract.py:265,334`.
+  Their `in_scope` half feeds the frozen inspection ranges and the review digest; their
+  `out_of_scope` half is what `review prepare` prints as the reviewer's scope-drift warning.
+
+**That second group is not a convenience, and this change does not fix it.** Because the
+matcher is loose, a declared `tests/` entry keeps `tests/unit/x.py` out of the
+`out_of_scope` list, so `review prepare` still under-reports exactly the drift the merge
+gate blocks on — the same under-report removed from the `verify` baseline here. Fixing it
+would change the frozen inspection ranges and every stored bundle digest, which is its own
+cut. It is recorded as a known residual in the `core/scope_match.py` docstring rather than
+asserted away; that docstring is also where the stale claim that the verification baseline
+points at this matcher gets corrected.
 
 ## 2. Omitting `--scope` silently revokes `plan_artifacts`
 
@@ -44,9 +57,13 @@ What is not worth keeping is the silence. Re-emitting `plan_ready` without `--sc
 the `PLAN_REJECTED` carve-out that lets a change revise its own plan documents, with no
 output saying so.
 
-**Fix: `plan ready` warns when `--scope` is absent and the change's current
-`plan_artifacts` is non-empty.** Warn, not refuse — refusing would block a deliberate
-revocation, which is a legitimate act. Reducer semantics unchanged.
+**Fix: `plan ready` warns when the emit will leave `plan_artifacts` empty while the previous
+state had them non-empty.** Keyed on the outcome, not on the flag — that covers both paths to
+the same revocation: no `--scope` at all, and a `--scope` carrying no frontmatter-marked plan
+doc, which is the likelier one (someone re-passes scope but drops the plan document from the
+list). Warn, not refuse — refusing would block a deliberate revocation, which is legitimate.
+Reducer semantics unchanged, and the message names `plan redeclare` because by the time it
+prints, `plan ready` is already illegal from the state the emit produced.
 
 ## 3. `review skip --source` reads as scoping and is only a label
 
@@ -62,10 +79,27 @@ duplication, so the fix is not to make `--source` scope.
 
 **Fix, two parts.** Teeth first:
 
-- **Refuse `skip` when the role has automated participants and no round has been frozen in
-  the current epoch.** You cannot pass a role no reviewer was ever asked to perform. *This
-  is the arm that catches the mistake actually made* — `skip` was called before
-  `review begin`.
+- **Refuse `skip` when the role has automated participants, its producers are resolvable,
+  and no round has been frozen in the current epoch.** Arm A carries **three** silent
+  carve-outs, all of them load-bearing, because each marks a case where "no rounds" says
+  nothing about whether a reviewer was asked:
+
+  1. **No governance file at all** — `skip` has always supported an ungoverned workspace.
+     Note the deliberate asymmetry: a governance file that is *present but malformed* fails
+     CLOSED through `_load_governance_or_exit`. Conflating the two would have made the guard
+     removable by corrupting one token of a tracked config, which is how it shipped in the
+     first draft and what the code review caught.
+  2. **A human-only role** — see below.
+  3. **Producers that cannot be resolved to profiles** (`ReviewProfilesError`).
+     `.harness/review-profiles.local.yaml` is gitignored while `review-governance.yaml` is
+     tracked, so a collaborator, or anyone without the reviewer CLIs installed, has
+     automated participants declared and no local profile. There no round can ever be
+     frozen, and both steps of Arm A's own hint fail — `prepare` and `begin` each exit 2 on
+     the missing profile. Without this carve-out the guard strands the change in
+     `AWAITING_CODE_REVIEW`, which is precisely the stuck-reviewer case `skip` exists for.
+
+  What remains after the three is the case worth refusing: producers resolve, and you simply
+  never asked. *That is the mistake actually made* — `skip` was called before `review begin`.
 
   **Why the condition, stated correctly.** For an automated role, "a reviewer was asked" has
   a mechanical trace: a frozen round. For a human-only role it has none until

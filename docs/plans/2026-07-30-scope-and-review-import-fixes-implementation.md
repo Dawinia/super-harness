@@ -141,8 +141,15 @@ text appears in verification fixtures elsewhere). Commit.
 artifacts that are about to lose their authorization. Assert on stderr, and assert the exit
 code is still success.
 
-**Step 2 — implement.** In `ready()` (`cli/plan.py`), before emitting: when `scope_raw is
-None`, derive the change's current state and, if `cs.plan_artifacts` is non-empty, print a
+**Step 2 — implement, keyed on the OUTCOME not on the flag.** The condition is not
+"`--scope` was omitted" but "this emit will leave `plan_artifacts` empty while the previous
+state had them non-empty". That covers both paths to the same silent revocation: no
+`--scope` at all, and a `--scope` that contains no frontmatter-marked plan doc (the likelier
+one — someone re-passes scope but drops the plan document from the list). Compute the
+artifacts the payload will carry, then warn when the previous state's list was non-empty and
+the outgoing one is empty. One condition, two paths, no second branch.
+
+In `ready()` (`cli/plan.py`), before emitting: derive the change's current state and, if `cs.plan_artifacts` is non-empty, print a
 warning via the project's existing warning path. Say what is lost — the `PLAN_REJECTED`
 carve-out that authorizes revising those files — and how to keep it (re-pass `--scope`).
 
@@ -177,7 +184,10 @@ property (`core/reducer.py`, commented); only the silence is the defect.
 
 **Step 2 — extract the automated-participant predicate first.** `begin` computes it as an
 inline generator expression at `cli/review.py:720-723`; there is no helper to reuse. Lift it
-to a module-level function taking `(governance, reviewer)` and returning `bool`, then call it
+to `engineering/review_governance.automated_participants(governance, reviewer)` returning
+`tuple[str, ...]` — `begin` needs the tuple for `required_sources`, so a bool wrapper would
+not pull its weight — and put it in `engineering/` rather than `cli/review.py` so
+`cli/status.py` can reach it without importing another CLI module. Then call it
 from **both** `begin`'s existing check and the new Arm A. Two call sites deciding "is this
 role automated?" must not be able to drift apart. Assert `begin`'s existing
 "no automated participants" behaviour is unchanged by the extraction.
@@ -322,14 +332,19 @@ that arrived while fixing review findings.
   it.
 - `review skip` still passes a **human-only** reviewer role with no frozen round, pinned by a
   test — that is `init`'s default for both roles, so Arm A must not fire there.
-- The automated-participant predicate is a single module-level helper called by both
-  `review begin` and Arm A; `begin`'s existing behaviour is unchanged, pinned by a test.
+- The automated-participant predicate is a single helper,
+  `engineering/review_governance.automated_participants`, returning `tuple[str, ...]` and
+  called by all four sites (`review begin`, `skip`'s Arm A, `authorize-round`, and
+  `cli/status.py`); `begin`'s existing behaviour is unchanged, pinned by a test.
 - Every error hint names a first step that succeeds — the human path is
   `review prepare` → `review human draft` → `review human confirm`.
-- `plan ready` warns (exit still success) when `--scope` is omitted while `plan_artifacts`
-  is non-empty; reducer unchanged.
-- `review skip` refuses when the role **has automated participants** and no round has been
-  frozen (Arm A), and refuses while the latest round is open with pending runs (Arm B); the
+- `plan ready` warns (exit still success) whenever the emit will leave `plan_artifacts`
+  empty while the previous state had them — both the no-`--scope` path and the
+  `--scope`-without-a-marked-plan-doc path; reducer unchanged; the message names
+  `plan redeclare` as the executable remedy.
+- `review skip` refuses when the role has automated participants, its producers resolve to
+  profiles, and no round has been frozen (Arm A) — silent for an absent governance file, a
+  human-only role, or unresolvable producers; fail-CLOSED for a malformed governance file, and refuses while the latest round is open with pending runs (Arm B); the
   post-recording override path still works.
 - `skip` alone takes `--stuck-source`, whose help says "audit label, not a scope selector";
   `review approve` and `review reject` keep `--source`. Pinned by a **structural** test over
