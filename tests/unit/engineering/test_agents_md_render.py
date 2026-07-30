@@ -191,3 +191,26 @@ def test_corrupt_adapters_yaml_broken_syntax_is_nonfatal(tmp_path: Path) -> None
     assert "<!-- super-harness section begin " in text
     assert text.count("<!-- super-harness framework: plain -->") == 1
     assert "<!-- super-harness no-agent-adapter-installed -->" in text
+
+
+def test_section_states_where_negative_knowledge_goes(tmp_path: Path) -> None:
+    """A trap worth remembering is recorded as a `proposed` decision — the record
+    type that gates nothing and still has an exit (`ratify` / `retire`). The
+    section states the vessel's ADDRESS (a constraint, one bullet); it must never
+    accumulate the pitfalls themselves, which is what dilutes an always-on file."""
+    agents = tmp_path / "AGENTS.md"
+
+    render_super_harness_section(tmp_path, agents, "0.1.0")
+
+    text = agents.read_text()
+    assert "super-harness decision new" in text
+    assert "proposed" in text
+    # No parallel corpus is offered as an alternative home.
+    assert "pitfall directory" in text
+    # The caveat must survive: filing is free, anchoring is not. Without it the bullet
+    # sends an agent that files a trap and anchors it into a dangling-up CI failure.
+    assert "until it is ratified" in text
+    # It lives in the managed outer block, not an agent-specific subsection.
+    assert text.index("super-harness decision new") < text.index(
+        "<!-- super-harness section end -->"
+    )

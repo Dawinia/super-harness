@@ -129,6 +129,15 @@ you work — CI runs it too as the un-bypassable floor, so keep it green locally
 - **Don't hand-edit the body of a ratified decision.** Its text is hash-locked;
   re-ratifying (`super-harness decision ratify <id>`) is the only unlock, and is
   a deliberate, recorded act.
+- **Hit a trap worth remembering?** Record it with
+  `super-harness decision new <id> --text "..."`. Filing costs nothing — a
+  `proposed` record is excluded from every `decision check` verdict — and unlike a
+  note it has an exit: `ratify` once you can state the rule (arm it with a check if
+  you can), `retire` once it stops being true. **Do not attach a `@decision:`
+  sentinel to it until it is ratified** — a sentinel naming a proposed id is a
+  dangling-up reference, which is a hard CI failure. Filing is free; anchoring is
+  not. Do not open a scratch notes file or a pitfall directory either; a record with
+  no lifecycle has no way to stop being wrong.
 - **Attaching an executable check to a decision?** Before you propose it, run
   `super-harness decision ratify <id> --dry-run` to confirm the check actually
   bites (runs the bite-test without ratifying).
