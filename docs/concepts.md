@@ -28,6 +28,37 @@ artifact (a marked `.md` in the declared scope), editing that file through the n
 `Edit`/`Write` tools is allowed — the reject-loop revise path needs no shell bypass.
 Source files stay blocked; only the recorded marked-`.md` plan doc is editable there.
 
+## Recording what not to do
+
+Some of what you learn while building is negative: don't do this, here be dragons,
+doing X also requires Y. super-harness has no separate place for that. A `proposed`
+decision record *is* the place.
+
+A proposed record is the state for "we got burned, we haven't settled the rule yet".
+It gates nothing — `decision check` skips anything not yet ratified, so it cannot
+fail CI or block a teammate — and it stays out of the tier tally. Its advantage over
+a notes file is the **exit**: `ratify` it once you can state the rule (arm it with a
+check if the violation has a mechanical signature), or `retire` it once it stops
+being true. A note has no exit, which is why notes files fill up with entries nobody
+can tell are still valid.
+
+Two shapes turn up, and only one of them lasts. A **defect** record says "the current
+code has this hole"; it names the fix and dies when the fix ships — as a proposed
+decision it exits cleanly, whereas as a note it would sit there advising you about a
+hole that no longer exists. A **precondition** record says "doing X requires also
+doing Y and Z"; no fix retires it, because it constrains code not yet written. The
+second kind is what is worth ratifying.
+
+This is not a preference. Standalone lessons-learned repositories have a documented
+failure record — NASA's LLIS, audited in OIG report IG-12-012, went years with only
+one contributing center and could not be searched usefully by its own knowledge
+architect. The forms that survive in the field all impose an entry condition:
+an executable detector (Clippy's lints), a subject stable enough not to move
+(PostgreSQL's "Don't Do This"), or a named replacement (the AntiPatterns catalogue).
+A decision record can carry all three, and adds two those forms lack: a lifecycle
+that retires it, and anchors that flag it as suspect when the code it describes
+changes.
+
 ## super-harness does not review your code for you
 
 The gate enforces that the configured independent review sources produce valid
