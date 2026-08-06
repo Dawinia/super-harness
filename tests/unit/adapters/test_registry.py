@@ -262,12 +262,55 @@ def test_codex_is_registered():
     assert get_builtin("codex") is CodexAdapter
 
 
-def test_resolve_spec_plan_paths_openspec(tmp_path: Path) -> None:
+def test_resolve_spec_plan_paths_openspec_is_repo_relative(tmp_path: Path) -> None:
+    """Rewritten from the absolute-path contract: these feed a scope matcher.
+
+    `covered_by_scope` compares against `git diff --name-only` output, which is
+    repo-relative, so an absolute entry can never match and the inspection target
+    silently collapses to empty.
+    """
     from super_harness.adapters.registry import resolve_spec_plan_paths
 
     spec, plan = resolve_spec_plan_paths("openspec", tmp_path, "c")
-    assert spec == str(tmp_path / "openspec" / "changes" / "c" / "proposal.md")
-    assert plan == str(tmp_path / "openspec" / "changes" / "c" / "tasks.md")
+    assert spec == "openspec/changes/c/proposal.md"
+    assert plan == "openspec/changes/c/tasks.md"
+
+
+def test_resolve_spec_plan_paths_superpowers_is_repo_relative(tmp_path: Path) -> None:
+    from super_harness.adapters.registry import resolve_spec_plan_paths
+
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "x-implementation.md").write_text(
+        "---\nchange: c\nstage: plan\n---\n# Plan\n", encoding="utf-8"
+    )
+
+    _, plan = resolve_spec_plan_paths("superpowers", tmp_path, "c")
+    assert plan == "docs/plans/x-implementation.md"
+
+
+def test_repo_relative_drops_paths_outside_root(tmp_path: Path) -> None:
+    """A path outside the workspace becomes "", not a never-matching entry.
+
+    Dropped rather than raised: this feeds a pure path-derivation helper that
+    several callers assume never raises.
+    """
+    from super_harness.adapters.registry import _repo_relative
+
+    assert _repo_relative(tmp_path, "/elsewhere/spec.md") == ""
+
+
+def test_repo_relative_passes_through_relative(tmp_path: Path) -> None:
+    """Idempotent: an already-relative path is returned unchanged."""
+    from super_harness.adapters.registry import _repo_relative
+
+    assert _repo_relative(tmp_path, "docs/plan.md") == "docs/plan.md"
+
+
+def test_repo_relative_empty_stays_empty(tmp_path: Path) -> None:
+    from super_harness.adapters.registry import _repo_relative
+
+    assert _repo_relative(tmp_path, "") == ""
 
 
 def test_resolve_spec_plan_paths_plain_is_empty(tmp_path: Path) -> None:

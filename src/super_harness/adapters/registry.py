@@ -74,13 +74,42 @@ def get_builtin(name: str) -> _BuiltinAdapter | None:
     return _BUILTIN.get(name)
 
 
+def _repo_relative(root: Path, value: str) -> str:
+    """Normalize one adapter-reported artifact path to repo-relative, or ``""``.
+
+    ``FrameworkAdapter.spec_paths`` reports workspace-rooted ABSOLUTE paths, which
+    is the useful form for ``sensors.verification_runner``'s ``${SPEC_PATH}`` /
+    ``${PLAN_PATH}`` substitution. This resolver feeds a scope matcher instead:
+    ``core.scope_match.covered_by_scope`` compares entries against
+    ``git diff --name-only`` output, which is repo-relative, so an absolute entry
+    matches nothing and the inspection target silently collapses to empty — a
+    reviewer then approves a plan it was never shown. Normalizing here keeps the
+    adapter contract intact and gives the defect exactly one choke point.
+
+    A path outside ``root`` is dropped rather than raised: this helper is pure
+    path derivation that callers assume never raises, and "" is already the
+    resolver's "no artifact" answer.
+    """
+    if not value:
+        return ""
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        return value
+    try:
+        return candidate.relative_to(root).as_posix()
+    except ValueError:
+        return ""
+
+
 def resolve_spec_plan_paths(
     framework: str | None, root: Path, change_id: str
 ) -> tuple[str, str]:
-    """Resolve ``(spec_path, plan_path)`` for ``change_id`` via its framework adapter.
+    """Resolve repo-relative ``(spec_path, plan_path)`` for ``change_id``.
 
-    Pure path derivation — delegates to the builtin adapter's ``spec_paths``.
-    Returns ``("", "")`` when ``framework`` is falsy or has no builtin adapter.
+    Pure path derivation — delegates to the builtin adapter's ``spec_paths`` and
+    normalizes what it reports (see ``_repo_relative`` for why the normalization
+    belongs here and not in the adapters). Returns ``("", "")`` when ``framework``
+    is falsy or has no builtin adapter.
 
     Lives here (not in ``core``) so ``core.review_bundle`` stays free of any
     ``adapters`` import: the review-bundle assembler takes this as an injected
@@ -93,7 +122,10 @@ def resolve_spec_plan_paths(
     if cls is None or not issubclass(cls, FrameworkAdapter):
         return "", ""
     paths = cls().spec_paths(root, change_id)
-    return paths.get("spec", ""), paths.get("plan", "")
+    return (
+        _repo_relative(root, paths.get("spec", "")),
+        _repo_relative(root, paths.get("plan", "")),
+    )
 
 
 def load_adapters(
