@@ -104,7 +104,7 @@ git commit -am "fix(review): resolve framework artifact paths repo-relative"
 
 ---
 
-### Task 2: An unmatched assignment scope fails closed
+### Task 2: A scope entry that names no file fails closed
 
 **Files:**
 - Modify: `src/super_harness/engineering/review_contract.py` (around the `inspection` construction, `:330-345`)
@@ -113,8 +113,10 @@ git commit -am "fix(review): resolve framework artifact paths repo-relative"
 **Step 1: Write the failing tests**
 
 - `test_compile_fails_when_scope_names_no_tracked_file`: the assignment scope is non-empty and no entry matches any file tracked at `target_head` → compilation raises rather than emitting an empty `diff_argv`. This is the absolute-path case, and it is the only case that raises.
+
+  Throughout this task, **"names no file" means absent at `target_head`** and is the raising condition; **"unchanged"** means present at `target_head` but outside the diff range and always compiles. The two are never interchangeable — a guard keyed on an empty diff instead of on absence is the round-2 mistake this plan already reversed once.
 - `test_compile_allows_unchanged_scope_in_incremental_range`: the scope entries exist at `target_head` but nothing in them changed since the incremental baseline, while other files did → **must still compile** with an empty target. This is a legitimate re-review round; failing it would wedge the reject loop.
-- `test_compile_allows_unmatched_scope_in_full_change_mode`: the scope entries exist at `target_head` and nothing in them changed in a non-empty range → **also compiles**, with an empty target. This is the inherited-plan case split out above; `tests/unit/cli/test_review_prepare.py:269` pins it today and must stay green, because this change deliberately does not touch it.
+- `test_compile_allows_unchanged_scope_in_full_change_mode`: the scope entries exist at `target_head` and nothing in them changed in a non-empty range → **also compiles**, with an empty target. This is the inherited-plan case split out above; `tests/unit/cli/test_review_prepare.py:269` pins it today and must stay green, because this change deliberately does not touch it.
 - `test_compile_allows_empty_target_when_range_is_empty`: `base..head` has no changes at all → the existing empty-target path still works.
 - `test_compile_allows_empty_assignment_scope`: a role with no declared artifacts is unchanged.
 
@@ -139,7 +141,9 @@ Tasks 1 and 2 are each necessary and neither is sufficient: without Task 1 the c
 **Files:**
 - Test: `tests/unit/core/test_review_bundle.py`
 
-**Step 1: Write the failing test** — `test_superpowers_change_gets_a_real_inspection_target`: a workspace with the superpowers layout and a committed plan document, assembled and compiled, produces a `diff_argv` that names the plan document. Assert on the argv, not on an intermediate.
+**Step 1: Write the failing test** — `test_superpowers_change_gets_a_real_inspection_target`: a workspace with the superpowers layout, assembled and compiled, produces a `diff_argv` that names the plan document. Assert on the argv, not on an intermediate.
+
+**The plan document must be committed on the feature branch, not on the base.** The neighbouring fixtures this test mirrors (`tests/unit/core/test_review_bundle.py:134-145`) commit on the base branch, where the plan falls outside the range and `diff_argv` is legitimately `[]` — that is the split-out defect, not this one. Committing on the branch is what makes the argv non-empty and therefore what makes this test discriminate.
 
 **Step 2–4: Run, implement (should already pass after Tasks 1–2), run.**
 
@@ -169,20 +173,22 @@ git commit -am "test: pin a real inspection target for superpowers-framework rev
 Run: `super-harness doc check --fix`
 Then verify: `super-harness doc check`
 
-**Step 4:** Full suite and lint.
+**Step 4: Register both deferred items in `private/OPEN-ITEMS.md`, as DOABLE-NOW.**
+
+This is a step, not an afterthought: the entries are the only thing keeping either item alive once this plan is merged, and a note placed after the commit step is a note that never gets written.
+
+1. **A first-ever review targets a diff, so a plan inherited from the base branch is reviewed as nothing.** Carry rounds 4 and 5's findings as its design input: the undefined representation for a content target, its effect on `contract_digest`, and the fact that `full-change`'s merge-base means the change would touch effectively every first-round plan review.
+2. **`cli/init.py:525` makes the same "`--framework` is a no-op" claim** for install time, and `docs/cli-reference.md` will still carry that wording on the `init --framework` row after regeneration. Whether it is also false is a separate question about a different command; answering it here would widen a Micro change that is closing a live fail-open.
+
+**Step 5:** Full suite and lint.
 
 Run: `pytest tests/ -q && ruff check src tests && super-harness verify`
 
-**Step 5: Commit**
+**Step 6: Commit**
 
 ```bash
 git commit -am "docs: --framework selects the artifact resolver, not a no-op"
 ```
-
-Two things are punted by this change and both get a `private/OPEN-ITEMS.md` entry as DOABLE-NOW — this project's convention is that anything explicitly deferred is recorded with its status, and neither of these may survive only as a paragraph inside a merged plan document:
-
-1. **A first-ever review targets a diff, so a plan inherited from the base branch is reviewed as nothing.** Carry rounds 4 and 5's findings as its design input: the undefined representation for a content target, its effect on `contract_digest`, and the fact that `full-change`'s merge-base means the change would touch effectively every first-round plan review.
-2. **`cli/init.py:525` makes the same "`--framework` is a no-op" claim** for install time, and `docs/cli-reference.md` will still carry that wording on the `init --framework` row after regeneration. Whether it is also false is a separate question about a different command; answering it here would widen a Micro change that is closing a live fail-open.
 
 ---
 
