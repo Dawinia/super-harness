@@ -628,3 +628,100 @@ def test_plan_reviewer_prompt_omits_pass_with_open_finding(tmp_path: Path) -> No
     prompt = compiled["assignments"][0]["prompt"]
     assert "passes with the finding left open" not in prompt
     assert "blocking severity" not in prompt.lower()
+
+
+# --- assignment scope that names no tracked file fails closed -----------------
+#
+# The guard is SET-scoped: it raises only when NOT ONE entry names a file tracked
+# at either endpoint. A per-entry check would wedge every scope that declares a
+# file the change has not created yet; keying on an empty DIFF instead of on
+# absence would wedge legitimate re-review rounds. Both were tried and reversed
+# during this plan's own review.
+
+
+def _scope_repo(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t")
+    _git(tmp_path, "config", "user.name", "t")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "src" / "a.py").write_text("v1\n")
+    (tmp_path / "docs" / "plan.md").write_text(
+        "---\nchange: change\nstage: plan\n---\n# Plan\n"
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-qm", "base")
+    _git(tmp_path, "checkout", "-qb", "feat")
+
+
+def _compile(tmp_path: Path, *, declared: list[str], plan_path: str = "docs/plan.md"):
+    governance, bundle = _code_reviewer_inputs()
+    bundle = {**bundle, "plan_path": plan_path}
+    profile = ReviewProducerProfile(
+        source="external", protocol="codex-cli", model="m",
+        cost_class="standard", agent_options={},
+    )
+    return compile_review_contract(
+        tmp_path, bundle=bundle, governance=governance,
+        profiles={"external": profile}, events=[], declared=declared,
+    )
+
+
+def test_compile_fails_when_scope_names_no_tracked_file(tmp_path: Path) -> None:
+    """The absolute-path defect: entries that can never name a real file.
+
+    This is the ONLY case that raises. Compiling an empty target here is what let
+    a contract-compliant reviewer approve a plan it was never shown.
+    """
+    _scope_repo(tmp_path)
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "work")
+
+    with pytest.raises(ReviewContractError, match="names no file tracked"):
+        _compile(tmp_path, declared=[str(tmp_path / "src")])
+
+
+def test_compile_allows_unchanged_scope_in_full_change_mode(tmp_path: Path) -> None:
+    """Entries exist but fall outside a non-empty range -> compiles, empty target.
+
+    A plan inherited from the base branch. Reviewing it as nothing is a real
+    defect, but a DIFFERENT one, deliberately split out of this change.
+    """
+    _scope_repo(tmp_path)
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "work")
+
+    compiled = _compile(tmp_path, declared=["docs/plan.md"])
+    assert compiled["assignments"][0]["inspection"]["files"] == []
+
+
+def test_compile_allows_scope_naming_only_deleted_files(tmp_path: Path) -> None:
+    """A delete-only change: entries are tracked at base but absent at head.
+
+    Keying the guard on target_head alone would raise here and wedge review
+    prepare with no way forward but editing the scope (PSFO-R8-02).
+    """
+    _scope_repo(tmp_path)
+    _git(tmp_path, "rm", "-q", "src/a.py")
+    _git(tmp_path, "commit", "-qm", "delete only")
+
+    compiled = _compile(tmp_path, declared=["src/a.py"])
+    assert compiled["assignments"][0]["inspection"]["files"] == ["src/a.py"]
+
+
+def test_compile_allows_empty_target_when_range_is_empty(tmp_path: Path) -> None:
+    """No changes at all between base and head -> the empty-target path survives."""
+    _scope_repo(tmp_path)
+
+    compiled = _compile(tmp_path, declared=["src/", "docs/"])
+    assert compiled["assignments"][0]["inspection"]["files"] == []
+
+
+def test_compile_allows_empty_assignment_scope(tmp_path: Path) -> None:
+    """A role with no declared artifacts is unchanged: nothing to check."""
+    _scope_repo(tmp_path)
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "work")
+
+    compiled = _compile(tmp_path, declared=[])
+    assert compiled["assignments"][0]["inspection"]["files"] == []

@@ -12,11 +12,13 @@ from super_harness.core.review_bundle import resolve_declared_artifact_paths
 from super_harness.core.review_verdict import derive_open_findings
 from super_harness.core.scope_match import (
     GitScopeError,
+    covered_by_scope,
     is_ancestor,
     merge_base_commit,
     resolve_commit,
     scope_diff_argv,
     split_changed_by_scope_between,
+    tracked_files_at_commit,
 )
 from super_harness.engineering.review_governance import ReviewGovernance
 from super_harness.engineering.review_profiles import ReviewProducerProfile
@@ -289,6 +291,28 @@ def compile_review_contract(
     )
 
     profile_payload: dict[str, object] = {}
+    # Fail closed on an assignment scope that can never name a real file. The
+    # absolute-path defect produced entries no `git diff --name-only` output can
+    # match, so `files` came back empty and the reviewer was handed nothing —
+    # then approved a plan it had never seen. An empty target must mean "nothing
+    # changed", never "the scope was unusable".
+    #
+    # SET-scoped, and keyed on EXISTENCE at either endpoint. Per-entry would wedge
+    # any scope declaring a file the change has not created yet; keying on an
+    # empty diff would wedge legitimate re-review rounds; and checking only
+    # `target_head` would wedge a delete-only change, whose entries are tracked at
+    # the base alone. All three were tried and reversed while reviewing this plan.
+    if assignment_scope:
+        known = set(tracked_files_at_commit(root, target_head))
+        known.update(tracked_files_at_commit(root, full_base))
+        if not any(covered_by_scope(path, list(assignment_scope)) for path in known):
+            raise ReviewContractError(
+                "assignment scope names no file tracked at "
+                f"{full_base[:12]} or {target_head[:12]}: "
+                f"{', '.join(assignment_scope)} — the reviewer would be given an "
+                "empty target and could approve without seeing anything"
+            )
+
     for source in participants:
         source_kind = governance.sources[source].kind
         profile = resolved_profiles.get(source)

@@ -16,11 +16,18 @@ Per cli-command-surface §3.2:
   is always `[]` because no sensors are registered yet (Phase 3/5/8/11 wire
   them); this is the documented v0.1 contract, not a bug.
 
-The `--framework` option on `change start` is a v0.1 no-op placeholder per the
-project-wide convention (matches `init --framework`, `init --setup-github`,
-`state rebuild --verify`, `event log --tail`): the value flows into the event
-record so future adapter selection logic (Phase 4) can read it from history,
-but no runtime adapter dispatch happens in v0.1.
+The `--framework` option on `change start` is **not** a no-op. The value recorded
+on `intent_declared` selects which framework adapter resolves the change's spec
+and plan artifacts when a review contract is compiled (`adapters.registry`
+`resolve_spec_plan_paths` → `core.review_bundle.assemble_bundle`), so it decides
+what a reviewer is actually shown. Choosing `superpowers` on
+`2026-08-06-plan-scope-fail-open` was the single input that turned two plan
+reviews into empty targets.
+
+This docstring previously described the flag as a v0.1 placeholder and appealed
+to a project-wide convention. That appeal is dropped rather than repaired: the
+claim is now false here, and whether it still holds for the other flags it named
+is a question about those commands, not this one.
 
 Helper functions for `resume` (`_tail_events_for_change`, `_event_to_dict`,
 `_render_resume_markdown`) live inline in this module — they total <60 lines
@@ -73,8 +80,9 @@ def change_group() -> None:
     "--framework",
     type=click.Choice(["openspec", "spec-kit", "superpowers", "plain"]),
     default="plain",
-    help="Framework label recorded on the event "
-    "(v0.1: no-op placeholder; framework adapters auto-detect at observe time.)",
+    help="Framework recorded on the event; selects which adapter resolves this "
+    "change's spec and plan artifacts when a review contract is compiled, and so "
+    "what a reviewer is shown.",
 )
 @click.option(
     "--as",
