@@ -104,7 +104,7 @@ git commit -am "fix(review): resolve framework artifact paths repo-relative"
 
 ---
 
-### Task 2: A scope entry that names no file fails closed
+### Task 2: A scope that names no file at all fails closed
 
 **Files:**
 - Modify: `src/super_harness/engineering/review_contract.py` (around the `inspection` construction, `:330-345`)
@@ -114,7 +114,9 @@ git commit -am "fix(review): resolve framework artifact paths repo-relative"
 
 - `test_compile_fails_when_scope_names_no_tracked_file`: the assignment scope is non-empty and no entry matches any file tracked at `target_head` → compilation raises rather than emitting an empty `diff_argv`. This is the absolute-path case, and it is the only case that raises.
 
-  Throughout this task, **"names no file" means absent at `target_head`** and is the raising condition; **"unchanged"** means present at `target_head` but outside the diff range and always compiles. The two are never interchangeable — a guard keyed on an empty diff instead of on absence is the round-2 mistake this plan already reversed once.
+  **The guard is set-scoped, not per-entry.** It fires only when **not one** entry matches any file tracked at `target_head`. A per-entry existence check would be a new wedge: declaring a file the change has not created yet is ordinary, and it must not hard-fail plan review.
+
+  Two words, never interchangeable: **absent** (no entry names any tracked file at `target_head`) is the raising condition; **unchanged** (entries exist at `target_head` but fall outside the diff range) always compiles. A guard keyed on an empty diff rather than on absence is the round-2 mistake this plan already reversed once.
 - `test_compile_allows_unchanged_scope_in_incremental_range`: the scope entries exist at `target_head` but nothing in them changed since the incremental baseline, while other files did → **must still compile** with an empty target. This is a legitimate re-review round; failing it would wedge the reject loop.
 - `test_compile_allows_unchanged_scope_in_full_change_mode`: the scope entries exist at `target_head` and nothing in them changed in a non-empty range → **also compiles**, with an empty target. This is the inherited-plan case split out above; `tests/unit/cli/test_review_prepare.py:269` pins it today and must stay green, because this change deliberately does not touch it.
 - `test_compile_allows_empty_target_when_range_is_empty`: `base..head` has no changes at all → the existing empty-target path still works.
@@ -143,7 +145,7 @@ Tasks 1 and 2 are each necessary and neither is sufficient: without Task 1 the c
 
 **Step 1: Write the failing test** — `test_superpowers_change_gets_a_real_inspection_target`: a workspace with the superpowers layout, assembled and compiled, produces a `diff_argv` that names the plan document. Assert on the argv, not on an intermediate.
 
-**The plan document must be committed on the feature branch, not on the base.** The neighbouring fixtures this test mirrors (`tests/unit/core/test_review_bundle.py:134-145`) commit on the base branch, where the plan falls outside the range and `diff_argv` is legitimately `[]` — that is the split-out defect, not this one. Committing on the branch is what makes the argv non-empty and therefore what makes this test discriminate.
+**The plan document must be committed on the feature branch.** `_repo_with_change` (`tests/unit/core/test_review_bundle.py:51-64`) already ends on `feat`, so following the neighbouring fixtures gives the right shape — but state it, because a plan committed on the base instead falls outside the range and yields `diff_argv == []` for a legitimate reason (the split-out defect, not this one), and the test would then pass while proving nothing.
 
 **Step 2–4: Run, implement (should already pass after Tasks 1–2), run.**
 
