@@ -57,7 +57,9 @@ files = []  →  scope_diff_argv → []  →  empty target, all-`na` verdict, pl
 
 The precise discriminator is **existence, not change**: this defect is entirely about scope entries that can never name a real file. So the primary guard is *"the assignment scope is non-empty and not one of its entries matches any file tracked at `target_head`"*. An absolute path fails it always; an unchanged plan passes it always; and it does not care which baseline the range was computed from.
 
-**The range check still applies in `full-change` mode.** Relaxing it everywhere would leave the same vacuous-approval class reachable by a different cause: in `full-change` mode a non-empty range that matches no scope entry is never a legitimate plan review either. The counterexample that forced the relaxation — an unchanged plan in a re-review round — only exists in `incremental` mode. So the strict check is kept, conditioned on `mode`, which `review_contract.py:333` already computes one line above the split. Two guards, each covering what the other cannot.
+**There is no range check, in any mode.** Round 2 of this plan's own review suggested keeping a strict "non-empty range, zero scope matches" check for `full-change` mode; round 3 refuted it. `tests/unit/cli/test_review_prepare.py:268` already pins the counterexample: a plan authored on the base branch, a feature branch that changes only source, no prior review — so `mode == "full-change"`, the range is non-empty, the assignment scope matches nothing, and an explicitly-empty target with `EXIT_OK` is the correct outcome. That is an ordinary workflow, not a defect.
+
+The existence guard closes the absolute-path defect on its own. A second guard keyed on the range would only re-open a legitimate case, so there is exactly one guard. (The `do not construct a broader diff` message was written for precisely that pinned scenario, whose range is non-empty — which is why "empty range" was never the right discriminator either.)
 
 ---
 
@@ -101,8 +103,8 @@ git commit -am "fix(review): resolve framework artifact paths repo-relative"
 
 - `test_compile_fails_when_scope_names_no_tracked_file`: the assignment scope is non-empty and no entry matches any file tracked at `target_head` → compilation raises rather than emitting an empty `diff_argv`. This is the absolute-path case.
 - `test_compile_allows_unchanged_scope_in_incremental_range`: the scope entries exist at `target_head` but nothing in them changed since the incremental baseline, while other files did → **must still compile** with an empty target. This is a legitimate re-review round; failing it would wedge the reject loop.
-- `test_compile_fails_on_unmatched_scope_in_full_change_mode`: the same shape in `full-change` mode → raises. The relaxation above is `incremental`-only.
-- `test_compile_allows_empty_target_when_range_is_empty`: `base..head` has no changes at all → the existing empty-target path still works. This is the case the current message was written for and it must survive.
+- `test_compile_allows_unmatched_scope_in_full_change_mode`: the same shape in `full-change` mode → **also compiles**. `tests/unit/cli/test_review_prepare.py:268` already pins this (a plan authored on the base branch, only source changed on the feature branch) and must stay green; it is the reason there is no range check.
+- `test_compile_allows_empty_target_when_range_is_empty`: `base..head` has no changes at all → the existing empty-target path still works.
 - `test_compile_allows_empty_assignment_scope`: a role with no declared artifacts is unchanged.
 
 **Step 2: Run to verify they fail.**
