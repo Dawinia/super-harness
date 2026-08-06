@@ -8,6 +8,7 @@ scope:
     - AGENTS.md
     - docs/getting-started.md
     - docs/state-machine.md
+    - private/OPEN-ITEMS.md
     - .harness/review-governance.yaml
     - src/super_harness/adapters/reviewer/base.py
     - src/super_harness/adapters/reviewer/claude_cli.py
@@ -37,6 +38,7 @@ scope:
     - tests/unit/engineering/test_review_contract.py
     - tests/unit/engineering/test_review_governance.py
     - tests/unit/engineering/test_review_profiles.py
+    - tests/unit/engineering/test_review_runs.py
     - tests/unit/engineering/test_value_report.py
 tier_hint: Normal
 ---
@@ -61,7 +63,9 @@ Prose about execution detail is an unbounded review surface, and the detail it d
 
 ## What this cut does not touch
 
-No finding semantics, no `verdict_blocks`, no `derive_open_findings`, and **no prompt text**. That last one is load-bearing: prompt text feeds `contract_digest` (`engineering/review_contract.py`), so a cut that rewrites it invalidates every in-flight frozen contract. Cut 1 leaves a round already in progress completable across the upgrade. Cuts 2 and 3 do not have that property, which is one reason they are separate changes.
+No finding semantics, no `verdict_blocks`, no `derive_open_findings`, and no prompt text — not because leaving the prompt alone buys contract compatibility, but because those belong to Cuts 2 and 3.
+
+**A round frozen before this upgrade cannot be completed after it, and there is no way around that.** `cli/review.py:718` puts the governance payload into the bundle and `engineering/review_contract.py:412` digests the whole bundle, so Task 3's rename moves `contract_digest` by exactly the mechanism a prompt rewrite would. Any round in flight at upgrade time must be re-frozen. No compatibility shim: the digest is what binds a verdict to what was reviewed, and holding it stable across a semantic change to the budget would make it lie.
 
 Epochs stay. They anchor contract freezing and run retries; only the budget stops counting them, so `review_runs.py:12-13`'s fold and `automatic_rounds_used` keep their present meaning.
 
@@ -100,11 +104,14 @@ Three values the reviewer CLIs hand us and we throw away. Pure recording: nothin
 
 Cached tokens are where these CLIs actually bill. On the diagnosed change the report showed 161,701 tokens against 13,986,935 real — an 86x blind spot — and Task 4's evidence is worthless until that is fixed.
 
+**The two shipped producers report cache differently, and the fix must not be generalized across them.** claude reports `cache_read_input_tokens` and `cache_creation_input_tokens` as amounts *in addition to* a near-empty `input_tokens` — 63 against 2,629,763 cache-read on this change's own first plan round. codex reports `cached_input_tokens` as a portion *already inside* `input_tokens` — 898,816 of 1,007,614 on `init-interactive-wizard`. So only claude's two keys are summed: adding codex's would inflate its total by roughly 89%, and leaving it alone is already correct. The rule is per named key, never "any key containing cache". codex's `reasoning_output_tokens` stays uncounted in this cut — 3,166 against a million input tokens is below the resolution this datum serves.
+
 The harness still does not price tokens or estimate USD. It does stop discarding a cost the producer states about itself, which is the same class of repair as the session id.
 
 Behaviours to pin:
 
-- cache-read and cache-creation tokens enter the fallback sum; a non-integer field contributes zero and the function still never raises
+- claude's two cache keys enter the fallback sum; a non-integer field contributes zero and the function still never raises
+- a codex-shaped usage dict totals `input_tokens + output_tokens`, unchanged by this task — the subset key is not added
 - a reported `total_tokens` still wins when present
 - no usage at all yields `None`, not `0` — the report must distinguish "not captured" from "zero"
 - `claude`'s `session_id` reaches the receipt; absent or non-string yields `None`. `base.py:38` already has the field and `codex_cli.py` already populates it, so `claude_cli.py` is the only gap
@@ -112,7 +119,7 @@ Behaviours to pin:
 
 ## Task 3 — the budget counts rounds per change, not per epoch
 
-`engineering/review_runs.py` · `engineering/review_governance.py:76,198-199,214` · `cli/review.py:237,907-909,1111,1219-1221` · `cli/status.py:279` · `cli/init.py:213,217,314` · `cli/init_plan.py:622` · `.harness/review-governance.yaml:28,32` · tests in `tests/unit/engineering/test_review_governance.py`, `tests/unit/cli/test_review_runs.py`, `tests/unit/cli/test_review_prepare.py`, `tests/unit/engineering/test_review_contract.py`, `tests/unit/engineering/test_review_profiles.py`, `tests/unit/core/test_review_bundle.py`, `tests/integration/cli/test_status.py`, `tests/integration/cli/test_init.py`
+`engineering/review_runs.py` · `engineering/review_governance.py:76,198-199,214` · `cli/review.py:237,907-909,1111,1219-1221` · `cli/status.py:279` · `cli/init.py:213,217,314` · `cli/init_plan.py:622` · `.harness/review-governance.yaml:28,32` · tests in `tests/unit/engineering/test_review_governance.py`, `tests/unit/engineering/test_review_runs.py` (where the existing budget-fold tests live, `:19`), `tests/unit/cli/test_review_runs.py`, `tests/unit/cli/test_review_prepare.py`, `tests/unit/engineering/test_review_contract.py`, `tests/unit/engineering/test_review_profiles.py`, `tests/unit/core/test_review_bundle.py`, `tests/integration/cli/test_status.py`, `tests/integration/cli/test_init.py`
 
 `core/transitions.py:37` sends `PLAN_REJECTED` back out through `plan_ready`, which is `review_runs.py:12`'s plan epoch boundary, so the counter resets on every rejection. That is why twelve rounds produced zero authorizations.
 
@@ -188,11 +195,16 @@ Both halves ship together: a cut that lands only the report drops the half the a
 
 ## Task 7 — documentation and closure
 
-`docs/getting-started.md:347,351` · `AGENTS.md` regenerated via `super-harness sync --agents-md`, never by hand
+`docs/getting-started.md:347,351` · `AGENTS.md` regenerated via `super-harness sync --agents-md`, never by hand · `private/OPEN-ITEMS.md`
 
 The governance examples move to the new key, the per-change semantics, and the differing per-role defaults. `AGENTS.md` is regenerated and may come back unchanged; it is declared because the generator decides that, not the author.
 
-**Revert the codex retirement before attesting.** `.harness/review-governance.yaml` currently drops codex from both roles on this branch, because codex-cli is unusable on this machine — the account rejects the configured model, so every run produces nothing. That is a local environment fact and must not merge as this repository's tracked governance. Governance has no user-local overlay, so it can only live as a tracked change until it is reverted, which makes forgetting it easy and is why it is a task line rather than a note. This change is therefore reviewed single-source, and the attestation says so.
+**The codex retirement stays, is reviewed here, and its reversal is registered rather than performed.** `.harness/review-governance.yaml` currently drops codex from both roles on this branch, because codex-cli is unusable on this machine — the account rejects the configured model, so every run produces nothing. Restoring it inside this change is unsound in both possible orderings, and one of them is unrecoverable:
+
+- restore **before** code review and the change can never merge. `engineering/review_governance.py:192` forces `min_independent` to equal the participant count, so codex comes back as a *required* source, and `cli/review.py:1474-1476` closes any round missing a required source as `execution_failed`. Code review would be unreachable, not merely single-source.
+- restore **after** `code_review_passed` and the file governing review independence merges having never been reviewed, edited from `READY_TO_MERGE`, which blocks edits and offers no path back into review.
+
+So the retirement is part of this change and is reviewed with everything else, and the attestation states that both this plan review and the code review ran single-source. Restoring codex is registered in `private/OPEN-ITEMS.md` as `BLOCKED-upstream` on codex-cli having a model the account accepts. The honest state of the world is one working producer; tracked governance claiming two makes every round fail closed.
 
 ## Done when
 
