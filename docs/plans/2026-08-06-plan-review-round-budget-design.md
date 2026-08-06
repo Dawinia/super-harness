@@ -1,9 +1,16 @@
 ---
-change: 2026-08-06-plan-review-convergence
+change: 2026-08-06-plan-review-round-budget
 stage: design
 ---
 
 # The plan-review loop is a memoryless sampler, not a convergent loop
+
+> This document diagnoses one problem and designs all three cuts that answer it. It is
+> filed under the change that implements Cut 1 — `2026-08-06-plan-review-round-budget` —
+> because that is the change that introduces it, and because a design artifact a change
+> declares in scope must be identifiable as that change's artifact by both mechanisms that
+> key on the change id: its frontmatter and its filename. Cuts 2 and 3 read it; neither
+> needs to edit it.
 
 A `pantheon` change (`2026-08-04-stage5b-pack-versions`) ran **12 plan-review rounds**
 for a single plan document, burned ~14M reviewer tokens, and never converged. This
@@ -227,7 +234,11 @@ it lives outside the event stream to protect that fail-open hot path, neither of
 applies inside `review begin`, which already emits events.
 
 **6. `_usage_tokens` counts `cache_read_input_tokens` and `cache_creation_input_tokens`.**
-Rough magnitude is the goal; no USD. Item 4 depends on this being right.
+Rough magnitude is the goal: the harness does not price tokens and does not estimate USD.
+It does stop discarding a cost the producer states about itself — `claude --print` returns
+`total_cost_usd` at the top level and we throw it away — which is the same class of repair
+as item 8, writing down what is already in hand, and not an estimate. Item 4 depends on the
+token count being right.
 
 **7. A missing source is reported at every round close, not only at the wall.** The data is
 already in the `review_round_closed` payload and nothing reads it. Close ordering
