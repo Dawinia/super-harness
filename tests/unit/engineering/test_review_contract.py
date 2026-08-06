@@ -256,7 +256,7 @@ def test_unresolvable_source_baseline_falls_back_to_full_change(tmp_path: Path) 
                 reviewer="code-reviewer",
                 participants=("external",),
                 min_independent=1,
-                max_automatic_rounds_per_epoch=2,
+                max_automatic_rounds=2,
             )
         },
         require_distinct_model_families=False,
@@ -351,7 +351,7 @@ def test_imported_finding_from_execution_failed_round_is_in_next_prompt(
                 reviewer="code-reviewer",
                 participants=("external",),
                 min_independent=1,
-                max_automatic_rounds_per_epoch=2,
+                max_automatic_rounds=2,
             )
         },
         require_distinct_model_families=False,
@@ -420,7 +420,7 @@ def _code_reviewer_inputs() -> tuple[ReviewGovernance, dict[str, object]]:
                 reviewer="code-reviewer",
                 participants=("external",),
                 min_independent=1,
-                max_automatic_rounds_per_epoch=2,
+                max_automatic_rounds=2,
             )
         },
         require_distinct_model_families=False,
@@ -541,7 +541,7 @@ def test_prompt_documents_pass_with_open_finding_threshold(tmp_path: Path) -> No
                 reviewer="code-reviewer",
                 participants=("external",),
                 min_independent=1,
-                max_automatic_rounds_per_epoch=2,
+                max_automatic_rounds=2,
             )  # blocking_severity defaults to "major"
         },
         require_distinct_model_families=False,
@@ -601,7 +601,7 @@ def test_plan_reviewer_prompt_omits_pass_with_open_finding(tmp_path: Path) -> No
                 reviewer="plan-reviewer",
                 participants=("external",),
                 min_independent=1,
-                max_automatic_rounds_per_epoch=2,
+                max_automatic_rounds=2,
             )
         },
         require_distinct_model_families=False,

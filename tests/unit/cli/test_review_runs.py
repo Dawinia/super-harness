@@ -58,7 +58,7 @@ def _repo(root: Path, *, cost_class: str = "standard") -> Path:
         "    code-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n",
+        "      max_automatic_rounds: 2\n",
         encoding="utf-8",
     )
     (harness / "review-profiles.local.yaml").write_text(
@@ -128,7 +128,7 @@ def _enable_claude(root: Path) -> None:
         "    code-reviewer:\n"
         "      participants: [codex, claude]\n"
         "      min_independent: 2\n"
-        "      max_automatic_rounds_per_epoch: 3\n",
+        "      max_automatic_rounds: 3\n",
         encoding="utf-8",
     )
     (harness / "review-profiles.local.yaml").write_text(
@@ -1242,11 +1242,11 @@ def test_plan_reviewer_round_freezes_no_code_finding_ids(
         "    plan-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n"
+        "      max_automatic_rounds: 2\n"
         "    code-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n",
+        "      max_automatic_rounds: 2\n",
         encoding="utf-8",
     )
     (harness / "review-profiles.local.yaml").write_text(
@@ -1328,7 +1328,7 @@ def _enable_codex_human_quorum(root: Path) -> None:
         "    code-reviewer:\n"
         "      participants: [codex, human]\n"
         "      min_independent: 2\n"
-        "      max_automatic_rounds_per_epoch: 2\n",
+        "      max_automatic_rounds: 2\n",
         encoding="utf-8",
     )
 
@@ -1440,7 +1440,7 @@ def _single_source_governance(root: Path, *, blocking_severity: str | None) -> N
         "    code-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n" + extra,
+        "      max_automatic_rounds: 2\n" + extra,
         encoding="utf-8",
     )
 
@@ -1574,11 +1574,11 @@ def _repo_plan(tmp_path: Path) -> Path:
         "    plan-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n"
+        "      max_automatic_rounds: 2\n"
         "    code-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n",
+        "      max_automatic_rounds: 2\n",
         encoding="utf-8",
     )
     (harness / "review-profiles.local.yaml").write_text(

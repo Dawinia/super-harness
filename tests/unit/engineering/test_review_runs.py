@@ -731,3 +731,74 @@ def test_minor_only_plan_source_is_not_retained_across_peer_failure() -> None:
     execution = derive_review_execution(events, "plan-reviewer")
 
     assert execution.retained_sources == ()
+
+
+def _round(rid: str, epoch: str, *, automatic: bool = True, reviewer: str = "plan-reviewer"):
+    return _event(
+        f"event-{rid}",
+        "review_round_started",
+        {
+            "reviewer": reviewer,
+            "epoch_id": epoch,
+            "round_id": rid,
+            "contract_digest": f"contract-{rid}",
+            "target_head": "abc123",
+            "profile_digest": "profiles-1",
+            "automatic": automatic,
+            "runs": [{
+                "run_id": f"run-{rid}", "source": "claude", "protocol": "claude-cli",
+                "requested_model": "claude-review", "requested_options": {},
+            }],
+        },
+    )
+
+
+def test_automatic_rounds_survive_plan_resubmit() -> None:
+    """`plan_ready` re-fires on every rejection (transitions.py: PLAN_REJECTED ->
+    plan_ready is the revise-and-resubmit path), so the per-epoch fold resets and the
+    budget never bites. The per-change count is what the brake must compare against."""
+    from super_harness.engineering.review_runs import count_automatic_rounds
+
+    events = []
+    for n in (1, 2, 3):
+        events.append(_event(f"epoch-{n}", "plan_ready", {}))
+        events.append(_round(f"round-{n}", f"epoch-{n}"))
+
+    execution = derive_review_execution(events, "plan-reviewer")
+
+    assert execution.automatic_rounds_used == 1          # the bug, left in place on purpose
+    assert count_automatic_rounds(events, "plan-reviewer") == 3
+
+
+def test_count_automatic_rounds_ignores_other_roles_and_non_automatic() -> None:
+    """A human-confirmed round emits `automatic: False` (cli/review.py review confirm)
+    and is not counted; neither is another role's round."""
+    from super_harness.engineering.review_runs import count_automatic_rounds
+
+    events = [
+        _event("epoch-plan", "plan_ready", {}),
+        _round("round-1", "epoch-plan"),
+        _round("round-2", "epoch-plan", automatic=False),
+        _round("round-3", "epoch-plan", reviewer="code-reviewer"),
+    ]
+
+    assert count_automatic_rounds(events, "plan-reviewer") == 1
+    assert count_automatic_rounds(events, "code-reviewer") == 1
+
+
+def test_count_automatic_rounds_treats_missing_automatic_as_automatic() -> None:
+    """Historical rounds predate the flag; the budget must not silently forget them."""
+    from super_harness.engineering.review_runs import count_automatic_rounds
+
+    legacy = _event(
+        "event-legacy", "review_round_started",
+        {"reviewer": "plan-reviewer", "epoch_id": "e", "round_id": "r",
+         "contract_digest": "c", "target_head": "h", "profile_digest": "p", "runs": []},
+    )
+    assert count_automatic_rounds([_event("e", "plan_ready", {}), legacy], "plan-reviewer") == 1
+
+
+def test_count_automatic_rounds_is_zero_before_any_round() -> None:
+    from super_harness.engineering.review_runs import count_automatic_rounds
+
+    assert count_automatic_rounds([], "plan-reviewer") == 0

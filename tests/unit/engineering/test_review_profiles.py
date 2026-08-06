@@ -64,7 +64,7 @@ def test_automated_participant_requires_explicit_local_profile() -> None:
                 reviewer="code-reviewer",
                 participants=("codex",),
                 min_independent=1,
-                max_automatic_rounds_per_epoch=2,
+                max_automatic_rounds=2,
             )
         },
         require_distinct_model_families=False,
@@ -92,7 +92,7 @@ def test_human_only_role_needs_no_local_producer_profile() -> None:
                 reviewer="plan-reviewer",
                 participants=("human",),
                 min_independent=1,
-                max_automatic_rounds_per_epoch=2,
+                max_automatic_rounds=2,
             )
         },
         require_distinct_model_families=False,

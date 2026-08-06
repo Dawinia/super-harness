@@ -616,17 +616,21 @@ def _review_content(
     }
     governance_sources["human"] = {"kind": "human"}
     participants = selected_sources or ["human"]
-    role = {
-        "participants": participants,
-        "min_independent": len(participants),
-        "max_automatic_rounds_per_epoch": 2,
-    }
+    # Per-role budgets: the two roles genuinely differ now that the budget
+    # accumulates per change instead of resetting on every epoch boundary. A shared
+    # template cannot express that, so it is split.
+    def _role(max_automatic_rounds: int) -> dict[str, object]:
+        return {
+            "participants": participants,
+            "min_independent": len(participants),
+            "max_automatic_rounds": max_automatic_rounds,
+        }
     governance = {
         "version": 1,
         "review": {
             "base_branch": "main",
             "sources": governance_sources,
-            "roles": {"plan-reviewer": dict(role), "code-reviewer": dict(role)},
+            "roles": {"plan-reviewer": _role(6), "code-reviewer": _role(2)},
             "require_distinct_model_families": False,
         },
     }

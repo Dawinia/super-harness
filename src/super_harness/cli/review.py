@@ -234,7 +234,7 @@ def _governance_payload(
         "reviewer": reviewer,
         "participants": list(role.participants),
         "min_independent": role.min_independent,
-        "max_automatic_rounds_per_epoch": role.max_automatic_rounds_per_epoch,
+        "max_automatic_rounds": role.max_automatic_rounds,
         "require_distinct_model_families": governance.require_distinct_model_families,
         "blocking_severity": role.blocking_severity,
         "sources": {
@@ -905,8 +905,8 @@ def begin(
         sys.exit(EXIT_VALIDATION)
 
     needs_authorization = (
-        execution.automatic_rounds_used
-        >= role.max_automatic_rounds_per_epoch
+        execution.automatic_rounds_this_change
+        >= role.max_automatic_rounds
         or any(profiles[source].cost_class == "expensive" for source in selected)
     )
     authorization_id: str | None = None
@@ -1107,8 +1107,8 @@ def begin(
         "contract_digest": packet["contract_digest"],
         "target_head": packet["target_head"],
         "contract_path": str(frozen_path),
-        "automatic_rounds_used": execution.automatic_rounds_used + 1,
-        "automatic_rounds_max": role.max_automatic_rounds_per_epoch,
+        "automatic_rounds_used": execution.automatic_rounds_this_change + 1,
+        "automatic_rounds_max": role.max_automatic_rounds,
         "runs": output,
     }
     if ctx.obj.get("json"):
@@ -1217,8 +1217,8 @@ def authorize_round(
         )
         sys.exit(EXIT_VALIDATION)
     needs_authorization = (
-        execution.automatic_rounds_used
-        >= role.max_automatic_rounds_per_epoch
+        execution.automatic_rounds_this_change
+        >= role.max_automatic_rounds
         or any(profiles[source].cost_class == "expensive" for source in selected)
     )
     if not needs_authorization:

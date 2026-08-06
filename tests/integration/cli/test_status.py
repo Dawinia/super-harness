@@ -252,6 +252,10 @@ def _set_independent_policy(tmp_path: Path) -> None:
         "    plan-reviewer:\n"
         "      participants: [subagent, external]\n"
         "      min_independent: 2\n"
+        # Pinned rather than defaulted: these tests assert on review progress, not
+        # on the per-role budget default (6 for plan review since the budget became
+        # per-change).
+        "      max_automatic_rounds: 2\n"
         "    code-reviewer:\n"
         "      participants: [subagent, external]\n"
         "      min_independent: 2\n"
@@ -574,7 +578,7 @@ def _write_exhausted_review_governance(
         "    code-reviewer:\n"
         f"      participants: {participants}\n"
         "      min_independent: 2\n"
-        f"      max_automatic_rounds_per_epoch: {1 if human_role else 2}\n",
+        f"      max_automatic_rounds: {1 if human_role else 2}\n",
         encoding="utf-8",
     )
     (tmp_path / ".harness" / "review-profiles.local.yaml").write_text(
@@ -936,3 +940,58 @@ def test_status_exhaustion_recommends_human_path_only_for_role_participant(
         in next_command
     )
     assert "review skip --override" not in next_command
+
+
+def _emit(tmp_path: Path, slug: str, event_type: str, payload: dict) -> None:
+    from super_harness.core.events import Actor, Event
+    from super_harness.core.paths import events_path
+    from super_harness.core.post_emit import refresh_state_after_emit
+    from super_harness.core.ulid import new_event_id
+    from super_harness.core.writer import EventWriter
+
+    EventWriter(events_path(tmp_path)).emit(
+        Event(
+            event_id=new_event_id(), type=event_type, change_id=slug,
+            timestamp="2026-06-02T00:00:00Z",
+            actor=Actor(type="agent", identifier="test"),
+            framework="plain", payload=payload,
+        )
+    )
+    refresh_state_after_emit(tmp_path)
+
+
+def test_status_remaining_rounds_uses_the_per_change_count(tmp_path: Path) -> None:
+    """Three rounds across three epochs, budget 6 -> 3 remaining, not 6.
+
+    Without this, `status` promises budget the agent does not have and `review begin`
+    then blocks it — reintroducing exactly the misinformation the per-change counter
+    exists to remove. `plan_ready` re-fires on every rejection, so each round below
+    sits in its own epoch.
+    """
+    _init(tmp_path)
+    _seed_awaiting_plan_review(tmp_path, "demo")
+    _set_independent_policy(tmp_path)
+    (tmp_path / ".harness" / "review-governance.yaml").write_text(
+        (tmp_path / ".harness" / "review-governance.yaml")
+        .read_text(encoding="utf-8")
+        .replace("      max_automatic_rounds: 2\n", "      max_automatic_rounds: 6\n", 1),
+        encoding="utf-8",
+    )
+
+    for n in (1, 2, 3):
+        if n > 1:
+            # The real revise-and-resubmit loop, which is what re-fires the epoch
+            # boundary and used to wash the counter.
+            _emit(tmp_path, "demo", "plan_rejected", {"reviewer": "plan-reviewer"})
+            _emit(tmp_path, "demo", "plan_ready", {})
+        _emit(tmp_path, "demo", "review_round_started", {
+            "reviewer": "plan-reviewer", "epoch_id": f"epoch-{n}", "round_id": f"r{n}",
+            "contract_digest": f"c{n}", "target_head": "head", "profile_digest": "p",
+            "automatic": True, "runs": [],
+        })
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "--json", "status", "demo"])
+    assert r.exit_code == 0, r.output
+    progress = json.loads(r.output)["data"]["changes"][0]["review_progress"]
+    assert progress["automatic_rounds_used"] == 3
+    assert progress["automatic_rounds_remaining"] == 3

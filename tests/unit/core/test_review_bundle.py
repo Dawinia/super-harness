@@ -196,7 +196,7 @@ def test_superpowers_change_gets_a_real_inspection_target(tmp_path: Path) -> Non
                 reviewer="plan-reviewer",
                 participants=("external",),
                 min_independent=1,
-                max_automatic_rounds_per_epoch=2,
+                max_automatic_rounds=2,
             )
         },
         require_distinct_model_families=False,

@@ -66,6 +66,14 @@ class ReviewerSourceGovernance:
     kind: Literal["automated", "human"]
 
 
+# Per-role round budgets over a fallback of 2 (today's single literal). `review.roles`
+# keys are arbitrary non-empty strings, so an adopter-defined or future role name is
+# not an error condition — it simply gets the fallback. Six for `plan-reviewer` comes
+# from replaying eight recorded changes: at two the brake interrupts a change that
+# converged in three rounds, and `code-reviewer`'s own history supports two.
+_DEFAULT_ROUND_BUDGETS: dict[str, int] = {"plan-reviewer": 6, "code-reviewer": 2}
+
+
 @dataclass(frozen=True)
 class ReviewerRoleGovernance:
     """Shared requirements for one lifecycle reviewer role."""
@@ -73,7 +81,10 @@ class ReviewerRoleGovernance:
     reviewer: str
     participants: tuple[str, ...]
     min_independent: int
-    max_automatic_rounds_per_epoch: int
+    # Automatic rounds this role may start for one CHANGE before a human has to fund
+    # the next one. Per change, not per epoch: `plan_ready` re-fires on every
+    # rejection, so an epoch-scoped budget resets exactly when it should bite.
+    max_automatic_rounds: int
     blocking_severity: str = "major"
 
 
@@ -194,9 +205,18 @@ def load_review_governance(root: Path) -> ReviewGovernance:
                 f"review.roles.{reviewer}.min_independent must match participants "
                 f"count ({len(participants)})"
             )
+        if "max_automatic_rounds_per_epoch" in role:
+            raise ReviewGovernanceError(
+                f"review.roles.{reviewer}.max_automatic_rounds_per_epoch was renamed "
+                "to max_automatic_rounds, and its meaning changed: the budget now "
+                "accumulates per-change instead of resetting on every epoch boundary "
+                "(a rejected plan re-fires `plan_ready`, which reset the old counter). "
+                "Rename the key and choose the value you want for a whole change — "
+                "the same number now means something different."
+            )
         max_rounds = _positive_int(
-            role.get("max_automatic_rounds_per_epoch", 2),
-            f"review.roles.{reviewer}.max_automatic_rounds_per_epoch",
+            role.get("max_automatic_rounds", _DEFAULT_ROUND_BUDGETS.get(reviewer, 2)),
+            f"review.roles.{reviewer}.max_automatic_rounds",
         )
         blocking_severity = role.get("blocking_severity", "major")
         if (
@@ -211,7 +231,7 @@ def load_review_governance(root: Path) -> ReviewGovernance:
             reviewer=reviewer,
             participants=participants,
             min_independent=min_independent,
-            max_automatic_rounds_per_epoch=max_rounds,
+            max_automatic_rounds=max_rounds,
             blocking_severity=blocking_severity,
         )
 

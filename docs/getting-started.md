@@ -344,11 +344,11 @@ starts editing. The hot-path gate enforces lifecycle rules:
       plan-reviewer:
         participants: [codex, claude]
         min_independent: 2
-        max_automatic_rounds_per_epoch: 2
+        max_automatic_rounds: 2
       code-reviewer:
         participants: [codex, claude]
         min_independent: 2
-        max_automatic_rounds_per_epoch: 2
+        max_automatic_rounds: 2
         blocking_severity: major   # optional; blocker|major|minor (default major)
     require_distinct_model_families: false
   ```

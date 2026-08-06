@@ -43,6 +43,38 @@ round can start, cost money, and never produce a result. `corpus-04` started 11 
 plan rounds and imported 6 — five rounds that reviewed nothing. Any replay must say which
 count it means.
 
+## The budget table, recomputed against started rounds
+
+The design document's replay table is measured in **imported** rounds. The shipped
+counter counts **started** ones, so the real prompt counts are higher and land on more
+changes. Recomputed here from this corpus, `max(0, started - budget)` summed per change:
+
+| budget | prompts (started) | changes hit | prompts (imported) | changes hit |
+| --- | --- | --- | --- | --- |
+| 2 | 62 | 8 | 53 | 8 |
+| 4 | 47 | 6 | 38 | 6 |
+| 6 | 35 | 5 | 26 | 4 |
+| 8 | 25 | 5 | 18 | 4 |
+| 12 | 9 | 2 | 7 | 2 |
+
+At the shipped default of 6:
+
+| corpus id | started | imported | rounds that imported nothing | prompts |
+| --- | --- | --- | --- | --- |
+| `corpus-01` | 14 | 13 | 1 | 8 |
+| `corpus-04` | 11 | 6 | 5 | 5 |
+| `corpus-07` | 9 | 9 | 0 | 3 |
+| `corpus-08` | 19 | 18 | 1 | 13 |
+| `corpus-11` | 12 | 10 | 2 | 6 |
+
+Note the change with a large started/imported gap: it is over budget **only** because
+rounds started, cost money, and produced no review. The design classifies it as
+converged, and the design's own table gives it zero prompts. Counting failed rounds is
+deliberate — the brake bounds spend, and a repeatedly failing producer is the pathology
+the evidence block exists to surface — but the cost is real and is recorded here rather
+than smoothed over. The design chose 6 on the imported figures; this is the honest
+number the shipped counter produces.
+
 ## Redaction contract
 
 **Kept**: `event_id`, `type`, `change_id`, `timestamp`, `actor.type`, `framework`, and from

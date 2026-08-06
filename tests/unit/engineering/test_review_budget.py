@@ -116,3 +116,63 @@ def test_corpus_finding_ids_are_rewritten_not_dropped() -> None:
             assert re.fullmatch(r"c\d{2}/f-\d{2}", finding["id"]), finding["id"]
             seen += 1
     assert seen > 0
+
+
+def _authorizations_at(budget: int) -> dict[str, int]:
+    """Prompts each corpus change would need, by the rule the counter implements."""
+    started = _started_automatic_plan_rounds()
+    return {change: max(0, n - budget) for change, n in started.items()}
+
+
+def test_corpus_replays_the_budget_rule() -> None:
+    """The criterion is the RULE, and the corpus supplies the numbers. Nothing here is
+    transcribed from the plan or from the design — the design's tables are measured in
+    imported rounds while the counter counts started ones, so copying them across would
+    assert against the wrong quantity."""
+    from super_harness.engineering.review_runs import count_automatic_rounds
+
+    prompts = _authorizations_at(6)
+    started = _started_automatic_plan_rounds()
+    for change, n in started.items():
+        assert prompts[change] == max(0, n - 6)
+
+    # The rule and the shipped counter agree on the same event stream.
+    from super_harness.core.events import Actor, Event
+
+    for change in started:
+        events = [
+            Event(
+                event_id=e["event_id"], type=e["type"], change_id=e["change_id"],
+                timestamp=e["timestamp"],
+                actor=Actor(type=e["actor"]["type"], identifier=e["actor"]["identifier"]),
+                framework=e["framework"], payload=e["payload"],
+            )
+            for e in _events() if e["change_id"] == change
+        ]
+        assert count_automatic_rounds(events, "plan-reviewer") == started[change]
+
+
+def test_corpus_budget_of_six_leaves_the_quiet_changes_alone() -> None:
+    """Changes at or under the budget are never interrupted — the property the default
+    was chosen for. Changes above it are, including ones the design calls converged;
+    that is this cut shipping the noisy half of the design's pair on purpose."""
+    started = _started_automatic_plan_rounds()
+    prompts = _authorizations_at(6)
+
+    assert all(prompts[c] == 0 for c, n in started.items() if n <= 6)
+    assert all(prompts[c] > 0 for c, n in started.items() if n > 6)
+    assert sum(prompts.values()) > 0
+
+
+def test_corpus_a_failed_round_still_consumes_budget() -> None:
+    """A round that imported nothing cost real money and produced no findings — the
+    worst round to hide from a brake that bounds spend. At least one corpus change is
+    over budget only because of rounds that never imported."""
+    started = _started_automatic_plan_rounds()
+    imported = {change: len(curve) for change, curve in _plan_curves().items()}
+    over_only_via_failures = [
+        change
+        for change, n in started.items()
+        if n > 6 and imported.get(change, 0) <= 6
+    ]
+    assert over_only_via_failures
