@@ -10,7 +10,6 @@ scope:
     - src/super_harness/cli/change.py
     - src/super_harness/engineering/review_contract.py
     - tests/unit/adapters/test_registry.py
-    - tests/unit/cli/test_review_prepare.py
     - tests/unit/core/test_review_bundle.py
     - tests/unit/engineering/test_review_contract.py
 tier_hint: Micro
@@ -22,7 +21,7 @@ tier_hint: Micro
 
 **Goal:** Close a fail-open in the review contract compiler: under two of the three shipped framework adapters, plan review hands the reviewer an empty inspection target, so a contract-compliant reviewer approves a plan nobody read.
 
-**Architecture:** Two paths lead to the same vacuous approval and each needs its own repair. A normalization at the boundary that already exists for this purpose stops scope entries that can never name a real file, and a fail-closed guard makes that failure loud instead of empty. Separately, a first-ever plan review is given the artifact itself rather than a diff, so "the reviewer has never seen this document" can no longer render as "there is nothing to review".
+**Architecture:** One normalization at the boundary that already exists for this purpose, so scope entries can never name a file that does not exist, plus one fail-closed guard so that failure is loud instead of empty. A second, independent path to the same vacuous approval — a first-ever review of a plan inherited from the base branch — is documented below and deliberately left to its own change.
 
 **Tech Stack:** Python 3.10+, pytest. No new dependencies.
 
@@ -58,14 +57,20 @@ files = []  →  scope_diff_argv → []  →  empty target, all-`na` verdict, pl
 
 The precise discriminator is **existence, not change**: this defect is entirely about scope entries that can never name a real file. So the primary guard is *"the assignment scope is non-empty and not one of its entries matches any file tracked at `target_head`"*. An absolute path fails it always; an unchanged plan passes it always; and it does not care which baseline the range was computed from.
 
-**A first-ever plan review targets the artifact, not a diff.** The absolute-path bug is one way to reach a vacuous approval; there is a second, and the existence guard does not touch it. `mode == "full-change"` means `resolve_source_baseline` found no completed prior review by that source (`review_contract.py:108, :311-333`) — the reviewer **has never seen this plan**. If the plan was authored on the base branch and the feature branch changed only source, the diff for it is empty, and a contract-compliant reviewer approves a document it was never shown. `tests/unit/cli/test_review_prepare.py:269` pins that outcome as `EXIT_OK` today; that assertion predates this defect class and this change deliberately reverses it.
+## The second path to the same defect is split out, not solved here
 
-Neither remedy this plan's own review first proposed survives. Raising on it (round 2) wedges a legitimate workflow; dropping the question (round 3) leaves the hole open. The resolution is to make the target correct instead of policing it:
+Rounds 4 and 5 of this plan's own review established that the absolute path is not the only way to reach a vacuous approval. `mode == "full-change"` means `resolve_source_baseline` found no completed prior review by that source (`review_contract.py:108, :311-333`) — the reviewer **has never seen this plan**. A plan authored on the base branch and untouched on the feature branch therefore has an empty diff, and a contract-compliant reviewer approves a document it was never shown. `tests/unit/cli/test_review_prepare.py:269` pins that outcome as `EXIT_OK` today.
 
-- **`full-change` → the artifact content at `target_head`.** A reviewer who has never seen the document should be handed the document. For a plan created on the branch this is already what the diff produced, so the common case is unchanged; for a plan inherited from the base branch it is the difference between reviewing it and reviewing nothing.
-- **`incremental` → the diff since that source's baseline**, unchanged. Here an empty target is genuinely benign: the artifact was reviewed at the baseline and has not moved.
+That is a real defect and **this change does not fix it.** Fixing it means changing what a review targets, and rounds 2–5 oscillated on it precisely because it is not settled:
 
-This needs no new guard and cannot wedge, because it never raises.
+- raising on it (round 2) wedges a legitimate workflow;
+- dropping the question (round 3) leaves the hole open;
+- retargeting to the artifact's content (round 4) has no defined representation — `scope_diff_argv` emits `["git","diff",range,"--",*files]` and an *empty* argv is today's empty-target signal, so a content target needs a different argv shape plus decisions on `inspection["base"]` and `["files"]`, and that argv is frozen into `contract_digest`;
+- and its blast radius is not narrow: `full-change`'s base is the merge-base, so the target representation would change for effectively **every** first-round plan review, not just the inherited-plan case.
+
+Those are design questions with a digest-bearing contract, raised on round 4 of a change that was already in review. Folding them in is the exact failure this whole line of work exists to prevent: one document carrying a settled decision and an unsettled one, re-litigated every round. They belong to their own change, with rounds 4 and 5's findings as its design input.
+
+**What stays here** is the part no round has contested since round 1: adapter paths that can never name a real file, and a guard that makes that loud instead of empty. The split-out defect is registered in `private/OPEN-ITEMS.md` by Task 4, as DOABLE-NOW with rounds 4 and 5's findings attached — it must not survive only as a paragraph in a merged plan.
 
 ---
 
@@ -99,7 +104,7 @@ git commit -am "fix(review): resolve framework artifact paths repo-relative"
 
 ---
 
-### Task 2: Unmatched scope fails closed, and a first-ever plan review sees the artifact
+### Task 2: An unmatched assignment scope fails closed
 
 **Files:**
 - Modify: `src/super_harness/engineering/review_contract.py` (around the `inspection` construction, `:330-345`)
@@ -107,14 +112,13 @@ git commit -am "fix(review): resolve framework artifact paths repo-relative"
 
 **Step 1: Write the failing tests**
 
-- `test_compile_fails_when_scope_names_no_tracked_file`: the assignment scope is non-empty and no entry matches any file tracked at `target_head` → compilation raises rather than emitting an empty `diff_argv`. This is the absolute-path case.
+- `test_compile_fails_when_scope_names_no_tracked_file`: the assignment scope is non-empty and no entry matches any file tracked at `target_head` → compilation raises rather than emitting an empty `diff_argv`. This is the absolute-path case, and it is the only case that raises.
 - `test_compile_allows_unchanged_scope_in_incremental_range`: the scope entries exist at `target_head` but nothing in them changed since the incremental baseline, while other files did → **must still compile** with an empty target. This is a legitimate re-review round; failing it would wedge the reject loop.
-- `test_full_change_plan_review_targets_the_artifact`: `mode == "full-change"`, the plan exists at `target_head` and is unchanged in the range → the target is the plan's content at `target_head`, **not** an empty diff. This is the second path to a vacuous approval and the reason the existence guard alone is not enough.
-- `test_incremental_plan_review_targets_the_diff`: `mode == "incremental"` with an unchanged plan → an empty target is still correct and still compiles. The relaxation lives here and only here.
-
-**Reverse the pinned assertion.** `tests/unit/cli/test_review_prepare.py:269`'s `test_prepare_keeps_empty_plan_target_explicitly_empty` asserts `EXIT_OK` and an explicitly-empty target for exactly the full-change case above. It was written before this defect class was understood, and this change deliberately reverses it: rewrite it to expect the artifact target. Do not preserve it by weakening the fix.
+- `test_compile_allows_unmatched_scope_in_full_change_mode`: the scope entries exist at `target_head` and nothing in them changed in a non-empty range → **also compiles**, with an empty target. This is the inherited-plan case split out above; `tests/unit/cli/test_review_prepare.py:269` pins it today and must stay green, because this change deliberately does not touch it.
 - `test_compile_allows_empty_target_when_range_is_empty`: `base..head` has no changes at all → the existing empty-target path still works.
 - `test_compile_allows_empty_assignment_scope`: a role with no declared artifacts is unchanged.
+
+Every case except the first compiles. The guard keys on **existence**, never on emptiness, so it cannot fire on any legitimate round.
 
 **Step 2: Run to verify they fail.**
 
@@ -175,7 +179,10 @@ Run: `pytest tests/ -q && ruff check src tests && super-harness verify`
 git commit -am "docs: --framework selects the artifact resolver, not a no-op"
 ```
 
-`cli/init.py:525` carries a similar claim about `--framework` at install time, and `docs/cli-reference.md` will still carry that wording on the `init --framework` row after regeneration. Whether it is also false is a separate question about a different command; answering it here would widen a Micro change that is closing a live fail-open. **Register it in `private/OPEN-ITEMS.md` as DOABLE-NOW rather than leaving it unrecorded** — this project's convention is that anything explicitly punted gets an entry with its status.
+Two things are punted by this change and both get a `private/OPEN-ITEMS.md` entry as DOABLE-NOW — this project's convention is that anything explicitly deferred is recorded with its status, and neither of these may survive only as a paragraph inside a merged plan document:
+
+1. **A first-ever review targets a diff, so a plan inherited from the base branch is reviewed as nothing.** Carry rounds 4 and 5's findings as its design input: the undefined representation for a content target, its effect on `contract_digest`, and the fact that `full-change`'s merge-base means the change would touch effectively every first-round plan review.
+2. **`cli/init.py:525` makes the same "`--framework` is a no-op" claim** for install time, and `docs/cli-reference.md` will still carry that wording on the `init --framework` row after regeneration. Whether it is also false is a separate question about a different command; answering it here would widen a Micro change that is closing a live fail-open.
 
 ---
 
