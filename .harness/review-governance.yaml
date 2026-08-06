@@ -10,13 +10,24 @@ review:
       kind: automated
     human:
       kind: human
+  # TEMPORARY (2026-08-06): codex retired from both roles because codex-cli is
+  # unusable on this machine — the account rejects the configured model with
+  # `HTTP 400: The 'gpt-5.6-sol' model is not supported when using Codex with a
+  # ChatGPT account`, so every run produces nothing. Both roles are therefore
+  # SINGLE-SOURCE and cross-actor review is currently off.
+  #
+  # To restore: put codex back in both `participants` lists and set
+  # `min_independent: 2`, once codex-cli has a working model — or once a second
+  # producer protocol exists (see OPEN-ITEMS: an `omp` reviewer adapter would
+  # reach deepseek and others, but `omp` has no output-schema flag, so its
+  # verdict conformance would rest on import-time validation alone).
   roles:
     plan-reviewer:
-      participants: [codex, claude]
-      min_independent: 2
+      participants: [claude]
+      min_independent: 1
       max_automatic_rounds_per_epoch: 2
     code-reviewer:
-      participants: [codex, claude]
-      min_independent: 2
+      participants: [claude]
+      min_independent: 1
       max_automatic_rounds_per_epoch: 2
   require_distinct_model_families: false
