@@ -55,7 +55,9 @@ files = []  →  scope_diff_argv → []  →  empty target, all-`na` verdict, pl
 
 **Fail closed on paths that do not exist, not on ranges that are empty.** The obvious discriminator — "the range has changes but the scope matched none of them" — is wrong. `review_contract.py:328-335` runs the inspection against an *incremental* baseline whenever `resolve_source_baseline` returns an ancestor, so a legitimate re-review round where the plan is unchanged since that reviewer last looked (findings dispositioned `wontfix`, or addressed in the design document or the code instead) has a non-empty range and zero matching files. Guarding on that would hard-fail `review prepare` with no way forward except editing the plan to make the error go away.
 
-The precise discriminator is **existence, not change**: this defect is entirely about scope entries that can never name a real file. So the guard is *"the assignment scope is non-empty and not one of its entries matches any file tracked at `target_head`"*. An absolute path fails it always; an unchanged plan passes it always; and it does not care which baseline the range was computed from.
+The precise discriminator is **existence, not change**: this defect is entirely about scope entries that can never name a real file. So the primary guard is *"the assignment scope is non-empty and not one of its entries matches any file tracked at `target_head`"*. An absolute path fails it always; an unchanged plan passes it always; and it does not care which baseline the range was computed from.
+
+**The range check still applies in `full-change` mode.** Relaxing it everywhere would leave the same vacuous-approval class reachable by a different cause: in `full-change` mode a non-empty range that matches no scope entry is never a legitimate plan review either. The counterexample that forced the relaxation — an unchanged plan in a re-review round — only exists in `incremental` mode. So the strict check is kept, conditioned on `mode`, which `review_contract.py:333` already computes one line above the split. Two guards, each covering what the other cannot.
 
 ---
 
@@ -71,6 +73,8 @@ The precise discriminator is **existence, not change**: this defect is entirely 
 - `test_resolve_spec_plan_paths_openspec_is_repo_relative`: the same for `openspec/changes/<id>/tasks.md`.
 - `test_resolve_spec_plan_paths_drops_paths_outside_root`: an adapter reporting a path outside the workspace yields `""` for that slot rather than a path no scope entry can ever match. Silently dropping is correct here — the alternative is a crash in a pure path-derivation helper that several callers assume never raises.
 - `test_resolve_spec_plan_paths_passes_through_relative`: an adapter already returning relative paths is unchanged (idempotent).
+
+**Replace, do not add.** `tests/unit/adapters/test_registry.py:265-270`'s existing `test_resolve_spec_plan_paths_openspec` asserts `str(tmp_path / "openspec" / ... / "proposal.md")` — it pins the exact absolute contract being removed and will go red at Step 4. Rewrite that test to the repo-relative expectation rather than leaving two contradicting tests for an executor to adjudicate.
 
 **Step 2: Run to verify they fail**
 
@@ -97,6 +101,7 @@ git commit -am "fix(review): resolve framework artifact paths repo-relative"
 
 - `test_compile_fails_when_scope_names_no_tracked_file`: the assignment scope is non-empty and no entry matches any file tracked at `target_head` → compilation raises rather than emitting an empty `diff_argv`. This is the absolute-path case.
 - `test_compile_allows_unchanged_scope_in_incremental_range`: the scope entries exist at `target_head` but nothing in them changed since the incremental baseline, while other files did → **must still compile** with an empty target. This is a legitimate re-review round; failing it would wedge the reject loop.
+- `test_compile_fails_on_unmatched_scope_in_full_change_mode`: the same shape in `full-change` mode → raises. The relaxation above is `incremental`-only.
 - `test_compile_allows_empty_target_when_range_is_empty`: `base..head` has no changes at all → the existing empty-target path still works. This is the case the current message was written for and it must survive.
 - `test_compile_allows_empty_assignment_scope`: a role with no declared artifacts is unchanged.
 
