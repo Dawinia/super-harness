@@ -137,9 +137,13 @@ Behaviours to pin:
 - three `plan_ready` boundaries with one automatic round each count as three, not one
 - `status` and `review begin` read the **same** counter. Otherwise `status` reports budget the agent does not have and `review begin` then blocks it, which is exactly the misinformation this cut exists to remove
 - authorized rounds keep counting as automatic, so every round past the budget stays a fresh decision
-- replayed against Task 1's corpus at a budget of 6, every change's authorization count equals `max(0, rounds - 6)`: four of the eight corpus changes need none, the other four need 3, 12, 7 and 4 — **26 prompts across four changes**, which is the design table's `budget alone` column for that row. **Assert this in the corpus's own `corpus-NN` ids**, never the source repository's change names: Task 1's redaction removes those names from the fixture and pins a scan proving it, and the only corpus id with a published identity is `corpus-06`
+- replayed against Task 1's corpus at a budget of 6, each change's authorization count equals `max(0, started_automatic_rounds - 6)`, asserted per change in the corpus's own `corpus-NN` ids and **computed by the test from the corpus**, not transcribed from this document or from the design
 
-**This cut deliberately ships the noisy half of that table.** The design's 11-prompts-on-two-changes figure is the `threshold + budget` column and needs Cut 3's severity threshold, which is out of scope here. Cut 1 alone will therefore interrupt two of the changes the design classifies as converged — the 9-round and 18-round curves, costing 3 and 12 prompts. That is expected, not a defect to test around: the budget alone is an alarm-fatigue machine, the pair is what makes it precise, and shipping the brake first is a deliberate ordering because it is the only half that bounds the worst case. Do not tune the counter to reach 11.
+**A round whose runs failed still consumes budget.** The counter counts `review_round_started`, and `automatic_rounds_used` (`engineering/review_runs.py:73`) already does exactly that. Keep it. A failed round costs real money and produces no findings, which is the worst possible round to make invisible to a brake whose purpose is bounding spend — and a source that keeps failing is itself something Task 5 exists to put in front of a human. Excluding failed rounds would let a change burn unbounded money on half-failing rounds without ever tripping the brake.
+
+**Therefore the design's replay table is not this criterion's expected value, and must not be copied into it.** That table is measured in *imported* rounds (`per imported plan round`, `69 imported plan rounds`, curve lengths summing to 69) while the counter counts started rounds — the design's own text puts one change at 12 started rounds against a 10-entry curve. Started ≥ imported everywhere, so the real prompt counts are at or above the table's.
+
+**Task 3 recomputes that table against started rounds and reports the result** — the corpus carries both `review_round_started` and the imported results, so this is a derivation, not a new measurement. Two consequences to state rather than assume: this cut ships the *noisy* half of the design's pair (the severity threshold that makes it precise is Cut 3, out of scope here), so changes the design classifies as converged **will** be interrupted; and if the recomputed numbers materially change the picture that chose 6, the default is revisited on that evidence. Do not tune the counter to make either table's numbers come out.
 
 ## Task 4 — the evidence derivation
 
@@ -149,12 +153,12 @@ A pure fold over one change's events: no I/O, never raises — the same discipli
 
 Behaviours to pin, each replayed against the corpus:
 
-- which round this is, counted per change
-- the per-round `blocker+major` curve and the per-round total-findings curve, in round order
+- which round this is — **Task 3's started-round count**, the same number the budget compares against, so the block and the counter never disagree
+- the per-round `blocker+major` curve and the per-round total-findings curve, in round order. These come from **imported** rounds, because a failed round produced no findings; a round counted by the budget but absent from the curve is exactly the case the human needs to see, so the evidence states both counts rather than reconciling them
 - cumulative tokens including cache
 - per review source, how many consecutive rounds it has been missing
 - whether the last round improved on the one before — defined as its `blocker+major` count against the previous round's, on that curve and no other
-- the headline case: `corpus-06` at round 7 reports the curve `[3,2,3,2,2,1]`, **an improving last round** (2 → 1), and one source missing for six consecutive rounds. That combination is the point: six rounds have bought a net reduction of two findings while a required reviewer was absent throughout, and the most recent step down is exactly what would talk an automatic rule — or a human reading only the last two numbers — into funding round seven
+- the headline case, with every number **derived from the corpus by the test**, never transcribed: at the round where `corpus-06` first exceeds a budget of 6, the evidence reports its findings curve so far, **an improving last step**, and one source missing for every round so far. That combination is the point — the rounds bought a small net reduction while a required reviewer was absent throughout, and the improving last step is exactly what talks an automatic rule, or a human reading only the last two numbers, into funding one more round
 
 The reason recorded on the most recent `review_run_failed` belongs here too — "the second reviewer is unavailable" is useless without "why". Task 1 strips that free text, so this one datum is pinned by a hand-written fixture, and the test name says which datum is not corpus-backed.
 
@@ -217,7 +221,7 @@ So the retirement is part of this change and is reviewed with everything else, a
 
 ## Done when
 
-`pytest tests/ -q && ruff check src tests && super-harness doc check && super-harness verify` all pass; a config carrying the old key fails loudly; a freshly `init`-ed repository loads its own generated governance; and replaying the corpus at a budget of 6 produces 26 authorizations, spread over the four corpus changes whose round counts exceed 6 — the design table's `budget alone` figure, not the `threshold + budget` one.
+`pytest tests/ -q && ruff check src tests && super-harness doc check && super-harness verify` all pass; a config carrying the old key fails loudly; a freshly `init`-ed repository loads its own generated governance; and replaying the corpus at a budget of 6 authorizes exactly `max(0, started_automatic_rounds - 6)` times per change, with the recomputed per-change totals recorded by the test and reported.
 
 ---
 
