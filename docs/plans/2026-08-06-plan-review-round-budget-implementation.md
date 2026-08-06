@@ -85,7 +85,7 @@ Task 3's counter is the foundation for Task 4's derivation, which is the foundat
 
 Exported once from a private repository's `.harness/events.jsonl`, which cannot itself be a test dependency. Hand-written fixtures are not an option: validating this design against curves we invented would be circular, and the shape that matters — a stable one to three majors per round, indefinitely — is not something we would have thought to fabricate.
 
-**The redaction contract.** Keep event identity and shape: `event_id`, `type`, `change_id`, `timestamp`, `actor`, `framework`, and from the payload only `reviewer`, `epoch_id`, `round_id`, `run_id`, `source`, `automatic`, `outcome`, `missing_sources`, `min_independent`, each finding's `severity`, and the receipt's token counts. Drop every finding summary, file and id; every digest; every path; and all `reason` free text. Rewrite `change_id` to `corpus-01`…`corpus-08` in first-appearance order and the actor identifier to `corpus@example.invalid`.
+**The redaction contract.** Keep event identity and shape: `event_id`, `type`, `change_id`, `timestamp`, `actor`, `framework`, and from the payload only `reviewer`, `epoch_id`, `round_id`, `run_id`, `source`, `automatic`, `outcome`, `missing_sources`, `min_independent`, each finding's `severity`, and the receipt's token counts. Drop every finding summary and file; every digest; every path; and all `reason` free text. Rewrite `change_id` to `corpus-01`…`corpus-08` in first-appearance order, the actor identifier to `corpus@example.invalid`, and each finding id to `c01/f-07` form — **ids are rewritten, not dropped**, as the design specifies. They carry no content once the summary and file are gone, and Cut 2 is entirely per-id disposal, so a corpus without them cannot replay the cut it exists to serve. Re-exporting later is not cheap: the source repository is private and cannot be a test dependency.
 
 Dropping `reason` costs exactly one datum: Task 4's missing-source reason cannot be corpus-replayed, and is pinned by a hand-written fixture instead. The redaction is not weakened to make that one test easier.
 
@@ -132,12 +132,14 @@ The generators in `cli/init.py` and `cli/init_plan.py` currently share one role 
 Behaviours to pin:
 
 - a config carrying `max_automatic_rounds_per_epoch` raises, naming both keys and stating that the semantics changed from per-epoch to per-change
-- defaults differ per role: 6 for `plan-reviewer`, 2 for `code-reviewer`
+- defaults differ per role: 6 for `plan-reviewer`, 2 for `code-reviewer`. `review.roles` keys are arbitrary non-empty strings (`engineering/review_governance.py:165-169`), so this is a per-role default table over a **fallback of 2**, today's single literal — any other role name, adopter-defined or future, keeps 2. An unknown role name is not a new error condition; this task does not narrow what `review.roles` accepts
 - a freshly `init`-ed repository's `review-governance.yaml` loads without error and yields those two values
 - three `plan_ready` boundaries with one automatic round each count as three, not one
 - `status` and `review begin` read the **same** counter. Otherwise `status` reports budget the agent does not have and `review begin` then blocks it, which is exactly the misinformation this cut exists to remove
 - authorized rounds keep counting as automatic, so every round past the budget stays a fresh decision
-- replayed against Task 1's corpus at a budget of 6, per-change authorization counts match the design document's table, and the six converging changes require zero
+- replayed against Task 1's corpus at a budget of 6, the per-change authorization counts are `stage3a` 3, `stage3b` 12, `stage1` 7, `stage5b` 4 — **26 prompts across four changes**, which is the design table's `budget alone` column for that row
+
+**This cut deliberately ships the noisy half of that table.** The design's 11-prompts-on-two-changes figure is the `threshold + budget` column and needs Cut 3's severity threshold, which is out of scope here. Cut 1 alone will therefore interrupt `stage3a` and `stage3b`, both of which the design classifies as converged. That is expected, not a defect to test around: the budget alone is an alarm-fatigue machine, the pair is what makes it precise, and shipping the brake first is a deliberate ordering because it is the only half that bounds the worst case. Do not tune the counter to reach 11.
 
 ## Task 4 — the evidence derivation
 
@@ -151,8 +153,8 @@ Behaviours to pin, each replayed against the corpus:
 - the per-round `blocker+major` curve and the per-round total-findings curve, in round order
 - cumulative tokens including cache
 - per review source, how many consecutive rounds it has been missing
-- whether the last round improved on the one before
-- the headline case: `corpus-06` at round 7 reports the curve `[3,2,3,2,2,1]`, no improvement, and one source missing for six consecutive rounds
+- whether the last round improved on the one before — defined as its `blocker+major` count against the previous round's, on that curve and no other
+- the headline case: `corpus-06` at round 7 reports the curve `[3,2,3,2,2,1]`, **an improving last round** (2 → 1), and one source missing for six consecutive rounds. That combination is the point: six rounds have bought a net reduction of two findings while a required reviewer was absent throughout, and the most recent step down is exactly what would talk an automatic rule — or a human reading only the last two numbers — into funding round seven
 
 The reason recorded on the most recent `review_run_failed` belongs here too — "the second reviewer is unavailable" is useless without "why". Task 1 strips that free text, so this one datum is pinned by a hand-written fixture, and the test name says which datum is not corpus-backed.
 
@@ -215,7 +217,7 @@ So the retirement is part of this change and is reviewed with everything else, a
 
 ## Done when
 
-`pytest tests/ -q && ruff check src tests && super-harness doc check && super-harness verify` all pass; a config carrying the old key fails loudly; a freshly `init`-ed repository loads its own generated governance; and replaying the corpus at a budget of 6 authorizes only on the two changes that diverged.
+`pytest tests/ -q && ruff check src tests && super-harness doc check && super-harness verify` all pass; a config carrying the old key fails loudly; a freshly `init`-ed repository loads its own generated governance; and replaying the corpus at a budget of 6 produces 26 authorizations across `stage3a`, `stage3b`, `stage1` and `stage5b` — the design table's `budget alone` figure, not the `threshold + budget` one.
 
 ---
 
