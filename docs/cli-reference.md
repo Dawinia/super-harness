@@ -233,7 +233,7 @@ super-harness change start [OPTIONS] SLUG
 |-------|------|---------|-------------|
 | `SLUG` | text | *required* |  |
 | `--description` | text | `''` | Human-readable change description. |
-| `--framework` | {openspec\|spec-kit\|superpowers\|plain} | `'plain'` | Framework label recorded on the event (v0.1: no-op placeholder; framework adapters auto-detect at observe time.) |
+| `--framework` | {openspec\|spec-kit\|superpowers\|plain} | `'plain'` | Framework recorded on the event; selects which adapter resolves this change's spec and plan artifacts when a review contract is compiled, and so what a reviewer is shown. |
 | `--as` | text | — | Author identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
