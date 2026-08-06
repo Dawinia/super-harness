@@ -113,6 +113,16 @@ def _render_human(r: ValueReport) -> str:
         f"  - review tokens: {_fmt_tokens(r.review_tokens)} "
         f"(review side only, self-reported; data for {r.review_runs_with_usage}/"
         f"{r.review_runs_total} runs; main coding-agent cost not captured)",
+    ]
+    if r.review_reported_cost_usd is not None:
+        # Only ever the producers' own figure. Omitted entirely when nobody reported
+        # one, because a `$0.00` line would read as "this was free".
+        lines.append(
+            f"  - producer-reported cost: ${r.review_reported_cost_usd:,.2f} "
+            f"(stated by the producer for {r.review_runs_with_reported_cost}/"
+            f"{r.review_runs_total} runs; not a harness estimate)"
+        )
+    lines += [
         f"  - review rework: {r.findings_wontfix} false alarm(s) (wontfix), "
         f"{r.rejected_rounds} rejected round(s)",
         "",

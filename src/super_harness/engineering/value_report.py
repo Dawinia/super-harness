@@ -48,6 +48,10 @@ class ValueReport:
     armed_decisions: int
     # attribution — where the review tokens went (Step 1 of risk-tiered review)
     cost_breakdown: tuple[CostBreakdownRow, ...] = ()
+    # Producer-stated cost. `None` means no run reported one — never 0.0, which would
+    # read as "this was free". The harness never prices tokens itself.
+    review_reported_cost_usd: float | None = None
+    review_runs_with_reported_cost: int = 0
 
 
 @dataclass(frozen=True)
@@ -209,26 +213,67 @@ def _edits_blocked(
     return len(seen)
 
 
+def _honest_int(value: object) -> int | None:
+    """An integer a producer actually reported, else None.
+
+    `bool` is excluded deliberately: `isinstance(True, int)` holds in Python, so a
+    JSON `true` landing in a numeric usage field would otherwise be counted as one
+    token. A nonsense value must read as 'not captured', never as a small number.
+    """
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+# Cache keys that are ADDITIONAL to `input_tokens`. Summed by name, never by
+# pattern — the two shipped producers disagree and a "looks like cache" rule would
+# be wrong for one of them:
+#
+#   claude  input_tokens: 63          cache_read_input_tokens: 2,629,763   -> additive
+#   codex   input_tokens: 1,007,614   cached_input_tokens:       898,816   -> ALREADY INSIDE
+#
+# Adding codex's key would inflate its total by ~89%; leaving it alone is already
+# correct. codex's `reasoning_output_tokens` also stays uncounted — a few thousand
+# against a million is below the resolution this number serves.
+_ADDITIVE_CACHE_KEYS = ("cache_read_input_tokens", "cache_creation_input_tokens")
+_SUMMED_USAGE_KEYS = ("input_tokens", "output_tokens", *_ADDITIVE_CACHE_KEYS)
+
+
 def _usage_tokens(usage: object) -> int | None:
     """Best-effort token total from a producer-reported usage dict. None if absent.
 
-    Prefer an explicit total; else input+output; else None. NEVER guess from
+    Prefer an explicit total; else sum the named keys; else None. NEVER guess from
     arbitrary keys — an unknown shape must read as 'not captured', never fabricate.
     """
     if not isinstance(usage, dict):
         return None
-    total = usage.get("total_tokens")
-    if isinstance(total, int):
+    total = _honest_int(usage.get("total_tokens"))
+    if total is not None:
         return total
-    inp, out = usage.get("input_tokens"), usage.get("output_tokens")
-    if isinstance(inp, int) or isinstance(out, int):
-        return (inp if isinstance(inp, int) else 0) + (out if isinstance(out, int) else 0)
-    return None
+    known = [
+        value
+        for value in (_honest_int(usage.get(key)) for key in _SUMMED_USAGE_KEYS)
+        if value is not None
+    ]
+    return sum(known) if known else None
 
 
-def _review_cost(events: list[Event]) -> tuple[int, int, int]:
-    """(tokens, runs_total, runs_with_usage) over review_result_imported events."""
-    tokens = runs_total = runs_with_usage = 0
+def _reported_cost(receipt: object) -> float | None:
+    """A cost the producer stated about itself, else None. Never derived."""
+    if not isinstance(receipt, dict):
+        return None
+    value = receipt.get("reported_cost_usd")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _review_cost(events: list[Event]) -> tuple[int, int, int, float | None, int]:
+    """(tokens, runs_total, runs_with_usage, reported_cost, runs_with_reported_cost).
+
+    `reported_cost` is None until some run states one, so a report can distinguish
+    "nobody told us" from "it was free".
+    """
+    tokens = runs_total = runs_with_usage = runs_with_cost = 0
+    cost: float | None = None
     for ev in events:
         if ev.type != "review_result_imported":
             continue
@@ -240,7 +285,11 @@ def _review_cost(events: list[Event]) -> tuple[int, int, int]:
         if t is not None:
             runs_with_usage += 1
             tokens += t
-    return tokens, runs_total, runs_with_usage
+        c = _reported_cost(receipt)
+        if c is not None:
+            runs_with_cost += 1
+            cost = c if cost is None else cost + c
+    return tokens, runs_total, runs_with_usage, cost, runs_with_cost
 
 
 def _round_outcomes(events: list[Event]) -> dict[str, str]:
@@ -340,7 +389,13 @@ def build_value_report(
     findings_resolved, findings_wontfix, findings_open_undisposed = _finding_counts(
         windowed, all_events
     )
-    review_tokens, review_runs_total, review_runs_with_usage = _review_cost(windowed)
+    (
+        review_tokens,
+        review_runs_total,
+        review_runs_with_usage,
+        reported_cost,
+        runs_with_reported_cost,
+    ) = _review_cost(windowed)
     return ValueReport(
         since=since,
         until=until,
@@ -356,4 +411,6 @@ def build_value_report(
         rejected_rounds=_rejected_rounds(windowed),
         armed_decisions=_armed_decisions(workspace_root),
         cost_breakdown=_cost_breakdown(windowed),
+        review_reported_cost_usd=reported_cost,
+        review_runs_with_reported_cost=runs_with_reported_cost,
     )

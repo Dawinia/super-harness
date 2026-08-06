@@ -1823,6 +1823,7 @@ def import_result(
         "usage": parsed.usage,
         "duration_ms": parsed.duration_ms,
         "tool_trace": parsed.tool_trace,
+        "reported_cost_usd": parsed.reported_cost_usd,
     }
     framework = cs.framework if cs is not None else "plain"
     _emit_review_event(
