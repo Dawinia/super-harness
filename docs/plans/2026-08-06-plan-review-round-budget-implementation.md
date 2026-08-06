@@ -199,12 +199,19 @@ Both halves ship together: a cut that lands only the report drops the half the a
 
 The governance examples move to the new key, the per-change semantics, and the differing per-role defaults. `AGENTS.md` is regenerated and may come back unchanged; it is declared because the generator decides that, not the author.
 
-**The codex retirement stays, is reviewed here, and its reversal is registered rather than performed.** `.harness/review-governance.yaml` currently drops codex from both roles on this branch, because codex-cli is unusable on this machine — the account rejects the configured model, so every run produces nothing. Restoring it inside this change is unsound in both possible orderings, and one of them is unrecoverable:
+**The codex retirement stays, is reviewed here, and restoring codex is recorded rather than performed.** `.harness/review-governance.yaml` drops codex from both roles on this branch. Two independent blockers, both measured on 2026-08-07:
+
+- the pinned model is rejected. `gpt-5.6-sol`, `gpt-5.6-codex`, `gpt-5.1-codex` and `gpt-5-codex` each return HTTP 400 `not supported when using Codex with a ChatGPT account`; `gpt-5.5` is accepted. That pin is a value this repository chooses, in the gitignored `.harness/review-profiles.local.yaml`, and it is already corrected there — which is exactly why it cannot be the recorded blocker.
+- with an accepted model the account answers `You've hit your usage limit … try again at Aug 28th, 2026`. This one is external: the only local levers are a paid upgrade or waiting. The design document already recorded this quota lock for the diagnosed change's dead codex source.
+
+Restoring codex inside this change is unsound whichever ordering is chosen:
 
 - restore **before** code review and the change can never merge. `engineering/review_governance.py:192` forces `min_independent` to equal the participant count, so codex comes back as a *required* source, and `cli/review.py:1474-1476` closes any round missing a required source as `execution_failed`. Code review would be unreachable, not merely single-source.
-- restore **after** `code_review_passed` and the file governing review independence merges having never been reviewed, edited from `READY_TO_MERGE`, which blocks edits and offers no path back into review.
+- restore **after** `code_review_passed` and the file governing review independence merges having never been reviewed. `super-harness plan redeclare` is legal from `READY_TO_MERGE` (`core/transitions.py:108-110`; only `ARCHIVED`/`ABANDONED` are terminal), so there *is* a way back into review — and taking it lands in the first bullet, where the restored source cannot run. The trap is the loop, not a missing exit.
 
-So the retirement is part of this change and is reviewed with everything else, and the attestation states that both this plan review and the code review ran single-source. Restoring codex is registered in `private/OPEN-ITEMS.md` as `BLOCKED-upstream` on codex-cli having a model the account accepts. The honest state of the world is one working producer; tracked governance claiming two makes every round fail closed.
+So the retirement is part of this change and is reviewed with everything else, and the attestation states that both this plan review and the code review ran single-source.
+
+**Task 7 updates the existing register entry, it does not add a second one.** `private/OPEN-ITEMS.md` already carries this item — ⑤ `codex 评审源的模型 pin`, recording that PRs #87–#89 all ran single-source — classified `DOABLE-NOW`. Splitting the same subject across two entries in the register that is the deferred-work single source of truth is worse than either classification. Entry ⑤ is rewritten to name both blockers, to record `gpt-5.5` as the verified-accepted pin, and to reclassify as `BLOCKED-upstream` **on the quota, dated 2026-08-28** — not on the pin, which is fixed. Because the fix landed in a gitignored file, that entry is the only tracked record of it.
 
 ## Done when
 
