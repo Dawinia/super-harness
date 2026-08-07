@@ -344,14 +344,31 @@ starts editing. The hot-path gate enforces lifecycle rules:
       plan-reviewer:
         participants: [codex, claude]
         min_independent: 2
-        max_automatic_rounds: 2
+        max_automatic_rounds: 6   # optional; default 6 for this role
       code-reviewer:
         participants: [codex, claude]
         min_independent: 2
-        max_automatic_rounds: 2
+        max_automatic_rounds: 2   # optional; default 2 for this role
         blocking_severity: major   # optional; blocker|major|minor (default major)
     require_distinct_model_families: false
   ```
+
+  `max_automatic_rounds` is the number of automatic rounds a role may start **for one
+  change** before a human has to fund the next one. Per change, not per epoch: a
+  rejected plan re-fires `plan_ready`, so an epoch-scoped budget resets exactly when it
+  should start biting. A round whose runs failed still counts — it cost money and
+  produced no findings, which is the worst kind of round to hide from a brake.
+
+  Defaults differ per role — **6** for `plan-reviewer`, **2** for `code-reviewer`, and 2
+  for any other role name — because their histories differ. Omit the key to take the
+  default. The old `max_automatic_rounds_per_epoch` is a hard error rather than a silent
+  alias: the same number now means something different.
+
+  When the budget is reached, `review begin` refuses the round, prints the round
+  history, cumulative token cost and any reviewer that has been failing, and records a
+  state-preserving `review_budget_exceeded` event that `super-harness report` and the
+  merge attestation both surface. Authorizing another round is `review authorize`, one
+  round at a time.
 
   Each user's explicit producer choices stay out of Git:
 
