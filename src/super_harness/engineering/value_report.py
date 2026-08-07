@@ -368,15 +368,22 @@ def _rejected_rounds(events: list[Event]) -> int:
 
 
 def _budget_rounds_held(events: list[Event]) -> int:
-    """Distinct (reviewer, attempted_round) pairs the budget refused.
+    """Distinct (change_id, reviewer, attempted_round) triples the budget refused.
 
     Deduped on purpose: `review begin` emits one event per refused invocation, so a
     retrying agent would otherwise inflate a number the report and the merge
     attestation both present as rounds. An event missing `attempted_round` (older or
     malformed) falls back to its own id so it counts once and never merges with
     another round.
+
+    ``change_id`` is part of the identity, like everywhere else in this module
+    (``_edits_blocked`` keys on ``(change_id, file, state)``; ``_dispositions`` on
+    ``(change_id, id)``). Without it the count collapses across changes: ``report`` is
+    repo-wide and, at the shipped plan budget of 6, EVERY change's first block carries
+    ``attempted_round=7``, so a global key would fold all of them into one and
+    undercount exactly the thing this number exists to make visible.
     """
-    seen: set[tuple[str, object]] = set()
+    seen: set[tuple[str, str, object]] = set()
     for ev in events:
         if ev.type != "review_budget_exceeded":
             continue
@@ -384,7 +391,7 @@ def _budget_rounds_held(events: list[Event]) -> int:
         reviewer = payload.get("reviewer")
         attempted = payload.get("attempted_round")
         key = attempted if isinstance(attempted, int) else f"event:{ev.event_id}"
-        seen.add((reviewer if isinstance(reviewer, str) else "", key))
+        seen.add((ev.change_id, reviewer if isinstance(reviewer, str) else "", key))
     return len(seen)
 
 

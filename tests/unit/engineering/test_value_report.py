@@ -524,3 +524,31 @@ def test_report_budget_hits_separates_the_two_roles(tmp_path):
     ])
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.review_budget_hits == 2
+
+
+def test_budget_hits_do_not_collapse_across_changes(tmp_path):
+    """f-01. `report` is repo-wide, and with the shipped plan budget of 6 EVERY change's
+    first block is attempted_round=7 — so a dedupe key without change_id collapses them
+    all into one and systematically undercounts the brake it exists to make visible.
+
+    Finding identity in this module is per-change everywhere else for the same reason
+    (`_edits_blocked` keys on (change_id, file, state); `_dispositions` on
+    (change_id, id), with a comment explaining that ids recur across changes)."""
+    events_file = _write_events(tmp_path, [
+        _budget_exceeded("e1", "c1", "2026-08-06T00:00:00Z", attempted=7),
+        _budget_exceeded("e2", "c2", "2026-08-06T01:00:00Z", attempted=7),
+        _budget_exceeded("e3", "c3", "2026-08-06T02:00:00Z", attempted=7),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 3
+
+
+def test_budget_hits_still_dedupe_retries_within_one_change(tmp_path):
+    """The retry-proofing must survive the per-change fix."""
+    events_file = _write_events(tmp_path, [
+        _budget_exceeded("e1", "c1", "2026-08-06T00:00:00Z", attempted=7),
+        _budget_exceeded("e2", "c1", "2026-08-06T00:01:00Z", attempted=7),
+        _budget_exceeded("e3", "c2", "2026-08-06T00:02:00Z", attempted=7),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 2
