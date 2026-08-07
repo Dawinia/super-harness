@@ -70,8 +70,13 @@ class ReviewerSourceGovernance:
 # keys are arbitrary non-empty strings, so an adopter-defined or future role name is
 # not an error condition — it simply gets the fallback. Six for `plan-reviewer` comes
 # from replaying eight recorded changes: at two the brake interrupts a change that
-# converged in three rounds, and `code-reviewer`'s own history supports two.
-_DEFAULT_ROUND_BUDGETS: dict[str, int] = {"plan-reviewer": 6, "code-reviewer": 2}
+# converged in three rounds. Four for `code-reviewer` because per-change counting is NOT
+# behaviour-neutral there — four events re-enter a state that re-fires
+# `implementation_complete`, so a restarted change now carries its earlier code rounds
+# forward where the per-epoch counter washed them. Replayed: at 2 the brake fires 8 times
+# across 5 of 10 changes, at 4 never, and the longest recorded code review is 4 rounds.
+# Keeping 2 would silently tighten the code path under a rename.
+_DEFAULT_ROUND_BUDGETS: dict[str, int] = {"plan-reviewer": 6, "code-reviewer": 4}
 
 
 @dataclass(frozen=True)

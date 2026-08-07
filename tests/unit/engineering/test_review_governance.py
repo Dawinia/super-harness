@@ -300,15 +300,6 @@ def test_plan_reviewer_round_budget_defaults_to_six(tmp_path: Path) -> None:
     assert load_review_governance(tmp_path).roles["plan-reviewer"].max_automatic_rounds == 6
 
 
-def test_code_reviewer_round_budget_defaults_to_two(tmp_path: Path) -> None:
-    _write_governance(tmp_path, (
-        "    code-reviewer:\n"
-        "      participants: [claude]\n"
-        "      min_independent: 1\n"
-    ))
-    assert load_review_governance(tmp_path).roles["code-reviewer"].max_automatic_rounds == 2
-
-
 def test_unknown_role_keeps_the_fallback_of_two(tmp_path: Path) -> None:
     """`review.roles` keys are arbitrary non-empty strings. An adopter-defined role is
     not a new error condition; it gets today's single literal."""
@@ -328,3 +319,19 @@ def test_explicit_round_budget_overrides_the_per_role_default(tmp_path: Path) ->
         "      max_automatic_rounds: 3\n"
     ))
     assert load_review_governance(tmp_path).roles["plan-reviewer"].max_automatic_rounds == 3
+
+
+def test_code_reviewer_default_is_four_because_restarts_carry_rounds_forward(
+    tmp_path: Path,
+) -> None:
+    """Per-change counting is NOT behaviour-neutral on the code path: four events
+    re-enter a state that re-fires `implementation_complete`, so a restarted change
+    carries its earlier code rounds forward where the per-epoch counter washed them.
+    Keeping 2 would silently tighten the code path under a rename — replayed, 2 fires
+    8 times across 5 of 10 corpus changes and 4 never fires."""
+    _write_governance(tmp_path, (
+        "    code-reviewer:\n"
+        "      participants: [claude]\n"
+        "      min_independent: 1\n"
+    ))
+    assert load_review_governance(tmp_path).roles["code-reviewer"].max_automatic_rounds == 4

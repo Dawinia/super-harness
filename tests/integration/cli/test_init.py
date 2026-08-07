@@ -216,13 +216,13 @@ def test_init_creates_harness_dir(tmp_path: Path):
     assert review["roles"]["plan-reviewer"] == {
         "participants": ["human"],
         "min_independent": 1,
-        # Per-role: plan review gets 6 automatic rounds per change, code review 2.
+        # Per-role: plan review gets 6 automatic rounds per change, code review 4.
         "max_automatic_rounds": 6,
     }
     assert review["roles"]["code-reviewer"] == {
         "participants": ["human"],
         "min_independent": 1,
-        "max_automatic_rounds": 2,
+        "max_automatic_rounds": 4,
     }
     assert not (tmp_path / ".harness" / "review-profiles.local.yaml").exists()
     assert (tmp_path / ".harness" / "sensors.yaml").exists()
@@ -1794,4 +1794,4 @@ def test_init_emits_per_role_round_budgets(tmp_path: Path):
 
     governance = load_review_governance(tmp_path)
     assert governance.roles["plan-reviewer"].max_automatic_rounds == 6
-    assert governance.roles["code-reviewer"].max_automatic_rounds == 2
+    assert governance.roles["code-reviewer"].max_automatic_rounds == 4

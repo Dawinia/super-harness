@@ -198,8 +198,32 @@ is a hard error.** No deprecation period, no silent acceptance. The value's mean
 means something entirely different is the same failure as `blocking_severity` being
 silently inert on the plan path. Better to make someone edit one line.
 
-For `code-reviewer` this rename is behaviour-neutral: with no reject-loop edge back to
-`implementation_complete`, per-change and per-epoch counting already coincide.
+**This rename is not behaviour-neutral for `code-reviewer`, and an earlier draft of this
+document claimed it was.** The claim rested on there being no edge back to
+`implementation_complete`. There are four: `plan_redeclared` and `intent_redeclared` reset
+to `INTENT_DECLARED`, `implementation_restarted` returns to `PLAN_APPROVED`, and
+`implementation_invalidated` returns to `IMPLEMENTATION_IN_PROGRESS`
+(`core/transitions.py`). This document's own mechanism-4 paragraph already noted
+`implementation_complete` firing twice on three of the eight changes, which contradicts the
+claim it appeared beside.
+
+So per-epoch and per-change counting diverge on the code path too, and they diverge on
+exactly the changes that took `plan redeclare` — the sanctioned late-scope-expansion route
+shipped in PR#77. Since no reset channel is provided, a restarted change re-enters code
+review carrying the rounds it spent before the restart.
+
+**The code default therefore moves from 2 to 4.** Not to soften the brake, but because
+under per-epoch counting a restart already washed the counter, so the effective bound was
+never "2 per change" and keeping the number at 2 would silently tighten the code path while
+the commit message said "rename". Measured on the corpus, code rounds per change run
+1, 1, 1, 2, 2, 3, 3, 4, 4, 4: at a budget of 2 the brake fires 8 times across 5 of 10
+changes, at 3 it fires 3 times, and at 4 it never fires. Four is the value that leaves
+converging changes alone — the same standard that chose 6 for the plan path.
+
+That the corpus contains no pathological code change is itself the finding: code review
+converges in 1–4 rounds everywhere in it, because its claims are falsifiable by an
+executor. The code budget is a ceiling against a failure mode not yet observed, and it is
+set where the observed data ends rather than where it would start interrupting healthy work.
 
 **3. Exceeding the budget requires authorization per round, unchanged.** Authorized rounds
 still count as automatic (`cli/review.py:1074`), so each further round is a fresh decision

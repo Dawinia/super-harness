@@ -214,7 +214,7 @@ def _skeleton_files() -> dict[str, str]:
             "    code-reviewer:\n"
             "      participants: [human]\n"
             "      min_independent: 1\n"
-            "      max_automatic_rounds: 2\n"
+            "      max_automatic_rounds: 4\n"
             "      # blocking_severity: major   # optional; one of blocker|major|minor\n"
             "      #   (default major). A code-review round rejects only when a finding\n"
             "      #   is at or above this severity; findings below it pass with the\n"
@@ -324,7 +324,7 @@ def _configure_review_producers(
             "sources": governance_sources,
             "roles": {
                 "plan-reviewer": _role(6),
-                "code-reviewer": _role(2),
+                "code-reviewer": _role(4),
             },
             "require_distinct_model_families": False,
         },

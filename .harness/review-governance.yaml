@@ -30,7 +30,9 @@ review:
       min_independent: 1
       max_automatic_rounds: 6
     code-reviewer:
+      # Four per CHANGE. A restart carries earlier code rounds forward now, so 2
+      # would be tighter than the per-epoch counter it replaced.
       participants: [claude]
       min_independent: 1
-      max_automatic_rounds: 2
+      max_automatic_rounds: 4
   require_distinct_model_families: false

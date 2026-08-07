@@ -126,7 +126,7 @@ def _render_human(r: ValueReport) -> str:
         # Only when it fired. A "0 times" line would be noise on every other change.
         lines.append(
             f"  - round budget: held {r.review_budget_hits} automatic round(s) for a "
-            "human funding decision"
+            "human funding decision (distinct rounds, not retries)"
         )
     lines += [
         f"  - review rework: {r.findings_wontfix} false alarm(s) (wontfix), "

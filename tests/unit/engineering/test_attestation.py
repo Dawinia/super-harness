@@ -600,5 +600,5 @@ def test_attestation_discloses_budget_hits(tmp_path) -> None:
     ]
     disclosure = derive_independence(events)
 
-    assert disclosure["review_budget_hits"] == 2
-    assert derive_independence([ev("e0", "intent_declared")])["review_budget_hits"] == 0
+    assert disclosure["review_budget_rounds_held"] == 2
+    assert derive_independence([ev("e0", "intent_declared")])["review_budget_rounds_held"] == 0

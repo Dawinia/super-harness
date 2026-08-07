@@ -348,7 +348,7 @@ starts editing. The hot-path gate enforces lifecycle rules:
       code-reviewer:
         participants: [codex, claude]
         min_independent: 2
-        max_automatic_rounds: 2   # optional; default 2 for this role
+        max_automatic_rounds: 4   # optional; default 4 for this role
         blocking_severity: major   # optional; blocker|major|minor (default major)
     require_distinct_model_families: false
   ```
@@ -359,8 +359,11 @@ starts editing. The hot-path gate enforces lifecycle rules:
   should start biting. A round whose runs failed still counts — it cost money and
   produced no findings, which is the worst kind of round to hide from a brake.
 
-  Defaults differ per role — **6** for `plan-reviewer`, **2** for `code-reviewer`, and 2
-  for any other role name — because their histories differ. Omit the key to take the
+  Defaults differ per role — **6** for `plan-reviewer`, **4** for `code-reviewer`, and 2
+  for any other role name — because their histories differ. Four on the code path is
+  not a softer brake: a restart (`plan redeclare`, `implementation_restarted`) now
+  carries earlier code rounds forward where the old per-epoch counter washed them, so
+  keeping 2 would have tightened that path under what is otherwise a rename. Omit the key to take the
   default. The old `max_automatic_rounds_per_epoch` is a hard error rather than a silent
   alias: the same number now means something different.
 

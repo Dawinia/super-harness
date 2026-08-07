@@ -630,7 +630,7 @@ def _review_content(
         "review": {
             "base_branch": "main",
             "sources": governance_sources,
-            "roles": {"plan-reviewer": _role(6), "code-reviewer": _role(2)},
+            "roles": {"plan-reviewer": _role(6), "code-reviewer": _role(4)},
             "require_distinct_model_families": False,
         },
     }

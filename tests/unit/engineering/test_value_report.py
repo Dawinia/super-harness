@@ -501,3 +501,26 @@ def test_report_budget_hits_is_zero_when_the_brake_never_fired(tmp_path):
     events_file = _write_events(tmp_path, [])
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.review_budget_hits == 0
+
+
+def test_report_budget_hits_counts_distinct_rounds_not_retries(tmp_path):
+    """An agent that retries a blocked `review begin` — the behaviour the block forbids
+    and cannot prevent — must not be able to inflate a number presented as rounds."""
+    events_file = _write_events(tmp_path, [
+        _budget_exceeded("e1", "c1", "2026-08-06T00:00:00Z", attempted=7),
+        _budget_exceeded("e2", "c1", "2026-08-06T00:01:00Z", attempted=7),  # retry
+        _budget_exceeded("e3", "c1", "2026-08-06T00:02:00Z", attempted=7),  # retry
+        _budget_exceeded("e4", "c1", "2026-08-06T01:00:00Z", attempted=8),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 2
+
+
+def test_report_budget_hits_separates_the_two_roles(tmp_path):
+    events_file = _write_events(tmp_path, [
+        _budget_exceeded("e1", "c1", "2026-08-06T00:00:00Z", attempted=7),
+        _budget_exceeded("e2", "c1", "2026-08-06T01:00:00Z", attempted=7,
+                         reviewer="code-reviewer"),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 2

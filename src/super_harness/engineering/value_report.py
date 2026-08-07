@@ -52,7 +52,10 @@ class ValueReport:
     # read as "this was free". The harness never prices tokens itself.
     review_reported_cost_usd: float | None = None
     review_runs_with_reported_cost: int = 0
-    # Times the round budget refused an automatic round and made a human decide.
+    # Distinct rounds the budget refused, NOT blocks: one refused round can be
+    # re-attempted, and an agent that retries — the behaviour the block forbids and
+    # cannot prevent, which is why the event exists at all — must not be able to
+    # inflate the figure the cut adds to make cost trustworthy.
     # Surfaced whether or not the agent relayed the block — this repo's own research
     # concluded that specifications read into context and not followed is the actual
     # widespread failure, so the brake records itself.
@@ -364,6 +367,27 @@ def _rejected_rounds(events: list[Event]) -> int:
     )
 
 
+def _budget_rounds_held(events: list[Event]) -> int:
+    """Distinct (reviewer, attempted_round) pairs the budget refused.
+
+    Deduped on purpose: `review begin` emits one event per refused invocation, so a
+    retrying agent would otherwise inflate a number the report and the merge
+    attestation both present as rounds. An event missing `attempted_round` (older or
+    malformed) falls back to its own id so it counts once and never merges with
+    another round.
+    """
+    seen: set[tuple[str, object]] = set()
+    for ev in events:
+        if ev.type != "review_budget_exceeded":
+            continue
+        payload = ev.payload if isinstance(ev.payload, dict) else {}
+        reviewer = payload.get("reviewer")
+        attempted = payload.get("attempted_round")
+        key = attempted if isinstance(attempted, int) else f"event:{ev.event_id}"
+        seen.add((reviewer if isinstance(reviewer, str) else "", key))
+    return len(seen)
+
+
 def _armed_decisions(workspace_root: Path) -> int:
     """Ratified decisions carrying an executable check (bite-test). Best-effort:
     any load error -> 0 (the footnote must never crash the report)."""
@@ -418,7 +442,5 @@ def build_value_report(
         cost_breakdown=_cost_breakdown(windowed),
         review_reported_cost_usd=reported_cost,
         review_runs_with_reported_cost=runs_with_reported_cost,
-        review_budget_hits=sum(
-            1 for ev in windowed if ev.type == "review_budget_exceeded"
-        ),
+        review_budget_hits=_budget_rounds_held(windowed),
     )

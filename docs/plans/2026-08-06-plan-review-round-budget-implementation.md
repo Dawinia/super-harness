@@ -133,7 +133,9 @@ The generators in `cli/init.py` and `cli/init_plan.py` currently share one role 
 Behaviours to pin:
 
 - a config carrying `max_automatic_rounds_per_epoch` raises, naming both keys and stating that the semantics changed from per-epoch to per-change
-- defaults differ per role: 6 for `plan-reviewer`, 2 for `code-reviewer`. `review.roles` keys are arbitrary non-empty strings (`engineering/review_governance.py:165-169`), so this is a per-role default table over a **fallback of 2**, today's single literal — any other role name, adopter-defined or future, keeps 2. An unknown role name is not a new error condition; this task does not narrow what `review.roles` accepts
+- defaults differ per role: 6 for `plan-reviewer`, **4** for `code-reviewer`. `review.roles` keys are arbitrary non-empty strings (`engineering/review_governance.py:165-169`), so this is a per-role default table over a **fallback of 2**, today's single literal — any other role name, adopter-defined or future, keeps 2. An unknown role name is not a new error condition; this task does not narrow what `review.roles` accepts
+- **the code path is not behaviour-neutral under this rename, and the code default moves 2 → 4 because of it.** Four events re-enter a state that can re-fire `implementation_complete` (`plan_redeclared`, `intent_redeclared`, `implementation_restarted`, `implementation_invalidated`), so a restarted change now carries its pre-restart code rounds forward where the per-epoch counter used to wash them. Keeping 2 would silently tighten the code path under a commit that says "rename". Replayed: at 2 the brake fires 8 times across 5 of 10 corpus changes, at 4 it never fires, and the longest code review in the corpus is 4 rounds
+- a change that restarts implementation keeps its code-round count: `implementation_complete` firing a second time does **not** anchor a fresh count. That is the no-reset rule applied consistently, not an oversight — a change that genuinely needs to start over is closed and reopened
 - a freshly `init`-ed repository's `review-governance.yaml` loads without error and yields those two values
 - three `plan_ready` boundaries with one automatic round each count as three, not one
 - `status` and `review begin` read the **same** counter. Otherwise `status` reports budget the agent does not have and `review begin` then blocks it, which is exactly the misinformation this cut exists to remove
@@ -194,8 +196,8 @@ Behaviours to pin:
 - the block message carries every item from Task 4, plus an explicit instruction to the agent: stop, relay this verbatim to the human, do not retry, do not route around it
 - a `review_budget_exceeded` event lands in `events.jsonl` carrying the evidence, emitted before the process exits
 - replaying that event through the reducer leaves the state unchanged, and `docs/state-machine.md` lists it among the state-preserving events (`doc check` enforces that list)
-- `report` counts how many times the change hit the budget
-- the merge attestation discloses the same count
+- `report` counts **distinct over-budget rounds**, not blocks: one `review begin` invocation per refused round emits one event, and an agent that retries — the behaviour the block text forbids and cannot prevent, which is the whole premise of recording the event at all — must not be able to inflate the figure. Count unique attempted rounds per reviewer
+- the merge attestation discloses the same count, under a label that says rounds
 - the authorization prompt displays the same items before asking for a reason
 
 Both halves ship together: a cut that lands only the report drops the half the agent cannot wash.
