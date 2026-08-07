@@ -52,6 +52,7 @@ from super_harness.core.scope_match import (
 )
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
+from super_harness.engineering.review_budget import derive_round_budget_evidence
 from super_harness.engineering.review_contract import ReviewContractError, compile_review_contract
 from super_harness.engineering.review_governance import (
     ReviewGovernance,
@@ -1576,6 +1577,45 @@ def _close_round_if_terminal(
     return outcome, milestone
 
 
+def _missing_source_notices(
+    root: Path, change: str, reviewer: str
+) -> list[dict[str, object]]:
+    """Sources the rounds closed so far have lost, newest streak first.
+
+    Read AFTER the closing event lands so the round just closed is counted. The data
+    was already in every `review_round_closed` payload and nothing read it: on the
+    diagnosed change one source was dead from round 1 and eleven consecutive
+    single-source rounds passed unremarked. Worth most at round 1, worth nothing by
+    round 7 — so the caller prints it only when non-empty.
+    """
+    evidence = derive_round_budget_evidence(
+        _change_events(root, change), reviewer=reviewer
+    )
+    return [
+        {
+            "source": source,
+            "consecutive_rounds_missing": streak,
+            "reason": evidence.missing_source_reasons.get(source),
+        }
+        for source, streak in sorted(evidence.missing_source_streaks.items())
+    ]
+
+
+def _format_missing_sources(notices: list[dict[str, object]]) -> str:
+    """One human line per lost source; empty string when nothing is missing."""
+    if not notices:
+        return ""
+    lines = ["super-harness: review source(s) missing from this round:"]
+    for notice in notices:
+        reason = notice.get("reason")
+        detail = f"; last failure: {reason}" if isinstance(reason, str) and reason else ""
+        lines.append(
+            f"  {notice['source']} — missing "
+            f"{notice['consecutive_rounds_missing']} consecutive round(s){detail}"
+        )
+    return "\n".join(lines)
+
+
 @review_group.group("result")
 def result_group() -> None:
     """Import completed caller-owned reviewer results."""
@@ -1856,6 +1896,8 @@ def import_result(
     )
     refresh_state_after_emit(root)
     new_cs = derive_state(events_path(root)).get(change)
+    # After the close event, so the round just closed is counted.
+    notices = _missing_source_notices(root, change, reviewer) if outcome else []
     data = {
         "change": change,
         "reviewer": reviewer,
@@ -1868,6 +1910,7 @@ def import_result(
         "round_outcome": outcome,
         "milestone": milestone,
         "new_state": new_cs.current_state if new_cs is not None else None,
+        "missing_sources": notices,
     }
     if ctx.obj.get("json"):
         click.echo(
@@ -1883,6 +1926,9 @@ def import_result(
             f"super-harness: imported {run_id} ({run.source}); "
             f"round={outcome or 'open'}"
         )
+        warning = _format_missing_sources(notices)
+        if warning:
+            click.echo(warning, err=True)
     sys.exit(EXIT_OK)
 
 
@@ -1965,12 +2011,14 @@ def fail_run(
         framework=framework,
     )
     refresh_state_after_emit(root)
+    notices = _missing_source_notices(root, change, reviewer) if outcome else []
     data = {
         "change": change,
         "reviewer": reviewer,
         "run_id": run_id,
         "round_outcome": outcome,
         "milestone": milestone,
+        "missing_sources": notices,
     }
     if ctx.obj.get("json"):
         click.echo(
@@ -1985,6 +2033,9 @@ def fail_run(
         click.echo(
             f"super-harness: recorded failed run {run_id}; round={outcome or 'open'}"
         )
+        warning = _format_missing_sources(notices)
+        if warning:
+            click.echo(warning, err=True)
     sys.exit(EXIT_OK)
 
 

@@ -1652,3 +1652,110 @@ def test_plan_reviewer_minor_only_round_still_rejects(
     )
     assert imported.exit_code == EXIT_OK, imported.output
     assert json.loads(imported.output)["data"]["round_outcome"] == "rejected"
+
+
+def test_round_close_reports_missing_source(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """A round where one reviewer rejected and the other died closes as a clean
+    `rejected` and the death used to go unmentioned. On the diagnosed change one
+    source was dead from round 1 and eleven consecutive single-source rounds passed
+    unremarked. The close ordering is NOT changed — a rejection is a rejection
+    regardless of quorum — only the output is.
+    """
+    root = _repo(tmp_path)
+    _enable_claude(root)
+    _fake_codex(root, monkeypatch)
+    _fake_claude(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    codex_run, codex_verdict = _result_for_source(begun, "codex")
+    checklist = cast(list[dict[str, object]], codex_verdict["checklist"])
+    checklist[0]["status"] = "fail"
+    codex_verdict["findings"] = [
+        {"id": "B-1", "severity": "blocker", "file": "src/app.py", "summary": "unsafe"}
+    ]
+    codex_path = root / "codex-result.json"
+    codex_path.write_text(json.dumps(codex_verdict), encoding="utf-8")
+    assert CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "result", "import", "change",
+        "--reviewer", "code-reviewer", "--run-id", cast(str, codex_run["run_id"]),
+        "--result-file", str(codex_path),
+    ]).exit_code == EXIT_OK
+    claude_run, _ = _result_for_source(begun, "claude")
+
+    failed = CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "run", "fail", "change",
+        "--reviewer", "code-reviewer", "--run-id", cast(str, claude_run["run_id"]),
+        "--reason", "the account rejects the configured model (HTTP 400)",
+    ])
+
+    assert failed.exit_code == EXIT_OK, failed.output
+    assert "round=rejected" in failed.output          # ordering unchanged
+    assert "claude" in failed.output
+    assert "the account rejects the configured model (HTTP 400)" in failed.output
+    assert "1 consecutive" in failed.output
+
+
+def test_round_close_carries_missing_sources_as_structured_data(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _enable_claude(root)
+    _fake_codex(root, monkeypatch)
+    _fake_claude(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    codex_run, codex_verdict = _result_for_source(begun, "codex")
+    codex_path = root / "codex-result.json"
+    codex_path.write_text(json.dumps(codex_verdict), encoding="utf-8")
+    assert CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "result", "import", "change",
+        "--reviewer", "code-reviewer", "--run-id", cast(str, codex_run["run_id"]),
+        "--result-file", str(codex_path),
+    ]).exit_code == EXIT_OK
+    claude_run, _ = _result_for_source(begun, "claude")
+
+    failed = CliRunner().invoke(main, [
+        "--json", "--workspace", str(root), "review", "run", "fail", "change",
+        "--reviewer", "code-reviewer", "--run-id", cast(str, claude_run["run_id"]),
+        "--reason", "usage limit reached; try again 2026-08-28",
+    ])
+
+    assert failed.exit_code == EXIT_OK, failed.output
+    notices = json.loads(failed.output)["data"]["missing_sources"]
+    assert notices == [{
+        "source": "claude",
+        "consecutive_rounds_missing": 1,
+        "reason": "usage limit reached; try again 2026-08-28",
+    }]
+
+
+def test_round_close_says_nothing_when_no_source_is_missing(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Print only when non-empty — this information decays to noise by round seven."""
+    root = _repo(tmp_path)
+    _enable_claude(root)
+    _fake_codex(root, monkeypatch)
+    _fake_claude(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    last = None
+    for source in ("codex", "claude"):
+        run, verdict = _result_for_source(begun, source)
+        path = root / f"{source}-result.json"
+        # The claude protocol parses a raw CLI envelope, not a bare verdict.
+        raw = {"structured_output": verdict} if source == "claude" else verdict
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        last = CliRunner().invoke(main, [
+            "--json", "--workspace", str(root), "review", "result", "import", "change",
+            "--reviewer", "code-reviewer", "--run-id", cast(str, run["run_id"]),
+            "--result-file", str(path),
+        ])
+        assert last.exit_code == EXIT_OK, last.output
+
+    assert last is not None
+    data = json.loads(last.output)["data"]
+    assert data["round_outcome"] == "approved"
+    assert data["missing_sources"] == []
