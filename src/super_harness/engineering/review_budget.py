@@ -74,15 +74,20 @@ def _missing_streaks(closed_missing: list[list[str]]) -> dict[str, int]:
     nothing by round seven, and "missing in 3 of 9 rounds, none of them recent" is a
     different situation from "missing in the last 3".
     """
+    if not closed_missing:
+        return {}
+    # Only a source missing from the LATEST closed round has a live streak. Seeding from
+    # anywhere else reports a recovered source as missing, which is worse than silence:
+    # the point of this datum is that a dead reviewer should be believed.
+    candidates = set(closed_missing[-1])
     streaks: dict[str, int] = {}
-    broken: set[str] = set()
     for missing in reversed(closed_missing):
-        current = set(missing)
-        for source in current - broken:
+        current = candidates & set(missing)
+        if not current:
+            break
+        for source in current:
             streaks[source] = streaks.get(source, 0) + 1
-        # A source tracked so far but absent from this earlier round: its run of
-        # consecutive recent rounds ends here and must never extend again.
-        broken |= {source for source in streaks if source not in current}
+        candidates = current
     return streaks
 
 
@@ -94,8 +99,14 @@ def derive_round_budget_evidence(
     ``events`` is one change's stream in append order. Never raises: an unreadable
     payload contributes nothing rather than aborting the fold.
     """
-    blocker_major: list[int] = []
-    totals: list[int] = []
+    # Curves are per ROUND, keyed by round_id in first-appearance order. A round with
+    # `min_independent >= 2` imports once per source, so counting imports would render a
+    # 4-round change as 8 rounds reviewed and destroy the started-minus-reviewed gap that
+    # exists to show rounds which produced nothing. The recorded corpus cannot catch this:
+    # all 71 of its plan rounds imported exactly once, its second source having been dead
+    # from the first round.
+    round_order: list[str] = []
+    per_round: dict[str, list[int]] = {}
     tokens: int | None = None
     closed_missing: list[list[str]] = []
     reasons: dict[str, str] = {}
@@ -108,8 +119,17 @@ def derive_round_budget_evidence(
         if event.type == "review_result_imported":
             counts = _severity_counts(payload.get("verdict"))
             if counts is not None:
-                blocker_major.append(counts[0])
-                totals.append(counts[1])
+                raw_round = payload.get("round_id")
+                # An import with no round_id cannot be grouped with anything; give it its
+                # own bucket rather than silently merging unrelated rounds.
+                key = raw_round if isinstance(raw_round, str) and raw_round else (
+                    f"event:{event.event_id}"
+                )
+                if key not in per_round:
+                    round_order.append(key)
+                    per_round[key] = [0, 0]
+                per_round[key][0] += counts[0]
+                per_round[key][1] += counts[1]
             receipt = payload.get("receipt")
             found = usage_tokens(receipt.get("usage")) if isinstance(receipt, dict) else None
             if found is not None:
@@ -128,6 +148,8 @@ def derive_round_budget_evidence(
             if isinstance(source, str) and source and isinstance(reason, str) and reason:
                 reasons[source] = reason
 
+    blocker_major = [per_round[key][0] for key in round_order]
+    totals = [per_round[key][1] for key in round_order]
     improved: bool | None = None
     if len(blocker_major) >= 2:
         improved = blocker_major[-1] < blocker_major[-2]

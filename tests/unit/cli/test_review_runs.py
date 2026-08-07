@@ -1853,3 +1853,34 @@ def test_authorize_prompt_repeats_the_evidence(
     assert "round 3 against an automatic budget of 2" in result.output
     assert "usage limit reached" in result.output
     assert "authorization cancelled" in result.output
+
+
+def test_authorize_json_envelope_is_not_polluted_by_the_evidence_block(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """rb/f-03. The evidence is a diagnostic, so it belongs on stderr rather than
+    prepended to the `--json` document.
+
+    Scoped honestly: `click.confirm` already writes its prompt to stdout, which is
+    pre-existing behaviour and its own (separate) question for `--json` callers. What
+    this pins is that the multi-line evidence block does not add to that.
+    """
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _exhaust_budget(root, 2)
+    _prepare(root)
+    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
+
+    result = CliRunner().invoke(
+        main,
+        ["--json", "--workspace", str(root), "review", "authorize", "change",
+         "--reviewer", "code-reviewer", "--reason", "one more round"],
+        input="y\n",
+    )
+
+    assert result.exit_code == EXIT_OK, result.output
+    assert "Round-budget evidence" in result.stderr
+    assert "Round-budget evidence" not in result.stdout
+    # The envelope is still there, after click.confirm's own prompt line.
+    envelope = result.stdout[result.stdout.index("{"):]
+    assert json.loads(envelope)["command"] == "review authorize"

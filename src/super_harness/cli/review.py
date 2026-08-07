@@ -1307,7 +1307,11 @@ def authorize_round(
                     _change_events(root, change), reviewer=reviewer
                 ),
                 max_automatic_rounds=role.max_automatic_rounds,
-            )
+            ),
+            # stderr, like the block itself: a `--json` caller in a TTY must still be
+            # able to parse stdout, and every other diagnostic in this module already
+            # keeps out of the envelope's way.
+            err=True,
         )
     prompt = (
         f"Authorize exactly one automated {reviewer} round for "

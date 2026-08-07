@@ -387,3 +387,90 @@ def test_missing_source_reason_from_fixture_not_corpus() -> None:
     assert evidence.missing_source_reasons["codex"] == (
         "usage limit reached; try again 2026-08-28"
     )
+
+
+# --- code review rb/f-01, rb/f-02: shapes the corpus cannot exercise ----------------
+
+def _ev(eid, etype, payload):
+    from super_harness.core.events import Actor, Event
+
+    return Event(event_id=eid, type=etype, change_id="c",
+                 timestamp="2026-08-07T00:00:00Z",
+                 actor=Actor(type="agent", identifier="x"),
+                 framework="plain", payload=payload)
+
+
+def test_a_recovered_source_is_not_reported_as_missing() -> None:
+    """rb/f-01. A source that failed once and came back is present now. Reporting it as
+    missing puts a false claim in the budget block and in the post-import warning, which
+    is worse than saying nothing: the whole point of the datum is that a dead reviewer
+    should be believed."""
+    from super_harness.engineering.review_budget import derive_round_budget_evidence
+
+    events = [
+        _ev("c1", "review_round_closed", {"reviewer": "plan-reviewer",
+                                          "round_id": "r1", "missing_sources": ["codex"]}),
+        _ev("c2", "review_round_closed", {"reviewer": "plan-reviewer",
+                                          "round_id": "r2", "missing_sources": []}),
+    ]
+    evidence = derive_round_budget_evidence(events, reviewer="plan-reviewer")
+    assert evidence.missing_source_streaks == {}
+
+
+def test_streak_counts_only_back_from_the_latest_round() -> None:
+    """A streak is consecutive-and-current, not a total: 'missing in 3 of 9 rounds, none
+    of them recent' is a different situation from 'missing in the last 3'."""
+    from super_harness.engineering.review_budget import derive_round_budget_evidence
+
+    def closed(n, missing):
+        return _ev(f"c{n}", "review_round_closed",
+                   {"reviewer": "plan-reviewer", "round_id": f"r{n}",
+                    "missing_sources": missing})
+
+    # codex missing in the last two; claude only in the oldest.
+    events = [closed(1, ["codex", "claude"]), closed(2, ["codex"]), closed(3, ["codex"])]
+    evidence = derive_round_budget_evidence(events, reviewer="plan-reviewer")
+    assert evidence.missing_source_streaks == {"codex": 3}
+
+
+def test_curves_count_rounds_not_imports_under_two_sources() -> None:
+    """rb/f-02. With min_independent >= 2 — which `init` produces whenever an adopter
+    picks two producers — each round imports once per source. Counting imports made a
+    4-round change render as 8 'rounds that reviewed', and destroyed the
+    started-minus-imported gap that exists to show rounds which produced nothing.
+
+    The recorded corpus cannot catch this: all 71 of its plan rounds imported exactly
+    once, because its second source was dead from the first round.
+    """
+    from super_harness.engineering.review_budget import derive_round_budget_evidence
+
+    events = []
+    for n in (1, 2):
+        events.append(_ev(f"s{n}", "review_round_started", {
+            "reviewer": "plan-reviewer", "round_id": f"r{n}", "automatic": True}))
+        for source, sev in (("claude", "major"), ("codex", "blocker")):
+            events.append(_ev(f"i{n}{source}", "review_result_imported", {
+                "reviewer": "plan-reviewer", "round_id": f"r{n}", "source": source,
+                "verdict": {"findings": [{"id": f"{source}/f-1", "severity": sev}]},
+            }))
+
+    evidence = derive_round_budget_evidence(events, reviewer="plan-reviewer")
+
+    assert evidence.started_rounds == 2
+    assert evidence.imported_rounds == 2               # rounds, not the 4 imports
+    assert evidence.blocker_major_curve == (2, 2)      # both sources' findings per round
+    assert evidence.total_findings_curve == (2, 2)
+
+
+def test_imports_without_a_round_id_each_count_once() -> None:
+    """Legacy or malformed imports must not silently merge into one round."""
+    from super_harness.engineering.review_budget import derive_round_budget_evidence
+
+    events = [
+        _ev("i1", "review_result_imported", {"reviewer": "plan-reviewer",
+                                             "verdict": {"findings": []}}),
+        _ev("i2", "review_result_imported", {"reviewer": "plan-reviewer",
+                                             "verdict": {"findings": []}}),
+    ]
+    evidence = derive_round_budget_evidence(events, reviewer="plan-reviewer")
+    assert evidence.imported_rounds == 2
