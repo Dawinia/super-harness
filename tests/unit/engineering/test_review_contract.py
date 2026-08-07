@@ -818,3 +818,65 @@ def test_both_roles_get_the_new_checklist_rendering() -> None:
     assert "Checklist — review these and nothing else:" in code
     assert "Checklist: [" not in code
     assert "passes with the finding left open" in code
+
+
+def _compiled_prompt_for(tmp_path: Path, reviewer: str) -> str:
+    """Compile one assignment for `reviewer` and return its frozen prompt."""
+    profile = ReviewProducerProfile(
+        source="external", protocol="codex-cli", model="m",
+        cost_class="standard", agent_options={},
+    )
+    governance = ReviewGovernance(
+        version=1,
+        base_branch="main",
+        sources={"external": ReviewerSourceGovernance(name="external", kind="automated")},
+        roles={
+            reviewer: ReviewerRoleGovernance(
+                reviewer=reviewer,
+                participants=("external",),
+                min_independent=1,
+                max_automatic_rounds=2,
+            )
+        },
+        require_distinct_model_families=False,
+    )
+    bundle = {
+        "base": "main",
+        "change": "change",
+        "reviewer": reviewer,
+        "bundle_digest": "digest",
+        "checklist": ["architecture"],
+        "spec_path": "",
+        "plan_path": "docs/plan.md",
+    }
+    compiled = compile_review_contract(
+        tmp_path, bundle=bundle, governance=governance,
+        profiles={"external": profile}, events=[], declared=["src/", "docs/"],
+    )
+    return str(compiled["assignments"][0]["prompt"])
+
+
+def test_consequence_gate_is_wired_to_the_role_not_just_to_the_flag(
+    tmp_path: Path,
+) -> None:
+    """Pinned WHERE THE ROLE IS KNOWN, and asserted on both sides.
+
+    One comparison in `compile_review_contract` decides which reviewer receives a
+    finding-SUPPRESSING instruction. Inverting it to `code-reviewer` is the exact
+    defect this change exists to prevent, and every unit test that calls
+    `_review_prompt` directly passes the flag as an argument, so none of them can
+    see it. Both directions are asserted here because either alone still passes
+    under the inversion.
+    """
+    _scope_repo(tmp_path)
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "work")
+
+    plan_prompt = _compiled_prompt_for(tmp_path, "plan-reviewer")
+    code_prompt = _compiled_prompt_for(tmp_path, "code-reviewer")
+
+    assert "BUILD THE WRONG THING" in plan_prompt
+    assert "BUILD THE WRONG THING" not in code_prompt
+    # The exhaustiveness instruction can only ADD findings and stays role-agnostic.
+    assert "Be exhaustive" in plan_prompt
+    assert "Be exhaustive" in code_prompt
