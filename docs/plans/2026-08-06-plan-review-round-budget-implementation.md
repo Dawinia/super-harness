@@ -30,6 +30,7 @@ scope:
     - tests/integration/cli/test_status.py
     - tests/unit/adapters/reviewer/test_claude_cli.py
     - tests/unit/cli/test_init_plan.py
+    - tests/unit/cli/test_report.py
     - tests/unit/cli/test_review_prepare.py
     - tests/unit/cli/test_review_runs.py
     - tests/unit/core/test_review_bundle.py
