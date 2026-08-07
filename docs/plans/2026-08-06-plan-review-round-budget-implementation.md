@@ -8,6 +8,8 @@ scope:
     - AGENTS.md
     - docs/getting-started.md
     - docs/state-machine.md
+    - docs/decisions/d-events-append-only.md
+    - docs/decisions/d-fixed-transition-matrix.md
     - private/OPEN-ITEMS.md
     - .harness/review-governance.yaml
     - src/super_harness/adapters/reviewer/base.py
@@ -183,7 +185,7 @@ Behaviours to pin:
 
 ## Task 6 — the block carries the evidence, records it, and discloses it
 
-`core/events.py:27` (`EXTENSION_EVENT_TYPES`) · `core/transitions.py:19` (`_INFORMATIONAL`) · `docs/state-machine.md:69-80` · `cli/review.py:907-935` (the block) and `:1142-1250` (`authorize_round`) · `engineering/value_report.py` · `cli/report.py` · `engineering/attestation.py` · tests in `tests/unit/cli/test_review_runs.py`, `tests/unit/engineering/test_value_report.py`, `tests/unit/engineering/test_attestation.py`
+`core/events.py:27` (`EXTENSION_EVENT_TYPES`) · `core/transitions.py:19` (`_INFORMATIONAL`) · `docs/state-machine.md:69-80` · `docs/decisions/d-events-append-only.md` and `docs/decisions/d-fixed-transition-matrix.md` — both tier-2 decisions anchor those two source files, so `decision check` demands a reconcile and the reconcile re-stamps them; they are in scope for that reason and no other · `cli/review.py:907-935` (the block) and `:1142-1250` (`authorize_round`) · `engineering/value_report.py` · `cli/report.py` · `engineering/attestation.py` · tests in `tests/unit/cli/test_review_runs.py`, `tests/unit/engineering/test_value_report.py`, `tests/unit/engineering/test_attestation.py`
 
 The **block** is the load-bearing surface, not the authorization prompt. The human does not read the CLI's stderr; the human reads what the agent says. An agent without the numbers can only say "I was blocked, please approve", which is the rubber-stamp path. By the time anyone types `review authorize` the decision is already made, so the prompt repeating the evidence is insurance, not the primary channel.
 
