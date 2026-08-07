@@ -86,7 +86,7 @@ The consequence test is deliberately phrased on outcome rather than on topic. Ro
 
 Behaviours to pin:
 
-- The rendered prompt names every resolved checklist item, and the recordable-shape section still instructs the reviewer to echo each item exactly once.
+- The rendered prompt names every resolved checklist item, and the recordable-shape section is **reworded** to demand the bare id — the pre-change "copy each assigned checklist item exactly, once" now literally reads as "copy the whole `- id: definition` line", which is not in the `enum` spliced from the bare-id list (`core/review_verdict.py:104`) and, on the human/aggregate path, yields checklist keys `_aggregate_verdicts` cannot match to the required ids. The id must stay separable from its definition in the rendering, and the instruction must say so.
 - **Both roles'** prompts change, so `prompt_digest` and `contract_digest` change for both — a packet frozen before this change cannot silently satisfy the new contract, and an in-flight code-review round must be re-prepared. That is the intended cost of changing what was asked; nothing is grandfathered.
 - A previously imported result whose checklist does not cover the newly required items loses incremental eligibility and the next round falls back to `full-change`. This is the existing coverage rule in `resolve_source_baseline`; it must degrade to a full re-read, never to a crash or a silent partial target.
 - `code-reviewer` keeps its current prior-findings and pass-with-open wording. It gains the checklist rendering and the exhaustiveness instruction, and it must **not** carry the consequence test.
