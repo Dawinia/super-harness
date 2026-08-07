@@ -78,16 +78,19 @@ Behaviours to pin:
 
 1. The checklist renders as one line per id, carrying its definition when the mapping has one and the bare id when it does not, instead of a JSON array. **This applies to every reviewer** — `code-reviewer`'s five ids render as bare lines.
 2. An instruction to be exhaustive, verbatim: *Be exhaustive: work through the entire target and report EVERY distinct issue you can substantiate, not only the most severe one. Returning a single finding when more exist is an incomplete review. Do not stop once the checklist verdict is decided.*
-3. A consequence test, verbatim: *Before reporting any finding, answer this question: following this document literally, would the implementer BUILD THE WRONG THING, GET STUCK, or would TWO IMPLEMENTERS BUILD DIFFERENT THINGS? If none of the three is true, do not report it — however defensible the observation is. Wording, internal cross-reference numbering, arithmetic, line-number citations and prose consistency are NOT findings unless they change one of those three answers.*
+3. A consequence test, **emitted for `plan-reviewer` only**, verbatim: *Before reporting any finding, answer this question: following this document literally, would the implementer BUILD THE WRONG THING, GET STUCK, or would TWO IMPLEMENTERS BUILD DIFFERENT THINGS? If none of the three is true, do not report it — however defensible the observation is. Wording, internal cross-reference numbering, arithmetic, line-number citations and prose consistency are NOT findings unless they change one of those three answers.*
 
 The consequence test is deliberately phrased on outcome rather than on topic. Roughly two fifths of the findings in the replayed pathological case were internal contradictions between sections of the plan, and most of those did block implementation. A prohibition written as "do not report internal inconsistency" would have discarded them.
+
+**The split between 2 and 3 is the rule, not a detail of this change.** An instruction that can only *add* findings is safe to give every reviewer; one that *suppresses* findings must match what it filters. The consequence test is phrased about a *document* and its *implementers* and excludes `arithmetic` — on a code delta a reviewer applying it literally can drop a real off-by-one. Its wording is a measured artefact from plan review, and inventing an unmeasured code-shaped variant is the mistake this change exists to avoid, so code review gets no consequence gate at all. Whether it needs one is deferred to **issue #99**; re-adding this one to code review as a conformance fix would re-open the exposure.
 
 Behaviours to pin:
 
 - The rendered prompt names every resolved checklist item, and the recordable-shape section still instructs the reviewer to echo each item exactly once.
 - **Both roles'** prompts change, so `prompt_digest` and `contract_digest` change for both — a packet frozen before this change cannot silently satisfy the new contract, and an in-flight code-review round must be re-prepared. That is the intended cost of changing what was asked; nothing is grandfathered.
 - A previously imported result whose checklist does not cover the newly required items loses incremental eligibility and the next round falls back to `full-change`. This is the existing coverage rule in `resolve_source_baseline`; it must degrade to a full re-read, never to a crash or a silent partial target.
-- `code-reviewer` keeps its current prior-findings and pass-with-open wording; only its checklist rendering changes.
+- `code-reviewer` keeps its current prior-findings and pass-with-open wording. It gains the checklist rendering and the exhaustiveness instruction, and it must **not** carry the consequence test.
+- The role→flag wiring is pinned **where the role is known**, not only on the pure function. A compiled `plan-reviewer` prompt contains the consequence test and a compiled `code-reviewer` prompt does not — asserted on both sides, because inverting that one comparison is the exact defect this change exists to prevent and a unit test taking the flag as an argument cannot see it.
 
 ## Task 3 — Documentation says what plan review is now asked to do
 
