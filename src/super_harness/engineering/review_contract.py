@@ -140,6 +140,7 @@ def _review_prompt(
     open_findings: list[dict[str, Any]],
     blocking_severity: str,
     pass_with_open: bool,
+    consequence_gate: bool,
 ) -> str:
     argv = json.dumps(inspection["diff_argv"], separators=(",", ":"))
     empty_target_guidance = (
@@ -153,6 +154,25 @@ def _review_prompt(
         "Verify each against the assigned target and include one prior_findings "
         "disposition for every id.\n"
         if open_findings
+        else ""
+    )
+    # Asymmetric on purpose. The exhaustiveness instruction above can only ADD
+    # findings, so generalising it to every reviewer risks nothing. This one
+    # SUPPRESSES findings, its three tests are phrased about a document and its
+    # implementers, and its exclusion clause names arithmetic — on a code delta a
+    # reviewer applying it literally can drop a real off-by-one. Its wording is a
+    # measured artefact from plan review only; inventing an unmeasured code-shaped
+    # variant is the mistake this change exists to avoid. Code review therefore
+    # gets no consequence gate until one is measured for it.
+    consequence_gate_guidance = (
+        "Before reporting any finding, answer this question: following this "
+        "document literally, would the implementer BUILD THE WRONG THING, GET "
+        "STUCK, or would TWO IMPLEMENTERS BUILD DIFFERENT THINGS? If none of the "
+        "three is true, do not report it — however defensible the observation is. "
+        "Wording, internal cross-reference numbering, arithmetic, line-number "
+        "citations and prose consistency are NOT findings unless they change one "
+        "of those three answers.\n\n"
+        if consequence_gate
         else ""
     )
     pass_with_open_guidance = (
@@ -183,12 +203,7 @@ def _review_prompt(
         "Returning a single finding when more exist is an incomplete review. Do not stop "
         "once the checklist verdict is decided. If this scope is insufficient, return a "
         "partial rejection instead of expanding it.\n\n"
-        "Before reporting any finding, answer this question: following this document "
-        "literally, would the implementer BUILD THE WRONG THING, GET STUCK, or would TWO "
-        "IMPLEMENTERS BUILD DIFFERENT THINGS? If none of the three is true, do not report "
-        "it — however defensible the observation is. Wording, internal cross-reference "
-        "numbering, arithmetic, line-number citations and prose consistency are NOT "
-        "findings unless they change one of those three answers.\n\n"
+        f"{consequence_gate_guidance}"
         "Return one JSON object with this recordable shape:\n"
         f"bundle_digest: {bundle_digest}\n"
         "checklist:\n"
@@ -403,6 +418,7 @@ def compile_review_contract(
             open_findings=open_findings,
             blocking_severity=role.blocking_severity,
             pass_with_open=reviewer == "code-reviewer",
+            consequence_gate=reviewer == "plan-reviewer",
         )
         assignments.append(
             {

@@ -90,13 +90,19 @@ The configuration separates shared governance from user-local execution:
   questions — `architecture` (does the design hold up), `tech-choices` (can the
   chosen mechanisms carry what is assigned to them), `conventions` (does it match
   this repository's ratified decisions and practice), and `spec-coverage` (is
-  everything the spec asks for covered). The prompt also asks the reviewer to be
-  exhaustive rather than to stop at the worst finding, and gates every finding on
-  consequence: following the document literally, would the implementer build the
-  wrong thing, get stuck, or would two implementers build different things?
-  Wording, cross-reference numbering and prose consistency are not findings
-  unless they change one of those answers. Override the item list per project in
+  everything the spec asks for covered). Override the item list per project in
   `.harness/review-checklists.yaml`; ids you invent render without a definition.
+- **Two prompt instructions, one of them role-scoped.** *Every* reviewer is asked
+  to be exhaustive rather than stop at the worst finding — that can only add
+  findings. Only **plan** review carries the consequence gate: following the
+  document literally, would the implementer build the wrong thing, get stuck, or
+  would two implementers build different things? If not, it is not a finding, and
+  wording, cross-reference numbering, arithmetic and prose consistency never are.
+  That gate suppresses findings and its wording was measured on plan review, so
+  code review gets none until one is measured for code. Both changes move
+  `prompt_digest` and `contract_digest` for **both** roles: a packet prepared
+  before an upgrade is stale and must be re-prepared, including an in-flight
+  code-review round.
 - **User-local profiles** in the gitignored
   `.harness/review-profiles.local.yaml` select an explicit producer protocol,
   model, cost class, and producer-specific `agent_options` for automated sources.

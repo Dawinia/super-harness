@@ -409,12 +409,20 @@ starts editing. The hot-path gate enforces lifecycle rules:
 
   What a plan round is asked to judge is the checklist, and its four items carry
   definitions that go into the frozen prompt: `architecture`, `tech-choices`,
-  `conventions`, `spec-coverage`. The prompt asks for an exhaustive pass rather
-  than the single worst finding, and admits a finding only when following the
-  document literally would make the implementer build the wrong thing, get
-  stuck, or make two implementers build different things. Replace the items per
-  project in `.harness/review-checklists.yaml` — ids without a built-in
-  definition render as bare ids and work exactly as before.
+  `conventions`, `spec-coverage`. Replace the items per project in
+  `.harness/review-checklists.yaml` — ids without a built-in definition render as
+  bare ids and work exactly as before.
+
+  Two prompt instructions come with them. **Both** roles are asked for an
+  exhaustive pass rather than the single worst finding. **Only plan review** also
+  gets the consequence gate — a finding counts only if following the document
+  literally would make the implementer build the wrong thing, get stuck, or make
+  two implementers build different things — because that gate suppresses findings
+  and its wording was measured on plan review alone; a code delta reviewed under
+  it could lose a genuine arithmetic bug. Upgrading moves `prompt_digest` and
+  `contract_digest` for **both** roles, so a packet prepared before the upgrade
+  is stale: re-run `review prepare`, including for an in-flight code-review
+  round.
 
   The automated plan-review protocol is prepare → begin → caller execution →
   import/fail:

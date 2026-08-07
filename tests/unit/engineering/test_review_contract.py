@@ -755,7 +755,12 @@ def test_rendered_id_stays_separable_from_its_definition() -> None:
         assert line.removeprefix("  - ").split(": ", 1)[0] == item
 
 
-def _prompt(checklist: list[str], *, pass_with_open: bool = False) -> str:
+def _prompt(
+    checklist: list[str],
+    *,
+    pass_with_open: bool = False,
+    consequence_gate: bool = True,
+) -> str:
     return _review_prompt(
         source="s",
         context=None,
@@ -765,6 +770,7 @@ def _prompt(checklist: list[str], *, pass_with_open: bool = False) -> str:
         open_findings=[],
         blocking_severity="major",
         pass_with_open=pass_with_open,
+        consequence_gate=consequence_gate,
     )
 
 
@@ -775,6 +781,18 @@ def test_prompt_asks_the_reviewer_to_finish() -> None:
     assert "Be exhaustive" in body
     assert "not only the most severe one" in body
     assert "Do not stop once the checklist verdict is decided." in body
+
+
+def test_code_review_gets_no_consequence_gate() -> None:
+    """The gate SUPPRESSES findings, is phrased about a document and its
+    implementers, and excludes `arithmetic` — applied to a code delta a reviewer
+    can drop a real off-by-one. Its wording was measured on plan review only, so
+    code review gets none until one is measured for it. The exhaustiveness
+    instruction can only ADD findings and is therefore role-agnostic."""
+    code = _prompt(["spec-compliance"], pass_with_open=True, consequence_gate=False)
+    assert "BUILD THE WRONG THING" not in code
+    assert "arithmetic" not in code
+    assert "Be exhaustive" in code
 
 
 def test_prompt_gates_findings_on_consequence_not_on_topic() -> None:
