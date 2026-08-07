@@ -206,14 +206,16 @@ document claimed it was.** The claim rested on there being no edge back to
 to `INTENT_DECLARED`, `implementation_restarted` returns to `PLAN_APPROVED`, and
 `implementation_invalidated` returns to `IMPLEMENTATION_IN_PROGRESS`
 (`core/transitions.py`). This document's own mechanism-4 paragraph already noted
-`implementation_complete` firing twice on three of the eight changes, which contradicts the
-claim it appeared beside.
+`implementation_complete` firing twice on three of the ten changes that reached code review
+— the code-path population, not the plan-curve one — which contradicts the claim it
+appeared beside.
 
 So per-epoch and per-change counting diverge on the code path too — on the changes that
 redeclared **after** `implementation_complete`, a strict subset of those that redeclared at
 all. In the corpus six changes carry `plan_redeclared` (`corpus-01`, `04`, `07`, `08`, `10`,
-`11`) and three have a second code epoch (`04`, `07`, `08`); on the other three every
-redeclare precedes the first `implementation_complete`, so the counters coincide there.
+`11`) and three have a second code epoch (`04`, `07`, `08`). On `corpus-01` and `corpus-10`
+every redeclare precedes the first `implementation_complete`, so the counters coincide;
+`corpus-11` never reached code review at all, so they coincide vacuously.
 Since no reset channel is provided, a change that redeclares after code review has begun
 re-enters it carrying the rounds it already spent.
 
@@ -222,7 +224,9 @@ under per-epoch counting a restart already washed the counter, so the effective 
 never "2 per change" and keeping the number at 2 would silently tighten the code path while
 the commit message said "rename". Three populations appear in this document, and each figure states which one it is over:
 the corpus holds **11** changes, **10** of them reached code review, and the plan-curve
-table above tabulates the **8** with imported plan rounds. Over the 10 that reached code
+table above lists **8** — the changes examined when that table was written. Nine corpus
+changes have imported plan rounds; `corpus-09` (curve `1, 0`) is the ninth and is not
+tabulated, so "the tabulated 8" is a named set, not a set derived from a rule. Over the 10 that reached code
 review, rounds per change run 1, 1, 1, 2, 2, 3, 3, 4, 4, 4: at a budget of 2 the brake
 fires 8 times across 5 of those 10, at 3 it fires 3 times, and at 4 it never fires.
 
