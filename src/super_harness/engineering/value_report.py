@@ -52,6 +52,11 @@ class ValueReport:
     # read as "this was free". The harness never prices tokens itself.
     review_reported_cost_usd: float | None = None
     review_runs_with_reported_cost: int = 0
+    # Times the round budget refused an automatic round and made a human decide.
+    # Surfaced whether or not the agent relayed the block — this repo's own research
+    # concluded that specifications read into context and not followed is the actual
+    # widespread failure, so the brake records itself.
+    review_budget_hits: int = 0
 
 
 @dataclass(frozen=True)
@@ -413,4 +418,7 @@ def build_value_report(
         cost_breakdown=_cost_breakdown(windowed),
         review_reported_cost_usd=reported_cost,
         review_runs_with_reported_cost=runs_with_reported_cost,
+        review_budget_hits=sum(
+            1 for ev in windowed if ev.type == "review_budget_exceeded"
+        ),
     )

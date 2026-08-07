@@ -52,7 +52,10 @@ from super_harness.core.scope_match import (
 )
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
-from super_harness.engineering.review_budget import derive_round_budget_evidence
+from super_harness.engineering.review_budget import (
+    RoundBudgetEvidence,
+    derive_round_budget_evidence,
+)
 from super_harness.engineering.review_contract import ReviewContractError, compile_review_contract
 from super_harness.engineering.review_governance import (
     ReviewGovernance,
@@ -922,6 +925,50 @@ def begin(
                 authorization_id = authorization.authorization_id
                 break
         if authorization_id is None:
+            over_budget = (
+                execution.automatic_rounds_this_change >= role.max_automatic_rounds
+            )
+            evidence = (
+                derive_round_budget_evidence(
+                    _change_events(root, change), reviewer=reviewer
+                )
+                if over_budget
+                else None
+            )
+            if evidence is not None:
+                # Recorded before the exit, and state-preserving: hitting the budget is
+                # a legitimate human-authorized act, so it must be VISIBLE, not
+                # forbidden. `report` and the merge attestation surface it whether or
+                # not the agent relayed anything downstream.
+                _emit_review_event(
+                    root,
+                    change=change,
+                    reviewer=reviewer,
+                    event_type="review_budget_exceeded",
+                    reason=(
+                        f"round {evidence.started_rounds + 1} would exceed the "
+                        f"automatic budget of {role.max_automatic_rounds} for this "
+                        "change"
+                    ),
+                    actor=Actor(type="agent", identifier="review-protocol"),
+                    framework=cs.framework if cs is not None else "plain",
+                    payload={
+                        # The round already started, and the one being refused. Both,
+                        # never one standing in for the other.
+                        "started_rounds": evidence.started_rounds,
+                        "attempted_round": evidence.started_rounds + 1,
+                        "imported_rounds": evidence.imported_rounds,
+                        "max_automatic_rounds": role.max_automatic_rounds,
+                        "blocker_major_curve": list(evidence.blocker_major_curve),
+                        "total_findings_curve": list(evidence.total_findings_curve),
+                        "tokens": evidence.tokens,
+                        "missing_source_streaks": dict(evidence.missing_source_streaks),
+                        "missing_source_reasons": dict(evidence.missing_source_reasons),
+                        "last_round_improved": evidence.last_round_improved,
+                    },
+                    subcommand=subcommand,
+                )
+                refresh_state_after_emit(root)
             click.echo(
                 format_error(
                     subcommand=subcommand,
@@ -933,6 +980,13 @@ def begin(
                 ),
                 err=True,
             )
+            if evidence is not None:
+                click.echo(
+                    _format_budget_evidence(
+                        evidence, max_automatic_rounds=role.max_automatic_rounds
+                    ),
+                    err=True,
+                )
             sys.exit(EXIT_VALIDATION)
 
     round_id = _new_review_id("round")
@@ -1243,6 +1297,18 @@ def authorize_round(
                 f"super-harness: authorization {existing.authorization_id} already available"
             )
             sys.exit(EXIT_OK)
+    # Insurance, not the primary surface: by the time anyone types `review authorize`
+    # the decision is usually already made from what the agent relayed. Shown anyway,
+    # because the one case that matters is the human who was told nothing.
+    if execution.automatic_rounds_this_change >= role.max_automatic_rounds:
+        click.echo(
+            _format_budget_evidence(
+                derive_round_budget_evidence(
+                    _change_events(root, change), reviewer=reviewer
+                ),
+                max_automatic_rounds=role.max_automatic_rounds,
+            )
+        )
     prompt = (
         f"Authorize exactly one automated {reviewer} round for "
         f"{', '.join(selected)} at {str(packet['target_head'])[:12]}?"
@@ -1575,6 +1641,62 @@ def _close_round_if_terminal(
         )
     refresh_state_after_emit(root)
     return outcome, milestone
+
+
+def _format_budget_evidence(
+    evidence: RoundBudgetEvidence, *, max_automatic_rounds: int
+) -> str:
+    """The numbers a human needs, plus an instruction to the messenger.
+
+    The agent is the only channel the human actually reads, so the block tells it
+    what to do with this: stop, relay verbatim, do not retry, do not route around.
+    Advisory text is not sufficient on its own — the event is emitted too — but it is
+    necessary, because an agent without the numbers can only ask for approval.
+    """
+    lines = [
+        "",
+        f"Round-budget evidence — round {evidence.started_rounds + 1} against an "
+        f"automatic budget of {max_automatic_rounds} for this change:",
+        f"  rounds started        : {evidence.started_rounds}",
+        f"  rounds that reviewed  : {evidence.imported_rounds}"
+        + (
+            f"  ({evidence.started_rounds - evidence.imported_rounds} produced nothing)"
+            if evidence.started_rounds > evidence.imported_rounds
+            else ""
+        ),
+    ]
+    if evidence.blocker_major_curve:
+        lines.append(
+            "  blocker+major/round  : "
+            + ", ".join(str(n) for n in evidence.blocker_major_curve)
+        )
+        lines.append(
+            "  all findings/round   : "
+            + ", ".join(str(n) for n in evidence.total_findings_curve)
+        )
+    if evidence.last_round_improved is not None:
+        lines.append(
+            "  last round           : "
+            + ("improved on the one before" if evidence.last_round_improved
+               else "did not improve on the one before")
+        )
+    lines.append(
+        "  reviewer tokens      : "
+        + (f"{evidence.tokens:,}" if evidence.tokens is not None else "not captured")
+    )
+    for source, streak in sorted(evidence.missing_source_streaks.items()):
+        reason = evidence.missing_source_reasons.get(source)
+        detail = f" — {reason}" if reason else ""
+        lines.append(
+            f"  source {source} missing : {streak} consecutive round(s){detail}"
+        )
+    lines += [
+        "",
+        "STOP. Relay the block above verbatim to the human and let them decide "
+        "whether to fund another round. Do not retry, do not route around this, and "
+        "do not summarise the numbers away.",
+    ]
+    return "\n".join(lines)
 
 
 def _missing_source_notices(

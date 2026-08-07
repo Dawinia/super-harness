@@ -43,6 +43,9 @@ EXTENSION_EVENT_TYPES: frozenset[str] = frozenset({
     "sensor_timeout_exceeded", "sensor_crashed",
     # gate-bypass disclosure (state-preserving audit signals)
     "gate_bypassed", "gate_bypass_disclosed",
+    # round-budget brake (state-preserving: hitting the budget is a legitimate,
+    # human-authorized act — it must be VISIBLE, not forbidden)
+    "review_budget_exceeded",
 })
 
 KNOWN_EVENT_TYPES: frozenset[str] = CORE_EVENT_TYPES | EXTENSION_EVENT_TYPES

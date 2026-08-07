@@ -23,6 +23,7 @@ _INFORMATIONAL: frozenset[str] = frozenset({
     "gate_bypassed", "gate_bypass_disclosed",
     "review_round_started", "review_result_imported", "review_run_failed",
     "review_round_closed", "review_round_authorized",
+    "review_budget_exceeded",
 })
 
 # Per spec §3.7 Reachability table — explicit (current_state, event_type) -> target.

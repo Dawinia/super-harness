@@ -351,6 +351,12 @@ def derive_independence(events: list[Event]) -> dict[str, Any]:
             "classification": cls, "reviewer": reviewer, "skipped": skipped,
             "override": override, "reason": reason,
         },
+        # Informational, like the rest of this function — NOT a merge blocker.
+        # Hitting the round budget is a legitimate, human-authorized act; it has to be
+        # visible at the moment of merge, not forbidden.
+        "review_budget_hits": sum(
+            1 for e in events if e.type == "review_budget_exceeded"
+        ),
     }
 
 

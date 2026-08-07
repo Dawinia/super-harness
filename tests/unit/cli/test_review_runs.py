@@ -1759,3 +1759,97 @@ def test_round_close_says_nothing_when_no_source_is_missing(
     data = json.loads(last.output)["data"]
     assert data["round_outcome"] == "approved"
     assert data["missing_sources"] == []
+
+
+def _exhaust_budget(root: Path, rounds: int) -> None:
+    """Close `rounds` automatic code-review rounds by failing their runs."""
+    for _ in range(rounds):
+        _prepare(root)
+        begun = _begin(root)
+        run = cast(list[dict[str, object]], begun["runs"])[0]
+        assert CliRunner().invoke(main, [
+            "--workspace", str(root), "review", "run", "fail", "change",
+            "--reviewer", "code-reviewer", "--run-id", cast(str, run["run_id"]),
+            "--reason", "producer unavailable: usage limit reached",
+        ]).exit_code == EXIT_OK
+
+
+def test_budget_block_prints_evidence(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """The block is the load-bearing surface, not the authorization prompt: nobody
+    reads a CLI's stderr, they read what the agent says. An agent without the numbers
+    can only say "I was blocked, please approve" — the rubber-stamp path."""
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _exhaust_budget(root, 2)          # budget is 2 for code-reviewer in this fixture
+
+    _prepare(root)
+    blocked = CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "begin", "change",
+        "--reviewer", "code-reviewer",
+    ])
+
+    assert blocked.exit_code != EXIT_OK
+    out = blocked.output
+    assert "round 3" in out or "3 of 2" in out or "round: 3" in out   # which round
+    assert "codex" in out                                            # missing source
+    assert "usage limit reached" in out                              # and why
+    # An explicit instruction to the messenger, because advisory text alone is not
+    # enough and the agent is the only channel the human actually reads.
+    assert "relay" in out.lower()
+    assert "do not retry" in out.lower()
+
+
+def test_budget_block_emits_a_state_preserving_event(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Recorded whether or not the agent relayed anything — this repo's own research
+    concluded that specifications read into context and not followed is the actual
+    widespread failure."""
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _exhaust_budget(root, 2)
+    before = derive_state(events_path(root))["change"].current_state
+
+    _prepare(root)
+    CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "begin", "change",
+        "--reviewer", "code-reviewer",
+    ])
+
+    events = read_change_events(events_path(root), "change")
+    hits = [e for e in events if e.type == "review_budget_exceeded"]
+    assert len(hits) == 1
+    payload = hits[-1].payload
+    assert payload["reviewer"] == "code-reviewer"
+    # Both numbers, never one standing in for the other: two rounds have started and
+    # the third is the one being refused.
+    assert payload["started_rounds"] == 2
+    assert payload["attempted_round"] == 3
+    assert payload["max_automatic_rounds"] == 2
+    assert payload["missing_source_streaks"] == {"codex": 2}
+    # Emitted BEFORE the process exits, and it must not move the change.
+    assert derive_state(events_path(root))["change"].current_state == before
+
+
+def test_authorize_prompt_repeats_the_evidence(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Insurance, not the primary surface — but the one case that matters is the human
+    who was told nothing by the agent."""
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _exhaust_budget(root, 2)
+    _prepare(root)
+    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(root), "review", "authorize", "change",
+         "--reviewer", "code-reviewer", "--reason", "the curve is flat but I want one more"],
+        input="n\n",
+    )
+
+    assert "Round-budget evidence" in result.output
+    assert "round 3 against an automatic budget of 2" in result.output
+    assert "usage limit reached" in result.output
+    assert "authorization cancelled" in result.output

@@ -233,3 +233,32 @@ def test_report_human_omits_cost_line_when_nobody_reported_one(tmp_path):
                              catch_exceptions=False)
     assert res.exit_code == 0
     assert "producer-reported cost" not in res.output
+
+
+def _budget_hit(eid, change, ts, attempted):
+    return _json.dumps({
+        "event_id": eid, "type": "review_budget_exceeded", "change_id": change,
+        "timestamp": ts, "actor": {"type": "agent", "identifier": "review-protocol"},
+        "framework": "plain",
+        "payload": {"reviewer": "plan-reviewer", "attempted_round": attempted,
+                    "started_rounds": attempted - 1, "max_automatic_rounds": 6},
+    })
+
+
+def test_report_human_shows_budget_hits(tmp_path):
+    _seed(tmp_path, [
+        _budget_hit("e1", "c1", "2026-08-06T00:00:00Z", 7),
+        _budget_hit("e2", "c1", "2026-08-06T01:00:00Z", 8),
+    ])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "round budget: held 2 automatic round(s)" in res.output
+
+
+def test_report_human_omits_budget_line_when_the_brake_never_fired(tmp_path):
+    _seed(tmp_path, [])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "round budget" not in res.output

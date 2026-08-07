@@ -472,3 +472,32 @@ def test_report_reported_cost_ignores_junk_values(tmp_path):
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.review_reported_cost_usd == 0.5
     assert report.review_runs_with_reported_cost == 1
+
+
+def _budget_exceeded(eid, change, ts, *, reviewer="plan-reviewer", attempted=7):
+    return json.dumps({
+        "event_id": eid, "type": "review_budget_exceeded", "change_id": change,
+        "timestamp": ts, "actor": {"type": "agent", "identifier": "review-protocol"},
+        "framework": "plain",
+        "payload": {"reviewer": reviewer, "attempted_round": attempted,
+                    "started_rounds": attempted - 1, "max_automatic_rounds": 6},
+    })
+
+
+def test_report_counts_budget_hits(tmp_path):
+    """Surfaced whether or not the agent relayed the block — advisory text alone is
+    not enough."""
+    events_file = _write_events(tmp_path, [
+        _budget_exceeded("e1", "c1", "2026-08-06T00:00:00Z", attempted=7),
+        _budget_exceeded("e2", "c1", "2026-08-06T01:00:00Z", attempted=8),
+        _budget_exceeded("e3", "c2", "2026-08-06T02:00:00Z", attempted=3,
+                         reviewer="code-reviewer"),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 3
+
+
+def test_report_budget_hits_is_zero_when_the_brake_never_fired(tmp_path):
+    events_file = _write_events(tmp_path, [])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 0
