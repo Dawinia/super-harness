@@ -178,8 +178,10 @@ Authorization prompts across all eight changes, threshold and budget together:
 The budget alone is an alarm-fatigue machine: at 2 it interrupts a change that converged in
 three rounds. Paired with the threshold at 6, the six healthy changes are **never
 interrupted** and every prompt lands on one of the two that deserved intervention. The
-default is therefore 6 for `plan-reviewer`; `code-reviewer` keeps 2, which its own history
-supports.
+default is therefore 6 for `plan-reviewer`. The `code-reviewer` default is settled
+separately, in Cut 1 item 2 below, because per-change counting is not behaviour-neutral
+there — a conclusion drawn from that role's own round counts rather than from this table,
+which measures the plan path.
 
 ## Cut 1 — the brake
 
@@ -207,23 +209,34 @@ to `INTENT_DECLARED`, `implementation_restarted` returns to `PLAN_APPROVED`, and
 `implementation_complete` firing twice on three of the eight changes, which contradicts the
 claim it appeared beside.
 
-So per-epoch and per-change counting diverge on the code path too, and they diverge on
-exactly the changes that took `plan redeclare` — the sanctioned late-scope-expansion route
-shipped in PR#77. Since no reset channel is provided, a restarted change re-enters code
-review carrying the rounds it spent before the restart.
+So per-epoch and per-change counting diverge on the code path too — on the changes that
+redeclared **after** `implementation_complete`, a strict subset of those that redeclared at
+all. In the corpus six changes carry `plan_redeclared` (`corpus-01`, `04`, `07`, `08`, `10`,
+`11`) and three have a second code epoch (`04`, `07`, `08`); on the other three every
+redeclare precedes the first `implementation_complete`, so the counters coincide there.
+Since no reset channel is provided, a change that redeclares after code review has begun
+re-enters it carrying the rounds it already spent.
 
 **The code default therefore moves from 2 to 4.** Not to soften the brake, but because
 under per-epoch counting a restart already washed the counter, so the effective bound was
 never "2 per change" and keeping the number at 2 would silently tighten the code path while
-the commit message said "rename". Measured on the corpus, code rounds per change run
-1, 1, 1, 2, 2, 3, 3, 4, 4, 4: at a budget of 2 the brake fires 8 times across 5 of 10
-changes, at 3 it fires 3 times, and at 4 it never fires. Four is the value that leaves
-converging changes alone — the same standard that chose 6 for the plan path.
+the commit message said "rename". Three populations appear in this document, and each figure states which one it is over:
+the corpus holds **11** changes, **10** of them reached code review, and the plan-curve
+table above tabulates the **8** with imported plan rounds. Over the 10 that reached code
+review, rounds per change run 1, 1, 1, 2, 2, 3, 3, 4, 4, 4: at a budget of 2 the brake
+fires 8 times across 5 of those 10, at 3 it fires 3 times, and at 4 it never fires.
+
+Four is **not** chosen by the standard that chose 6, and the resemblance should not be
+claimed. Six satisfies a two-part criterion — healthy changes never interrupted *and* every
+prompt landing on one of the two pathological changes — and only does so paired with Cut 3's
+severity threshold. Four satisfies the first half alone: it is the maximum observed value,
+with zero margin, and it fires nowhere in the corpus.
 
 That the corpus contains no pathological code change is itself the finding: code review
 converges in 1–4 rounds everywhere in it, because its claims are falsifiable by an
-executor. The code budget is a ceiling against a failure mode not yet observed, and it is
-set where the observed data ends rather than where it would start interrupting healthy work.
+executor. So the code budget is a ceiling against a failure mode not yet observed, set
+where the observed data ends. If a divergent code review ever appears, that is the number
+to revisit, on its evidence.
 
 **3. Exceeding the budget requires authorization per round, unchanged.** Authorized rounds
 still count as automatic (`cli/review.py:1074`), so each further round is a fresh decision
@@ -280,7 +293,7 @@ receipts read `session_id: null`. Same class as item 6: write down what is alrea
 **9. A redacted replay corpus enters the repo as a fixture.** Exported from `pantheon`:
 event types, reviewer roles, per-finding severity, round/epoch structure, usage numbers,
 timestamps. Stripped: finding summaries and file paths, plan document paths, commit hashes.
-`change_id` becomes `corpus-01`…`corpus-08`, finding ids become `c01/f-07`.
+`change_id` becomes `corpus-01`…`corpus-NN` in first-appearance order (11 as exported), finding ids become `c01/f-07`.
 
 Hand-written fixtures are not an option here — validating our assumptions against curves
 we invented is circular, and the specific shape of `stage5b` and `stage1` (a stable 1–3
