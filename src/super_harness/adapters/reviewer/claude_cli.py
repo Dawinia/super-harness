@@ -143,10 +143,20 @@ class ClaudeCliReviewerProtocol(ReviewerProtocolAdapter):
         normalized_usage = dict(usage) if isinstance(usage, dict) else None
         duration = raw.get("duration_ms")
         duration_ms = duration if isinstance(duration, (int, float)) else None
+        session = raw.get("session_id")
+        session_id = session if isinstance(session, str) and session else None
+        cost = raw.get("total_cost_usd")
+        reported_cost_usd = (
+            float(cost)
+            if isinstance(cost, (int, float)) and not isinstance(cost, bool)
+            else None
+        )
         return ReviewerProtocolResult(
             verdict=verdict,
             actual_model=actual_model,
+            session_id=session_id,
             usage=normalized_usage,
             duration_ms=duration_ms,
             tool_trace=raw.get("tool_trace"),
+            reported_cost_usd=reported_cost_usd,
         )

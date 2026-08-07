@@ -70,11 +70,11 @@ def _write_review_config(
         "    plan-reviewer:\n"
         f"      participants: [{source}]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n"
+        "      max_automatic_rounds: 2\n"
         "    code-reviewer:\n"
         f"      participants: [{source}]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n"
+        "      max_automatic_rounds: 2\n"
         "  require_distinct_model_families: false\n"
     ).encode()
     profile = (

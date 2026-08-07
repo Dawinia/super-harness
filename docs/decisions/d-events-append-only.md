@@ -5,13 +5,13 @@ ratified_by: dawinialo@163.com
 ratified_at: '2026-06-26T09:45:08.963090Z'
 ratified_text_hash: sha256:8db7275f6ea859c6e8ada8b4e77ec8a954024d45bffcc6a822ede1d62f69254b
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-07-13T10:53:18.109538Z'
+last_reconciled_at: '2026-08-07T08:13:42.404431Z'
 last_reconcile_kind: self
-last_reconcile_justification: Review execution adds append-only informational evidence
-  events only; Event remains frozen, EventWriter still appends, and derived state
-  remains log-owned.
+last_reconcile_justification: "Added review_budget_exceeded to EXTENSION_EVENT_TYPES:\
+  \ a new append-only extension event type, state-preserving. The append-only invariant\
+  \ is untouched \u2014 no event is mutated, deleted or reordered by this change."
 reconciled_anchors:
-  src/super_harness/core/events.py: sha256:7ae3548dc0145e2cefb7b23cd9121412c532566e24aaa9b7e2a2f796892316a3
+  src/super_harness/core/events.py: sha256:5a143f7e90c9ecac9cd92d7f0ed9b82859862e0c58d37a3c1dfeacca49d41b6e
   src/super_harness/core/writer.py: sha256:b2c1cf24862e9473fe14d50e70cfc675189f4c61679579f506a55e6975d3b8bf
 ---
 Events are append-only; the log is the source of truth, state is derived.

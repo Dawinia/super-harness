@@ -366,3 +366,189 @@ def test_edits_blocked_zero_when_no_log(tmp_path):
     events_file = tmp_path / "events.jsonl"
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.edits_blocked == 0
+
+
+def test_usage_tokens_counts_claude_cache_fields():
+    """Cache reads are where reviewer CLIs actually bill. A real claude receipt has a
+    near-empty input_tokens and millions of cache-read tokens; counting only
+    input+output under-reports by ~86x."""
+    from super_harness.engineering.value_report import usage_tokens
+
+    assert usage_tokens({
+        "input_tokens": 63,
+        "output_tokens": 23320,
+        "cache_creation_input_tokens": 110069,
+        "cache_read_input_tokens": 2629763,
+    }) == 63 + 23320 + 110069 + 2629763
+
+
+def test_usage_tokens_does_not_add_the_codex_subset_key():
+    """codex reports cached_input_tokens as a portion ALREADY INSIDE input_tokens.
+    Adding it would inflate that producer's total by ~89%. The rule is per named
+    key, never 'anything containing cache'."""
+    from super_harness.engineering.value_report import usage_tokens
+
+    assert usage_tokens({
+        "input_tokens": 1007614,
+        "cached_input_tokens": 898816,
+        "output_tokens": 5903,
+        "reasoning_output_tokens": 3166,
+    }) == 1007614 + 5903
+
+
+def test_usage_tokens_prefers_reported_total():
+    from super_harness.engineering.value_report import usage_tokens
+
+    assert usage_tokens({
+        "total_tokens": 500,
+        "input_tokens": 1,
+        "cache_read_input_tokens": 999999,
+    }) == 500
+
+
+def test_usage_tokens_absent_usage_is_none_not_zero():
+    from super_harness.engineering.value_report import usage_tokens
+
+    assert usage_tokens(None) is None
+    assert usage_tokens({}) is None
+    assert usage_tokens("nope") is None
+
+
+def test_usage_tokens_never_raises_on_junk_values():
+    from super_harness.engineering.value_report import usage_tokens
+
+    assert usage_tokens({"input_tokens": "x", "cache_read_input_tokens": None}) is None
+    assert usage_tokens({"input_tokens": 10, "cache_read_input_tokens": "x"}) == 10
+    assert usage_tokens({"input_tokens": True, "output_tokens": 5}) == 5
+
+
+def _import_with_cost(eid, change, ts, *, usage, cost):
+    receipt = {"usage": usage}
+    if cost is not None:
+        receipt["reported_cost_usd"] = cost
+    return json.dumps({
+        "event_id": eid, "type": "review_result_imported", "change_id": change,
+        "timestamp": ts, "actor": {"type": "agent", "identifier": "claude"},
+        "framework": "plain",
+        "payload": {"reviewer": "code-reviewer", "source": "claude", "round_id": "r1",
+                    "receipt": receipt, "verdict": {"findings": []}},
+    })
+
+
+def test_report_sums_producer_reported_cost(tmp_path):
+    """The producers state their own cost; the report adds those up and says so.
+    It does not price tokens itself."""
+    events_file = _write_events(tmp_path, [
+        _import_with_cost("e1", "c1", "2026-07-02T00:00:00Z",
+                          usage={"input_tokens": 10, "output_tokens": 5}, cost=1.340269),
+        _import_with_cost("e2", "c1", "2026-07-02T01:00:00Z",
+                          usage={"input_tokens": 10, "output_tokens": 5}, cost=0.659731),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_reported_cost_usd == 2.0
+    assert report.review_runs_with_reported_cost == 2
+
+
+def test_report_reported_cost_is_none_when_no_run_reported_one(tmp_path):
+    """None, not 0.0 — a report that shows $0.00 for uncaptured cost is lying."""
+    events_file = _write_events(tmp_path, [
+        _import_with_cost("e1", "c1", "2026-07-02T00:00:00Z",
+                          usage={"input_tokens": 10, "output_tokens": 5}, cost=None),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_reported_cost_usd is None
+    assert report.review_runs_with_reported_cost == 0
+
+
+def test_report_reported_cost_ignores_junk_values(tmp_path):
+    events_file = _write_events(tmp_path, [
+        _import_with_cost("e1", "c1", "2026-07-02T00:00:00Z",
+                          usage={"input_tokens": 1}, cost="1.34"),
+        _import_with_cost("e2", "c1", "2026-07-02T01:00:00Z",
+                          usage={"input_tokens": 1}, cost=True),
+        _import_with_cost("e3", "c1", "2026-07-02T02:00:00Z",
+                          usage={"input_tokens": 1}, cost=0.5),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_reported_cost_usd == 0.5
+    assert report.review_runs_with_reported_cost == 1
+
+
+def _budget_exceeded(eid, change, ts, *, reviewer="plan-reviewer", attempted=7):
+    return json.dumps({
+        "event_id": eid, "type": "review_budget_exceeded", "change_id": change,
+        "timestamp": ts, "actor": {"type": "agent", "identifier": "review-protocol"},
+        "framework": "plain",
+        "payload": {"reviewer": reviewer, "attempted_round": attempted,
+                    "started_rounds": attempted - 1, "max_automatic_rounds": 6},
+    })
+
+
+def test_report_counts_budget_hits(tmp_path):
+    """Surfaced whether or not the agent relayed the block — advisory text alone is
+    not enough."""
+    events_file = _write_events(tmp_path, [
+        _budget_exceeded("e1", "c1", "2026-08-06T00:00:00Z", attempted=7),
+        _budget_exceeded("e2", "c1", "2026-08-06T01:00:00Z", attempted=8),
+        _budget_exceeded("e3", "c2", "2026-08-06T02:00:00Z", attempted=3,
+                         reviewer="code-reviewer"),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 3
+
+
+def test_report_budget_hits_is_zero_when_the_brake_never_fired(tmp_path):
+    events_file = _write_events(tmp_path, [])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 0
+
+
+def test_report_budget_hits_counts_distinct_rounds_not_retries(tmp_path):
+    """An agent that retries a blocked `review begin` — the behaviour the block forbids
+    and cannot prevent — must not be able to inflate a number presented as rounds."""
+    events_file = _write_events(tmp_path, [
+        _budget_exceeded("e1", "c1", "2026-08-06T00:00:00Z", attempted=7),
+        _budget_exceeded("e2", "c1", "2026-08-06T00:01:00Z", attempted=7),  # retry
+        _budget_exceeded("e3", "c1", "2026-08-06T00:02:00Z", attempted=7),  # retry
+        _budget_exceeded("e4", "c1", "2026-08-06T01:00:00Z", attempted=8),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 2
+
+
+def test_report_budget_hits_separates_the_two_roles(tmp_path):
+    events_file = _write_events(tmp_path, [
+        _budget_exceeded("e1", "c1", "2026-08-06T00:00:00Z", attempted=7),
+        _budget_exceeded("e2", "c1", "2026-08-06T01:00:00Z", attempted=7,
+                         reviewer="code-reviewer"),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 2
+
+
+def test_budget_hits_do_not_collapse_across_changes(tmp_path):
+    """f-01. `report` is repo-wide, and with the shipped plan budget of 6 EVERY change's
+    first block is attempted_round=7 — so a dedupe key without change_id collapses them
+    all into one and systematically undercounts the brake it exists to make visible.
+
+    Finding identity in this module is per-change everywhere else for the same reason
+    (`_edits_blocked` keys on (change_id, file, state); `_dispositions` on
+    (change_id, id), with a comment explaining that ids recur across changes)."""
+    events_file = _write_events(tmp_path, [
+        _budget_exceeded("e1", "c1", "2026-08-06T00:00:00Z", attempted=7),
+        _budget_exceeded("e2", "c2", "2026-08-06T01:00:00Z", attempted=7),
+        _budget_exceeded("e3", "c3", "2026-08-06T02:00:00Z", attempted=7),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 3
+
+
+def test_budget_hits_still_dedupe_retries_within_one_change(tmp_path):
+    """The retry-proofing must survive the per-change fix."""
+    events_file = _write_events(tmp_path, [
+        _budget_exceeded("e1", "c1", "2026-08-06T00:00:00Z", attempted=7),
+        _budget_exceeded("e2", "c1", "2026-08-06T00:01:00Z", attempted=7),
+        _budget_exceeded("e3", "c2", "2026-08-06T00:02:00Z", attempted=7),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.review_budget_hits == 2

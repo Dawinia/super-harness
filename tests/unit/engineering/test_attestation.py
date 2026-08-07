@@ -577,3 +577,28 @@ def test_verify_disclosed_bypass_passes(tmp_path):
     diff = [DiffEntry("A", (".harness/attestations/s.jsonl",)), DiffEntry("M", ("src/x.py",))]
     v = verify_attestations(tmp_path, diff)
     assert v.ok, v.blockers
+
+
+def test_attestation_discloses_budget_hits(tmp_path) -> None:
+    """Informational, like review-independence — not a merge blocker. Hitting the
+    budget is a legitimate, human-authorized act: it must be visible, not forbidden."""
+    from super_harness.core.events import Actor, Event
+    from super_harness.engineering.attestation import derive_independence
+
+    def ev(eid, etype, payload=None):
+        return Event(event_id=eid, type=etype, change_id="c",
+                     timestamp="2026-08-06T00:00:00Z",
+                     actor=Actor(type="agent", identifier="agent-a"),
+                     framework="plain", payload=payload or {})
+
+    events = [
+        ev("e0", "intent_declared"),
+        ev("e1", "review_budget_exceeded", {"reviewer": "plan-reviewer",
+                                            "attempted_round": 7}),
+        ev("e2", "review_budget_exceeded", {"reviewer": "plan-reviewer",
+                                            "attempted_round": 8}),
+    ]
+    disclosure = derive_independence(events)
+
+    assert disclosure["review_budget_rounds_held"] == 2
+    assert derive_independence([ev("e0", "intent_declared")])["review_budget_rounds_held"] == 0

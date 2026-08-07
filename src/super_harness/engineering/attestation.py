@@ -351,6 +351,18 @@ def derive_independence(events: list[Event]) -> dict[str, Any]:
             "classification": cls, "reviewer": reviewer, "skipped": skipped,
             "override": override, "reason": reason,
         },
+        # Informational, like the rest of this function — NOT a merge blocker.
+        # Hitting the round budget is a legitimate, human-authorized act; it has to be
+        # visible at the moment of merge, not forbidden. Deduped on (reviewer,
+        # attempted_round) so a retrying agent cannot inflate a figure presented as
+        # rounds; an event without that field counts once via its own id.
+        "review_budget_rounds_held": len({
+            (
+                (e.payload or {}).get("reviewer"),
+                (e.payload or {}).get("attempted_round", f"event:{e.event_id}"),
+            )
+            for e in events if e.type == "review_budget_exceeded"
+        }),
     }
 
 

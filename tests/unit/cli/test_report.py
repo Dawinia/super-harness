@@ -199,3 +199,66 @@ def test_footnote_no_longer_claims_gate_leaves_no_trace():
     out = _render_human(_vr(edits_blocked=0))
     note = out.split("Note:")[1]
     assert "lifecycle gate" not in note
+
+
+def _imp_with_cost(eid, change, ts, *, cost, total=100):
+    receipt = {"usage": {"total_tokens": total}}
+    if cost is not None:
+        receipt["reported_cost_usd"] = cost
+    return _json.dumps({
+        "event_id": eid, "type": "review_result_imported", "change_id": change,
+        "timestamp": ts, "actor": {"type": "agent", "identifier": "claude"},
+        "framework": "plain",
+        "payload": {"reviewer": "code-reviewer", "source": "claude", "round_id": "r1",
+                    "receipt": receipt, "verdict": {"findings": []}},
+    })
+
+
+def test_report_human_shows_producer_reported_cost(tmp_path):
+    _seed(tmp_path, [
+        _imp_with_cost("e1", "c1", "2026-07-02T00:00:00Z", cost=1.340269),
+        _imp_with_cost("e2", "c1", "2026-07-02T01:00:00Z", cost=0.659731),
+    ])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "producer-reported cost: $2.00" in res.output
+    assert "2/2 runs" in res.output
+
+
+def test_report_human_omits_cost_line_when_nobody_reported_one(tmp_path):
+    """A `$0.00` line would read as 'this was free'. Omit it instead."""
+    _seed(tmp_path, [_imp_with_cost("e1", "c1", "2026-07-02T00:00:00Z", cost=None)])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "producer-reported cost" not in res.output
+
+
+def _budget_hit(eid, change, ts, attempted):
+    return _json.dumps({
+        "event_id": eid, "type": "review_budget_exceeded", "change_id": change,
+        "timestamp": ts, "actor": {"type": "agent", "identifier": "review-protocol"},
+        "framework": "plain",
+        "payload": {"reviewer": "plan-reviewer", "attempted_round": attempted,
+                    "started_rounds": attempted - 1, "max_automatic_rounds": 6},
+    })
+
+
+def test_report_human_shows_budget_hits(tmp_path):
+    _seed(tmp_path, [
+        _budget_hit("e1", "c1", "2026-08-06T00:00:00Z", 7),
+        _budget_hit("e2", "c1", "2026-08-06T01:00:00Z", 8),
+    ])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "round budget: held 2 automatic round(s)" in res.output
+
+
+def test_report_human_omits_budget_line_when_the_brake_never_fired(tmp_path):
+    _seed(tmp_path, [])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "round budget" not in res.output

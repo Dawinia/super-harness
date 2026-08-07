@@ -58,7 +58,7 @@ def _repo(root: Path, *, cost_class: str = "standard") -> Path:
         "    code-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n",
+        "      max_automatic_rounds: 2\n",
         encoding="utf-8",
     )
     (harness / "review-profiles.local.yaml").write_text(
@@ -128,7 +128,7 @@ def _enable_claude(root: Path) -> None:
         "    code-reviewer:\n"
         "      participants: [codex, claude]\n"
         "      min_independent: 2\n"
-        "      max_automatic_rounds_per_epoch: 3\n",
+        "      max_automatic_rounds: 3\n",
         encoding="utf-8",
     )
     (harness / "review-profiles.local.yaml").write_text(
@@ -1242,11 +1242,11 @@ def test_plan_reviewer_round_freezes_no_code_finding_ids(
         "    plan-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n"
+        "      max_automatic_rounds: 2\n"
         "    code-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n",
+        "      max_automatic_rounds: 2\n",
         encoding="utf-8",
     )
     (harness / "review-profiles.local.yaml").write_text(
@@ -1328,7 +1328,7 @@ def _enable_codex_human_quorum(root: Path) -> None:
         "    code-reviewer:\n"
         "      participants: [codex, human]\n"
         "      min_independent: 2\n"
-        "      max_automatic_rounds_per_epoch: 2\n",
+        "      max_automatic_rounds: 2\n",
         encoding="utf-8",
     )
 
@@ -1440,7 +1440,7 @@ def _single_source_governance(root: Path, *, blocking_severity: str | None) -> N
         "    code-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n" + extra,
+        "      max_automatic_rounds: 2\n" + extra,
         encoding="utf-8",
     )
 
@@ -1574,11 +1574,11 @@ def _repo_plan(tmp_path: Path) -> Path:
         "    plan-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n"
+        "      max_automatic_rounds: 2\n"
         "    code-reviewer:\n"
         "      participants: [codex]\n"
         "      min_independent: 1\n"
-        "      max_automatic_rounds_per_epoch: 2\n",
+        "      max_automatic_rounds: 2\n",
         encoding="utf-8",
     )
     (harness / "review-profiles.local.yaml").write_text(
@@ -1652,3 +1652,235 @@ def test_plan_reviewer_minor_only_round_still_rejects(
     )
     assert imported.exit_code == EXIT_OK, imported.output
     assert json.loads(imported.output)["data"]["round_outcome"] == "rejected"
+
+
+def test_round_close_reports_missing_source(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """A round where one reviewer rejected and the other died closes as a clean
+    `rejected` and the death used to go unmentioned. On the diagnosed change one
+    source was dead from round 1 and eleven consecutive single-source rounds passed
+    unremarked. The close ordering is NOT changed — a rejection is a rejection
+    regardless of quorum — only the output is.
+    """
+    root = _repo(tmp_path)
+    _enable_claude(root)
+    _fake_codex(root, monkeypatch)
+    _fake_claude(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    codex_run, codex_verdict = _result_for_source(begun, "codex")
+    checklist = cast(list[dict[str, object]], codex_verdict["checklist"])
+    checklist[0]["status"] = "fail"
+    codex_verdict["findings"] = [
+        {"id": "B-1", "severity": "blocker", "file": "src/app.py", "summary": "unsafe"}
+    ]
+    codex_path = root / "codex-result.json"
+    codex_path.write_text(json.dumps(codex_verdict), encoding="utf-8")
+    assert CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "result", "import", "change",
+        "--reviewer", "code-reviewer", "--run-id", cast(str, codex_run["run_id"]),
+        "--result-file", str(codex_path),
+    ]).exit_code == EXIT_OK
+    claude_run, _ = _result_for_source(begun, "claude")
+
+    failed = CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "run", "fail", "change",
+        "--reviewer", "code-reviewer", "--run-id", cast(str, claude_run["run_id"]),
+        "--reason", "the account rejects the configured model (HTTP 400)",
+    ])
+
+    assert failed.exit_code == EXIT_OK, failed.output
+    assert "round=rejected" in failed.output          # ordering unchanged
+    assert "claude" in failed.output
+    assert "the account rejects the configured model (HTTP 400)" in failed.output
+    assert "1 consecutive" in failed.output
+
+
+def test_round_close_carries_missing_sources_as_structured_data(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    root = _repo(tmp_path)
+    _enable_claude(root)
+    _fake_codex(root, monkeypatch)
+    _fake_claude(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    codex_run, codex_verdict = _result_for_source(begun, "codex")
+    codex_path = root / "codex-result.json"
+    codex_path.write_text(json.dumps(codex_verdict), encoding="utf-8")
+    assert CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "result", "import", "change",
+        "--reviewer", "code-reviewer", "--run-id", cast(str, codex_run["run_id"]),
+        "--result-file", str(codex_path),
+    ]).exit_code == EXIT_OK
+    claude_run, _ = _result_for_source(begun, "claude")
+
+    failed = CliRunner().invoke(main, [
+        "--json", "--workspace", str(root), "review", "run", "fail", "change",
+        "--reviewer", "code-reviewer", "--run-id", cast(str, claude_run["run_id"]),
+        "--reason", "usage limit reached; try again 2026-08-28",
+    ])
+
+    assert failed.exit_code == EXIT_OK, failed.output
+    notices = json.loads(failed.output)["data"]["missing_sources"]
+    assert notices == [{
+        "source": "claude",
+        "consecutive_rounds_missing": 1,
+        "reason": "usage limit reached; try again 2026-08-28",
+    }]
+
+
+def test_round_close_says_nothing_when_no_source_is_missing(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Print only when non-empty — this information decays to noise by round seven."""
+    root = _repo(tmp_path)
+    _enable_claude(root)
+    _fake_codex(root, monkeypatch)
+    _fake_claude(root, monkeypatch)
+    _prepare(root)
+    begun = _begin(root)
+    last = None
+    for source in ("codex", "claude"):
+        run, verdict = _result_for_source(begun, source)
+        path = root / f"{source}-result.json"
+        # The claude protocol parses a raw CLI envelope, not a bare verdict.
+        raw = {"structured_output": verdict} if source == "claude" else verdict
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        last = CliRunner().invoke(main, [
+            "--json", "--workspace", str(root), "review", "result", "import", "change",
+            "--reviewer", "code-reviewer", "--run-id", cast(str, run["run_id"]),
+            "--result-file", str(path),
+        ])
+        assert last.exit_code == EXIT_OK, last.output
+
+    assert last is not None
+    data = json.loads(last.output)["data"]
+    assert data["round_outcome"] == "approved"
+    assert data["missing_sources"] == []
+
+
+def _exhaust_budget(root: Path, rounds: int) -> None:
+    """Close `rounds` automatic code-review rounds by failing their runs."""
+    for _ in range(rounds):
+        _prepare(root)
+        begun = _begin(root)
+        run = cast(list[dict[str, object]], begun["runs"])[0]
+        assert CliRunner().invoke(main, [
+            "--workspace", str(root), "review", "run", "fail", "change",
+            "--reviewer", "code-reviewer", "--run-id", cast(str, run["run_id"]),
+            "--reason", "producer unavailable: usage limit reached",
+        ]).exit_code == EXIT_OK
+
+
+def test_budget_block_prints_evidence(tmp_path: Path, monkeypatch: MonkeyPatch) -> None:
+    """The block is the load-bearing surface, not the authorization prompt: nobody
+    reads a CLI's stderr, they read what the agent says. An agent without the numbers
+    can only say "I was blocked, please approve" — the rubber-stamp path."""
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _exhaust_budget(root, 2)          # budget is 2 for code-reviewer in this fixture
+
+    _prepare(root)
+    blocked = CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "begin", "change",
+        "--reviewer", "code-reviewer",
+    ])
+
+    assert blocked.exit_code != EXIT_OK
+    out = blocked.output
+    assert "round 3" in out or "3 of 2" in out or "round: 3" in out   # which round
+    assert "codex" in out                                            # missing source
+    assert "usage limit reached" in out                              # and why
+    # An explicit instruction to the messenger, because advisory text alone is not
+    # enough and the agent is the only channel the human actually reads.
+    assert "relay" in out.lower()
+    assert "do not retry" in out.lower()
+
+
+def test_budget_block_emits_a_state_preserving_event(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Recorded whether or not the agent relayed anything — this repo's own research
+    concluded that specifications read into context and not followed is the actual
+    widespread failure."""
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _exhaust_budget(root, 2)
+    before = derive_state(events_path(root))["change"].current_state
+
+    _prepare(root)
+    CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "begin", "change",
+        "--reviewer", "code-reviewer",
+    ])
+
+    events = read_change_events(events_path(root), "change")
+    hits = [e for e in events if e.type == "review_budget_exceeded"]
+    assert len(hits) == 1
+    payload = hits[-1].payload
+    assert payload["reviewer"] == "code-reviewer"
+    # Both numbers, never one standing in for the other: two rounds have started and
+    # the third is the one being refused.
+    assert payload["started_rounds"] == 2
+    assert payload["attempted_round"] == 3
+    assert payload["max_automatic_rounds"] == 2
+    assert payload["missing_source_streaks"] == {"codex": 2}
+    # Emitted BEFORE the process exits, and it must not move the change.
+    assert derive_state(events_path(root))["change"].current_state == before
+
+
+def test_authorize_prompt_repeats_the_evidence(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """Insurance, not the primary surface — but the one case that matters is the human
+    who was told nothing by the agent."""
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _exhaust_budget(root, 2)
+    _prepare(root)
+    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
+
+    result = CliRunner().invoke(
+        main,
+        ["--workspace", str(root), "review", "authorize", "change",
+         "--reviewer", "code-reviewer", "--reason", "the curve is flat but I want one more"],
+        input="n\n",
+    )
+
+    assert "Round-budget evidence" in result.output
+    assert "round 3 against an automatic budget of 2" in result.output
+    assert "usage limit reached" in result.output
+    assert "authorization cancelled" in result.output
+
+
+def test_authorize_json_envelope_is_not_polluted_by_the_evidence_block(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """rb/f-03. The evidence is a diagnostic, so it belongs on stderr rather than
+    prepended to the `--json` document.
+
+    Scoped honestly: `click.confirm` already writes its prompt to stdout, which is
+    pre-existing behaviour and its own (separate) question for `--json` callers. What
+    this pins is that the multi-line evidence block does not add to that.
+    """
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _exhaust_budget(root, 2)
+    _prepare(root)
+    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
+
+    result = CliRunner().invoke(
+        main,
+        ["--json", "--workspace", str(root), "review", "authorize", "change",
+         "--reviewer", "code-reviewer", "--reason", "one more round"],
+        input="y\n",
+    )
+
+    assert result.exit_code == EXIT_OK, result.output
+    assert "Round-budget evidence" in result.stderr
+    assert "Round-budget evidence" not in result.stdout
+    # The envelope is still there, after click.confirm's own prompt line.
+    envelope = result.stdout[result.stdout.index("{"):]
+    assert json.loads(envelope)["command"] == "review authorize"

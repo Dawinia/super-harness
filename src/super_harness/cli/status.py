@@ -276,7 +276,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
         retry_sources = [source for source in automated if source not in imported]
         retry_flags = "".join(f" --source {source}" for source in retry_sources)
         remaining_rounds = max(
-            role.max_automatic_rounds_per_epoch - execution.automatic_rounds_used, 0
+            role.max_automatic_rounds - execution.automatic_rounds_this_change, 0
         )
         if packet is None or packet_stale:
             next_command = (
@@ -328,7 +328,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             "failed_sources": failed,
             "retained_sources": retained,
             "stale_sources": sorted(stale),
-            "automatic_rounds_used": execution.automatic_rounds_used,
+            "automatic_rounds_used": execution.automatic_rounds_this_change,
             "automatic_rounds_remaining": remaining_rounds,
             "available_authorizations": list(execution.available_authorization_ids),
             "packet": (

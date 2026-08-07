@@ -222,3 +222,53 @@ def test_no_json_schema_ref_url_in_argv(tmp_path: Path) -> None:
         '{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object"}',
     )
     assert not any("json-schema.org" in arg for arg in invocation.argv)
+
+
+def _result_file(tmp_path: Path, extra: str) -> Path:
+    output = tmp_path / "result.raw.json"
+    output.write_text(
+        "{\n"
+        '  "structured_output": {"bundle_digest": "d", "checklist": [], "findings": []}'
+        f"{extra}\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    return output
+
+
+def test_parse_result_records_session_id(tmp_path: Path) -> None:
+    """claude reports its session id and we currently discard it, so every claude
+    receipt in the wild records null. Pure recording — nothing depends on it yet."""
+    adapter = ClaudeCliReviewerProtocol(executable="/opt/bin/claude")
+    out = _result_file(tmp_path, ',\n  "session_id": "6f73688a-e5d2-4e5f-b203-fd05d406d336"')
+
+    assert adapter.parse_result(out).session_id == "6f73688a-e5d2-4e5f-b203-fd05d406d336"
+
+
+def test_parse_result_tolerates_missing_or_non_string_session_id(tmp_path: Path) -> None:
+    adapter = ClaudeCliReviewerProtocol(executable="/opt/bin/claude")
+
+    assert adapter.parse_result(_result_file(tmp_path, "")).session_id is None
+    assert adapter.parse_result(_result_file(tmp_path, ',\n  "session_id": 17')).session_id is None
+    assert adapter.parse_result(_result_file(tmp_path, ',\n  "session_id": ""')).session_id is None
+
+
+def test_parse_result_records_reported_cost(tmp_path: Path) -> None:
+    """`claude --print` states its own cost at the top level. The harness does not
+    price tokens itself; it stops throwing away a number the producer supplies."""
+    adapter = ClaudeCliReviewerProtocol(executable="/opt/bin/claude")
+    out = _result_file(tmp_path, ',\n  "total_cost_usd": 1.340269')
+
+    assert adapter.parse_result(out).reported_cost_usd == 1.340269
+
+
+def test_parse_result_never_fabricates_a_cost(tmp_path: Path) -> None:
+    adapter = ClaudeCliReviewerProtocol(executable="/opt/bin/claude")
+
+    assert adapter.parse_result(_result_file(tmp_path, "")).reported_cost_usd is None
+    assert adapter.parse_result(
+        _result_file(tmp_path, ',\n  "total_cost_usd": "1.34"')
+    ).reported_cost_usd is None
+    assert adapter.parse_result(
+        _result_file(tmp_path, ',\n  "total_cost_usd": true')
+    ).reported_cost_usd is None

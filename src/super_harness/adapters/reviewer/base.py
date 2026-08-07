@@ -39,6 +39,9 @@ class ReviewerProtocolResult:
     usage: dict[str, Any] | None = None
     duration_ms: int | float | None = None
     tool_trace: object | None = None
+    # A cost the producer states about ITSELF. The harness does not price tokens and
+    # does not estimate; a producer that reports nothing simply has none here.
+    reported_cost_usd: float | None = None
 
 
 class ReviewerProtocolAdapter(ABC):

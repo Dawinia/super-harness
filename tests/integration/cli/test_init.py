@@ -216,12 +216,13 @@ def test_init_creates_harness_dir(tmp_path: Path):
     assert review["roles"]["plan-reviewer"] == {
         "participants": ["human"],
         "min_independent": 1,
-        "max_automatic_rounds_per_epoch": 2,
+        # Per-role: plan review gets 6 automatic rounds per change, code review 4.
+        "max_automatic_rounds": 6,
     }
     assert review["roles"]["code-reviewer"] == {
         "participants": ["human"],
         "min_independent": 1,
-        "max_automatic_rounds_per_epoch": 2,
+        "max_automatic_rounds": 4,
     }
     assert not (tmp_path / ".harness" / "review-profiles.local.yaml").exists()
     assert (tmp_path / ".harness" / "sensors.yaml").exists()
@@ -1777,3 +1778,20 @@ def test_every_skeleton_file_is_announced_in_the_frozen_plan() -> None:
     announced = {p.as_posix() for p in (*_SKELETON_PATHS, *_REVIEW_PATHS)}
     written = {f".harness/{name}" for name in _skeleton_files()}
     assert written <= announced, f"written but never announced: {sorted(written - announced)}"
+
+
+def test_init_emits_per_role_round_budgets(tmp_path: Path):
+    """A freshly init-ed repo's governance must load without error and carry the two
+    different budgets. The old key is a hard error, so a generator left behind would
+    emit a config that fails its own first governance load."""
+    from super_harness.engineering.review_governance import load_review_governance
+
+    r = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
+    assert r.exit_code == 0, r.output
+
+    text = (tmp_path / ".harness" / "review-governance.yaml").read_text(encoding="utf-8")
+    assert "max_automatic_rounds_per_epoch" not in text
+
+    governance = load_review_governance(tmp_path)
+    assert governance.roles["plan-reviewer"].max_automatic_rounds == 6
+    assert governance.roles["code-reviewer"].max_automatic_rounds == 4

@@ -173,7 +173,7 @@ def test_prepare_embeds_tracked_reviewer_governance(tmp_path: Path) -> None:
         "reviewer": "code-reviewer",
         "min_independent": 2,
         "participants": ["subagent", "external"],
-        "max_automatic_rounds_per_epoch": 2,
+        "max_automatic_rounds": 4,   # per-role default for code-reviewer
         "require_distinct_model_families": False,
         "blocking_severity": "major",
         "sources": {

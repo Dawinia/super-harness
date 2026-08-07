@@ -52,6 +52,10 @@ from super_harness.core.scope_match import (
 )
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
+from super_harness.engineering.review_budget import (
+    RoundBudgetEvidence,
+    derive_round_budget_evidence,
+)
 from super_harness.engineering.review_contract import ReviewContractError, compile_review_contract
 from super_harness.engineering.review_governance import (
     ReviewGovernance,
@@ -234,7 +238,7 @@ def _governance_payload(
         "reviewer": reviewer,
         "participants": list(role.participants),
         "min_independent": role.min_independent,
-        "max_automatic_rounds_per_epoch": role.max_automatic_rounds_per_epoch,
+        "max_automatic_rounds": role.max_automatic_rounds,
         "require_distinct_model_families": governance.require_distinct_model_families,
         "blocking_severity": role.blocking_severity,
         "sources": {
@@ -905,8 +909,8 @@ def begin(
         sys.exit(EXIT_VALIDATION)
 
     needs_authorization = (
-        execution.automatic_rounds_used
-        >= role.max_automatic_rounds_per_epoch
+        execution.automatic_rounds_this_change
+        >= role.max_automatic_rounds
         or any(profiles[source].cost_class == "expensive" for source in selected)
     )
     authorization_id: str | None = None
@@ -921,6 +925,50 @@ def begin(
                 authorization_id = authorization.authorization_id
                 break
         if authorization_id is None:
+            over_budget = (
+                execution.automatic_rounds_this_change >= role.max_automatic_rounds
+            )
+            evidence = (
+                derive_round_budget_evidence(
+                    _change_events(root, change), reviewer=reviewer
+                )
+                if over_budget
+                else None
+            )
+            if evidence is not None:
+                # Recorded before the exit, and state-preserving: hitting the budget is
+                # a legitimate human-authorized act, so it must be VISIBLE, not
+                # forbidden. `report` and the merge attestation surface it whether or
+                # not the agent relayed anything downstream.
+                _emit_review_event(
+                    root,
+                    change=change,
+                    reviewer=reviewer,
+                    event_type="review_budget_exceeded",
+                    reason=(
+                        f"round {evidence.started_rounds + 1} would exceed the "
+                        f"automatic budget of {role.max_automatic_rounds} for this "
+                        "change"
+                    ),
+                    actor=Actor(type="agent", identifier="review-protocol"),
+                    framework=cs.framework if cs is not None else "plain",
+                    payload={
+                        # The round already started, and the one being refused. Both,
+                        # never one standing in for the other.
+                        "started_rounds": evidence.started_rounds,
+                        "attempted_round": evidence.started_rounds + 1,
+                        "imported_rounds": evidence.imported_rounds,
+                        "max_automatic_rounds": role.max_automatic_rounds,
+                        "blocker_major_curve": list(evidence.blocker_major_curve),
+                        "total_findings_curve": list(evidence.total_findings_curve),
+                        "tokens": evidence.tokens,
+                        "missing_source_streaks": dict(evidence.missing_source_streaks),
+                        "missing_source_reasons": dict(evidence.missing_source_reasons),
+                        "last_round_improved": evidence.last_round_improved,
+                    },
+                    subcommand=subcommand,
+                )
+                refresh_state_after_emit(root)
             click.echo(
                 format_error(
                     subcommand=subcommand,
@@ -932,6 +980,13 @@ def begin(
                 ),
                 err=True,
             )
+            if evidence is not None:
+                click.echo(
+                    _format_budget_evidence(
+                        evidence, max_automatic_rounds=role.max_automatic_rounds
+                    ),
+                    err=True,
+                )
             sys.exit(EXIT_VALIDATION)
 
     round_id = _new_review_id("round")
@@ -1107,8 +1162,8 @@ def begin(
         "contract_digest": packet["contract_digest"],
         "target_head": packet["target_head"],
         "contract_path": str(frozen_path),
-        "automatic_rounds_used": execution.automatic_rounds_used + 1,
-        "automatic_rounds_max": role.max_automatic_rounds_per_epoch,
+        "automatic_rounds_used": execution.automatic_rounds_this_change + 1,
+        "automatic_rounds_max": role.max_automatic_rounds,
         "runs": output,
     }
     if ctx.obj.get("json"):
@@ -1217,8 +1272,8 @@ def authorize_round(
         )
         sys.exit(EXIT_VALIDATION)
     needs_authorization = (
-        execution.automatic_rounds_used
-        >= role.max_automatic_rounds_per_epoch
+        execution.automatic_rounds_this_change
+        >= role.max_automatic_rounds
         or any(profiles[source].cost_class == "expensive" for source in selected)
     )
     if not needs_authorization:
@@ -1242,6 +1297,22 @@ def authorize_round(
                 f"super-harness: authorization {existing.authorization_id} already available"
             )
             sys.exit(EXIT_OK)
+    # Insurance, not the primary surface: by the time anyone types `review authorize`
+    # the decision is usually already made from what the agent relayed. Shown anyway,
+    # because the one case that matters is the human who was told nothing.
+    if execution.automatic_rounds_this_change >= role.max_automatic_rounds:
+        click.echo(
+            _format_budget_evidence(
+                derive_round_budget_evidence(
+                    _change_events(root, change), reviewer=reviewer
+                ),
+                max_automatic_rounds=role.max_automatic_rounds,
+            ),
+            # stderr, like the block itself: a `--json` caller in a TTY must still be
+            # able to parse stdout, and every other diagnostic in this module already
+            # keeps out of the envelope's way.
+            err=True,
+        )
     prompt = (
         f"Authorize exactly one automated {reviewer} round for "
         f"{', '.join(selected)} at {str(packet['target_head'])[:12]}?"
@@ -1576,6 +1647,101 @@ def _close_round_if_terminal(
     return outcome, milestone
 
 
+def _format_budget_evidence(
+    evidence: RoundBudgetEvidence, *, max_automatic_rounds: int
+) -> str:
+    """The numbers a human needs, plus an instruction to the messenger.
+
+    The agent is the only channel the human actually reads, so the block tells it
+    what to do with this: stop, relay verbatim, do not retry, do not route around.
+    Advisory text is not sufficient on its own — the event is emitted too — but it is
+    necessary, because an agent without the numbers can only ask for approval.
+    """
+    lines = [
+        "",
+        f"Round-budget evidence — round {evidence.started_rounds + 1} against an "
+        f"automatic budget of {max_automatic_rounds} for this change:",
+        f"  rounds started        : {evidence.started_rounds}",
+        f"  rounds that reviewed  : {evidence.imported_rounds}"
+        + (
+            f"  ({evidence.started_rounds - evidence.imported_rounds} produced nothing)"
+            if evidence.started_rounds > evidence.imported_rounds
+            else ""
+        ),
+    ]
+    if evidence.blocker_major_curve:
+        lines.append(
+            "  blocker+major/round  : "
+            + ", ".join(str(n) for n in evidence.blocker_major_curve)
+        )
+        lines.append(
+            "  all findings/round   : "
+            + ", ".join(str(n) for n in evidence.total_findings_curve)
+        )
+    if evidence.last_round_improved is not None:
+        lines.append(
+            "  last round           : "
+            + ("improved on the one before" if evidence.last_round_improved
+               else "did not improve on the one before")
+        )
+    lines.append(
+        "  reviewer tokens      : "
+        + (f"{evidence.tokens:,}" if evidence.tokens is not None else "not captured")
+    )
+    for source, streak in sorted(evidence.missing_source_streaks.items()):
+        reason = evidence.missing_source_reasons.get(source)
+        detail = f" — {reason}" if reason else ""
+        lines.append(
+            f"  source {source} missing : {streak} consecutive round(s){detail}"
+        )
+    lines += [
+        "",
+        "STOP. Relay the block above verbatim to the human and let them decide "
+        "whether to fund another round. Do not retry, do not route around this, and "
+        "do not summarise the numbers away.",
+    ]
+    return "\n".join(lines)
+
+
+def _missing_source_notices(
+    root: Path, change: str, reviewer: str
+) -> list[dict[str, object]]:
+    """Sources the rounds closed so far have lost, newest streak first.
+
+    Read AFTER the closing event lands so the round just closed is counted. The data
+    was already in every `review_round_closed` payload and nothing read it: on the
+    diagnosed change one source was dead from round 1 and eleven consecutive
+    single-source rounds passed unremarked. Worth most at round 1, worth nothing by
+    round 7 — so the caller prints it only when non-empty.
+    """
+    evidence = derive_round_budget_evidence(
+        _change_events(root, change), reviewer=reviewer
+    )
+    return [
+        {
+            "source": source,
+            "consecutive_rounds_missing": streak,
+            "reason": evidence.missing_source_reasons.get(source),
+        }
+        for source, streak in sorted(evidence.missing_source_streaks.items())
+    ]
+
+
+def _format_missing_sources(notices: list[dict[str, object]]) -> str:
+    """One human line per lost source; empty string when nothing is missing."""
+    if not notices:
+        return ""
+    lines = ["super-harness: review source(s) missing from this round:"]
+    for notice in notices:
+        reason = notice.get("reason")
+        detail = f"; last failure: {reason}" if isinstance(reason, str) and reason else ""
+        lines.append(
+            f"  {notice['source']} — missing "
+            f"{notice['consecutive_rounds_missing']} consecutive round(s){detail}"
+        )
+    return "\n".join(lines)
+
+
 @review_group.group("result")
 def result_group() -> None:
     """Import completed caller-owned reviewer results."""
@@ -1823,6 +1989,7 @@ def import_result(
         "usage": parsed.usage,
         "duration_ms": parsed.duration_ms,
         "tool_trace": parsed.tool_trace,
+        "reported_cost_usd": parsed.reported_cost_usd,
     }
     framework = cs.framework if cs is not None else "plain"
     _emit_review_event(
@@ -1855,6 +2022,8 @@ def import_result(
     )
     refresh_state_after_emit(root)
     new_cs = derive_state(events_path(root)).get(change)
+    # After the close event, so the round just closed is counted.
+    notices = _missing_source_notices(root, change, reviewer) if outcome else []
     data = {
         "change": change,
         "reviewer": reviewer,
@@ -1867,6 +2036,7 @@ def import_result(
         "round_outcome": outcome,
         "milestone": milestone,
         "new_state": new_cs.current_state if new_cs is not None else None,
+        "missing_sources": notices,
     }
     if ctx.obj.get("json"):
         click.echo(
@@ -1882,6 +2052,9 @@ def import_result(
             f"super-harness: imported {run_id} ({run.source}); "
             f"round={outcome or 'open'}"
         )
+        warning = _format_missing_sources(notices)
+        if warning:
+            click.echo(warning, err=True)
     sys.exit(EXIT_OK)
 
 
@@ -1964,12 +2137,14 @@ def fail_run(
         framework=framework,
     )
     refresh_state_after_emit(root)
+    notices = _missing_source_notices(root, change, reviewer) if outcome else []
     data = {
         "change": change,
         "reviewer": reviewer,
         "run_id": run_id,
         "round_outcome": outcome,
         "milestone": milestone,
+        "missing_sources": notices,
     }
     if ctx.obj.get("json"):
         click.echo(
@@ -1984,6 +2159,9 @@ def fail_run(
         click.echo(
             f"super-harness: recorded failed run {run_id}; round={outcome or 'open'}"
         )
+        warning = _format_missing_sources(notices)
+        if warning:
+            click.echo(warning, err=True)
     sys.exit(EXIT_OK)
 
 

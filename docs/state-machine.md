@@ -72,6 +72,7 @@ These events are legal but leave the state unchanged (informational sensor signa
 - `gate_bypassed`
 - `merged_reverted`
 - `pr_opened`
+- `review_budget_exceeded`
 - `review_result_imported`
 - `review_round_authorized`
 - `review_round_closed`

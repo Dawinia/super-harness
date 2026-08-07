@@ -210,11 +210,11 @@ def _skeleton_files() -> dict[str, str]:
             "    plan-reviewer:\n"
             "      participants: [human]\n"
             "      min_independent: 1\n"
-            "      max_automatic_rounds_per_epoch: 2\n"
+            "      max_automatic_rounds: 6\n"
             "    code-reviewer:\n"
             "      participants: [human]\n"
             "      min_independent: 1\n"
-            "      max_automatic_rounds_per_epoch: 2\n"
+            "      max_automatic_rounds: 4\n"
             "      # blocking_severity: major   # optional; one of blocker|major|minor\n"
             "      #   (default major). A code-review round rejects only when a finding\n"
             "      #   is at or above this severity; findings below it pass with the\n"
@@ -308,19 +308,23 @@ def _configure_review_producers(
 
     governance_sources["human"] = {"kind": "human"}
     participants = selected_sources or ["human"]
-    role = {
-        "participants": participants,
-        "min_independent": len(participants),
-        "max_automatic_rounds_per_epoch": 2,
-    }
+    # Per-role budgets: the two roles genuinely differ now that the budget
+    # accumulates per change instead of resetting on every epoch boundary. A shared
+    # template cannot express that, so it is split.
+    def _role(max_automatic_rounds: int) -> dict[str, object]:
+        return {
+            "participants": participants,
+            "min_independent": len(participants),
+            "max_automatic_rounds": max_automatic_rounds,
+        }
     governance = {
         "version": 1,
         "review": {
             "base_branch": "main",
             "sources": governance_sources,
             "roles": {
-                "plan-reviewer": dict(role),
-                "code-reviewer": dict(role),
+                "plan-reviewer": _role(6),
+                "code-reviewer": _role(4),
             },
             "require_distinct_model_families": False,
         },

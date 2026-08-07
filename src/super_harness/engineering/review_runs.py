@@ -68,9 +68,17 @@ class ReviewExecutionState:
     epoch_id: str | None
     rounds: tuple[ReviewRoundState, ...]
     authorizations: tuple[ReviewRoundAuthorization, ...]
+    # Automatic rounds this role has started for the whole CHANGE — what the round
+    # budget compares against. Carried on the state rather than recomputed by each
+    # caller so `status` and `review begin` cannot drift onto different numbers:
+    # `status` promising budget that `review begin` then refuses is precisely the
+    # misinformation this counter exists to remove.
+    automatic_rounds_this_change: int = 0
 
     @property
     def automatic_rounds_used(self) -> int:
+        """Automatic rounds in the CURRENT epoch. Retry anchoring still needs this;
+        the budget does not use it (see `automatic_rounds_this_change`)."""
         return sum(1 for round_state in self.rounds if round_state.automatic)
 
     @property
@@ -127,6 +135,28 @@ class ReviewExecutionState:
         )
 
 
+def count_automatic_rounds(events: list[Event], reviewer: str) -> int:
+    """Automatic rounds this role has started for this change, across every epoch.
+
+    The round budget compares against THIS, not `ReviewExecutionState`
+    .automatic_rounds_used: `core/transitions.py` routes `PLAN_REJECTED` back out
+    through `plan_ready`, which is the plan epoch boundary, so the per-epoch fold
+    resets on every rejection and a budget wired to it never fires. Epochs still
+    anchor contract freezing and run retries, which is why that fold is left alone.
+
+    Counts started rounds, failures included — a round that produced no findings
+    still cost money, and the brake bounds spend. A round with no `automatic` flag
+    predates the flag and counts, so an upgrade cannot silently forget history.
+    """
+    return sum(
+        1
+        for event in events
+        if event.type == "review_round_started"
+        and (event.payload or {}).get("reviewer") == reviewer
+        and (event.payload or {}).get("automatic", True)
+    )
+
+
 def derive_review_execution(
     events: list[Event], reviewer: str
 ) -> ReviewExecutionState:
@@ -146,7 +176,11 @@ def derive_review_execution(
     authorizations: list[ReviewRoundAuthorization] = []
     if epoch_id is None:
         return ReviewExecutionState(
-            reviewer=reviewer, epoch_id=None, rounds=(), authorizations=()
+            reviewer=reviewer,
+            epoch_id=None,
+            rounds=(),
+            authorizations=(),
+            automatic_rounds_this_change=count_automatic_rounds(events, reviewer),
         )
 
     for event in events[start:]:
@@ -431,4 +465,5 @@ def derive_review_execution(
         epoch_id=epoch_id,
         rounds=tuple(rounds),
         authorizations=tuple(authorizations),
+        automatic_rounds_this_change=count_automatic_rounds(events, reviewer),
     )
