@@ -218,3 +218,21 @@ def test_superpowers_change_gets_a_real_inspection_target(tmp_path: Path) -> Non
     argv = compiled["assignments"][0]["inspection"]["diff_argv"]
     assert argv, "the reviewer was handed an empty target"
     assert "docs/plans/c-implementation.md" in argv
+
+
+def test_bundle_checklist_is_a_list_of_plain_strings(tmp_path: Path) -> None:
+    """Regression anchor for the load-bearing constraint.
+
+    `bundle["checklist"]` is spliced straight into the frozen verdict schema's
+    `enum` (`core/review_verdict.review_verdict_json_schema`), compared as a set
+    of strings by `resolve_source_baseline`, and hashed into `bundle_digest`.
+    Checklist-item DEFINITIONS therefore live in a side mapping keyed by id and
+    must never be folded into this list — doing so breaks all three at once.
+    """
+    ws = _repo_with_change(tmp_path)
+    _change(ws, ["src/"])
+    for reviewer in ("code-reviewer", "plan-reviewer"):
+        b = assemble_bundle(ws, change_id="c", reviewer=reviewer, base="main")
+        assert isinstance(b["checklist"], list)
+        assert b["checklist"], reviewer
+        assert all(type(i) is str for i in b["checklist"]), reviewer

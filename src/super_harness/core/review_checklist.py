@@ -24,10 +24,43 @@ DEFAULT_CHECKLISTS: dict[str, list[str]] = {
         "doc-impact",
     ],
     "plan-reviewer": [
+        "architecture",
+        "tech-choices",
+        "conventions",
         "spec-coverage",
-        "design-soundness",
-        "scope-declared",
     ],
+}
+
+# Definitions live HERE, keyed by item id, and never inside the resolved list.
+# `resolve_checklist` returns `list[str]` because that list is spliced straight
+# into the frozen verdict schema's `enum` (core/review_verdict.py), compared as a
+# set of strings by `resolve_source_baseline`, and hashed into `bundle_digest`.
+# Enriching it into id+definition objects would break all three at once.
+#
+# An id with no entry here is not an error: a checklist configured through
+# `.harness/review-checklists.yaml` renders as bare ids and still works.
+#
+# The wording is a measured artefact, not a paraphrase — plan review yield was
+# replayed against these exact four definitions. Reword them only with evidence.
+CHECKLIST_DEFINITIONS: dict[str, str] = {
+    "architecture": (
+        "does the design hold up? Layer ownership, dependency direction, state "
+        "and who owns it, failure paths. Test: would a system built to this "
+        "design be wrong, deadlock, or silently deliver the wrong value?"
+    ),
+    "tech-choices": (
+        "are the chosen libraries, mechanisms and data structures able to carry "
+        "the responsibilities assigned to them, and do they conflict with "
+        "choices already made in this repository?"
+    ),
+    "conventions": (
+        "does this conform to the norms, ratified decisions and established "
+        "practice of THIS repository?"
+    ),
+    "spec-coverage": (
+        "is everything the spec/requirement asks for actually covered by this "
+        "plan, and do the acceptance criteria match the body?"
+    ),
 }
 
 

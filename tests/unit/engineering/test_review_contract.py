@@ -9,6 +9,8 @@ import pytest
 from super_harness.core.events import Actor, Event
 from super_harness.engineering.review_contract import (
     ReviewContractError,
+    _render_checklist,
+    _review_prompt,
     compile_review_contract,
     resolve_source_baseline,
 )
@@ -725,3 +727,156 @@ def test_compile_allows_empty_assignment_scope(tmp_path: Path) -> None:
 
     compiled = _compile(tmp_path, declared=[])
     assert compiled["assignments"][0]["inspection"]["files"] == []
+
+
+def test_checklist_renders_one_line_per_id_with_its_definition() -> None:
+    """The template is frozen text: it is hashed into `prompt_digest`."""
+    rendered = _render_checklist(["architecture", "conventions"])
+    lines = rendered.rstrip("\n").split("\n")
+    assert lines[0] == "Checklist — review these and nothing else:"
+    assert lines[1].startswith("  - architecture: does the design hold up?")
+    assert lines[2].startswith("  - conventions: does this conform to the norms")
+
+
+def test_checklist_id_without_a_definition_renders_bare() -> None:
+    """`code-reviewer`'s ids and any adopter-configured id have no definition."""
+    rendered = _render_checklist(["doc-impact", "house-style"])
+    assert "  - doc-impact\n" in rendered
+    assert "  - house-style\n" in rendered
+    assert ":" not in rendered.split("\n")[1]
+
+
+def test_rendered_id_stays_separable_from_its_definition() -> None:
+    """`item` is pinned to an enum of BARE ids in the verdict schema, so a
+    reviewer echoing a whole rendered line fails validation and wastes the round.
+    The id is always the token between `  - ` and the first `: `."""
+    for item in ("architecture", "tech-choices", "conventions", "spec-coverage"):
+        line = _render_checklist([item]).split("\n")[1]
+        assert line.removeprefix("  - ").split(": ", 1)[0] == item
+
+
+def _prompt(
+    checklist: list[str],
+    *,
+    pass_with_open: bool = False,
+    consequence_gate: bool = True,
+) -> str:
+    return _review_prompt(
+        source="s",
+        context=None,
+        inspection={"mode": "full-change", "diff_argv": ["git", "diff"]},
+        checklist=checklist,
+        bundle_digest="d",
+        open_findings=[],
+        blocking_severity="major",
+        pass_with_open=pass_with_open,
+        consequence_gate=consequence_gate,
+    )
+
+
+def test_prompt_asks_the_reviewer_to_finish() -> None:
+    """Yield per round was flat across 71 replayed rounds because nothing ever
+    asked for completeness; the recordable shape is satisfied by one finding."""
+    body = _prompt(["architecture"])
+    assert "Be exhaustive" in body
+    assert "not only the most severe one" in body
+    assert "Do not stop once the checklist verdict is decided." in body
+
+
+def test_code_review_gets_no_consequence_gate() -> None:
+    """The gate SUPPRESSES findings, is phrased about a document and its
+    implementers, and excludes `arithmetic` — applied to a code delta a reviewer
+    can drop a real off-by-one. Its wording was measured on plan review only, so
+    code review gets none until one is measured for it. The exhaustiveness
+    instruction can only ADD findings and is therefore role-agnostic."""
+    code = _prompt(["spec-compliance"], pass_with_open=True, consequence_gate=False)
+    assert "BUILD THE WRONG THING" not in code
+    assert "arithmetic" not in code
+    assert "Be exhaustive" in code
+
+
+def test_prompt_gates_findings_on_consequence_not_on_topic() -> None:
+    """Phrased on outcome: most intra-document contradictions in the replayed
+    pathological case did block implementation, so a topic ban would lose them."""
+    body = _prompt(["architecture"])
+    assert "BUILD THE WRONG THING, GET STUCK" in body
+    assert "TWO IMPLEMENTERS BUILD DIFFERENT THINGS" in body
+    assert "prose consistency are NOT" in body
+
+
+def test_prompt_names_every_resolved_item_and_asks_for_the_bare_id() -> None:
+    body = _prompt(["architecture", "doc-impact"])
+    assert "  - architecture: " in body
+    assert "  - doc-impact\n" in body
+    assert "the id alone, never its definition" in body
+
+
+def test_both_roles_get_the_new_checklist_rendering() -> None:
+    """Rendering is role-agnostic, so `code-reviewer`'s prompt digest moves too —
+    an in-flight round must be re-prepared rather than silently grandfathered."""
+    code = _prompt(["spec-compliance", "doc-impact"], pass_with_open=True)
+    assert "Checklist — review these and nothing else:" in code
+    assert "Checklist: [" not in code
+    assert "passes with the finding left open" in code
+
+
+def _compiled_prompt_for(tmp_path: Path, reviewer: str) -> str:
+    """Compile one assignment for `reviewer` and return its frozen prompt."""
+    profile = ReviewProducerProfile(
+        source="external", protocol="codex-cli", model="m",
+        cost_class="standard", agent_options={},
+    )
+    governance = ReviewGovernance(
+        version=1,
+        base_branch="main",
+        sources={"external": ReviewerSourceGovernance(name="external", kind="automated")},
+        roles={
+            reviewer: ReviewerRoleGovernance(
+                reviewer=reviewer,
+                participants=("external",),
+                min_independent=1,
+                max_automatic_rounds=2,
+            )
+        },
+        require_distinct_model_families=False,
+    )
+    bundle = {
+        "base": "main",
+        "change": "change",
+        "reviewer": reviewer,
+        "bundle_digest": "digest",
+        "checklist": ["architecture"],
+        "spec_path": "",
+        "plan_path": "docs/plan.md",
+    }
+    compiled = compile_review_contract(
+        tmp_path, bundle=bundle, governance=governance,
+        profiles={"external": profile}, events=[], declared=["src/", "docs/"],
+    )
+    return str(compiled["assignments"][0]["prompt"])
+
+
+def test_consequence_gate_is_wired_to_the_role_not_just_to_the_flag(
+    tmp_path: Path,
+) -> None:
+    """Pinned WHERE THE ROLE IS KNOWN, and asserted on both sides.
+
+    One comparison in `compile_review_contract` decides which reviewer receives a
+    finding-SUPPRESSING instruction. Inverting it to `code-reviewer` is the exact
+    defect this change exists to prevent, and every unit test that calls
+    `_review_prompt` directly passes the flag as an argument, so none of them can
+    see it. Both directions are asserted here because either alone still passes
+    under the inversion.
+    """
+    _scope_repo(tmp_path)
+    (tmp_path / "src" / "a.py").write_text("v2\n")
+    _git(tmp_path, "commit", "-aqm", "work")
+
+    plan_prompt = _compiled_prompt_for(tmp_path, "plan-reviewer")
+    code_prompt = _compiled_prompt_for(tmp_path, "code-reviewer")
+
+    assert "BUILD THE WRONG THING" in plan_prompt
+    assert "BUILD THE WRONG THING" not in code_prompt
+    # The exhaustiveness instruction can only ADD findings and stays role-agnostic.
+    assert "Be exhaustive" in plan_prompt
+    assert "Be exhaustive" in code_prompt
