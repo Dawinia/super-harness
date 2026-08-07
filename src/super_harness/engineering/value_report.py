@@ -237,7 +237,7 @@ _ADDITIVE_CACHE_KEYS = ("cache_read_input_tokens", "cache_creation_input_tokens"
 _SUMMED_USAGE_KEYS = ("input_tokens", "output_tokens", *_ADDITIVE_CACHE_KEYS)
 
 
-def _usage_tokens(usage: object) -> int | None:
+def usage_tokens(usage: object) -> int | None:
     """Best-effort token total from a producer-reported usage dict. None if absent.
 
     Prefer an explicit total; else sum the named keys; else None. NEVER guess from
@@ -281,7 +281,7 @@ def _review_cost(events: list[Event]) -> tuple[int, int, int, float | None, int]
         payload = ev.payload if isinstance(ev.payload, dict) else {}
         raw_receipt = payload.get("receipt")
         receipt = raw_receipt if isinstance(raw_receipt, dict) else {}
-        t = _usage_tokens(receipt.get("usage"))
+        t = usage_tokens(receipt.get("usage"))
         if t is not None:
             runs_with_usage += 1
             tokens += t
@@ -340,7 +340,7 @@ def _cost_breakdown(events: list[Event]) -> tuple[CostBreakdownRow, ...]:
             change_id=ev.change_id,
             round=ordinal,
             round_id=rid,
-            tokens=_usage_tokens(receipt.get("usage")),
+            tokens=usage_tokens(receipt.get("usage")),
             findings_raised=len(findings) if isinstance(findings, list) else 0,
             outcome=outcomes.get(rid, "open"),
         ))
