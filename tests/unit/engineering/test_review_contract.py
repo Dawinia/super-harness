@@ -9,6 +9,8 @@ import pytest
 from super_harness.core.events import Actor, Event
 from super_harness.engineering.review_contract import (
     ReviewContractError,
+    _render_checklist,
+    _review_prompt,
     compile_review_contract,
     resolve_source_baseline,
 )
@@ -725,3 +727,76 @@ def test_compile_allows_empty_assignment_scope(tmp_path: Path) -> None:
 
     compiled = _compile(tmp_path, declared=[])
     assert compiled["assignments"][0]["inspection"]["files"] == []
+
+
+def test_checklist_renders_one_line_per_id_with_its_definition() -> None:
+    """The template is frozen text: it is hashed into `prompt_digest`."""
+    rendered = _render_checklist(["architecture", "conventions"])
+    lines = rendered.rstrip("\n").split("\n")
+    assert lines[0] == "Checklist — review these and nothing else:"
+    assert lines[1].startswith("  - architecture: does the design hold up?")
+    assert lines[2].startswith("  - conventions: does this conform to the norms")
+
+
+def test_checklist_id_without_a_definition_renders_bare() -> None:
+    """`code-reviewer`'s ids and any adopter-configured id have no definition."""
+    rendered = _render_checklist(["doc-impact", "house-style"])
+    assert "  - doc-impact\n" in rendered
+    assert "  - house-style\n" in rendered
+    assert ":" not in rendered.split("\n")[1]
+
+
+def test_rendered_id_stays_separable_from_its_definition() -> None:
+    """`item` is pinned to an enum of BARE ids in the verdict schema, so a
+    reviewer echoing a whole rendered line fails validation and wastes the round.
+    The id is always the token between `  - ` and the first `: `."""
+    for item in ("architecture", "tech-choices", "conventions", "spec-coverage"):
+        line = _render_checklist([item]).split("\n")[1]
+        assert line.removeprefix("  - ").split(": ", 1)[0] == item
+
+
+def _prompt(checklist: list[str], *, pass_with_open: bool = False) -> str:
+    return _review_prompt(
+        source="s",
+        context=None,
+        inspection={"mode": "full-change", "diff_argv": ["git", "diff"]},
+        checklist=checklist,
+        bundle_digest="d",
+        open_findings=[],
+        blocking_severity="major",
+        pass_with_open=pass_with_open,
+    )
+
+
+def test_prompt_asks_the_reviewer_to_finish() -> None:
+    """Yield per round was flat across 71 replayed rounds because nothing ever
+    asked for completeness; the recordable shape is satisfied by one finding."""
+    body = _prompt(["architecture"])
+    assert "Be exhaustive" in body
+    assert "not only the most severe one" in body
+    assert "Do not stop once the checklist verdict is decided." in body
+
+
+def test_prompt_gates_findings_on_consequence_not_on_topic() -> None:
+    """Phrased on outcome: most intra-document contradictions in the replayed
+    pathological case did block implementation, so a topic ban would lose them."""
+    body = _prompt(["architecture"])
+    assert "BUILD THE WRONG THING, GET STUCK" in body
+    assert "TWO IMPLEMENTERS BUILD DIFFERENT THINGS" in body
+    assert "prose consistency are NOT" in body
+
+
+def test_prompt_names_every_resolved_item_and_asks_for_the_bare_id() -> None:
+    body = _prompt(["architecture", "doc-impact"])
+    assert "  - architecture: " in body
+    assert "  - doc-impact\n" in body
+    assert "the id alone, never its definition" in body
+
+
+def test_both_roles_get_the_new_checklist_rendering() -> None:
+    """Rendering is role-agnostic, so `code-reviewer`'s prompt digest moves too —
+    an in-flight round must be re-prepared rather than silently grandfathered."""
+    code = _prompt(["spec-compliance", "doc-impact"], pass_with_open=True)
+    assert "Checklist — review these and nothing else:" in code
+    assert "Checklist: [" not in code
+    assert "passes with the finding left open" in code

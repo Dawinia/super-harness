@@ -407,6 +407,15 @@ starts editing. The hot-path gate enforces lifecycle rules:
   checklist fail regardless (its findings are not tracked in the report), so
   `blocking_severity` on `plan-reviewer` has no effect.
 
+  What a plan round is asked to judge is the checklist, and its four items carry
+  definitions that go into the frozen prompt: `architecture`, `tech-choices`,
+  `conventions`, `spec-coverage`. The prompt asks for an exhaustive pass rather
+  than the single worst finding, and admits a finding only when following the
+  document literally would make the implementer build the wrong thing, get
+  stuck, or make two implementers build different things. Replace the items per
+  project in `.harness/review-checklists.yaml` — ids without a built-in
+  definition render as bare ids and work exactly as before.
+
   The automated plan-review protocol is prepare → begin → caller execution →
   import/fail:
 

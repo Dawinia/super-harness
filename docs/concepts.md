@@ -85,6 +85,18 @@ The configuration separates shared governance from user-local execution:
   `major`) — the finding severity at or above which a **code-review** round
   rejects; findings below it pass with the finding left open (still surfaced by
   `super-harness report`). Plan review always rejects on any checklist fail.
+- **The checklist is what the reviewer is asked to judge**, and its items carry
+  definitions that are rendered into the frozen prompt. A plan is judged on four
+  questions — `architecture` (does the design hold up), `tech-choices` (can the
+  chosen mechanisms carry what is assigned to them), `conventions` (does it match
+  this repository's ratified decisions and practice), and `spec-coverage` (is
+  everything the spec asks for covered). The prompt also asks the reviewer to be
+  exhaustive rather than to stop at the worst finding, and gates every finding on
+  consequence: following the document literally, would the implementer build the
+  wrong thing, get stuck, or would two implementers build different things?
+  Wording, cross-reference numbering and prose consistency are not findings
+  unless they change one of those answers. Override the item list per project in
+  `.harness/review-checklists.yaml`; ids you invent render without a definition.
 - **User-local profiles** in the gitignored
   `.harness/review-profiles.local.yaml` select an explicit producer protocol,
   model, cost class, and producer-specific `agent_options` for automated sources.

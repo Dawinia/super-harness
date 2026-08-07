@@ -9,6 +9,7 @@ from typing import Any
 
 from super_harness.core.events import Event
 from super_harness.core.review_bundle import resolve_declared_artifact_paths
+from super_harness.core.review_checklist import CHECKLIST_DEFINITIONS
 from super_harness.core.review_verdict import derive_open_findings
 from super_harness.core.scope_match import (
     GitScopeError,
@@ -112,6 +113,23 @@ def resolve_source_baseline(
     return None
 
 
+def _render_checklist(checklist: list[str]) -> str:
+    """Render the assigned checklist as one line per id, with its definition.
+
+    An id absent from ``CHECKLIST_DEFINITIONS`` renders bare, so a checklist
+    configured through ``.harness/review-checklists.yaml`` still works. The id is
+    always the token between ``  - `` and the first ``: ``, which keeps it
+    separable from its definition: the verdict schema pins ``item`` to an enum of
+    the bare ids, so a reviewer echoing a whole rendered line would fail
+    validation and waste the round.
+    """
+    lines = ["Checklist — review these and nothing else:"]
+    for item in checklist:
+        definition = CHECKLIST_DEFINITIONS.get(item)
+        lines.append(f"  - {item}: {definition}" if definition else f"  - {item}")
+    return "\n".join(lines) + "\n"
+
+
 def _review_prompt(
     *,
     source: str,
@@ -152,7 +170,7 @@ def _review_prompt(
         f"Supporting context: {context or 'repository'}\n"
         f"Inspection mode: {inspection['mode']}\n"
         f"Inspection argv: {argv}\n"
-        f"Checklist: {json.dumps(checklist, separators=(',', ':'))}\n\n"
+        f"{_render_checklist(checklist)}\n"
         f"{empty_target_guidance}"
         f"{prior_finding_guidance}"
         "Review only the assigned target delta. You may read any unchanged repository "
@@ -160,11 +178,22 @@ def _review_prompt(
         "Report only issues caused by this target, dependencies or "
         "regressions made relevant by it, or unresolved prior findings. Do not expand to "
         "the whole PR or unrelated pre-existing issues. Continue through the full assigned "
-        "target after finding a blocker. If this scope is insufficient, return a partial "
-        "rejection instead of expanding it. Return one JSON object with this recordable shape:\n"
+        "target after finding a blocker. Be exhaustive: work through the entire target and "
+        "report EVERY distinct issue you can substantiate, not only the most severe one. "
+        "Returning a single finding when more exist is an incomplete review. Do not stop "
+        "once the checklist verdict is decided. If this scope is insufficient, return a "
+        "partial rejection instead of expanding it.\n\n"
+        "Before reporting any finding, answer this question: following this document "
+        "literally, would the implementer BUILD THE WRONG THING, GET STUCK, or would TWO "
+        "IMPLEMENTERS BUILD DIFFERENT THINGS? If none of the three is true, do not report "
+        "it — however defensible the observation is. Wording, internal cross-reference "
+        "numbering, arithmetic, line-number citations and prose consistency are NOT "
+        "findings unless they change one of those three answers.\n\n"
+        "Return one JSON object with this recordable shape:\n"
         f"bundle_digest: {bundle_digest}\n"
         "checklist:\n"
-        "  - item: <copy each assigned checklist item exactly, once>\n"
+        "  - item: <the checklist id exactly as listed above — the id alone, never its "
+        "definition; each id once>\n"
         "    status: pass | fail | na\n"
         "    note: <optional>\n"
         "findings: []  # required non-empty when any checklist item fails\n"
