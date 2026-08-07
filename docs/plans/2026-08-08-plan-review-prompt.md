@@ -20,7 +20,9 @@ tier_hint: Micro
 
 **Goal:** Raise how much of a plan's real defect population one review round surfaces, by telling the reviewer what to look at and that it must finish looking.
 
-**Architecture:** Two edits to the frozen prompt, no new machinery, no new state, no config migration. The checklist stops being opaque ids and becomes four defined questions; the instruction block stops being purely restrictive and asks for completeness. Everything downstream — schema enum, coverage check, incremental baseline — already derives from the resolved checklist and follows automatically.
+**Architecture:** Two edits to the frozen prompt, no new machinery, no new state, no config migration. The checklist stops being opaque ids and becomes four defined questions; the instruction block stops being purely restrictive and asks for completeness.
+
+**The load-bearing constraint:** `resolve_checklist` keeps its signature and keeps returning `list[str]`, so `bundle["checklist"]` keeps its shape. `review_verdict_json_schema` splices that list straight into `"enum": checklist` (`core/review_verdict.py:104`), `resolve_source_baseline` compares it as a set of strings, and `bundle_digest` hashes it. Definitions therefore live in a **separate mapping keyed by item id**, never inside the resolved list. Enriching the list into id+definition objects would break all three at once and push the repair into `cli/review.py`, which is deliberately not in scope — if an implementation needs to touch that file, the design is wrong, not the scope.
 
 **Tech Stack:** Python 3.10+, pytest. No new dependencies.
 
@@ -42,38 +44,50 @@ The prompt is where this lives. `engineering/review_contract.py:150-175` asks th
 
 ## Task 1 — Four defined checklist items replace three undefined ones
 
-`src/super_harness/core/review_checklist.py:26-30` · tests in `tests/unit/core/test_review_checklist.py`
+`src/super_harness/core/review_checklist.py:26-30` · tests in `tests/unit/core/test_review_checklist.py` and `tests/unit/core/test_review_bundle.py`
+
+`test_review_bundle.py` is in scope to carry the regression anchor for the load-bearing constraint above: that `bundle["checklist"]` is a list of plain strings for both reviewers. Its existing `code-reviewer` assertion must keep passing byte-identical, which is what proves Task 1 left that role alone.
 
 `plan-reviewer` currently resolves to `spec-coverage`, `design-soundness`, `scope-declared`. None of the three is defined anywhere in the codebase, documentation or configuration. In the replayed history `design-soundness` was the sole failing item in roughly half of all rejections — an unlabelled item carried the gate.
 
-The replacement is the four questions a human asks of an implementation plan: whether the architecture holds up, whether the technology choices hold up, whether it conforms to this project's norms, and whether it covers the spec.
+The replacement is the four questions a human asks of an implementation plan. The ids and the definition text are both specification — the ids become the frozen schema's `enum` and the vocabulary an adopter overrides in `.harness/review-checklists.yaml`, and the wording is the measured artifact, so both are given verbatim rather than paraphrased:
 
-`scope-declared` is dropped. It is harness bookkeeping, it is mechanically decidable, and the two guards that actually enforce it are elsewhere and unaffected: `scope_sufficient` is a separate verdict field that blocks independently of the checklist, and `compile_review_contract` already fails closed when the assignment scope names no tracked file.
+| id | definition, verbatim |
+| --- | --- |
+| `architecture` | does the design hold up? Layer ownership, dependency direction, state and who owns it, failure paths. Test: would a system built to this design be wrong, deadlock, or silently deliver the wrong value? |
+| `tech-choices` | are the chosen libraries, mechanisms and data structures able to carry the responsibilities assigned to them, and do they conflict with choices already made in this repository? |
+| `conventions` | does this conform to the norms, ratified decisions and established practice of THIS repository? |
+| `spec-coverage` | is everything the spec/requirement asks for actually covered by this plan, and do the acceptance criteria match the body? |
+
+Definitions live in a module-level `dict[str, str]` beside `DEFAULT_CHECKLISTS`, keyed by item id and shared across reviewers. `resolve_checklist` does not read it and does not change.
+
+`scope-declared` is dropped because two mechanical gates already decide it and an LLM opinion adds nothing to either: `sensors/verification_runner.py:483-484` reports every changed file absent from `scope.files`, and `engineering/attestation.py:297` refuses the merge for any changed file no complete lifecycle covers. Neither `scope_sufficient` nor `compile_review_contract`'s fail-closed guard is one of those gates — the first asserts the reviewer's assigned target was adequate, the second only trips when the scope matches *no* tracked file at all — and this change does not touch either.
 
 Behaviours to pin:
 
-- Each built-in item carries a definition, and an item with no definition still resolves — a checklist supplied through `.harness/review-checklists.yaml` keeps working unchanged, with or without definitions available.
+- `resolve_checklist` still returns `list[str]` for every reviewer, so `bundle["checklist"]` stays a list of plain strings.
+- An id with no definition resolves normally — a checklist supplied through `.harness/review-checklists.yaml` keeps working unchanged whether or not its ids appear in the mapping.
 - The existing YAML resolution and its error cases are untouched: absent or corrupt file falls back to the default, a present-but-empty list is still an error.
-- `code-reviewer`'s checklist is not changed by this task.
+- `code-reviewer`'s resolved items are unchanged, and none of the five carries a definition.
 
 ## Task 2 — The prompt renders the definitions, asks for completeness, and gates on consequence
 
 `src/super_harness/engineering/review_contract.py:115-175` · tests in `tests/unit/engineering/test_review_contract.py`
 
-Three additions to `_review_prompt`, all inside the existing frozen-prompt mechanism:
+`_review_prompt` reads the definition mapping from Task 1 by import; its `checklist: list[str]` parameter does not change type. Three additions, all inside the existing frozen-prompt mechanism:
 
-1. The checklist is rendered as ids with their definitions rather than a JSON array of bare strings. Items without a definition render as the bare id.
-2. An instruction to be exhaustive: work the whole target, report every distinct issue that can be substantiated, and treat a single finding as an incomplete review when more exist.
-3. A consequence test the reviewer applies before reporting anything: following this document literally, would the implementer build the wrong thing, get stuck, or would two implementers build different things? If none of the three, it is not a finding — regardless of how defensible the observation is.
+1. The checklist renders as one line per id, carrying its definition when the mapping has one and the bare id when it does not, instead of a JSON array. **This applies to every reviewer** — `code-reviewer`'s five ids render as bare lines.
+2. An instruction to be exhaustive, verbatim: *Be exhaustive: work through the entire target and report EVERY distinct issue you can substantiate, not only the most severe one. Returning a single finding when more exist is an incomplete review. Do not stop once the checklist verdict is decided.*
+3. A consequence test, verbatim: *Before reporting any finding, answer this question: following this document literally, would the implementer BUILD THE WRONG THING, GET STUCK, or would TWO IMPLEMENTERS BUILD DIFFERENT THINGS? If none of the three is true, do not report it — however defensible the observation is. Wording, internal cross-reference numbering, arithmetic, line-number citations and prose consistency are NOT findings unless they change one of those three answers.*
 
 The consequence test is deliberately phrased on outcome rather than on topic. Roughly two fifths of the findings in the replayed pathological case were internal contradictions between sections of the plan, and most of those did block implementation. A prohibition written as "do not report internal inconsistency" would have discarded them.
 
 Behaviours to pin:
 
 - The rendered prompt names every resolved checklist item, and the recordable-shape section still instructs the reviewer to echo each item exactly once.
-- Changing the resolved checklist changes `prompt_digest` and therefore `contract_digest` — a frozen packet compiled before this change cannot silently satisfy the new contract.
+- **Both roles'** prompts change, so `prompt_digest` and `contract_digest` change for both — a packet frozen before this change cannot silently satisfy the new contract, and an in-flight code-review round must be re-prepared. That is the intended cost of changing what was asked; nothing is grandfathered.
 - A previously imported result whose checklist does not cover the newly required items loses incremental eligibility and the next round falls back to `full-change`. This is the existing coverage rule in `resolve_source_baseline`; it must degrade to a full re-read, never to a crash or a silent partial target.
-- `code-reviewer` prompts keep their current wording for the prior-findings and pass-with-open blocks.
+- `code-reviewer` keeps its current prior-findings and pass-with-open wording; only its checklist rendering changes.
 
 ## Task 3 — Documentation says what plan review is now asked to do
 
