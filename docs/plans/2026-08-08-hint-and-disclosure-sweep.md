@@ -62,10 +62,18 @@ command that reaches the expected state from *there*, derived from `core/transit
 
 | reviewer | current state | route named |
 | --- | --- | --- |
-| `plan-reviewer` | `PLAN_REJECTED` | `plan ready` (`PLAN_REJECTED --plan_ready-> AWAITING_PLAN_REVIEW`) |
-| `plan-reviewer` | `INTENT_DECLARED` | `plan ready` |
+| `plan-reviewer` | `PLAN_REJECTED` | `plan ready … --scope <files>` (`PLAN_REJECTED --plan_ready-> AWAITING_PLAN_REVIEW`) |
+| `plan-reviewer` | `INTENT_DECLARED` | `plan ready … --scope <files>` |
 | `code-reviewer` | `IMPLEMENTATION_IN_PROGRESS` | `done` |
 | `code-reviewer` | `PLAN_APPROVED` | `implementation start` |
+
+`--scope` is part of the two `plan ready` rows, not decoration. `cli/plan.py:207` sends
+an empty artifact list when the flag is omitted and `core/reducer.py:149` **always
+replaces** rather than merges, so a bare `plan ready` revokes the HG-PLAN-AUTHORING
+carve-out and leaves the caller unable to edit their own plan document after the next
+rejection. A hint that unsticks someone by silently taking a permission away is this
+issue's own defect wearing a different hat, so the flag is named even though the guard
+cannot know the value.
 
 Every row names exactly one command — the *first* step, never a route. `PLAN_APPROVED`
 is two transitions away from `AWAITING_CODE_REVIEW` and still names only
@@ -95,6 +103,13 @@ is a slug that goes into a prompt line, a JSON schema `enum` and a digest; anyth
 non-printable in it — C0, C1, a line separator, a stray zero-width character — is a
 config error rather than an id, and `isprintable()` names that class exactly (ASCII space
 stays printable, so multi-word ids keep working).
+
+`isprintable()` alone is not the whole guard: `"".isprintable()` is `True`, so an empty
+or whitespace-only id would pass it and still reach the prompt as a bare `  - ` bullet
+and the verdict schema as an empty `enum` value. That is the degenerate case sitting
+right beside the one this guard closes, and it is rejected on the same footing — a
+present-but-blank id is the same kind of mistake as a present-but-empty list, which this
+function already refuses.
 
 **Scope note.** This is a widened pre-existing exposure, not a new one, and the
 repository's threat model already holds that a solo owner can forge anything in-repo.
@@ -194,14 +209,16 @@ rather than leaving half of it open.
 ## Acceptance criteria
 
 1. All four route-table rows are pinned, each naming exactly one command: `plan-reviewer`
-   from `PLAN_REJECTED` and from `INTENT_DECLARED` names `plan ready`; `code-reviewer`
-   from `IMPLEMENTATION_IN_PROGRESS` names `done` and from `PLAN_APPROVED` names
-   `implementation start` and nothing after it. A state with no mapped route still prints
-   today's `Expected state: …` line, and the guard still loads nothing.
-2. A checklist id containing a newline (or any other non-printable character) makes
-   `resolve_checklist` raise `ReviewChecklistError` naming the reviewer, on the same
-   footing as the existing empty-list and non-string errors. Ordinary slug ids and
-   multi-word ids with ASCII spaces are unaffected.
+   from `PLAN_REJECTED` and from `INTENT_DECLARED` names `plan ready` **carrying
+   `--scope`**; `code-reviewer` from `IMPLEMENTATION_IN_PROGRESS` names `done` and from
+   `PLAN_APPROVED` names `implementation start` and nothing after it. A state with no
+   mapped route still prints today's `Expected state: …` line, and the guard still loads
+   nothing.
+2. A checklist id containing a newline (or any other non-printable character), and an id
+   that is empty or only whitespace, each make `resolve_checklist` raise
+   `ReviewChecklistError` naming the reviewer, on the same footing as the existing
+   empty-list and non-string errors. Ordinary slug ids and multi-word ids with ASCII
+   spaces are unaffected.
 3. `attest verify` prints one `round budget: held N automatic round(s) …` line, in
    `report`'s wording, **per attestation that hit the budget** — never a sum across
    slugs — and `--json` carries a matching per-slug `budget_holds` list beside
