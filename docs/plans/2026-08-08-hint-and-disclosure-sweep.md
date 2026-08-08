@@ -215,11 +215,13 @@ rather than leaving half of it open.
 ## Acceptance criteria
 
 1. All four route-table rows are pinned, each naming exactly one command: `plan-reviewer`
-   from `PLAN_REJECTED` and from `INTENT_DECLARED` names `plan ready` **carrying
-   `--scope`**; `code-reviewer` from `IMPLEMENTATION_IN_PROGRESS` names `done` and from
-   `PLAN_APPROVED` names `implementation start` and nothing after it. A state with no
-   mapped route still prints today's `Expected state: …` line, and the guard still loads
-   nothing.
+   from `PLAN_REJECTED` and from `INTENT_DECLARED` names `plan ready` carrying
+   **`--scope @<path>` exactly** — not `<files>` or any other placeholder, because the
+   flag parses YAML and exits 2 on a bare filename, so the pinned form must be one the
+   caller can type as-is; `code-reviewer` from `IMPLEMENTATION_IN_PROGRESS` names `done`
+   and from `PLAN_APPROVED` names `implementation start` and nothing after it. A state
+   with no mapped route still prints today's `Expected state: …` line, and the guard
+   still loads nothing.
 2. A checklist id containing a newline (or any other non-printable character), and an id
    that is empty or only whitespace, each make `resolve_checklist` raise
    `ReviewChecklistError` naming the reviewer, on the same footing as the existing
