@@ -62,8 +62,8 @@ command that reaches the expected state from *there*, derived from `core/transit
 
 | reviewer | current state | route named |
 | --- | --- | --- |
-| `plan-reviewer` | `PLAN_REJECTED` | `plan ready … --scope <files>` (`PLAN_REJECTED --plan_ready-> AWAITING_PLAN_REVIEW`) |
-| `plan-reviewer` | `INTENT_DECLARED` | `plan ready … --scope <files>` |
+| `plan-reviewer` | `PLAN_REJECTED` | `plan ready … --scope @<path>` (`PLAN_REJECTED --plan_ready-> AWAITING_PLAN_REVIEW`) |
+| `plan-reviewer` | `INTENT_DECLARED` | `plan ready … --scope @<path>` |
 | `code-reviewer` | `IMPLEMENTATION_IN_PROGRESS` | `done` |
 | `code-reviewer` | `PLAN_APPROVED` | `implementation start` |
 
@@ -74,6 +74,12 @@ carve-out and leaves the caller unable to edit their own plan document after the
 rejection. A hint that unsticks someone by silently taking a permission away is this
 issue's own defect wearing a different hat, so the flag is named even though the guard
 cannot know the value.
+
+The placeholder is `@<path>` and not `<files>` because `--scope` parses its argument as
+YAML and rejects anything that is not a list (`cli/plan.py:105`), so a caller who reads
+`<files>` as "a filename" types `--scope docs/a.md` and gets exit 2. A change whose whole
+thesis is that a refusal must name a route the caller can walk cannot leave its own hint
+one step short of walkable — the placeholder has to be the form that actually works.
 
 Every row names exactly one command — the *first* step, never a route. `PLAN_APPROVED`
 is two transitions away from `AWAITING_CODE_REVIEW` and still names only
@@ -229,9 +235,11 @@ rather than leaving half of it open.
 4. The model-contradiction matrix contains a row that fails if `_model_qualifiers`
    returns a list instead of a `frozenset`, and a row pinning that an id reducing to an
    empty base does not block.
-5. `docs/getting-started.md` and `docs/concepts.md` describe the checklist-id constraint,
-   and the getting-started sentence about the merge attestation surfacing the budget
-   count is true.
+5. `docs/getting-started.md` and `docs/concepts.md` describe the checklist-id constraint
+   as the guard actually enforces it — **non-blank**, printable, single-line — because
+   `""` is printable and single-line, so prose that stops at "printable single-line text"
+   tells a reader a blank id is legal. And the getting-started sentence about the merge
+   attestation surfacing the budget count is true.
 6. `ruff`, `mypy`, `pytest`, `decision check` and `doc check` are clean.
 
 ## Explicit non-goals
