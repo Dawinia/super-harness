@@ -736,9 +736,9 @@ def test_stuck_source_is_scoped_to_skip() -> None:
         (
             "plan-reviewer",
             ("intent_declared", "plan_ready", "plan_rejected"),
-            "plan ready c --scope <files>",
+            "plan ready c --scope @<path>",
         ),
-        ("plan-reviewer", ("intent_declared",), "plan ready c --scope <files>"),
+        ("plan-reviewer", ("intent_declared",), "plan ready c --scope @<path>"),
         (
             "code-reviewer",
             ("intent_declared", "plan_ready", "plan_approved", "implementation_started"),
@@ -813,4 +813,31 @@ def test_plan_ready_route_names_scope_so_it_does_not_revoke_plan_authoring(
     r = CliRunner().invoke(main, [
         "--workspace", str(tmp_path), "review", "skip", "c",
         "--reviewer", "plan-reviewer", "--override", "--reason", "why"])
-    assert "Run `super-harness plan ready c --scope <files>` first." in r.output
+    assert "Run `super-harness plan ready c --scope @<path>` first." in r.output
+
+
+def test_the_scope_form_the_route_names_is_one_plan_ready_accepts(tmp_path: Path) -> None:
+    """The hint's placeholder has to be typeable, and this pins why `@<path>` is it.
+
+    `--scope` parses its argument as YAML and refuses anything that is not a list, so a
+    caller who reads `<files>` as "a filename" gets exit 2. Naming `@<path>` is what makes
+    the route walkable; without this test the criterion is prose and the earlier
+    `<files>` wording passed review twice (code review HDS-004).
+    """
+    _seed(tmp_path, "c", "intent_declared")
+    (tmp_path / "docs" / "plans").mkdir(parents=True)
+    plan = tmp_path / "docs" / "plans" / "c.md"
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# c\n", encoding="utf-8")
+
+    bare = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "plan", "ready", "c",
+        "--scope", "docs/plans/c.md"])
+    assert bare.exit_code == EXIT_VALIDATION, bare.output
+    assert "must be a yaml list of files" in bare.output
+
+    scope_file = tmp_path / "scope.yaml"
+    scope_file.write_text("- docs/plans/c.md\n", encoding="utf-8")
+    at_form = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "plan", "ready", "c",
+        "--scope", f"@{scope_file}"])
+    assert at_form.exit_code == EXIT_OK, at_form.output

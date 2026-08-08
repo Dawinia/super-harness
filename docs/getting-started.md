@@ -417,10 +417,10 @@ starts editing. The hot-path gate enforces lifecycle rules:
   definitions that go into the frozen prompt: `architecture`, `tech-choices`,
   `conventions`, `spec-coverage`. Replace the items per project in
   `.harness/review-checklists.yaml` — ids without a built-in definition render as
-  bare ids and work exactly as before. An id must be printable single-line text: it goes
-  into a prompt line, a JSON-schema `enum` and the bundle digest at once, so a newline or
-  any other non-printable character is rejected loudly rather than smuggled into the
-  prompt.
+  bare ids and work exactly as before. An id must be non-blank, printable, single-line
+  text: it goes into a prompt line, a JSON-schema `enum` and the bundle digest at once,
+  so a blank id, a newline, or any other non-printable character is rejected loudly
+  rather than smuggled into the prompt.
 
   Two prompt instructions come with them. **Both** roles are asked for an
   exhaustive pass rather than the single worst finding. **Only plan review** also

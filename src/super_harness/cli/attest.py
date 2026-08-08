@@ -210,10 +210,11 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
         for slug in verdict.attestations
         if (held := int(disclosures[slug].get("review_budget_rounds_held") or 0))
     }
+    # Built straight from the dict: it is already keyed in `verdict.attestations` order
+    # and already holds exactly the holding slugs, so re-filtering that list would be
+    # two loops where only one carries meaning.
     budget_holds = [
-        {"slug": slug, "rounds_held": holds_by_slug[slug]}
-        for slug in verdict.attestations
-        if slug in holds_by_slug
+        {"slug": slug, "rounds_held": rounds} for slug, rounds in holds_by_slug.items()
     ]
     data: dict[str, Any] = {
         "subjects": verdict.subjects,

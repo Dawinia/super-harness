@@ -194,15 +194,20 @@ _REVIEWER_STATES: dict[str, set[str]] = {
 # `cli/plan.py` sends an empty artifact list when the flag is omitted and
 # `core/reducer.py` ALWAYS replaces rather than merges, so a bare `plan ready` revokes
 # the HG-PLAN-AUTHORING carve-out and leaves the caller unable to edit their own plan
-# document after the next rejection. A hint that unsticks you by silently taking a
-# permission away is this issue's own defect wearing a different hat.
+# document after the next rejection. A hint that unsticks you by taking a permission
+# away is this issue's own defect wearing a different hat.
+#
+# The placeholder is `@<path>`, not `<files>`: `--scope` parses its argument as YAML and
+# rejects anything that is not a list (`cli/plan.py`), so a caller who reads `<files>`
+# as "a filename" types `--scope docs/a.md` and gets exit 2. A hint whose whole job is
+# to name a walkable route cannot itself be one step short of typeable.
 #
 # This exists because the round-budget block tells a human to run `review authorize`,
 # and by the time they do, a rejection has usually landed. They then hit this guard,
 # which named the destination state and no way to reach it (GitHub #94).
 _REVIEWER_STATE_ROUTES: dict[tuple[str, str], str] = {
-    ("plan-reviewer", "PLAN_REJECTED"): "plan ready {change} --scope <files>",
-    ("plan-reviewer", "INTENT_DECLARED"): "plan ready {change} --scope <files>",
+    ("plan-reviewer", "PLAN_REJECTED"): "plan ready {change} --scope @<path>",
+    ("plan-reviewer", "INTENT_DECLARED"): "plan ready {change} --scope @<path>",
     ("code-reviewer", "IMPLEMENTATION_IN_PROGRESS"): "done {change}",
     ("code-reviewer", "PLAN_APPROVED"): "implementation start {change}",
 }

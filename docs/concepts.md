@@ -92,8 +92,9 @@ The configuration separates shared governance from user-local execution:
   this repository's ratified decisions and practice), and `spec-coverage` (is
   everything the spec asks for covered). Override the item list per project in
   `.harness/review-checklists.yaml`; ids you invent render without a definition, and
-  must be printable single-line text — the same string is the prompt line, the verdict
-  schema's `enum` value and part of the digest.
+  must be non-blank, printable, single-line text — the same string is the prompt line,
+  the verdict schema's `enum` value and part of the digest, so a blank or non-printable
+  id is refused rather than carried into all three.
 - **Two prompt instructions, one of them role-scoped.** *Every* reviewer is asked
   to be exhaustive rather than stop at the worst finding — that can only add
   findings. Only **plan** review carries the consequence gate: following the
