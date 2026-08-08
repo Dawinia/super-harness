@@ -96,4 +96,18 @@ def resolve_checklist(root: Path, reviewer: str) -> list[str]:
         raise ReviewChecklistError(
             f"checklists.{reviewer} is an empty list — remove the key to use the default"
         )
+    # An id is a slug that goes into a prompt line (`  - {item}` in
+    # engineering/review_contract._render_checklist), a JSON-schema `enum` and a digest.
+    # Anything non-printable in it corrupts all three at once — a newline in particular
+    # emits free-standing lines into the region the reviewer reads as harness-authored
+    # instruction. `str.isprintable()` names that class exactly and keeps ASCII space
+    # printable, so multi-word ids still work. Rejected here rather than escaped at
+    # render time: escaping would silently accept a malformed config, and every other
+    # branch of this function fails loud on one.
+    unprintable = [i for i in items if not i.isprintable()]
+    if unprintable:
+        raise ReviewChecklistError(
+            f"checklists.{reviewer} contains a non-printable character in "
+            f"{unprintable[0]!r} — checklist ids must be printable single-line text"
+        )
     return list(items)

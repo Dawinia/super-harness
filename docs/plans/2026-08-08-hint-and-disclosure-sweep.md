@@ -170,7 +170,14 @@ against reported `claude-opus-5[1m][beta]`. Subset is `True`, so the correct ver
 more-specific-report case. Under a list, `["[beta]"] <= ["[1m]", "[beta]"]` compares
 `"[beta]"` against `"[1m]"` and is `False`, flipping the verdict to "contradiction" and
 failing the row. That is the property worth owning: the test fails if the container type
-changes, which is the only sensor this refactor hazard has.
+changes.
+
+Verified by swapping the `frozenset` for a list and running the matrix. Doing so also
+corrects the issue on a second point: it claims every existing row stays green, and the
+pre-existing `opus[1m]` / `claude-opus-5[200k]` row fails too, so the hazard was already
+half-covered by accident. The new row is the one that covers it on purpose, and it
+covers the subset direction — requested qualifiers being a strict subset of reported —
+that the `[200k]` row does not reach.
 
 **Second half of the same issue: an id that reduces to an empty base.**
 `_model_contradicts("opus", "[1m]")` returns `False`, because stripping qualifiers leaves

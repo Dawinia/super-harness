@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from super_harness.cli import main
@@ -724,3 +725,70 @@ def test_stuck_source_is_scoped_to_skip() -> None:
     assert "source" not in names("skip")
     assert "source" in names("approve")   # shared _source_opt untouched
     assert "source" in names("reject")
+
+
+# --------------------------------------------------------------------------- #
+# GitHub #94: a refusal names the first step out, not just the destination state
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("reviewer", "seed", "route"),
+    [
+        ("plan-reviewer", ("intent_declared", "plan_ready", "plan_rejected"), "plan ready"),
+        ("plan-reviewer", ("intent_declared",), "plan ready"),
+        (
+            "code-reviewer",
+            ("intent_declared", "plan_ready", "plan_approved", "implementation_started"),
+            "done",
+        ),
+        (
+            "code-reviewer",
+            ("intent_declared", "plan_ready", "plan_approved"),
+            "implementation start",
+        ),
+    ],
+)
+def test_wrong_state_names_the_first_step_out(
+    tmp_path: Path, reviewer: str, seed: tuple[str, ...], route: str
+) -> None:
+    """The round-budget block tells a human to run `review authorize`; by the time they
+    do, a rejection has usually landed and they hit this guard instead. Naming the
+    destination state and no way to reach it is the one instruction an agent is told to
+    relay verbatim and cannot make correct (GitHub #94).
+    """
+    _seed(tmp_path, "c", *seed)
+    _write_governance(tmp_path)
+    _write_profiles(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", reviewer, "--override", "--reason", "why"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert f"Run `super-harness {route} c`" in r.output
+    assert "Expected state:" in r.output  # the destination is still stated
+
+
+def test_route_hint_names_exactly_one_command(tmp_path: Path) -> None:
+    """`PLAN_APPROVED` is two transitions from `AWAITING_CODE_REVIEW` and still names
+    only `implementation start`. A hint that spells out a multi-command route rots
+    against the state machine; one correct step is what unsticks the caller.
+    """
+    _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_approved")
+    _write_governance(tmp_path)
+    _write_profiles(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--override", "--reason", "why"])
+    assert "Run `super-harness implementation start c` first." in r.output
+    assert "done" not in r.output.split("Run `super-harness")[1]
+
+
+def test_unmapped_state_keeps_the_bare_expected_state_hint(tmp_path: Path) -> None:
+    """No invented route for a state the table does not cover."""
+    _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_approved")
+    _write_governance(tmp_path)
+    _write_profiles(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "plan-reviewer", "--override", "--reason", "why"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "Expected state: AWAITING_PLAN_REVIEW." in r.output
+    assert "Run `super-harness" not in r.output

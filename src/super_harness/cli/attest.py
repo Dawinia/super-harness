@@ -190,14 +190,25 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
     verdict = verify_attestations(root, parse_name_status(raw))
     # HG-12 cut 1: disclose review independence for each validated (newly-ADDED,
     # scope-covering) attestation. Disclosure only — never changes pass/fail.
-    independence = [
-        {
-            "slug": slug,
-            **independence_for_attestation(
-                root / ATTESTATIONS_DIRNAME / f"{slug}.jsonl"
-            )["code_review"],
-        }
+    disclosures = {
+        slug: independence_for_attestation(root / ATTESTATIONS_DIRNAME / f"{slug}.jsonl")
         for slug in verdict.attestations
+    }
+    independence = [
+        {"slug": slug, **disclosures[slug]["code_review"]}
+        for slug in verdict.attestations
+    ]
+    # Kept OFF the independence item on purpose (GitHub #96). `derive_independence`
+    # counts every `review_budget_exceeded` whatever role raised it, while the
+    # independence classification is scoped to code review by design §4.1 — so a change
+    # held only at PLAN review would print as a claim about its code reviewer. One entry
+    # per holding attestation, never a sum across slugs: `attest verify` covers a whole
+    # base..head range, and summing would present two changes held three times each as
+    # one change held six times.
+    budget_holds = [
+        {"slug": slug, "rounds_held": held}
+        for slug in verdict.attestations
+        if (held := int(disclosures[slug].get("review_budget_rounds_held") or 0))
     ]
     data: dict[str, Any] = {
         "subjects": verdict.subjects,
@@ -205,6 +216,7 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
         "attestations": verdict.attestations,
         "blockers": verdict.blockers,
         "independence": independence,
+        "budget_holds": budget_holds,
     }
     if ctx.obj.get("json"):
         click.echo(
@@ -222,6 +234,14 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
         if not ctx.obj.get("quiet"):
             for item in independence:
                 click.echo(_independence_line(item))
+            for hold in budget_holds:
+                # `report`'s wording verbatim (cli/report.py:127) — one number, one
+                # phrasing. Emitted only when non-zero; a "held 0 round(s)" line on
+                # every clean change would be noise.
+                click.echo(
+                    f"round budget: held {hold['rounds_held']} automatic round(s) "
+                    "for a human funding decision (distinct rounds, not retries)"
+                )
             for slug in verdict.attestations:
                 gb = gate_bypass_for_attestation(
                     root / ATTESTATIONS_DIRNAME / f"{slug}.jsonl"

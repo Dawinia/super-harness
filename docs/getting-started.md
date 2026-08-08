@@ -370,8 +370,14 @@ starts editing. The hot-path gate enforces lifecycle rules:
   When the budget is reached, `review begin` refuses the round, prints the round
   history, cumulative token cost and any reviewer that has been failing, and records a
   state-preserving `review_budget_exceeded` event that `super-harness report` and the
-  merge attestation both surface. Authorizing another round is `review authorize`, one
-  round at a time.
+  merge attestation both surface — `attest verify` prints one
+  `round budget: held N automatic round(s) …` line per attestation that hit it, and
+  carries the same per-change figure in `--json` as `budget_holds`. It is deliberately
+  separate from the `review independence:` line, which speaks only about code review: a
+  change held at *plan* review would otherwise read as a claim about its code reviewer.
+  Authorizing another round is `review authorize`, one round at a time. If a rejection
+  has landed by the time you run it, the refusal now names the step back —
+  `plan ready` — instead of only the state it wanted you in.
 
   Each user's explicit producer choices stay out of Git:
 
@@ -411,7 +417,10 @@ starts editing. The hot-path gate enforces lifecycle rules:
   definitions that go into the frozen prompt: `architecture`, `tech-choices`,
   `conventions`, `spec-coverage`. Replace the items per project in
   `.harness/review-checklists.yaml` — ids without a built-in definition render as
-  bare ids and work exactly as before.
+  bare ids and work exactly as before. An id must be printable single-line text: it goes
+  into a prompt line, a JSON-schema `enum` and the bundle digest at once, so a newline or
+  any other non-printable character is rejected loudly rather than smuggled into the
+  prompt.
 
   Two prompt instructions come with them. **Both** roles are asked for an
   exhaustive pass rather than the single worst finding. **Only plan review** also

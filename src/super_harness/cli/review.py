@@ -183,17 +183,50 @@ _REVIEWER_STATES: dict[str, set[str]] = {
 }
 
 
+# The FIRST command that moves you toward a state where this reviewer may record a
+# verdict, keyed by (reviewer, the state you are actually in). Derived from
+# core/transitions.py; every value is exactly one command, never a route. A hint that
+# spells out a multi-command sequence rots against the state machine, and one correct
+# step is all a stuck caller needs — `PLAN_APPROVED` is two transitions away from
+# `AWAITING_CODE_REVIEW` and still names only `implementation start`.
+#
+# This exists because the round-budget block tells a human to run `review authorize`,
+# and by the time they do, a rejection has usually landed. They then hit this guard,
+# which named the destination state and no way to reach it (GitHub #94).
+_REVIEWER_STATE_ROUTES: dict[tuple[str, str], str] = {
+    ("plan-reviewer", "PLAN_REJECTED"): "plan ready",
+    ("plan-reviewer", "INTENT_DECLARED"): "plan ready",
+    ("code-reviewer", "IMPLEMENTATION_IN_PROGRESS"): "done",
+    ("code-reviewer", "PLAN_APPROVED"): "implementation start",
+}
+
+
 def _validate_reviewer_state_or_exit(
     cs: object | None, *, reviewer: str, subcommand: str,
 ) -> None:
     current = getattr(cs, "current_state", None)
     allowed = _REVIEWER_STATES[reviewer]
     if current not in allowed:
+        expected = f"Expected state: {', '.join(sorted(allowed))}."
+        # Deliberately decided from (reviewer, current_state) alone: this is the
+        # cheapest guard in the module and every caller runs it before governance,
+        # profiles or packets are loaded. It must stay that way.
+        route = (
+            _REVIEWER_STATE_ROUTES.get((reviewer, current))
+            if isinstance(current, str)
+            else None
+        )
+        change_id = getattr(cs, "change_id", None)
+        target = change_id if isinstance(change_id, str) and change_id else "<change>"
         click.echo(
             format_error(
                 subcommand=subcommand,
                 message=f"{reviewer} cannot record a verdict from state {current!r}",
-                hint=f"Expected state: {', '.join(sorted(allowed))}.",
+                hint=(
+                    f"{expected} Run `super-harness {route} {target}` first."
+                    if route
+                    else expected
+                ),
             ),
             err=True,
         )
@@ -1436,6 +1469,17 @@ def _model_contradicts(requested: str, actual: str) -> bool:
     answered with the standard one — a different model than the one frozen, which
     is precisely what this guard exists to catch. A different qualifier is the
     same failure.
+
+    ``req_quals <= act_quals`` is SUBSET, and it is load-bearing that both sides
+    stay a ``frozenset``: on a list the same operator means lexicographic order,
+    changes the verdict for real inputs, and raises nothing. The contradiction
+    matrix carries a row that fails if the container type ever changes.
+
+    An identifier that reduces to an EMPTY base after stripping qualifiers (a
+    producer reporting ``"[1m]"`` and nothing else) does not block, exactly like
+    the empty-string cases above: the doctrine is that only an explicit
+    contradiction invalidates a receipt, and an id carrying no model identity is
+    contentless rather than contradictory.
     """
 
     req = requested.strip().lower()
