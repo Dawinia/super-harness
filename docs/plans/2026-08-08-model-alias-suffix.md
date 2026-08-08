@@ -43,7 +43,11 @@ Two regression tests already cover this predicate end-to-end through the CLI —
 
 `src/super_harness/cli/review.py:1398-1414` · tests in `tests/unit/cli/test_review_runs.py`
 
-Split a single trailing bracketed suffix off both identifiers, then decide on the two parts.
+Collect **every** bracketed qualifier in each identifier, wherever it appears, and decide on the qualifier sets and the remaining bases separately.
+
+Position-agnostic on purpose. Requiring the qualifier to be the *trailing* token is the same over-narrow structural assumption this change exists to remove: a report shaped `claude-opus-5[1m]-20260101` carries the qualifier the request asked for, and reading it as "the qualifier was dropped" would strand a paid receipt exactly as the substring test does today. Nothing is known to emit that shape — which is the point. The guard must not false-reject on an unseen but plausible one, because a false rejection is what this whole change is about.
+
+Set containment, not equality: a report carrying a qualifier the request omitted is *more specific*, which the existing doctrine already honours.
 
 **The suffix rule is asymmetric, and the asymmetry is the whole point.** The existing dated-variant doctrine — a more-specific reported id is an honoured request — only licenses the direction where the *report* carries more than the request. A requested suffix that the report drops is the opposite: the contract froze a 1M-context variant and the producer answered with the standard one. That is a producer answering with a different model than the one frozen, which is exactly what this guard exists to catch, and it must not be waved through just because it happens to be a *missing* qualifier rather than a *different* one.
 
@@ -54,7 +58,10 @@ Behaviours to pin, both directions — a one-sided assertion passes under an inv
 - **Different** suffixes on both sides contradict: a request for one context-window variant answered by another is not the request being honoured.
 - **The report omitting a suffix the request carried contradicts** — same failure as answering with the wrong variant, and today it would import clean while recording an `actual_model` that silently ran at a different context window.
 - **The request omitting a suffix the report carries is consistent** — that is the more-specific-report case the existing doctrine already covers.
+- **A qualifier that is not the trailing token is still recognised** — `opus[1m]` against `claude-opus-5[1m]-20260101` is consistent, not a dropped qualifier.
 - The two pre-existing regression cases keep their current answers: the dated-variant pair stays consistent, the disjoint pair stays a contradiction. An empty identifier on either side stays non-blocking.
+
+The fixture that gives a test its requested model takes a `model=` argument on the existing repo helper, beside its `cost_class=`. A second copy of the profile YAML would silently discard whatever the caller passed to the first one, and would drift the moment that profile gains a field.
 
 ## Done when
 
