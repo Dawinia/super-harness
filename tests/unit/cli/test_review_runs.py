@@ -1936,6 +1936,25 @@ def test_import_rejects_report_dropping_a_requested_suffix(
         ("opus[1m]", "claude-opus-5", True, "report dropped a requested suffix"),
         ("opus[1m]", "claude-opus-5[200k]", True, "different suffixes"),
         ("opus", "claude-opus-5[1m]", False, "report is merely more specific"),
+        # SET semantics, pinned. Under a list `<=` is lexicographic: "[beta]" > "[1m]"
+        # because 'b' > '1', so this row flips to a contradiction the moment
+        # `_model_qualifiers` stops returning a frozenset (GitHub #106). Measured, not
+        # assumed: swapping the frozenset for a list fails this row. The issue claimed
+        # no existing row would catch it — the `[1m]`/`[200k]` row above happens to fail
+        # too, so the hazard was already half-covered. This row is the one that says so
+        # on purpose, and it covers the subset direction that row does not.
+        (
+            "opus[beta]",
+            "claude-opus-5[1m][beta]",
+            False,
+            "requested qualifier present alongside another — subset, not lexicographic order",
+        ),
+        (
+            "opus",
+            "[1m]",
+            False,
+            "an id that reduces to an empty base is contentless, not contradictory",
+        ),
         (
             "opus[1m]",
             "claude-opus-5[1m]-20260101",

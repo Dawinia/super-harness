@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from super_harness.cli import main
@@ -724,3 +725,119 @@ def test_stuck_source_is_scoped_to_skip() -> None:
     assert "source" not in names("skip")
     assert "source" in names("approve")   # shared _source_opt untouched
     assert "source" in names("reject")
+
+
+# --------------------------------------------------------------------------- #
+# GitHub #94: a refusal names the first step out, not just the destination state
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    ("reviewer", "seed", "route"),
+    [
+        (
+            "plan-reviewer",
+            ("intent_declared", "plan_ready", "plan_rejected"),
+            "plan ready c --scope @<path>",
+        ),
+        ("plan-reviewer", ("intent_declared",), "plan ready c --scope @<path>"),
+        (
+            "code-reviewer",
+            ("intent_declared", "plan_ready", "plan_approved", "implementation_started"),
+            "done c",
+        ),
+        (
+            "code-reviewer",
+            ("intent_declared", "plan_ready", "plan_approved"),
+            "implementation start c",
+        ),
+    ],
+)
+def test_wrong_state_names_the_first_step_out(
+    tmp_path: Path, reviewer: str, seed: tuple[str, ...], route: str
+) -> None:
+    """The round-budget block tells a human to run `review authorize`; by the time they
+    do, a rejection has usually landed and they hit this guard instead. Naming the
+    destination state and no way to reach it is the one instruction an agent is told to
+    relay verbatim and cannot make correct (GitHub #94).
+    """
+    _seed(tmp_path, "c", *seed)
+    _write_governance(tmp_path)
+    _write_profiles(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", reviewer, "--override", "--reason", "why"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert f"Run `super-harness {route}`" in r.output
+    assert "Expected state:" in r.output  # the destination is still stated
+
+
+def test_route_hint_names_exactly_one_command(tmp_path: Path) -> None:
+    """`PLAN_APPROVED` is two transitions from `AWAITING_CODE_REVIEW` and still names
+    only `implementation start`. A hint that spells out a multi-command route rots
+    against the state machine; one correct step is what unsticks the caller.
+    """
+    _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_approved")
+    _write_governance(tmp_path)
+    _write_profiles(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--override", "--reason", "why"])
+    assert "Run `super-harness implementation start c` first." in r.output
+    assert "done" not in r.output.split("Run `super-harness")[1]
+
+
+def test_unmapped_state_keeps_the_bare_expected_state_hint(tmp_path: Path) -> None:
+    """No invented route for a state the table does not cover."""
+    _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_approved")
+    _write_governance(tmp_path)
+    _write_profiles(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "plan-reviewer", "--override", "--reason", "why"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "Expected state: AWAITING_PLAN_REVIEW." in r.output
+    assert "Run `super-harness" not in r.output
+
+
+def test_plan_ready_route_names_scope_so_it_does_not_revoke_plan_authoring(
+    tmp_path: Path,
+) -> None:
+    """A bare `plan ready` sends an empty artifact list and the reducer ALWAYS replaces.
+
+    Following the hint literally would therefore revoke the HG-PLAN-AUTHORING carve-out
+    and leave the caller unable to edit their own plan document after the next rejection
+    — a hint that unsticks you by taking a permission away (code review HDS-001).
+    """
+    _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_rejected")
+    _write_governance(tmp_path)
+    _write_profiles(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "plan-reviewer", "--override", "--reason", "why"])
+    assert "Run `super-harness plan ready c --scope @<path>` first." in r.output
+
+
+def test_the_scope_form_the_route_names_is_one_plan_ready_accepts(tmp_path: Path) -> None:
+    """The hint's placeholder has to be typeable, and this pins why `@<path>` is it.
+
+    `--scope` parses its argument as YAML and refuses anything that is not a list, so a
+    caller who reads `<files>` as "a filename" gets exit 2. Naming `@<path>` is what makes
+    the route walkable; without this test the criterion is prose and the earlier
+    `<files>` wording passed review twice (code review HDS-004).
+    """
+    _seed(tmp_path, "c", "intent_declared")
+    (tmp_path / "docs" / "plans").mkdir(parents=True)
+    plan = tmp_path / "docs" / "plans" / "c.md"
+    plan.write_text("---\nchange: c\nstage: plan\n---\n# c\n", encoding="utf-8")
+
+    bare = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "plan", "ready", "c",
+        "--scope", "docs/plans/c.md"])
+    assert bare.exit_code == EXIT_VALIDATION, bare.output
+    assert "must be a yaml list of files" in bare.output
+
+    scope_file = tmp_path / "scope.yaml"
+    scope_file.write_text("- docs/plans/c.md\n", encoding="utf-8")
+    at_form = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "plan", "ready", "c",
+        "--scope", f"@{scope_file}"])
+    assert at_form.exit_code == EXIT_OK, at_form.output

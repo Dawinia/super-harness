@@ -246,3 +246,89 @@ def test_independence_line_override_skip():
          "override": True, "reason": "deadlock"})
     assert "OVERRIDE" in line
     assert "deadlock" in line
+
+
+# --------------------------------------------------------------------------- #
+# GitHub #96: the round-budget count reaches the merge disclosure
+# --------------------------------------------------------------------------- #
+def _budget_hold(w: EventWriter, slug: str, *, reviewer: str, attempted: int) -> None:
+    _emit_id(w, "review_budget_exceeded", slug, "review-protocol",
+             {"reviewer": reviewer, "attempted_round": attempted})
+
+
+def _attestation_with_holds(root: Path, slug: str, holds: list[tuple[str, int]]) -> None:
+    """A complete lifecycle whose review was held by the budget `len(holds)` times."""
+    _attestation(root, slug, "alice@x", "bob@x")
+    w = EventWriter(root / ".harness" / "attestations" / f"{slug}.jsonl")
+    for reviewer, attempted in holds:
+        _budget_hold(w, slug, reviewer=reviewer, attempted=attempted)
+
+
+def test_verify_prints_round_budget_holds(tmp_path, monkeypatch):
+    """The count `derive_independence` computes must reach the human line.
+
+    The change that added the counter argued in its own plan that shipping only the
+    `report` half drops the half an agent cannot decline to relay — and shipped exactly
+    that half. `docs/getting-started.md` already promised this line.
+    """
+    _attestation_with_holds(tmp_path, "feat-x", [("plan-reviewer", 7), ("plan-reviewer", 8)])
+    r = _verify(tmp_path, monkeypatch, _DIFF)
+    assert "round budget: held 2 automatic round(s) for a human funding decision" in r.output
+    assert r.exit_code == 0  # disclosure NEVER changes pass/fail
+
+
+def test_verify_budget_hold_is_not_attached_to_the_independence_line(tmp_path, monkeypatch):
+    """A PLAN-review hold must not read as a claim about the CODE reviewer.
+
+    `derive_independence` counts every `review_budget_exceeded` whatever role raised it,
+    while the independence classification is scoped to code review by design §4.1. The
+    two numbers therefore travel on separate lines and in separate envelope keys.
+    """
+    _attestation_with_holds(tmp_path, "feat-x", [("plan-reviewer", 7)])
+    r = _verify(tmp_path, monkeypatch, _DIFF)
+    independence_line = next(
+        ln for ln in r.output.splitlines() if ln.startswith("review independence:")
+    )
+    assert independence_line == "review independence: independent — bob@x"
+
+
+def test_verify_without_a_hold_prints_no_budget_line(tmp_path, monkeypatch):
+    """A `held 0 round(s)` line on every clean change would be noise."""
+    _attestation(tmp_path, "feat-x", "alice@x", "bob@x")
+    r = _verify(tmp_path, monkeypatch, _DIFF)
+    assert "round budget:" not in r.output
+
+
+def test_verify_json_carries_per_slug_budget_holds(tmp_path, monkeypatch):
+    _attestation_with_holds(tmp_path, "feat-x", [("code-reviewer", 5)])
+    r = _verify(tmp_path, monkeypatch, _DIFF, json_mode=True)
+    assert "round budget:" not in r.output  # human text must not leak into the envelope
+    payload = json.loads(r.output)
+    assert payload["data"]["budget_holds"] == [{"slug": "feat-x", "rounds_held": 1}]
+    # and the independence item keeps exactly its published shape
+    assert "review_budget_rounds_held" not in payload["data"]["independence"][0]
+
+
+def test_verify_attributes_each_hold_to_its_own_attestation(tmp_path, monkeypatch):
+    """Two holding attestations in one base..head range must be attributable.
+
+    The budget line sits in the SAME per-slug loop as `_independence_line`, so each hold
+    follows the independence line of the change it belongs to. Emitted from a separate
+    loop they were byte-identical and unattributable (code review HDS-002).
+    """
+    _attestation_with_holds(tmp_path, "feat-x", [("plan-reviewer", 7)])
+    _attestation_with_holds(tmp_path, "feat-y", [("code-reviewer", 5), ("code-reviewer", 6)])
+    diff = (
+        "A\t.harness/attestations/feat-x.jsonl\n"
+        "A\t.harness/attestations/feat-y.jsonl\n"
+        "M\tsrc/x.py\n"
+    )
+    r = _verify(tmp_path, monkeypatch, diff)
+    prefixes = ("review independence:", "round budget:")
+    lines = [ln for ln in r.output.splitlines() if ln.startswith(prefixes)]
+    # each hold immediately follows the independence line of its own change
+    assert [ln.split(":")[0] for ln in lines] == [
+        "review independence", "round budget", "review independence", "round budget",
+    ]
+    assert "held 1 automatic round(s)" in lines[1]
+    assert "held 2 automatic round(s)" in lines[3]
