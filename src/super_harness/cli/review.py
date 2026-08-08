@@ -1396,15 +1396,19 @@ def _model_family(model: str) -> str:
     return normalized.split("-", 1)[0]
 
 
-_MODEL_SUFFIX_RE = re.compile(r"^(?P<base>.*?)(?P<suffix>\[[^\[\]]*\])$")
+_MODEL_QUALIFIER_RE = re.compile(r"\[[^\[\]]*\]")
 
 
-def _split_model_suffix(value: str) -> tuple[str, str]:
-    """Split one trailing bracketed qualifier (e.g. ``[1m]``) off a model id."""
-    matched = _MODEL_SUFFIX_RE.match(value)
-    if matched is None:
-        return value, ""
-    return matched.group("base"), matched.group("suffix")
+def _model_qualifiers(value: str) -> tuple[frozenset[str], str]:
+    """Bracketed qualifiers (e.g. ``[1m]``) anywhere in a model id, and the rest.
+
+    Position-agnostic on purpose: requiring the qualifier to be the *trailing*
+    token is the same over-narrow assumption about id shape that made the plain
+    substring test refuse a legitimate receipt. A report shaped
+    ``claude-opus-5[1m]-20260101`` carries what was asked for, and reading it as
+    a dropped qualifier would strand a paid receipt for the same reason.
+    """
+    return frozenset(_MODEL_QUALIFIER_RE.findall(value)), _MODEL_QUALIFIER_RE.sub("", value)
 
 
 def _model_contradicts(requested: str, actual: str) -> bool:
@@ -1418,28 +1422,29 @@ def _model_contradicts(requested: str, actual: str) -> bool:
     compared as substrings, so only a disjoint pair (e.g. ``opus`` requested but
     ``sonnet`` reported) is rejected (PR#79 finding #6).
 
-    A trailing bracketed qualifier is split off first and compared on its own,
-    because it breaks that substring test structurally: an alias is shaped
-    ``<family><suffix>`` while the canonical id is shaped
-    ``<vendor>-<family>-<version><suffix>``, so ``opus[1m]`` can never be
+    Bracketed qualifiers are pulled out first and compared on their own, because
+    they break that substring test structurally: an alias is shaped
+    ``<family><qualifier>`` while the canonical id is shaped
+    ``<vendor>-<family>-<version><qualifier>``, so ``opus[1m]`` can never be
     contiguous inside ``claude-opus-5[1m]``, and a legitimate receipt was refused
     as tampering in three repositories for a month.
 
-    The suffix rule is **asymmetric on purpose**. A report carrying a qualifier
-    the request omitted is the more-specific-report case above. A report DROPPING
-    a qualifier the request carried is the opposite: the contract froze a 1M
-    context variant and the producer answered with the standard one — a different
-    model than the one frozen, which is precisely what this guard exists to catch.
-    Two different qualifiers are the same failure.
+    They are compared by **set containment, and the containment is asymmetric on
+    purpose**. A report carrying a qualifier the request omitted is the
+    more-specific-report case above. A report DROPPING one the request carried is
+    the opposite: the contract froze a 1M context variant and the producer
+    answered with the standard one — a different model than the one frozen, which
+    is precisely what this guard exists to catch. A different qualifier is the
+    same failure.
     """
 
     req = requested.strip().lower()
     act = actual.strip().lower()
     if not req or not act:
         return False
-    req_base, req_suffix = _split_model_suffix(req)
-    act_base, act_suffix = _split_model_suffix(act)
-    if req_suffix and req_suffix != act_suffix:
+    req_quals, req_base = _model_qualifiers(req)
+    act_quals, act_base = _model_qualifiers(act)
+    if not req_quals <= act_quals:
         return True
     return req_base not in act_base and act_base not in req_base
 

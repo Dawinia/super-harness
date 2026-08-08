@@ -30,7 +30,9 @@ def _git(root: Path, *args: str) -> None:
     )
 
 
-def _repo(root: Path, *, cost_class: str = "standard") -> Path:
+def _repo(
+    root: Path, *, cost_class: str = "standard", model: str = "gpt-review"
+) -> Path:
     _git(root, "init", "-q", "-b", "main")
     _git(root, "config", "user.email", "review@example.test")
     _git(root, "config", "user.name", "Reviewer")
@@ -68,7 +70,7 @@ def _repo(root: Path, *, cost_class: str = "standard") -> Path:
         "sources:\n"
         "  codex:\n"
         "    protocol: codex-cli\n"
-        "    model: gpt-review\n"
+        f"    model: {model}\n"
         f"    cost_class: {cost_class}\n"
         "    agent_options:\n"
         "      reasoning_effort: medium\n"
@@ -1888,22 +1890,6 @@ def test_authorize_json_envelope_is_not_polluted_by_the_evidence_block(
     assert json.loads(envelope)["command"] == "review authorize"
 
 
-def _set_requested_model(root: Path, model: str) -> None:
-    """Rewrite the local profile's model so the frozen request carries `model`."""
-    (root / ".harness" / "review-profiles.local.yaml").write_text(
-        "version: 1\n"
-        "sources:\n"
-        "  codex:\n"
-        "    protocol: codex-cli\n"
-        f"    model: {model}\n"
-        "    cost_class: standard\n"
-        "    agent_options:\n"
-        "      reasoning_effort: medium\n"
-        "      sandbox: read-only\n",
-        encoding="utf-8",
-    )
-
-
 def test_import_accepts_alias_whose_bracketed_suffix_matches(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -1915,9 +1901,8 @@ def test_import_accepts_alias_whose_bracketed_suffix_matches(
     tampering. Verified live: `claude --model 'opus[1m]'` runs and self-reports
     `claude-opus-5[1m]`.
     """
-    root = _repo(tmp_path)
+    root = _repo(tmp_path, model="opus[1m]")
     _fake_codex(root, monkeypatch)
-    _set_requested_model(root, "opus[1m]")
     _prepare(root)
     begun = _begin(root)
     imported = _import_run(root, begun, model="claude-opus-5[1m]")
@@ -1933,9 +1918,8 @@ def test_import_rejects_report_dropping_a_requested_suffix(
     standard one. Accepting that would let a downgraded review round import clean
     while recording an `actual_model` that ran at another context window.
     """
-    root = _repo(tmp_path)
+    root = _repo(tmp_path, model="opus[1m]")
     _fake_codex(root, monkeypatch)
-    _set_requested_model(root, "opus[1m]")
     _prepare(root)
     begun = _begin(root)
     imported = _import_run(root, begun, model="claude-opus-5")
@@ -1952,7 +1936,8 @@ def test_import_rejects_report_dropping_a_requested_suffix(
         ("opus[1m]", "claude-opus-5", True, "report dropped a requested suffix"),
         ("opus[1m]", "claude-opus-5[200k]", True, "different suffixes"),
         ("opus", "claude-opus-5[1m]", False, "report is merely more specific"),
-        ("opus[1m]", "claude-sonnet-5[1m]", True, "same suffix cannot rescue a disjoint base"),
+        ("opus[1m]", "claude-opus-5[1m]-20260101", False, "qualifier need not be the trailing token"),
+        ("opus[1m]", "claude-sonnet-5[1m]", True, "same qualifier cannot rescue a disjoint base"),
         ("", "claude-opus-5", False, "empty identifier never blocks"),
         ("opus", "", False, "empty identifier never blocks"),
     ],
