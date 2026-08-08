@@ -8,6 +8,7 @@ Direct ``approve`` and ``reject`` remain only as fail-loud compatibility command
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -1395,6 +1396,21 @@ def _model_family(model: str) -> str:
     return normalized.split("-", 1)[0]
 
 
+_MODEL_QUALIFIER_RE = re.compile(r"\[[^\[\]]*\]")
+
+
+def _model_qualifiers(value: str) -> tuple[frozenset[str], str]:
+    """Bracketed qualifiers (e.g. ``[1m]``) anywhere in a model id, and the rest.
+
+    Position-agnostic on purpose: requiring the qualifier to be the *trailing*
+    token is the same over-narrow assumption about id shape that made the plain
+    substring test refuse a legitimate receipt. A report shaped
+    ``claude-opus-5[1m]-20260101`` carries what was asked for, and reading it as
+    a dropped qualifier would strand a paid receipt for the same reason.
+    """
+    return frozenset(_MODEL_QUALIFIER_RE.findall(value)), _MODEL_QUALIFIER_RE.sub("", value)
+
+
 def _model_contradicts(requested: str, actual: str) -> bool:
     """True only when a producer-reported model genuinely conflicts with the request.
 
@@ -1402,16 +1418,35 @@ def _model_contradicts(requested: str, actual: str) -> bool:
     as ``claude-opus-4-1-20250805``) even when the profile requested a shorter
     alias or undated id (``opus``, ``claude-opus-4-1``). Per the plan, only an
     explicit *contradiction* invalidates a result; a more-specific reported id is
-    an honored request, not a contradiction. Treat the pair as consistent when
-    either identifier is a case-insensitive substring of the other, so only a
-    disjoint pair (e.g. ``opus`` requested but ``sonnet`` reported) is rejected
-    (PR#79 finding #6)."""
+    an honored request, not a contradiction. The base identifiers are therefore
+    compared as substrings, so only a disjoint pair (e.g. ``opus`` requested but
+    ``sonnet`` reported) is rejected (PR#79 finding #6).
+
+    Bracketed qualifiers are pulled out first and compared on their own, because
+    they break that substring test structurally: an alias is shaped
+    ``<family><qualifier>`` while the canonical id is shaped
+    ``<vendor>-<family>-<version><qualifier>``, so ``opus[1m]`` can never be
+    contiguous inside ``claude-opus-5[1m]``, and a legitimate receipt was refused
+    as tampering in three repositories for a month.
+
+    They are compared by **set containment, and the containment is asymmetric on
+    purpose**. A report carrying a qualifier the request omitted is the
+    more-specific-report case above. A report DROPPING one the request carried is
+    the opposite: the contract froze a 1M context variant and the producer
+    answered with the standard one — a different model than the one frozen, which
+    is precisely what this guard exists to catch. A different qualifier is the
+    same failure.
+    """
 
     req = requested.strip().lower()
     act = actual.strip().lower()
     if not req or not act:
         return False
-    return req not in act and act not in req
+    req_quals, req_base = _model_qualifiers(req)
+    act_quals, act_base = _model_qualifiers(act)
+    if not req_quals <= act_quals:
+        return True
+    return req_base not in act_base and act_base not in req_base
 
 
 def _aggregate_verdicts(runs: dict[str, ReviewRunState]) -> dict[str, object]:
