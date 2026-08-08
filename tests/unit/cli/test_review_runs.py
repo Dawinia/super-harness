@@ -1936,7 +1936,12 @@ def test_import_rejects_report_dropping_a_requested_suffix(
         ("opus[1m]", "claude-opus-5", True, "report dropped a requested suffix"),
         ("opus[1m]", "claude-opus-5[200k]", True, "different suffixes"),
         ("opus", "claude-opus-5[1m]", False, "report is merely more specific"),
-        ("opus[1m]", "claude-opus-5[1m]-20260101", False, "qualifier need not be the trailing token"),
+        (
+            "opus[1m]",
+            "claude-opus-5[1m]-20260101",
+            False,
+            "qualifier need not be the trailing token",
+        ),
         ("opus[1m]", "claude-sonnet-5[1m]", True, "same qualifier cannot rescue a disjoint base"),
         ("", "claude-opus-5", False, "empty identifier never blocks"),
         ("opus", "", False, "empty identifier never blocks"),
