@@ -37,7 +37,7 @@ Verified rather than reasoned: `claude --print --model 'opus[1m]'` runs here, ex
 
 `tapscribe` currently holds a frozen plan round with a completed claude receipt — `is_error: false`, `total_cost_usd: 0.68` — that `review result import` refuses. Two other repositories worked around the same defect by writing the fully-qualified id into `.harness/review-profiles.local.yaml`, which is why a month passed without anyone naming it. It was recorded as a known-unfixed observation when #87 shipped.
 
-**No test references this predicate today.** That is the second half of the story, and it is why the fix has to arrive with coverage of both directions rather than only the case being repaired.
+Two regression tests already cover this predicate end-to-end through the CLI — `test_import_accepts_dated_model_variant` and `test_import_rejects_contradictory_model` (`tests/unit/cli/test_review_runs.py:1121,1134`, both tagged PR#79 finding #6). Neither names the function, which is why a symbol grep reports no coverage and why an earlier draft of this plan asserted there was none. The new cases **extend** that pair; they do not replace it, and both existing assertions must keep their current answers.
 
 ## Task 1 — Compare a bracketed suffix separately from the base identifier
 
@@ -45,15 +45,16 @@ Verified rather than reasoned: `claude --print --model 'opus[1m]'` runs here, ex
 
 Split a single trailing bracketed suffix off both identifiers, then decide on the two parts.
 
-The suffix is compared **only when both sides carry one**. A report that omits it is *less specific*, not contradictory, which is the same doctrine the existing docstring states for the dated-variant case in the opposite direction: only an explicit conflict invalidates a result, and anything else is an honoured request.
+**The suffix rule is asymmetric, and the asymmetry is the whole point.** The existing dated-variant doctrine — a more-specific reported id is an honoured request — only licenses the direction where the *report* carries more than the request. A requested suffix that the report drops is the opposite: the contract froze a 1M-context variant and the producer answered with the standard one. That is a producer answering with a different model than the one frozen, which is exactly what this guard exists to catch, and it must not be waved through just because it happens to be a *missing* qualifier rather than a *different* one.
 
 Behaviours to pin, both directions — a one-sided assertion passes under an inverted implementation:
 
 - An alias and a canonical id that differ only by vendor prefix and version, carrying the **same** suffix, are consistent.
 - An alias and a canonical id whose **bases are disjoint** contradict, with or without suffixes — the guard must not be softened into always-true.
 - **Different** suffixes on both sides contradict: a request for one context-window variant answered by another is not the request being honoured.
-- A suffix on one side only is consistent, in either direction.
-- The pre-existing cases keep their current answers: the dated-variant pair stays consistent, the disjoint pair stays a contradiction, an empty identifier on either side stays non-blocking.
+- **The report omitting a suffix the request carried contradicts** — same failure as answering with the wrong variant, and today it would import clean while recording an `actual_model` that silently ran at a different context window.
+- **The request omitting a suffix the report carries is consistent** — that is the more-specific-report case the existing doctrine already covers.
+- The two pre-existing regression cases keep their current answers: the dated-variant pair stays consistent, the disjoint pair stays a contradiction. An empty identifier on either side stays non-blocking.
 
 ## Done when
 
