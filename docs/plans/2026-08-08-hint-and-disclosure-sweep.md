@@ -129,6 +129,13 @@ for the same number:
 round budget: held 2 automatic round(s) for a human funding decision
 ```
 
+**One line per holding attestation, never a sum.** `attest verify` covers a whole
+base..head range and `verdict.attestations` can hold several slugs, so this line sits in
+the same per-slug loop as `_independence_line` and the `gate bypass:` line and behaves
+like them. Summing across slugs would present two changes held three times each as one
+change held six times, and would also contradict the per-slug `budget_holds` entries in
+the envelope printed from the same data.
+
 Deliberately *not* lifting the whole `derive_independence` dict, which the issue offers
 as the alternative: that would nest the existing keys under `code_review` and add
 `author`, changing the shape of a published `--json` envelope for a rendering fix. And
@@ -188,13 +195,13 @@ rather than leaving half of it open.
    `resolve_checklist` raise `ReviewChecklistError` naming the reviewer, on the same
    footing as the existing empty-list and non-string errors. Ordinary slug ids and
    multi-word ids with ASCII spaces are unaffected.
-3. `attest verify` on a change that hit the round budget prints its own
-   `round budget: held N automatic round(s) …` line, in `report`'s wording, and `--json`
-   carries a `budget_holds` list beside `independence`. A change that never hit the
-   budget prints exactly what it prints today and contributes no `budget_holds` entry —
-   a `0` must not become a new always-on line. The `independence` item and
-   `_independence_line` keep their current shape and wording exactly, so nothing
-   role-agnostic lands on a code-review-scoped disclosure.
+3. `attest verify` prints one `round budget: held N automatic round(s) …` line, in
+   `report`'s wording, **per attestation that hit the budget** — never a sum across
+   slugs — and `--json` carries a matching per-slug `budget_holds` list beside
+   `independence`. A change that never hit the budget prints exactly what it prints
+   today and contributes no `budget_holds` entry — a `0` must not become a new always-on
+   line. The `independence` item and `_independence_line` keep their current shape and
+   wording exactly, so nothing role-agnostic lands on a code-review-scoped disclosure.
 4. The model-contradiction matrix contains a row that fails if `_model_qualifiers`
    returns a list instead of a `frozenset`, and a row pinning that an id reducing to an
    empty base does not block.
