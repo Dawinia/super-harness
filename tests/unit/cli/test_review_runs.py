@@ -8,10 +8,12 @@ import subprocess
 from pathlib import Path
 from typing import cast
 
+import pytest
 from click.testing import CliRunner, Result
 from pytest import MonkeyPatch
 
 from super_harness.cli import main
+from super_harness.cli.review import _model_contradicts
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import events_path, pending_reviews_dir
 from super_harness.core.post_emit import refresh_state_after_emit
@@ -1884,3 +1886,79 @@ def test_authorize_json_envelope_is_not_polluted_by_the_evidence_block(
     # The envelope is still there, after click.confirm's own prompt line.
     envelope = result.stdout[result.stdout.index("{"):]
     assert json.loads(envelope)["command"] == "review authorize"
+
+
+def _set_requested_model(root: Path, model: str) -> None:
+    """Rewrite the local profile's model so the frozen request carries `model`."""
+    (root / ".harness" / "review-profiles.local.yaml").write_text(
+        "version: 1\n"
+        "sources:\n"
+        "  codex:\n"
+        "    protocol: codex-cli\n"
+        f"    model: {model}\n"
+        "    cost_class: standard\n"
+        "    agent_options:\n"
+        "      reasoning_effort: medium\n"
+        "      sandbox: read-only\n",
+        encoding="utf-8",
+    )
+
+
+def test_import_accepts_alias_whose_bracketed_suffix_matches(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """The defect this fix exists for, end-to-end.
+
+    An alias is shaped `<family><suffix>` and the canonical id is shaped
+    `<vendor>-<family>-<version><suffix>`, so `opus[1m]` can never be contiguous
+    inside `claude-opus-5[1m]` and the substring test called a legitimate receipt
+    tampering. Verified live: `claude --model 'opus[1m]'` runs and self-reports
+    `claude-opus-5[1m]`.
+    """
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _set_requested_model(root, "opus[1m]")
+    _prepare(root)
+    begun = _begin(root)
+    imported = _import_run(root, begun, model="claude-opus-5[1m]")
+    assert imported.exit_code == EXIT_OK, imported.output
+
+
+def test_import_rejects_report_dropping_a_requested_suffix(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """The asymmetry, end-to-end: a dropped qualifier is still a different model.
+
+    The contract froze a 1M-context variant and the producer answered with the
+    standard one. Accepting that would let a downgraded review round import clean
+    while recording an `actual_model` that ran at another context window.
+    """
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _set_requested_model(root, "opus[1m]")
+    _prepare(root)
+    begun = _begin(root)
+    imported = _import_run(root, begun, model="claude-opus-5")
+    assert imported.exit_code == EXIT_VALIDATION
+    assert "contradicts" in imported.output
+
+
+@pytest.mark.parametrize(
+    ("requested", "actual", "contradicts", "why"),
+    [
+        ("opus[1m]", "claude-opus-5[1m]", False, "same suffix, base contained"),
+        ("opus", "claude-opus-4-1-20250805", False, "pre-existing: dated variant"),
+        ("opus", "claude-sonnet-5", True, "pre-existing: disjoint bases"),
+        ("opus[1m]", "claude-opus-5", True, "report dropped a requested suffix"),
+        ("opus[1m]", "claude-opus-5[200k]", True, "different suffixes"),
+        ("opus", "claude-opus-5[1m]", False, "report is merely more specific"),
+        ("opus[1m]", "claude-sonnet-5[1m]", True, "same suffix cannot rescue a disjoint base"),
+        ("", "claude-opus-5", False, "empty identifier never blocks"),
+        ("opus", "", False, "empty identifier never blocks"),
+    ],
+)
+def test_model_contradiction_matrix(
+    requested: str, actual: str, contradicts: bool, why: str
+) -> None:
+    """Both directions of every rule, because a one-sided set passes when inverted."""
+    assert _model_contradicts(requested, actual) is contradicts, why

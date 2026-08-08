@@ -8,6 +8,7 @@ Direct ``approve`` and ``reject`` remain only as fail-loud compatibility command
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
@@ -1395,6 +1396,17 @@ def _model_family(model: str) -> str:
     return normalized.split("-", 1)[0]
 
 
+_MODEL_SUFFIX_RE = re.compile(r"^(?P<base>.*?)(?P<suffix>\[[^\[\]]*\])$")
+
+
+def _split_model_suffix(value: str) -> tuple[str, str]:
+    """Split one trailing bracketed qualifier (e.g. ``[1m]``) off a model id."""
+    matched = _MODEL_SUFFIX_RE.match(value)
+    if matched is None:
+        return value, ""
+    return matched.group("base"), matched.group("suffix")
+
+
 def _model_contradicts(requested: str, actual: str) -> bool:
     """True only when a producer-reported model genuinely conflicts with the request.
 
@@ -1402,16 +1414,34 @@ def _model_contradicts(requested: str, actual: str) -> bool:
     as ``claude-opus-4-1-20250805``) even when the profile requested a shorter
     alias or undated id (``opus``, ``claude-opus-4-1``). Per the plan, only an
     explicit *contradiction* invalidates a result; a more-specific reported id is
-    an honored request, not a contradiction. Treat the pair as consistent when
-    either identifier is a case-insensitive substring of the other, so only a
-    disjoint pair (e.g. ``opus`` requested but ``sonnet`` reported) is rejected
-    (PR#79 finding #6)."""
+    an honored request, not a contradiction. The base identifiers are therefore
+    compared as substrings, so only a disjoint pair (e.g. ``opus`` requested but
+    ``sonnet`` reported) is rejected (PR#79 finding #6).
+
+    A trailing bracketed qualifier is split off first and compared on its own,
+    because it breaks that substring test structurally: an alias is shaped
+    ``<family><suffix>`` while the canonical id is shaped
+    ``<vendor>-<family>-<version><suffix>``, so ``opus[1m]`` can never be
+    contiguous inside ``claude-opus-5[1m]``, and a legitimate receipt was refused
+    as tampering in three repositories for a month.
+
+    The suffix rule is **asymmetric on purpose**. A report carrying a qualifier
+    the request omitted is the more-specific-report case above. A report DROPPING
+    a qualifier the request carried is the opposite: the contract froze a 1M
+    context variant and the producer answered with the standard one — a different
+    model than the one frozen, which is precisely what this guard exists to catch.
+    Two different qualifiers are the same failure.
+    """
 
     req = requested.strip().lower()
     act = actual.strip().lower()
     if not req or not act:
         return False
-    return req not in act and act not in req
+    req_base, req_suffix = _split_model_suffix(req)
+    act_base, act_suffix = _split_model_suffix(act)
+    if req_suffix and req_suffix != act_suffix:
+        return True
+    return req_base not in act_base and act_base not in req_base
 
 
 def _aggregate_verdicts(runs: dict[str, ReviewRunState]) -> dict[str, object]:
