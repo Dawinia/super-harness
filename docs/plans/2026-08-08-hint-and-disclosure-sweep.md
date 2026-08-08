@@ -65,11 +65,13 @@ command that reaches the expected state from *there*, derived from `core/transit
 | `plan-reviewer` | `PLAN_REJECTED` | `plan ready` (`PLAN_REJECTED --plan_ready-> AWAITING_PLAN_REVIEW`) |
 | `plan-reviewer` | `INTENT_DECLARED` | `plan ready` |
 | `code-reviewer` | `IMPLEMENTATION_IN_PROGRESS` | `done` |
-| `code-reviewer` | `PLAN_APPROVED` | `implementation start`, then `done` |
+| `code-reviewer` | `PLAN_APPROVED` | `implementation start` |
 
-Anything else keeps today's `Expected state: …` wording. The mapping states the *first*
-step only; naming a full multi-command route invites it to rot against the state machine,
-and one correct step is what the caller needs to stop being stuck.
+Every row names exactly one command — the *first* step, never a route. `PLAN_APPROVED`
+is two transitions away from `AWAITING_CODE_REVIEW` and still names only
+`implementation start`, because a hint that spells out a multi-command route rots against
+the state machine and one correct step is all the caller needs to stop being stuck. Any
+state not in the table keeps today's `Expected state: …` wording.
 
 **Constraint the implementation must respect:** the route is a hint, not a claim about
 reachability. `_validate_reviewer_state_or_exit` sees `current_state` and the reviewer,
@@ -110,13 +112,29 @@ the half an agent cannot wash — and then shipped exactly that.
 `docs/getting-started.md:373` already tells the reader that `report` **and the merge
 attestation** both surface it. The doc is currently false; this makes it true.
 
-**Design.** Add `review_budget_rounds_held` as a sibling key on the `independence` item
-and append a clause to `_independence_line` when it is non-zero.
+**Design.** The count is **role-agnostic** and the independence disclosure is not, so
+they must not share a line. `derive_independence` counts every `review_budget_exceeded`
+event whatever reviewer raised it (`attestation.py:359`), and `report` already renders it
+as its own standalone bullet (`cli/report.py:125`). Attaching it to `_independence_line`,
+whose classification is scoped to code review by design §4.1, would print
+`review independence: independent — alice (1 round held)` for a change that was held only
+at *plan* review — a true number reading as a claim about a different reviewer.
+
+So: a second per-slug list in the verify envelope, `budget_holds`, each entry
+`{slug, rounds_held}` and present only when the count is non-zero; and a separate human
+line that borrows `report`'s vocabulary verbatim rather than inventing a second phrasing
+for the same number:
+
+```
+round budget: held 2 automatic round(s) for a human funding decision
+```
 
 Deliberately *not* lifting the whole `derive_independence` dict, which the issue offers
 as the alternative: that would nest the existing keys under `code_review` and add
-`author`, changing the shape of a published `--json` envelope for a rendering fix. One
-new key is additive and breaks no consumer.
+`author`, changing the shape of a published `--json` envelope for a rendering fix. And
+deliberately not adding the key to the `independence` item either, for the same reason
+it does not go on the independence line — every other key on that item is code-review
+scoped, and a role-agnostic sibling among them is the same confusion moved into JSON.
 
 **Out of scope, decided rather than inherited.** The same issue raises that a
 `plan_approved` carrying `skipped: true, override: true` is written to the attestation
@@ -161,18 +179,22 @@ rather than leaving half of it open.
 
 ## Acceptance criteria
 
-1. From `PLAN_REJECTED`, any `plan-reviewer` command refused by the shared state guard
-   names `plan ready` as the next step; from `IMPLEMENTATION_IN_PROGRESS`, any
-   `code-reviewer` command refused by it names `done`. A state with no mapped route
-   still prints today's `Expected state: …` line, and the guard still loads nothing.
+1. All four route-table rows are pinned, each naming exactly one command: `plan-reviewer`
+   from `PLAN_REJECTED` and from `INTENT_DECLARED` names `plan ready`; `code-reviewer`
+   from `IMPLEMENTATION_IN_PROGRESS` names `done` and from `PLAN_APPROVED` names
+   `implementation start` and nothing after it. A state with no mapped route still prints
+   today's `Expected state: …` line, and the guard still loads nothing.
 2. A checklist id containing a newline (or any other non-printable character) makes
    `resolve_checklist` raise `ReviewChecklistError` naming the reviewer, on the same
    footing as the existing empty-list and non-string errors. Ordinary slug ids and
    multi-word ids with ASCII spaces are unaffected.
-3. `attest verify` on a change that hit the round budget prints the number of rounds
-   held on the independence line, and `--json` carries `review_budget_rounds_held` on
-   the same item. A change that never hit the budget prints exactly what it prints
-   today — a `0` must not become a new always-on line.
+3. `attest verify` on a change that hit the round budget prints its own
+   `round budget: held N automatic round(s) …` line, in `report`'s wording, and `--json`
+   carries a `budget_holds` list beside `independence`. A change that never hit the
+   budget prints exactly what it prints today and contributes no `budget_holds` entry —
+   a `0` must not become a new always-on line. The `independence` item and
+   `_independence_line` keep their current shape and wording exactly, so nothing
+   role-agnostic lands on a code-review-scoped disclosure.
 4. The model-contradiction matrix contains a row that fails if `_model_qualifiers`
    returns a list instead of a `frozenset`, and a row pinning that an id reducing to an
    empty base does not block.
