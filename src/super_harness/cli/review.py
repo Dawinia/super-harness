@@ -190,14 +190,21 @@ _REVIEWER_STATES: dict[str, set[str]] = {
 # step is all a stuck caller needs — `PLAN_APPROVED` is two transitions away from
 # `AWAITING_CODE_REVIEW` and still names only `implementation start`.
 #
+# `--scope` is part of the two `plan ready` rows on purpose, not decoration.
+# `cli/plan.py` sends an empty artifact list when the flag is omitted and
+# `core/reducer.py` ALWAYS replaces rather than merges, so a bare `plan ready` revokes
+# the HG-PLAN-AUTHORING carve-out and leaves the caller unable to edit their own plan
+# document after the next rejection. A hint that unsticks you by silently taking a
+# permission away is this issue's own defect wearing a different hat.
+#
 # This exists because the round-budget block tells a human to run `review authorize`,
 # and by the time they do, a rejection has usually landed. They then hit this guard,
 # which named the destination state and no way to reach it (GitHub #94).
 _REVIEWER_STATE_ROUTES: dict[tuple[str, str], str] = {
-    ("plan-reviewer", "PLAN_REJECTED"): "plan ready",
-    ("plan-reviewer", "INTENT_DECLARED"): "plan ready",
-    ("code-reviewer", "IMPLEMENTATION_IN_PROGRESS"): "done",
-    ("code-reviewer", "PLAN_APPROVED"): "implementation start",
+    ("plan-reviewer", "PLAN_REJECTED"): "plan ready {change} --scope <files>",
+    ("plan-reviewer", "INTENT_DECLARED"): "plan ready {change} --scope <files>",
+    ("code-reviewer", "IMPLEMENTATION_IN_PROGRESS"): "done {change}",
+    ("code-reviewer", "PLAN_APPROVED"): "implementation start {change}",
 }
 
 
@@ -223,7 +230,7 @@ def _validate_reviewer_state_or_exit(
                 subcommand=subcommand,
                 message=f"{reviewer} cannot record a verdict from state {current!r}",
                 hint=(
-                    f"{expected} Run `super-harness {route} {target}` first."
+                    f"{expected} Run `super-harness {route.format(change=target)}` first."
                     if route
                     else expected
                 ),

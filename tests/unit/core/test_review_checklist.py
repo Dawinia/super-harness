@@ -133,3 +133,21 @@ def test_ascii_space_stays_printable_so_multi_word_ids_survive(tmp_path: Path) -
         "checklists:\n  plan-reviewer:\n    - two word id\n"
     )
     assert resolve_checklist(root, "plan-reviewer") == ["two word id"]
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\u00a0"])
+def test_blank_id_is_a_loud_config_error(tmp_path: Path, blank: str) -> None:
+    """`"".isprintable()` is True, so the printable guard alone lets a blank id through.
+
+    It would reach the frozen prompt as a bare `  - ` bullet and the verdict schema as an
+    empty enum value — the degenerate case beside the one the guard closes. A
+    present-but-blank id is the same mistake as the present-but-empty list already
+    refused (code review HDS-003).
+    """
+    root = _harness(tmp_path)
+    (root / ".harness" / "review-checklists.yaml").write_text(
+        yaml.safe_dump({"checklists": {"plan-reviewer": ["architecture", blank]}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ReviewChecklistError, match="plan-reviewer"):
+        resolve_checklist(root, "plan-reviewer")

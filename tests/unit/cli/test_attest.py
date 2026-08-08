@@ -307,3 +307,28 @@ def test_verify_json_carries_per_slug_budget_holds(tmp_path, monkeypatch):
     assert payload["data"]["budget_holds"] == [{"slug": "feat-x", "rounds_held": 1}]
     # and the independence item keeps exactly its published shape
     assert "review_budget_rounds_held" not in payload["data"]["independence"][0]
+
+
+def test_verify_attributes_each_hold_to_its_own_attestation(tmp_path, monkeypatch):
+    """Two holding attestations in one base..head range must be attributable.
+
+    The budget line sits in the SAME per-slug loop as `_independence_line`, so each hold
+    follows the independence line of the change it belongs to. Emitted from a separate
+    loop they were byte-identical and unattributable (code review HDS-002).
+    """
+    _attestation_with_holds(tmp_path, "feat-x", [("plan-reviewer", 7)])
+    _attestation_with_holds(tmp_path, "feat-y", [("code-reviewer", 5), ("code-reviewer", 6)])
+    diff = (
+        "A\t.harness/attestations/feat-x.jsonl\n"
+        "A\t.harness/attestations/feat-y.jsonl\n"
+        "M\tsrc/x.py\n"
+    )
+    r = _verify(tmp_path, monkeypatch, diff)
+    prefixes = ("review independence:", "round budget:")
+    lines = [ln for ln in r.output.splitlines() if ln.startswith(prefixes)]
+    # each hold immediately follows the independence line of its own change
+    assert [ln.split(":")[0] for ln in lines] == [
+        "review independence", "round budget", "review independence", "round budget",
+    ]
+    assert "held 1 automatic round(s)" in lines[1]
+    assert "held 2 automatic round(s)" in lines[3]

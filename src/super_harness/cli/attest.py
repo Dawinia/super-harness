@@ -205,10 +205,15 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
     # per holding attestation, never a sum across slugs: `attest verify` covers a whole
     # base..head range, and summing would present two changes held three times each as
     # one change held six times.
-    budget_holds = [
-        {"slug": slug, "rounds_held": held}
+    holds_by_slug: dict[str, int] = {
+        slug: held
         for slug in verdict.attestations
         if (held := int(disclosures[slug].get("review_budget_rounds_held") or 0))
+    }
+    budget_holds = [
+        {"slug": slug, "rounds_held": holds_by_slug[slug]}
+        for slug in verdict.attestations
+        if slug in holds_by_slug
     ]
     data: dict[str, Any] = {
         "subjects": verdict.subjects,
@@ -234,14 +239,19 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
         if not ctx.obj.get("quiet"):
             for item in independence:
                 click.echo(_independence_line(item))
-            for hold in budget_holds:
+                # In the SAME per-slug loop as the line above, so a range covering two
+                # attestations attributes each hold by adjacency the way every other
+                # disclosure line here already does. A separate loop printed two
+                # byte-identical lines the reader could not attribute to a change.
+                #
                 # `report`'s wording verbatim (cli/report.py:127) — one number, one
                 # phrasing. Emitted only when non-zero; a "held 0 round(s)" line on
                 # every clean change would be noise.
-                click.echo(
-                    f"round budget: held {hold['rounds_held']} automatic round(s) "
-                    "for a human funding decision (distinct rounds, not retries)"
-                )
+                if rounds_held := holds_by_slug.get(str(item["slug"])):
+                    click.echo(
+                        f"round budget: held {rounds_held} automatic round(s) "
+                        "for a human funding decision (distinct rounds, not retries)"
+                    )
             for slug in verdict.attestations:
                 gb = gate_bypass_for_attestation(
                     root / ATTESTATIONS_DIRNAME / f"{slug}.jsonl"

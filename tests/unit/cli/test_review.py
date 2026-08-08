@@ -733,17 +733,21 @@ def test_stuck_source_is_scoped_to_skip() -> None:
 @pytest.mark.parametrize(
     ("reviewer", "seed", "route"),
     [
-        ("plan-reviewer", ("intent_declared", "plan_ready", "plan_rejected"), "plan ready"),
-        ("plan-reviewer", ("intent_declared",), "plan ready"),
+        (
+            "plan-reviewer",
+            ("intent_declared", "plan_ready", "plan_rejected"),
+            "plan ready c --scope <files>",
+        ),
+        ("plan-reviewer", ("intent_declared",), "plan ready c --scope <files>"),
         (
             "code-reviewer",
             ("intent_declared", "plan_ready", "plan_approved", "implementation_started"),
-            "done",
+            "done c",
         ),
         (
             "code-reviewer",
             ("intent_declared", "plan_ready", "plan_approved"),
-            "implementation start",
+            "implementation start c",
         ),
     ],
 )
@@ -762,7 +766,7 @@ def test_wrong_state_names_the_first_step_out(
         "--workspace", str(tmp_path), "review", "skip", "c",
         "--reviewer", reviewer, "--override", "--reason", "why"])
     assert r.exit_code == EXIT_VALIDATION, r.output
-    assert f"Run `super-harness {route} c`" in r.output
+    assert f"Run `super-harness {route}`" in r.output
     assert "Expected state:" in r.output  # the destination is still stated
 
 
@@ -792,3 +796,21 @@ def test_unmapped_state_keeps_the_bare_expected_state_hint(tmp_path: Path) -> No
     assert r.exit_code == EXIT_VALIDATION, r.output
     assert "Expected state: AWAITING_PLAN_REVIEW." in r.output
     assert "Run `super-harness" not in r.output
+
+
+def test_plan_ready_route_names_scope_so_it_does_not_revoke_plan_authoring(
+    tmp_path: Path,
+) -> None:
+    """A bare `plan ready` sends an empty artifact list and the reducer ALWAYS replaces.
+
+    Following the hint literally would therefore revoke the HG-PLAN-AUTHORING carve-out
+    and leave the caller unable to edit their own plan document after the next rejection
+    — a hint that unsticks you by taking a permission away (code review HDS-001).
+    """
+    _seed(tmp_path, "c", "intent_declared", "plan_ready", "plan_rejected")
+    _write_governance(tmp_path)
+    _write_profiles(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "plan-reviewer", "--override", "--reason", "why"])
+    assert "Run `super-harness plan ready c --scope <files>` first." in r.output

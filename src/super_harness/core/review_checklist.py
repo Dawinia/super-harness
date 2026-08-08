@@ -104,10 +104,15 @@ def resolve_checklist(root: Path, reviewer: str) -> list[str]:
     # printable, so multi-word ids still work. Rejected here rather than escaped at
     # render time: escaping would silently accept a malformed config, and every other
     # branch of this function fails loud on one.
-    unprintable = [i for i in items if not i.isprintable()]
-    if unprintable:
+    #
+    # `isprintable()` is not the whole guard: `"".isprintable()` is True, so an empty or
+    # whitespace-only id would pass it and still reach the prompt as a bare `  - ` bullet
+    # and the schema as an empty enum value. A present-but-blank id is the same kind of
+    # mistake as the present-but-empty list refused just above.
+    bad = [i for i in items if not i.strip() or not i.isprintable()]
+    if bad:
         raise ReviewChecklistError(
-            f"checklists.{reviewer} contains a non-printable character in "
-            f"{unprintable[0]!r} — checklist ids must be printable single-line text"
+            f"checklists.{reviewer} contains {bad[0]!r} — checklist ids must be "
+            "non-blank, printable, single-line text"
         )
     return list(items)
