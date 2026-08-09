@@ -1,3 +1,6 @@
+---
+change: 2026-08-09-authorization-channel
+---
 # Authorization channel — design
 
 Cut A of two. This cut covers `review authorize` end to end. `review human
@@ -112,35 +115,75 @@ one line; mtime is the timestamp; the raw payload is preserved so the judgment
 can be revisited later without archaeology. Uninstall removes the entry through
 the existing marker-based path.
 
+`.harness/.last-agent-bash.json` joins the managed gitignore block's file list in
+`engineering/gitignore_injector.py`. This repo does not blanket-ignore
+`.harness/` — the block enumerates each volatile file, and the existing
+`.harness/.*.lock` line does not cover a `.json`. Omitted, every agent Bash call
+would leave an untracked file in the working tree, `git add -A` would commit raw
+agent command text, and the committed file would then appear in the PR diff as a
+change no lifecycle covers — the merge gate blocking on the harness's own
+breadcrumb. Because `init` writes that same constant list downstream, the
+omission would reach every adopter, so it is fixed in the injector rather than by
+hand-editing this repo's `.gitignore`.
+
 ### 3. Channel resolution, in exactly one place
 
 `core/authorization_channel.py` is the only module that reads the breadcrumb or
-infers an origin. Four values:
+infers an origin. The resolution is a decision list, read top to bottom, first
+match wins — not a table of independent rows, so no combination of inputs can
+fall through unclassified:
 
-| channel | when |
-|---|---|
-| `agent` | breadcrumb matches this invocation |
-| `human_typed` | hook installed, no match, no TTY |
-| `tty` | hook installed, no match, TTY present |
-| `unknown` | no TTY **and** the hook is absent or unreadable |
+1. the hook is **not installed** → `unknown`
+2. the breadcrumb **matches** this invocation → `agent`
+3. a TTY is present on both stdin and stdout → `tty`
+4. otherwise → `human_typed`
 
-A breadcrumb **matches** when its command text contains both the literal
-`review authorize` and this invocation's `--reason` string verbatim. Requiring
-the reason is what makes the predicate tight: a `--reason` is a required,
-human-written sentence, so an unrelated agent command essentially cannot collide
-with it, while any genuine invocation contains both. Matching on
-`review authorize` alone was rejected after a probe false-positived on a script
-that merely printed the string — reading source or grepping for the command name
-would misclassify the human's next authorization.
+Rule 1 comes first on purpose. Without the hook, absence of a breadcrumb carries
+no information, and a TTY is forgeable in twelve lines — so an agent that
+uninstalls the hook and allocates a pty must not be able to reach `tty`.
+Uninstall-to-launder has to lead somewhere that still costs a disclosure, and
+rule 1 is what makes `unknown` that place. It also means a repo with no agent
+adapter at all discloses every authorization, which is the honest answer for an
+environment the harness cannot observe.
 
-Precedence: **a breadcrumb match outranks a TTY.** This is what closes the pty
-forgery. An agent that allocates a pty still leaves the breadcrumb, and the
-breadcrumb wins.
+Rule 2 outranks rule 3 for the same reason: an agent that allocates a pty still
+leaves the breadcrumb, and the breadcrumb wins. This is what closes the forgery
+demonstrated at the top of this document.
 
-`unknown` is the fail-closed default and is treated exactly like `agent`
-downstream. Absence of a hook is absence of evidence, not evidence of a human —
-and equating the two also removes the incentive to uninstall the hook to launder
-an authorization.
+A breadcrumb **matches** when both hold:
+
+- its command text contains the literal `review authorize` **and** this
+  invocation's `--reason` string verbatim; and
+- its mtime falls inside the window `[process_start - 5s, process_start]`.
+
+Requiring the reason is what makes the text predicate tight: `--reason` is a
+required, human-written sentence, so an unrelated agent command essentially
+cannot collide with it, while every genuine invocation contains both strings.
+Matching on `review authorize` alone was rejected after a probe false-positived
+on a script that merely printed that phrase — grepping the source or reading
+these docs would otherwise misclassify the human's next authorization.
+
+The window is a **lower** bound, not an upper one: the `PreToolUse` hook fires
+*before* the command it precedes, so a genuine agent breadcrumb is always
+slightly **older** than the `review authorize` process it produced. A predicate
+that discarded everything older than process start would discard every real
+agent breadcrumb and make `agent` unreachable. Five seconds is generous for the
+hook-to-exec gap and short enough that a breadcrumb from an earlier turn has
+expired. The resolver additionally **deletes the breadcrumb on match**, so even
+within the window a single stale entry can mislead at most one invocation.
+
+Whether the hook is installed is not inferred from the breadcrumb file's
+existence — a freshly installed repo has the hook but no file yet. The predicate
+is `AgentAdapter.breadcrumb_hook_installed(workspace) -> bool`, defaulting to
+`False` on the base class, implemented by `ClaudeCodeAdapter` as a marker lookup
+in `.claude/settings.local.json` through the existing `_settings_merge` marker
+machinery. `cli/review.py` resolves it over the adapters recorded in
+`adapters.yaml` and passes the boolean in; `core/authorization_channel.py` stays
+pure and never imports an adapter. No installed agent adapter, or an unreadable
+settings file, yields `False` — and therefore `unknown`. This is the Codex case:
+no breadcrumb hook there, so an agent-run authorization resolves `unknown` and a
+human at a real terminal also resolves `unknown`. Both must disclose, which is
+correct for a host the harness cannot yet observe.
 
 The event records the verdict and the observations it came from:
 
@@ -173,20 +216,43 @@ and the number is the only thing a human can independently check. "Someone wrote
 files around the gate" and "a review round was funded by the agent that was
 being reviewed" call for different judgments at merge.
 
-### 5. The brake block says nothing about this
+### 5. The brake block stops naming a terminal, and stops there
 
-The round-budget block keeps telling the agent to stop and relay. It does **not**
-mention that the command now runs without a TTY, and does not mention the
-disclosure price.
+The block today (`cli/review.py`) reads:
 
-This is not obscurity — the agent reads this source. It is placement. The block
-prints at the exact moment the agent is deciding whether to route around, and a
-sentence there reading "you can run this yourself, it just costs a disclosure"
-converts an instruction into a priced, pre-rationalized path. The consequence
-machinery does not require the agent to know about it.
+```
+super-harness review begin: this automated round requires one-shot human authorization
+  Hint: Use an interactive TTY: `super-harness review authorize <c> --reviewer <r> --reason <why>`.
+```
 
-The human side is where the fact belongs: `report`, the attestation rollup, and
-the docs that explain the blocker — because the human is who meets it.
+After §1 that first clause is simply false, and it is also the sentence that
+sends the human out to a second terminal — the workflow this cut exists to
+delete. It becomes:
+
+```
+super-harness review begin: this automated round requires one-shot human authorization
+  Hint: relay this block and ask the human to run:
+        super-harness review authorize <c> --reviewer <r> --reason "<why>"
+```
+
+The `STOP. Relay the block above verbatim…` paragraph is unchanged.
+
+What the new text does **not** say is that the agent could run the command
+itself, or that doing so costs a disclosure. That omission is not obscurity —
+the agent reads this source. It is placement. This block prints at the exact
+moment the agent is deciding whether to route around, and a sentence there
+reading "you can run this yourself, it just costs a disclosure" converts an
+instruction into a priced, pre-rationalized path. The consequence machinery does
+not require the agent to know about it.
+
+The host-specific ergonomics belong in the adapter's `AGENTS.md` subsection, not
+here: under Claude Code the human runs that line in-session with the `!` prefix,
+whose output already triggers the agent's next turn. That is guidance about what
+to tell the human, not an escape hatch.
+
+The fact that agent-run authorizations exist and must be disclosed belongs on
+the human side — `report`, the attestation rollup, and the docs explaining the
+blocker — because the human is who meets it.
 
 ## Rejected
 
@@ -218,22 +284,25 @@ cut A's own attestation is the acceptance evidence.
   Funding an extra round wastes tokens; fabricating a human review verdict
   fabricates a cognitive act, and no merge-time disclosure can repair "I did in
   fact read that diff".
-- The Codex breadcrumb hook. Codex has no human-typed shell, so a human there
-  uses a real terminal (`tty`) and the agent resolves to `unknown` — which is
-  the correct verdict. Deferring costs nothing, and the CLI is quota-locked
-  until 2026-08-28, so it cannot be tested. Registered as an issue.
+- The Codex breadcrumb hook. Without it every Codex authorization resolves
+  `unknown` and discloses, human or agent alike (§3 rule 1) — noisier than it
+  needs to be, but never wrong, and it is the same answer any unobservable host
+  gets. The CLI is quota-locked until 2026-08-28 and cannot be tested, and this
+  repo does not ship untested adapter surface. Registered as an issue.
 - `adapter uninstall` conflating `--quiet` with consent. Real, unrelated, own
   issue.
 
 ## Known taxes
 
 - **The false positive is a stale breadcrumb.** If the agent runs an
-  authorization and the human runs the same one before any other agent shell
-  command intervenes, the human's is read as `agent`. The CLI consumes the
-  breadcrumb on match and ignores matches older than the invocation's own start,
-  which bounds it; the residue costs one disclosure, never lost work.
-- **Every Bash tool call writes a file.** One `cat` with no interpreter start.
-  Measured cost is noise, but it is a write on a hot path and it is new.
+  authorization and the human re-runs the identical one within five seconds, the
+  human's is read as `agent`. The window plus consume-on-match (§3) bound it to
+  a single misread; the residue costs one disclosure, never lost work.
+- **Every Bash tool call writes a file inside the repo.** One `cat`, no
+  interpreter start, so the direct cost is noise — but it is a new write on a
+  hot path, and it churns anything watching the tree (file watchers, indexers).
+  Keeping it out of `.harness/` would avoid that at the cost of inventing a
+  per-workspace path outside the repo; the gitignore line is the cheaper trade.
 - **Adopters with neither the hook nor a TTY disclose every time.** That is the
   `unknown` path working as designed, and it is the price of refusing to read
   absence of evidence as evidence.
@@ -257,12 +326,19 @@ Modified:
 
 - `cli/review.py` — `review authorize` drops the TTY refusal and the confirm,
   resolves the channel, records it, and consumes a matched breadcrumb. The
-  round-budget block's wording is unchanged in substance (§5).
+  round-budget block's hint is rewritten to the exact text in §5.
 - `adapters/agent/_settings_merge.py` — a second managed `PreToolUse` entry with
   its own marker, planned in the same transaction and removed symmetrically on
   uninstall. The existing matcher constant is not widened.
-- `adapters/agent/claude_code.py` — supplies the breadcrumb command with the
-  workspace-absolute path; `installed_detail()` names the new hook.
+- `adapters/__init__.py` — `AgentAdapter.breadcrumb_hook_installed(workspace)`,
+  defaulting to `False`, so a host that never grew the hook resolves `unknown`
+  rather than inheriting someone else's answer.
+- `adapters/agent/claude_code.py` — supplies the breadcrumb command built from
+  the constant in `core/authorization_channel.py` plus the workspace-absolute
+  path, implements `breadcrumb_hook_installed` as a marker lookup, and names the
+  new hook in `installed_detail()`.
+- `engineering/gitignore_injector.py` — the breadcrumb joins the managed file
+  list; `.gitignore` is regenerated from it, never hand-edited.
 - `core/events.py` — the disclosure event type.
 - `engineering/attestation.py` — per-channel rollup; undisclosed `agent` or
   `unknown` becomes a blocker, by append order, matching `gate_bypassed`.
@@ -270,13 +346,18 @@ Modified:
 - `engineering/value_report.py` — the rollup reaches `report`.
 - `docs/cli-reference.md`, `docs/concepts.md`, `docs/state-machine.md`,
   `docs/getting-started.md` — all four describe the TTY requirement today.
-- `AGENTS.md` — regenerated via `sync --agents-md`, not hand-edited.
+- `.gitignore`, `AGENTS.md` — both regenerated (`sync`), never hand-edited.
 
 Acceptance obligations, beyond unit coverage of the resolution table:
 
 - The channel resolver is exercised against fabricated breadcrumbs for all four
-  values, including the precedence case (breadcrumb match **with** a TTY present
-  must resolve `agent`) and the malformed-breadcrumb fail-closed case.
+  outcomes and for every ordering that decides between them: hook absent **with**
+  a TTY present must resolve `unknown` (not `tty`); a breadcrumb match **with** a
+  TTY present must resolve `agent` (not `tty`); a breadcrumb written just before
+  process start must resolve `agent` (the window's lower bound — the case a
+  naive "newer than start" predicate would silently make unreachable); an expired
+  or consumed breadcrumb must not; and a malformed or unreadable breadcrumb must
+  resolve away from every human channel.
 - `attest verify` fails on a change carrying an undisclosed `agent`/`unknown`
   authorization, and passes once disclosed. This is exercised on real events,
   not mocked rollups.
@@ -285,12 +366,35 @@ Acceptance obligations, beyond unit coverage of the resolution table:
 
 ## Decision to record
 
-Tier-1, with an executable check: **channel resolution has exactly one
-implementation.** No module other than `core/authorization_channel.py` may read
-the breadcrumb file or infer an invocation's origin.
+`d-authorization-channel-single-seam`, tier-1: **the breadcrumb has exactly one
+reader.** The path literal, and every read of it, live in
+`core/authorization_channel.py`; `claude_code.py` imports the constant to build
+the hook command rather than spelling the path itself.
 
-Four values, one precedence rule, one fail-closed default. A second site that
-"also works it out" will drift, and it will drift permissive — the loose copy
-stays silent and lets things through, so nothing reports the divergence. This is
-the failure `core/parse_ts.py` was consolidated to prevent, found there by
-review rather than by design.
+Tier is derived structurally here — `decision_tier` returns 1 only when a
+```check``` fenced block is present — so the record carries a runnable command
+and a counterexample, in the shape `d-core-is-base` already uses:
+
+````
+```check
+test -z "$(grep -rl 'last-agent-bash' --include='*.py' src/super_harness \
+           | grep -v 'core/authorization_channel\.py')"
+```
+
+```counterexample path=src/super_harness/engineering/_ce_channel_seam.py
+BREADCRUMB = ".harness/.last-agent-bash.json"  # forbidden: a second reader
+```
+````
+
+The check covers the mechanical half only, and the record says so. "No other
+module infers an invocation's origin" is the intent; "the path literal appears
+in one file" is what a grep can hold. The narrower predicate is still the one
+that matters, because a second reader has to name the file before it can invent
+its own verdict.
+
+The rule earns tier-1 because the resolution is a four-outcome decision list
+with a precedence rule and a fail-closed first branch. A second site that "also
+works it out" will drift, and it will drift permissive — the loose copy stays
+silent and lets things through, so nothing reports the divergence. This is the
+failure `core/parse_ts.py` was consolidated to prevent, and there it was found
+by review rather than by design.
