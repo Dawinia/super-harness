@@ -118,15 +118,41 @@ not a single file:
 mkdir -p "$D"; cat > "$(mktemp "$D/bc.XXXXXX")"
 
 # post: drop any one entry — which one does not matter
-f=$(ls -1 "$D" 2>/dev/null | head -1); [ -n "$f" ] && rm -f "$D/$f"
+f=$(ls -1 "$D" 2>/dev/null | head -1); [ -n "$f" ] && rm -f "$D/$f"; true
 ```
 
 The post-hook deliberately does **not** identify its own entry. §3 needs one bit
-— is any agent Bash call in flight — so conserving the count is sufficient: N
-starts and N completions empty the directory whatever order they interleave in,
-and a post-hook that removes a sibling's entry instead of its own changes
-nothing observable. Two concurrent post-hooks racing for the same name leave the
-count one high, which fails closed.
+— is any agent Bash call in flight — so conserving the count is sufficient: a
+post-hook that removes a sibling's entry instead of its own changes nothing
+observable. Run serially in any permutation, N pre-hooks and N post-hooks leave
+the directory empty.
+
+The trailing `; true` is load-bearing, not tidiness: `[ -n "$f" ] && rm -f` exits
+1 on an empty directory, `breadcrumb_hook_installed` pins this exact string by
+equality, and Claude Code surfaces a non-zero `PostToolUse` hook as an error on
+the hottest path in the session.
+
+**Concurrent post-hooks do not conserve the count, and that is why `review
+authorize` clears the directory.** Two post-hooks that run at the same instant
+both read the same first name; one `rm -f` wins, the other no-ops, and two
+completions retire one entry. The count ratchets up by one and — with no reaper
+and no TTL by design — never comes back down. Claude Code issues several Bash
+calls per assistant message, which is the premise this whole section rests on, so
+that race is ordinary. Left alone it would drive the directory permanently
+non-empty, make rules 3 and 4 unreachable, and resolve every authorization in the
+repo — human `!` invocations included — to `unknown` forever.
+
+So the reaper is `review authorize` itself: **after** emitting its event, it
+calls `clear_breadcrumbs(root)` and empties the directory. That bounds any drift,
+from this race or from a post-hook that never ran, to the *next* authorization —
+one extra disclosure, then clean. It opens no laundering route, because an agent
+cannot reach an empty directory for its own second invocation: that invocation is
+itself a Bash tool call, and its pre-hook writes an entry before it starts.
+
+`clear_breadcrumbs` lives in `core/authorization_channel.py` beside the resolver,
+so the seam still owns every access to the directory. The resolver function stays
+pure and deletes nothing; clearing is a separate, explicitly impure export that
+only the CLI calls, and only after the event is durable.
 
 Pairing by identity was tried and rejected. The payload does carry a per-call
 `tool_use_id`, but extracting it in shell means pattern-matching JSON, and the
@@ -223,9 +249,11 @@ Two consequences worth stating plainly:
   that case.
 - **A leaked entry fails closed, and stays.** If `PostToolUse` never runs
   (crash, timeout, kill), the count stays high and every later authorization
-  resolves `unknown`. Nothing reaps it, and there is deliberately **no TTL** —
-  a time-based expiry would restore the `sleep`-past-the-window evasion the
-  in-flight formulation exists to close.
+  resolves `unknown` until the next authorization clears it. There is
+  deliberately **no TTL** — a time-based expiry would restore the
+  `sleep`-past-the-window evasion the in-flight formulation exists to close — so
+  the reaper is the authorization itself, and the cost of a leak is one
+  disclosure rather than a permanent tax.
   Paying for a leak in disclosures is the direction this design chooses
   everywhere else — but silently is not. Whenever the resolver returns `unknown`
   *because the directory was non-empty*, `review authorize` says so on stderr:
@@ -413,8 +441,10 @@ New:
 - `src/super_harness/core/authorization_channel.py` — the single seam, and the
   only file naming the breadcrumb path. Pure: takes the workspace root, the
   invocation's `--reason`, the TTY facts and the all-True hook-installed
-  boolean; returns the channel plus the evidence dict. Reads the breadcrumb but
-  never writes or deletes it. Never raises — an unreadable or malformed
+  boolean; returns the channel plus the evidence dict. Reads the breadcrumb
+  directory but never writes or deletes it. The module also exports
+  `clear_breadcrumbs(root)` — explicitly impure, the directory's only reaper —
+  so every access to the path stays inside the seam. Never raises — an unreadable or malformed
   breadcrumb is still a *present* breadcrumb and resolves to `unknown`, never to
   a human channel.
 - `docs/decisions/d-authorization-channel-single-seam.md` — tier-1, with the
@@ -424,8 +454,9 @@ Modified:
 
 - `cli/review.py` — `review authorize` drops the TTY refusal and the confirm,
   reduces `breadcrumb_hook_installed` with all-True over the registered agent
-  adapters, calls the resolver, and records the result. It deletes nothing: the
-  breadcrumb's lifetime belongs to the hook pair. The round-budget block's hint
+  adapters, calls the resolver, records the result, and only then calls
+  `clear_breadcrumbs` — after the event is durable, so a crash mid-emit loses no
+  evidence. It never touches the directory itself. The round-budget block's hint
   is rewritten to the exact text in §5.
 - `adapters/agent/_settings_merge.py` — a managed `PreToolUse` **and**
   `PostToolUse` entry for the breadcrumb, both keyed on the
@@ -471,11 +502,18 @@ Acceptance obligations, beyond unit coverage of the resolution table:
   (`cat > /dev/null  # super-harness-breadcrumb`) resolves False, and so does one
   carrying only the `PreToolUse` entry or only the `PostToolUse` entry. Without
   these three, the marker-only implementation ships green.
-- The hook pair is exercised as a **count**, not as identity: N simulated
-  pre-hooks followed by N post-hooks empty the directory whatever order they run
-  in, and post-hooks outnumbered by pre-hooks leave it non-empty. No test may
+- The hook pair is exercised as a **count**, not as identity, and the obligation
+  names its interleavings: N pre-hooks and N post-hooks run **serially, in any
+  permutation**, empty the directory; post-hooks outnumbered by pre-hooks leave
+  it non-empty; and the post-hook exits 0 on an empty directory. No test may
   depend on which entry a post-hook removed — that is the property the design
-  gives up on purpose in exchange for parsing nothing.
+  trades away in exchange for parsing nothing.
+- The **concurrent** same-name race is pinned as accepted, not as conserved: two
+  post-hooks reading the same first entry retire one, leaving the count one
+  high. What must be pinned is the recovery — `review authorize` empties the
+  directory after emitting, so a ratcheted count survives exactly one
+  authorization. A test that asserts concurrency conserves the count would be
+  asserting something the shipped commands do not do.
 - `attest verify` fails on a change carrying an undisclosed `agent`/`unknown`
   authorization, and passes once disclosed. This is exercised on real events,
   not mocked rollups.
