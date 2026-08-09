@@ -117,12 +117,24 @@ key on it:
 ```sh
 # pre:  D=<abs>/.harness/breadcrumbs
 T=$(cat); mkdir -p "$D"
-I=$(printf %s "$T" | sed -n 's/.*"tool_use_id":"\([^"]*\)".*/\1/p')
+I=$(printf %s "$T" | tr -d '\n' \
+    | sed -n 's/.*"tool_use_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 printf %s "$T" > "$D/${I:-unattributed-$$}.json"
 
 # post: same $D and the same extraction, then
 rm -f "$D/$I.json"
 ```
+
+The extraction tolerates whitespace around the colon and folds newlines first,
+rather than assuming the compact form. Today's payload *is* compact and
+single-line — `},"tool_use_id":"toolu_…"`, verified against a captured payload —
+but that is a serialization detail of one host version, and §3 gives leaked
+entries no reaper and no TTL on purpose. A systematic extraction failure would
+therefore not degrade, it would **permanently poison**: the first agent Bash call
+writes an `unattributed-` entry nothing removes, every later authorization
+resolves `unknown`, and a human `rm` is re-poisoned by the next call. A captured
+payload is pinned as a fixture so a format change fails a test rather than the
+product.
 
 A single shared file cannot work here, and the failure is not adversarial: a
 sibling call finishing while `review authorize` runs would `rm -f` the shared
@@ -217,9 +229,12 @@ Two consequences worth stating plainly:
   reaps it: per-call files mean no other call's post-hook will, and there is
   deliberately **no TTL** — a time-based expiry would restore the
   `sleep`-past-the-window evasion the in-flight formulation exists to close.
-  The recovery is a human one, `rm` on a gitignored directory, and it is named
-  in the docs. Paying for a leak in disclosures is the direction this design
-  chooses everywhere else.
+  Paying for a leak in disclosures is the direction this design chooses
+  everywhere else — but silently is not. An `unattributed-` entry means the
+  harness's own extraction failed, not that an agent is at work, so
+  `review authorize` names the offending file and the one-line `rm` that clears
+  it on stderr whenever it sees one. Fail closed **and** loud: the failure mode
+  this converts is "every merge quietly carries a disclosure forever".
 
 The resolver deletes nothing. Lifetime belongs entirely to the hook pair, which
 is what keeps `core/authorization_channel.py` a pure function of its inputs.
@@ -405,6 +420,8 @@ New:
   a human channel.
 - `docs/decisions/d-authorization-channel-single-seam.md` — tier-1, with the
   executable check described above.
+- `tests/fixtures/claude_code_pre_tool_use_bash.json` — a real captured
+  `PreToolUse` payload, the pin for the `tool_use_id` extraction.
 
 Modified:
 
@@ -423,7 +440,9 @@ Modified:
   rather than inheriting someone else's answer.
 - `adapters/agent/claude_code.py` — supplies the breadcrumb command built from
   the constant in `core/authorization_channel.py` plus the workspace-absolute
-  path, implements `breadcrumb_hook_installed` as a marker lookup, and names the
+  path, implements `breadcrumb_hook_installed` as **command equality over both
+  managed entries** (§3 — the marker only locates them; a marker-only check is
+  the laundering route that section exists to close), and names the
   new hook in `installed_detail()`.
 - `engineering/gitignore_injector.py` — the breadcrumb joins the managed file
   list; `.gitignore` is regenerated from it, never hand-edited.
@@ -434,6 +453,9 @@ Modified:
 - `engineering/value_report.py` — the rollup reaches `report`.
 - `docs/cli-reference.md`, `docs/concepts.md`, `docs/state-machine.md`,
   `docs/getting-started.md` — all four describe the TTY requirement today.
+  `docs/cli-reference.md` additionally carries the operational half: what an
+  `unattributed-` breadcrumb means and the `rm` that clears it, so the stderr
+  diagnostic in §3 has somewhere to point.
 - `.gitignore`, `AGENTS.md` — both regenerated (`sync`), never hand-edited.
 
 Acceptance obligations, beyond unit coverage of the resolution table:
@@ -447,6 +469,14 @@ Acceptance obligations, beyond unit coverage of the resolution table:
   `unknown`; and `human_typed` is reachable only with no breadcrumb at all.
 - All-True is pinned: a repo registering one adapter with the hook and one
   without resolves `unknown`, never `human_typed`.
+- `breadcrumb_hook_installed` is pinned as **equality**, not marker presence: a
+  settings file whose pre-hook still carries the marker but writes elsewhere
+  (`cat > /dev/null  # super-harness-breadcrumb`) resolves False, and so does one
+  carrying only the `PreToolUse` entry or only the `PostToolUse` entry. Without
+  these three, the marker-only implementation ships green.
+- The `tool_use_id` extraction is pinned against a **captured hook payload**
+  committed as a fixture, so a host serialization change fails a test instead of
+  permanently poisoning the directory.
 - `attest verify` fails on a change carrying an undisclosed `agent`/`unknown`
   authorization, and passes once disclosed. This is exercised on real events,
   not mocked rollups.
