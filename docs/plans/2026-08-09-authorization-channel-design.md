@@ -1,19 +1,19 @@
 ---
 change: 2026-08-09-authorization-channel
 ---
-# Authorization channel — design
+# Authorization record — design
 
-Cut A of two. This cut covers `review authorize` end to end. `review human
-confirm` reuses the same machinery in cut B and is a non-goal here.
+The TTY gate on `review authorize` comes out, and what replaces it is a count in
+the committed attestation, not another wall.
 
-## Why: the TTY gate stops the honest path and nobody else
+## Why: the gate stops the honest path and nobody else
 
 `review authorize` refuses to run without an interactive TTY, with no `--yes`
 path by design. The intent was a Ulysses pact: one automated review round costs
 one deliberate human act, and a code agent must not be able to fund its own
 rounds.
 
-Both halves of that intent fail in practice.
+Both halves fail in practice.
 
 **It does not stop an agent.** Twelve lines of stdlib defeat it. Measured from a
 non-interactive agent subprocess on 2026-08-09:
@@ -24,329 +24,79 @@ os.write(fd, b"y\n")          # answers the click.confirm prompt
 → tty: True     got: 'y'
 ```
 
-Both `sys.stdin.isatty()` and `sys.stdout.isatty()` report `True`, and the
-`y/N` confirm is answered. `script -q /dev/null <cmd>` does the same with a
-stock macOS tool. The gate costs a determined agent one line.
+Both `isatty()` calls report True and the `y/N` confirm is answered.
+`script -q /dev/null <cmd>` does the same with a stock macOS tool.
 
 **It does stop the human.** In a Claude Code session the human's own `!` prefix
-runs commands without a TTY (measured — see the probe below), so the one path
-that is unambiguously a human act is the path the gate rejects. The observed
-workflow is therefore: the agent relays the block, the human opens a separate
-terminal, `cd`s to the repo, pastes a 76-character command, and returns to the
-session to say it is done. That has happened on every brake bite so far.
+runs commands without a TTY (measured). So the one path that is unambiguously a
+human act is the path the gate rejects, and the observed workflow is: the agent
+relays the block, the human opens a separate terminal, `cd`s to the repo, pastes
+a 76-character command, and comes back to say it is done. That happened on every
+brake bite so far — including the one this change itself triggered at round 7 of
+its own plan review.
 
-So the check buys nothing on the axis it was built for and taxes the axis it was
-not. It has to go — but removing it alone would leave `review authorize` freely
-runnable by the agent with no record at all, which is strictly worse than today.
-The replacement is a record, not a wall.
+The check buys nothing on the axis it was built for and taxes the axis it was
+not.
 
-### What replaced the TTY check, and why it is not another wall
+## What can actually be enforced, and what cannot
 
 Nothing on disk resists an agent with shell access: `events.jsonl` is
-gitignored, has no hash chain, and can be rewritten wholesale. `.harness/
-attestations/*.jsonl`, by contrast, is committed and lands in the PR diff.
+gitignored, has no hash chain, and can be rewritten wholesale. Worse, the
+harness cannot tell an agent-run command from a human-typed one at all — process
+ancestry and environment are byte-identical between the two (measured: same
+`/bin/bash → /bin/zsh → claude` chain, the same `AI_AGENT` and
+`CLAUDE_CODE_CHILD_SESSION` variables, neither with a TTY).
 
-That asymmetry decides the design. The teeth are not in blocking the command;
-they are in a **count a human can falsify from memory**. An attestation line
-reading `authorizations: 5 (human_typed 2, agent 3)` is checkable by the person
-who remembers authorizing twice. No individual event is checkable that way, and
-no local file is tamper-proof, so the count in the committed artifact is the
-only anchor that survives contact with an adversarial agent.
+So there is no honest basis for a rule of the form "block agent-run
+authorizations". Any such rule enforces a distinction the harness cannot make.
 
-### Measured: `!` does not go through the Bash tool
-
-The whole channel mechanism rests on one premise, so it was tested before the
-design was fixed. A temporary `Bash`-matcher `PreToolUse` hook appending its
-stdin to a file, then one human `!` command and several agent commands:
-
-```
-entries: 4
-entries whose command IS the human probe: NONE
-```
-
-Every agent tool call appears; neither `! echo HUMAN_PROBE_1` nor
-`! echo HUMAN_PROBE_2` does. The hook payload also carries
-`"permission_mode": "bypassPermissions"`, which settles the second premise:
-**hooks fire under bypass mode**, where host permission prompts do not.
+What survives is `.harness/attestations/*.jsonl`: committed, in the PR diff, and
+therefore read by a human at the one moment that matters. The teeth are a **count
+a human can falsify from memory** — a line reading `authorizations: 5` is
+checkable by the person who remembers authorizing twice. No individual event is
+checkable that way. The count is the whole mechanism.
 
 ## Design
-
-### One rule, stated once
-
-Every `review_round_authorized` event records **how the harness observed the
-invocation's origin**, and an origin the harness could not attribute to a human
-must be disclosed before merge.
-
-`channel` is deliberately not a claim that a human approved. That claim lives in
-`--reason`, in the human's own words, and is unverifiable by construction.
-`channel` is the circumstantial evidence filed alongside it.
 
 ### 1. The gate comes out
 
 `_interactive_terminal()` and the `click.confirm` prompt are removed from
-`review authorize`. `--reason` stays required. With both gone, `!` works from
-inside the session, and its output already triggers the agent's next turn — the
-human types one line and nothing else.
+`review authorize`. Both must go: `!` supplies no stdin either, so leaving the
+confirm would trade one refusal for another.
+
+`--reason` stays required and is recorded verbatim. It is the human's own words,
+unverifiable by construction, and the only claim of approval this design makes.
+
+With the gate gone, `!` works from inside the session, and its output already
+triggers the agent's next turn — the human types one line and nothing else.
 
 `review human draft --pager` keeps its TTY check: a pager genuinely needs a
-terminal and `--pager` is optional. `init`, `sync --agents-md` and
+terminal, and `--pager` is optional. `init`, `sync --agents-md` and
 `adapter uninstall` are untouched.
 
-### 2. A breadcrumb the agent cannot avoid writing
+### 2. The count reaches the merge boundary
 
-The Claude Code adapter registers a **second** `PreToolUse` entry, separate from
-the existing gate entry:
+The attestation gains one line: how many automated review rounds this change
+authorized, with the `--reason` recorded for each. `report` surfaces the same.
 
-```json
-{ "matcher": "Bash",
-  "hooks": [{ "type": "command",
-              "command": "<pre-command>  # super-harness-breadcrumb",
-              "timeout": 5 }] }
-```
+There is **no new blocker and no new disclosure verb.** A blocker must name a
+condition, and every candidate here ("the agent did it") is one the harness
+cannot evaluate. Blocking on something unmeasurable yields either a rule that
+never fires or a rule that fires on everything — theatre, or a tax on every
+honest authorization. The number in the PR diff is the enforcement, and its
+reader is the person merging.
 
-`Bash` must not be added to the existing `Edit|Write|MultiEdit|NotebookEdit`
-matcher. That entry runs the Python gate binary, which would put a process
-launch on every shell command and — far worse — **block all Bash in gated
-states**.
+### 3. The brake block stops naming a terminal
 
-**One entry per tool call, and the hooks parse nothing.** Claude Code issues
-several Bash calls in a single assistant message, so the pair keeps a *count*,
-not a single file:
-
-```sh
-# pre:  D=<abs>/.harness/breadcrumbs
-mkdir -p "$D"; cat > "$(mktemp "$D/bc.XXXXXX")"
-
-# post: drop any one entry — which one does not matter
-f=$(ls -1 "$D" 2>/dev/null | head -1); [ -n "$f" ] && rm -f "$D/$f"; true
-```
-
-The post-hook deliberately does **not** identify its own entry. §3 needs one bit
-— is any agent Bash call in flight — so conserving the count is sufficient: a
-post-hook that removes a sibling's entry instead of its own changes nothing
-observable. Run serially in any permutation, N pre-hooks and N post-hooks leave
-the directory empty.
-
-The trailing `; true` is load-bearing, not tidiness: `[ -n "$f" ] && rm -f` exits
-1 on an empty directory, `breadcrumb_hook_installed` pins this exact string by
-equality, and Claude Code surfaces a non-zero `PostToolUse` hook as an error on
-the hottest path in the session.
-
-**Concurrent post-hooks do not conserve the count, and that is why `review
-authorize` clears the directory.** Two post-hooks that run at the same instant
-both read the same first name; one `rm -f` wins, the other no-ops, and two
-completions retire one entry. The count ratchets up by one and — with no reaper
-and no TTL by design — never comes back down. Claude Code issues several Bash
-calls per assistant message, which is the premise this whole section rests on, so
-that race is ordinary. Left alone it would drive the directory permanently
-non-empty, make rules 3 and 4 unreachable, and resolve every authorization in the
-repo — human `!` invocations included — to `unknown` forever.
-
-So the reaper is `review authorize` itself: **after** emitting its event, it
-calls `clear_breadcrumbs(root)` and empties the directory. That bounds any drift,
-from this race or from a post-hook that never ran, to the *next* authorization —
-one extra disclosure, then clean. It opens no laundering route, because an agent
-cannot reach an empty directory for its own second invocation: that invocation is
-itself a Bash tool call, and its pre-hook writes an entry before it starts.
-
-`clear_breadcrumbs` lives in `core/authorization_channel.py` beside the resolver,
-so the seam still owns every access to the directory. The resolver function stays
-pure and deletes nothing; clearing is a separate, explicitly impure export that
-only the CLI calls, and only after the event is durable.
-
-Pairing by identity was tried and rejected. The payload does carry a per-call
-`tool_use_id`, but extracting it in shell means pattern-matching JSON, and the
-post-hook's payload embeds `tool_response` — the command's own output. Any Bash
-call whose output happened to contain a well-formed `tool_use_id` (a `cat` of a
-captured payload, a test dumping one) would hijack a greedy match, the post-hook
-would delete a path that does not exist, and the real entry would leak. With no
-reaper and no TTL (§3), one such call poisons every later authorization in the
-repo permanently. `mktemp` plus "delete any one" needs no parser, so the class
-does not exist.
-
-A single shared file was rejected earlier for the mirror-image reason, and that
-failure was not adversarial either: a sibling call finishing while
-`review authorize` ran would `rm -f` the shared breadcrumb, the resolver would
-see an empty directory, and the agent's own authorization would record as
-`human_typed` — laundering with no pty, no uninstall and no detached process.
-
-What remains is drift in one direction only. A post-hook that never runs (crash,
-timeout, kill) leaves the count high, and the count only ever over-reports
-in-flight work, never under-reports it. That is the safe direction: it costs
-disclosures, not silence.
-
-Both commands carry the trailing `# super-harness-breadcrumb` comment, following
-`_settings_merge`'s existing `_OURS_MARKER` convention, so the module can plan,
-find and strip the entries without ever naming the breadcrumb directory — which
-is what the decision at the end of this document requires. Uninstall removes both
-through that same path.
-
-`.harness/breadcrumbs/` joins the managed gitignore block's file list in
-`engineering/gitignore_injector.py`. This repo does not blanket-ignore
-`.harness/` — the block enumerates each volatile entry, and the existing
-`.harness/.*.lock` line does not cover it. Omitted, every agent Bash call would
-leave an untracked file in the working tree, `git add -A` would commit raw agent
-command text, and the committed files would then appear in the PR diff as
-changes no lifecycle covers — the merge gate blocking on the harness's own
-breadcrumbs. Because `init` writes that same constant list downstream, the
-omission would reach every adopter, so it is fixed in the injector rather than by
-hand-editing this repo's `.gitignore`.
-
-### 3. Channel resolution, in exactly one place
-
-`core/authorization_channel.py` is the only module that reads the breadcrumb or
-infers an origin. The resolution is a decision list, read top to bottom, first
-match wins — not a table of independent rows, so no combination of inputs can
-fall through unclassified:
-
-1. the hook pair is **not installed on every registered agent adapter** →
-   `unknown`
-2. the breadcrumb directory **is non-empty** → `agent` if any entry's command
-   text names this invocation, otherwise `unknown`
-3. no breadcrumb, and a TTY is present on both stdin and stdout → `tty`
-4. no breadcrumb, no TTY → `human_typed`
-
-**Presence is the load-bearing predicate, not content.** The agent cannot avoid
-writing the breadcrumb — the hook fires on the tool call, above anything the
-command itself can do — but it fully controls what the command *says*. A wrapper
-script, a command assembled from a shell variable, or a `sleep` before the real
-invocation all leave a breadcrumb whose text names nothing useful. If content
-decided the outcome, every one of those would fall through to the most permissive
-branch. So rule 2 keys on the file existing at all: any agent shell call in
-flight means this invocation cannot be attributed to a human, whatever it says.
-
-Text matching survives only as a **label**: it separates `agent` from `unknown`,
-which are treated identically at the merge boundary. A match needs the command
-text to contain both the literal `review authorize` and this invocation's
-`--reason` value. That predicate is deliberately fragile — quoting, escaping and
-variable assembly all defeat it — and its fragility is now harmless, because
-failing it downgrades `agent` to `unknown` rather than promoting anything to a
-human channel.
-
-Rule 1 comes first because without the hook, absence carries no information, and
-a TTY is forgeable in twelve lines: an agent that uninstalls the hook and
-allocates a pty must not reach `tty`. It is evaluated across **all** registered
-agent adapters, and every one of them must have the pair installed. Any-True
-would be a laundering route — registering a second, hookless adapter would make
-that host's authorizations resolve `human_typed` and never disclose. All-True
-means a repo mixing an observable host with an unobservable one discloses
-everything, including genuine human acts. That is noisy and correct: the harness
-cannot see one of its hosts.
-
-Rule 2 outranks rule 3 for the same reason it exists: an agent that allocates a
-pty still leaves the breadcrumb. This closes the forgery demonstrated at the top
-of this document.
-
-Rules 3 and 4 are reachable only on the positive evidence that **no agent shell
-call is in flight**. Nothing falls through to them.
-
-Two consequences worth stating plainly:
-
-- **Concurrency is safe.** Claude Code issues several Bash calls in one
-  assistant message, and the count covers them: a sibling still in flight leaves
-  the directory non-empty, so rule 2 resolves `unknown`, which discloses. The
-  earlier single-file, content-keyed predicate resolved `human_typed` in exactly
-  that case.
-- **A leaked entry fails closed, and stays.** If `PostToolUse` never runs
-  (crash, timeout, kill), the count stays high and every later authorization
-  resolves `unknown` until the next authorization clears it. There is
-  deliberately **no TTL** — a time-based expiry would restore the
-  `sleep`-past-the-window evasion the in-flight formulation exists to close — so
-  the reaper is the authorization itself, and the cost of a leak is one
-  disclosure rather than a permanent tax.
-  Paying for a leak in disclosures is the direction this design chooses
-  everywhere else — but silently is not. Whenever the resolver returns `unknown`
-  *because the directory was non-empty*, `review authorize` says so on stderr:
-  the count, the directory, and the fact that `rm` on it is safe when no agent
-  is running. It needs no new event field and no second reader — the count is
-  already pinned in `channel_evidence`, and the directory is the constant
-  `cli/review.py` imports from the seam. Fail closed **and** loud: the failure
-  mode this converts is "every merge quietly carries a disclosure forever".
-
-The resolver deletes nothing. Lifetime belongs entirely to the hook pair, which
-is what keeps `core/authorization_channel.py` a pure function of its inputs.
-
-The residual evasion, stated rather than papered over: an agent can detach a
-process (`nohup … &`) so the real invocation outlives the tool call whose
-breadcrumb would have covered it. Nothing in this design stops that. It is a
-single-purpose, unmistakable act, it is visible in the transcript, and it is the
-honest boundary of what a file written by a hook can prove.
-
-Whether the hook is installed is not inferred from the breadcrumb file's
-existence — a freshly installed repo has the hook but no file yet. The predicate
-is `AgentAdapter.breadcrumb_hook_installed(workspace) -> bool`, defaulting to
-`False` on the base class. `ClaudeCodeAdapter` answers True only when
-`.claude/settings.local.json` holds **both** managed entries — one under
-`PreToolUse`, one under `PostToolUse` — and each command **equals the command
-this adapter would install**, rebuilt from the constant in
-`core/authorization_channel.py`.
-
-Equality, not marker presence, is the predicate. The marker only locates the
-entries; it cannot say what they do. `.claude/settings.local.json` is per-machine
-and gitignored, so it never reaches a PR diff, and an agent that rewrote the
-pre-hook to `cat > /dev/null  # super-harness-breadcrumb` would keep a
-marker-only check True while writing no breadcrumb at all — landing every
-agent-run authorization on `human_typed`, cheaper and quieter than the
-uninstall-then-pty route rule 1 exists to price. Requiring both entries closes
-the same gap at the other end: a settings file carrying only the post-hook writes
-nothing either.
-
-`cli/review.py` reduces it with **all-True** over every agent adapter
-recorded in `adapters.yaml` and passes the single boolean in;
-`core/authorization_channel.py` stays pure and never imports an adapter. Zero
-registered agent adapters, an adapter that does not implement the predicate, and
-an unreadable settings file all yield `False` — and therefore `unknown`. That
-covers the Codex case: no breadcrumb hook on that host, so every authorization
-in a Codex-registered repo discloses, agent-run or human alike.
-
-The event records the verdict and every observation it was derived from — one
-field per branch of §3, so the verdict can be recomputed from the event alone
-and an `unknown` from a missing hook is distinguishable from an `unknown` from
-an unmatched breadcrumb:
-
-```json
-"payload": {
-  "reason": "<the human's words>",
-  "authorization_channel": "human_typed",
-  "channel_evidence": {
-    "breadcrumb_hook_installed": true,
-    "breadcrumbs_present": 0,
-    "breadcrumb_matched": false,
-    "stdin_tty": false,
-    "stdout_tty": false
-  }
-}
-```
-
-Events emitted before this change carry no `authorization_channel`. They are
-read as `legacy` and never require disclosure: the rule in force when they were
-written was the TTY gate, and they satisfied it.
-
-### 4. The count reaches the merge boundary
-
-The attestation gains a per-channel rollup of the change's authorizations. An
-authorization in `agent` or `unknown` is a merge blocker until disclosed, in the
-same shape `gate_bypassed` already uses — undisclosed by append order, cleared
-by an explicit write.
-
-The verb is **new**: `attest write --disclose-agent-authorization "<why>"`.
-Reusing `--disclose-gate-bypass` would fold two different facts into one number,
-and the number is the only thing a human can independently check. "Someone wrote
-files around the gate" and "a review round was funded by the agent that was
-being reviewed" call for different judgments at merge.
-
-### 5. The brake block stops naming a terminal, and stops there
-
-The block today (`cli/review.py`) reads:
+The block today reads:
 
 ```
 super-harness review begin: this automated round requires one-shot human authorization
   Hint: Use an interactive TTY: `super-harness review authorize <c> --reviewer <r> --reason <why>`.
 ```
 
-After §1 that first clause is simply false, and it is also the sentence that
-sends the human out to a second terminal — the workflow this cut exists to
-delete. It becomes:
+After §1 the first clause is false, and it is also the sentence that sends the
+human to a second terminal. It becomes:
 
 ```
 super-harness review begin: this automated round requires one-shot human authorization
@@ -357,200 +107,92 @@ super-harness review begin: this automated round requires one-shot human authori
 The `STOP. Relay the block above verbatim…` paragraph is unchanged.
 
 What the new text does **not** say is that the agent could run the command
-itself, or that doing so costs a disclosure. That omission is not obscurity —
-the agent reads this source. It is placement. This block prints at the exact
-moment the agent is deciding whether to route around, and a sentence there
-reading "you can run this yourself, it just costs a disclosure" converts an
-instruction into a priced, pre-rationalized path. The consequence machinery does
-not require the agent to know about it.
+itself. That omission is placement, not obscurity — the agent reads this source.
+The block prints at the exact moment the agent is deciding whether to route
+around, and a sentence there describing a sanctioned self-service path converts
+an instruction into a priced one. Host-specific ergonomics (under Claude Code the
+human runs it in-session with `!`) belong in the adapter's `AGENTS.md`
+subsection: that is guidance about what to tell the human, not an escape hatch.
 
-The host-specific ergonomics belong in the adapter's `AGENTS.md` subsection, not
-here: under Claude Code the human runs that line in-session with the `!` prefix,
-whose output already triggers the agent's next turn. That is guidance about what
-to tell the human, not an escape hatch.
+## Rejected: a breadcrumb channel that identifies the caller
 
-The fact that agent-run authorizations exist and must be disclosed belongs on
-the human side — `report`, the attestation rollup, and the docs explaining the
-blocker — because the human is who meets it.
+This design originally carried a second mechanism. A `Bash`-matcher `PreToolUse`
+hook would write a breadcrumb, letting `review authorize` tell an agent-run
+invocation from a human-typed one, record a `channel` per authorization, and
+block agent-run rounds at merge until disclosed.
 
-## Rejected
+The premise was verified, not assumed: a human's `!` command does **not** go
+through the Bash tool, and hooks fire even under `bypassPermissions`. The signal
+genuinely exists. What did not hold was any implementation of it.
 
-**A `permissions.ask` rule installed by the adapter.** It was the original
-second half of this design and it does nothing here. Channel resolution has no
-`host_prompt` value, because the CLI can observe only that a rule exists in
-config, never that a human clicked. Meanwhile the breadcrumb catches agent-run
-authorizations unconditionally, including under bypass mode where the prompt
-evaporates. Buying a new class of settings mutation — the adapter has only ever
-touched `hooks`, never `permissions` — for something strictly weaker and fully
-covered is a bad trade.
+Seven review rounds produced 26 findings. **Twenty-five were about that
+mechanism.** The gate removal produced one (this document's own false hint text);
+the attestation count produced none. Each round's blocker was introduced by the
+previous round's fix:
 
-**Slicing by mechanism, shipping the gate removal first.** It opens a window
-where the agent can fund rounds with no record, and drags `review human confirm`
-into the same window. Slicing by command keeps every intermediate state safe:
-while cut A is in flight, `human confirm` keeps its current TTY gate — forgeable,
-but not worse than today.
+| round | the fix | what it opened |
+|---|---|---|
+| 2 | one shared breadcrumb file | a sibling call's text overwrote it |
+| 3 | pair entries by `tool_use_id` | a payload echoing an id hijacked the match |
+| 5 | `mktemp` + delete any one | concurrent deletes ratchet the count permanently |
+| 6 | clear the directory on authorize | two authorizes in one Bash call launder |
 
-**Deferring the merge blocker to a later cut.** A gate assertion is only worth
-what this cut measures. The blocker is armed here and is expected to bite this
-very change: until the breadcrumb hook is installed in this repo, every
-authorization resolves to `unknown` and needs a disclosure. That disclosure on
-cut A's own attestation is the acceptance evidence.
+The shape is consistent: each fix added structure, and each new structure added a
+concurrency or coupling surface the previous one lacked. Round 5 tried the
+opposite direction — remove structure, parse nothing — and improved immediately,
+until round 6 added structure back to fix what removing it had cost.
+
+The honest reading is that the mechanism cannot carry what it was asked to carry
+at this size. It is also not what the teeth were made of: the falsifiable count
+needs none of it. Channel would have upgraded "5 authorizations, you remember 2"
+into "and these 3 were agent-run" — better reading, not better evidence.
+
+Registered as an issue together with this history, so it can be reconsidered if
+the count ever shows something that wants explaining.
+
+## Rejected: a `permissions.ask` rule installed by the adapter
+
+The adapter has only ever touched `hooks`; making it mutate `permissions` is a
+new class of settings surgery. It also buys nothing in a session running in
+bypass mode, which is the normal mode here — the prompt evaporates exactly when
+it would matter.
 
 ## Non-goals
 
-- `review human confirm` — cut B. Its asymmetry is decided but not built here:
-  an `agent`/`unknown` channel must **refuse locally**, not record-and-disclose.
-  Funding an extra round wastes tokens; fabricating a human review verdict
-  fabricates a cognitive act, and no merge-time disclosure can repair "I did in
-  fact read that diff".
-- The Codex breadcrumb hook. Without it every Codex authorization resolves
-  `unknown` and discloses, human or agent alike (§3 rule 1) — noisier than it
-  needs to be, but never wrong, and it is the same answer any unobservable host
-  gets. The CLI is quota-locked until 2026-08-28 and cannot be tested, and this
-  repo does not ship untested adapter surface. Registered as an issue.
-- `adapter uninstall` conflating `--quiet` with consent. Real, unrelated, own
+- `review human confirm`. Its TTY gate is equally forgeable, but it is not worse
+  than today, and its semantics differ: it asserts a *cognitive* act ("I read
+  this diff"), which no merge-time disclosure can repair. It keeps its gate until
+  there is a mechanism worth putting behind it.
+- `adapter uninstall` conflating `--quiet` with consent. Real, unrelated, its own
   issue.
 
 ## Known taxes
 
-- **The human pays for the agent's concurrency.** Any agent Bash call in flight
-  when the human authorizes resolves the human's act to `unknown`, costing a
-  disclosure. This is the deliberate direction of the trade (§3 rule 2): the
-  alternative reading is the one that lets an agent launder. It never costs
-  work, only a line at merge.
-- **A hook on both ends of every Bash call.** One `sed` + one `rm -f`, no
-  interpreter start — but the harness now sits on both ends of every shell
-  command the agent runs, which is twice the surface for a hook bug to stall a
-  session.
-- **Every Bash tool call writes a file inside the repo.** One `cat`, no
-  interpreter start, so the direct cost is noise — but it is a new write on a
-  hot path, and it churns anything watching the tree (file watchers, indexers).
-  Keeping it out of `.harness/` would avoid that at the cost of inventing a
-  per-workspace path outside the repo; the gitignore line is the cheaper trade.
-- **Adopters with neither the hook nor a TTY disclose every time.** That is the
-  `unknown` path working as designed, and it is the price of refusing to read
-  absence of evidence as evidence.
-- **`_settings_merge.py` gains a second managed entry.** That module carries
-  atomic replacement, pristine backups and a transaction lock, and its matcher
-  is currently a single constant. This is the sharpest edge in the cut.
+- **An agent can now fund its own review rounds with one command.** That is the
+  deliberate trade. It could already do so at the cost of one `pty.fork()`; now
+  the act lands in a count the human reads at merge instead of being invisible.
+  The tax is that the count is the only thing standing there.
+- **The count is only as good as its reader.** It fails silently against a human
+  who merges without looking. Nothing here fixes that, and nothing pretends to.
 
 ## Scope
 
-New:
-
-- `src/super_harness/core/authorization_channel.py` — the single seam, and the
-  only file naming the breadcrumb path. Pure: takes the workspace root, the
-  invocation's `--reason`, the TTY facts and the all-True hook-installed
-  boolean; returns the channel plus the evidence dict. Reads the breadcrumb
-  directory but never writes or deletes it. The module also exports
-  `clear_breadcrumbs(root)` — explicitly impure, the directory's only reaper —
-  so every access to the path stays inside the seam. Never raises — an unreadable or malformed
-  breadcrumb is still a *present* breadcrumb and resolves to `unknown`, never to
-  a human channel.
-- `docs/decisions/d-authorization-channel-single-seam.md` — tier-1, with the
-  executable check described above.
-
 Modified:
 
-- `cli/review.py` — `review authorize` drops the TTY refusal and the confirm,
-  reduces `breadcrumb_hook_installed` with all-True over the registered agent
-  adapters, calls the resolver, records the result, and only then calls
-  `clear_breadcrumbs` — after the event is durable, so a crash mid-emit loses no
-  evidence. It never touches the directory itself. The round-budget block's hint
-  is rewritten to the exact text in §5.
-- `adapters/agent/_settings_merge.py` — a managed `PreToolUse` **and**
-  `PostToolUse` entry for the breadcrumb, both keyed on the
-  `# super-harness-breadcrumb` marker literal, planned in the same transaction
-  and removed symmetrically on uninstall. The existing matcher constant is not
-  widened, and the module never spells the breadcrumb path.
-- `adapters/__init__.py` — `AgentAdapter.breadcrumb_hook_installed(workspace)`,
-  defaulting to `False`, so a host that never grew the hook resolves `unknown`
-  rather than inheriting someone else's answer.
-- `adapters/agent/claude_code.py` — supplies the breadcrumb command built from
-  the constant in `core/authorization_channel.py` plus the workspace-absolute
-  path, implements `breadcrumb_hook_installed` as **command equality over both
-  managed entries** (§3 — the marker only locates them; a marker-only check is
-  the laundering route that section exists to close), and names the
-  new hook in `installed_detail()`.
-- `engineering/gitignore_injector.py` — the breadcrumb joins the managed file
-  list; `.gitignore` is regenerated from it, never hand-edited.
-- `core/events.py` — the disclosure event type.
-- `engineering/attestation.py` — per-channel rollup; undisclosed `agent` or
-  `unknown` becomes a blocker, by append order, matching `gate_bypassed`.
-- `cli/attest.py` — `--disclose-agent-authorization "<why>"`.
-- `engineering/value_report.py` — the rollup reaches `report`.
+- `cli/review.py` — `review authorize` drops the TTY refusal and the confirm; the
+  round-budget block's hint becomes the exact text in §3.
+- `engineering/attestation.py` — the authorization count and reasons join the
+  attestation.
+- `engineering/value_report.py` — the same rollup reaches `report`.
 - `docs/cli-reference.md`, `docs/concepts.md`, `docs/state-machine.md`,
   `docs/getting-started.md` — all four describe the TTY requirement today.
-  `docs/cli-reference.md` additionally carries the operational half: what an
-  non-empty breadcrumb directory means, and when `rm` on it is safe, so the
-  stderr diagnostic in §3 has somewhere to point.
-- `.gitignore`, `AGENTS.md` — both regenerated (`sync`), never hand-edited.
+- `AGENTS.md` — regenerated via `sync --agents-md`, never hand-edited.
 
-Acceptance obligations, beyond unit coverage of the resolution table:
+Acceptance obligations, beyond unit coverage:
 
-- The channel resolver is exercised against fabricated breadcrumbs for all four
-  outcomes and for every ordering that decides between them: hook absent **with**
-  a TTY present resolves `unknown`, not `tty`; a present breadcrumb **with** a
-  TTY present resolves `agent`, not `tty`; a present breadcrumb whose text names
-  nothing resolves `unknown`, **not** `human_typed` (the fail-open branch this
-  design was rewritten to remove); a malformed or unreadable breadcrumb resolves
-  `unknown`; and `human_typed` is reachable only with no breadcrumb at all.
-- All-True is pinned: a repo registering one adapter with the hook and one
-  without resolves `unknown`, never `human_typed`.
-- `breadcrumb_hook_installed` is pinned as **equality**, not marker presence: a
-  settings file whose pre-hook still carries the marker but writes elsewhere
-  (`cat > /dev/null  # super-harness-breadcrumb`) resolves False, and so does one
-  carrying only the `PreToolUse` entry or only the `PostToolUse` entry. Without
-  these three, the marker-only implementation ships green.
-- The hook pair is exercised as a **count**, not as identity, and the obligation
-  names its interleavings: N pre-hooks and N post-hooks run **serially, in any
-  permutation**, empty the directory; post-hooks outnumbered by pre-hooks leave
-  it non-empty; and the post-hook exits 0 on an empty directory. No test may
-  depend on which entry a post-hook removed — that is the property the design
-  trades away in exchange for parsing nothing.
-- The **concurrent** same-name race is pinned as accepted, not as conserved: two
-  post-hooks reading the same first entry retire one, leaving the count one
-  high. What must be pinned is the recovery — `review authorize` empties the
-  directory after emitting, so a ratcheted count survives exactly one
-  authorization. A test that asserts concurrency conserves the count would be
-  asserting something the shipped commands do not do.
-- `attest verify` fails on a change carrying an undisclosed `agent`/`unknown`
-  authorization, and passes once disclosed. This is exercised on real events,
-  not mocked rollups.
-- Live: at least one authorization in this change resolves and is disclosed —
-  the blocker armed in §4 is expected to bite here (see Rejected, third item).
-
-## Decision to record
-
-`d-authorization-channel-single-seam`, tier-1: **the breadcrumb has exactly one
-reader.** The directory literal, and every read of it, live in
-`core/authorization_channel.py`; `claude_code.py` imports the constant to build
-the hook command rather than spelling the path itself.
-
-Tier is derived structurally here — `decision_tier` returns 1 only when a
-```check``` fenced block is present — so the record carries a runnable command
-and a counterexample, in the shape `d-core-is-base` already uses:
-
-````
-```check
-test -z "$(grep -rl 'harness/breadcrumbs' --include='*.py' src/super_harness \
-           | grep -v 'core/authorization_channel\.py')"
-```
-
-```counterexample path=src/super_harness/engineering/_ce_channel_seam.py
-BREADCRUMB_DIR = ".harness/breadcrumbs"  # forbidden: a second reader
-```
-````
-
-The check covers the mechanical half only, and the record says so. "No other
-module infers an invocation's origin" is the intent; "the directory literal appears
-in one file" is what a grep can hold. The narrower predicate is still the one
-that matters, because a second reader has to name the file before it can invent
-its own verdict.
-
-The rule earns tier-1 because the resolution is a four-outcome decision list
-with a precedence rule and a fail-closed first branch. A second site that "also
-works it out" will drift, and it will drift permissive — the loose copy stays
-silent and lets things through, so nothing reports the divergence. This is the
-failure `core/parse_ts.py` was consolidated to prevent, and there it was found
-by review rather than by design.
+- `review authorize` succeeds with neither stdin nor stdout a TTY — the `!` case,
+  which is the whole point and which the confirm alone would still have blocked.
+- The attestation of a change with N authorizations reports N and every recorded
+  reason, exercised on real events rather than a mocked rollup.
+- Live: this change's own attestation carries its round-7 authorization, with the
+  reason the human typed.
