@@ -109,47 +109,45 @@ matcher. That entry runs the Python gate binary, which would put a process
 launch on every shell command and — far worse — **block all Bash in gated
 states**.
 
-**One breadcrumb per tool call, not one shared file.** Claude Code issues
-several Bash calls in a single assistant message, and its hook payload carries a
-`tool_use_id` unique to each (verified against a captured payload). Both hooks
-key on it:
+**One entry per tool call, and the hooks parse nothing.** Claude Code issues
+several Bash calls in a single assistant message, so the pair keeps a *count*,
+not a single file:
 
 ```sh
 # pre:  D=<abs>/.harness/breadcrumbs
-T=$(cat); mkdir -p "$D"
-I=$(printf %s "$T" | tr -d '\n' \
-    | sed -n 's/.*"tool_use_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
-printf %s "$T" > "$D/${I:-unattributed-$$}.json"
+mkdir -p "$D"; cat > "$(mktemp "$D/bc.XXXXXX")"
 
-# post: same $D and the same extraction, then
-rm -f "$D/$I.json"
+# post: drop any one entry — which one does not matter
+f=$(ls -1 "$D" 2>/dev/null | head -1); [ -n "$f" ] && rm -f "$D/$f"
 ```
 
-The extraction tolerates whitespace around the colon and folds newlines first,
-rather than assuming the compact form. Today's payload *is* compact and
-single-line — `},"tool_use_id":"toolu_…"`, verified against a captured payload —
-but that is a serialization detail of one host version, and §3 gives leaked
-entries no reaper and no TTL on purpose. A systematic extraction failure would
-therefore not degrade, it would **permanently poison**: the first agent Bash call
-writes an `unattributed-` entry nothing removes, every later authorization
-resolves `unknown`, and a human `rm` is re-poisoned by the next call. A captured
-payload is pinned as a fixture so a format change fails a test rather than the
-product.
+The post-hook deliberately does **not** identify its own entry. §3 needs one bit
+— is any agent Bash call in flight — so conserving the count is sufficient: N
+starts and N completions empty the directory whatever order they interleave in,
+and a post-hook that removes a sibling's entry instead of its own changes
+nothing observable. Two concurrent post-hooks racing for the same name leave the
+count one high, which fails closed.
 
-A single shared file cannot work here, and the failure is not adversarial: a
-sibling call finishing while `review authorize` runs would `rm -f` the shared
-breadcrumb, the resolver would see an empty directory, and the agent's own
-authorization would record as `human_typed`. That is a laundering route reachable
-with no pty, no uninstall and no detached process — the cheapest one in the whole
-design. Per-call files remove it: presence is `$D` being non-empty, and each
-post-hook deletes only its own.
+Pairing by identity was tried and rejected. The payload does carry a per-call
+`tool_use_id`, but extracting it in shell means pattern-matching JSON, and the
+post-hook's payload embeds `tool_response` — the command's own output. Any Bash
+call whose output happened to contain a well-formed `tool_use_id` (a `cat` of a
+captured payload, a test dumping one) would hijack a greedy match, the post-hook
+would delete a path that does not exist, and the real entry would leak. With no
+reaper and no TTL (§3), one such call poisons every later authorization in the
+repo permanently. `mktemp` plus "delete any one" needs no parser, so the class
+does not exist.
 
-Extraction failure falls **closed**: the pre-hook still writes a file (under
-`unattributed-$$`), so presence still holds, and the post-hook simply fails to
-match it. The residue is a leaked file, which resolves `unknown` — never a human
-channel. `$D` is emptied by a normally-completing agent Bash call only for that
-call's own entry, so a leak persists; §3 explains why that direction is the safe
-one and why there is deliberately no TTL.
+A single shared file was rejected earlier for the mirror-image reason, and that
+failure was not adversarial either: a sibling call finishing while
+`review authorize` ran would `rm -f` the shared breadcrumb, the resolver would
+see an empty directory, and the agent's own authorization would record as
+`human_typed` — laundering with no pty, no uninstall and no detached process.
+
+What remains is drift in one direction only. A post-hook that never runs (crash,
+timeout, kill) leaves the count high, and the count only ever over-reports
+in-flight work, never under-reports it. That is the safe direction: it costs
+disclosures, not silence.
 
 Both commands carry the trailing `# super-harness-breadcrumb` comment, following
 `_settings_merge`'s existing `_OURS_MARKER` convention, so the module can plan,
@@ -219,22 +217,23 @@ call is in flight**. Nothing falls through to them.
 Two consequences worth stating plainly:
 
 - **Concurrency is safe.** Claude Code issues several Bash calls in one
-  assistant message, so a sibling call may overwrite the breadcrumb with
-  unrelated text, and each call's post-hook removes only its own entry. Under
-  rule 2 a sibling still in flight resolves `unknown`, which discloses. The old
-  single-file, content-keyed predicate resolved `human_typed` in both cases.
-- **A leaked breadcrumb fails closed, and stays.** If `PostToolUse` never runs
-  (crash, timeout, kill) or the `tool_use_id` could not be extracted, that
-  entry survives and every later authorization resolves `unknown`. Nothing
-  reaps it: per-call files mean no other call's post-hook will, and there is
-  deliberately **no TTL** — a time-based expiry would restore the
-  `sleep`-past-the-window evasion the in-flight formulation exists to close.
+  assistant message, and the count covers them: a sibling still in flight leaves
+  the directory non-empty, so rule 2 resolves `unknown`, which discloses. The
+  earlier single-file, content-keyed predicate resolved `human_typed` in exactly
+  that case.
+- **A leaked entry fails closed, and stays.** If `PostToolUse` never runs
+  (crash, timeout, kill), the count stays high and every later authorization
+  resolves `unknown`. Nothing reaps it, and there is deliberately **no TTL** —
+  a time-based expiry would restore the `sleep`-past-the-window evasion the
+  in-flight formulation exists to close.
   Paying for a leak in disclosures is the direction this design chooses
-  everywhere else — but silently is not. An `unattributed-` entry means the
-  harness's own extraction failed, not that an agent is at work, so
-  `review authorize` names the offending file and the one-line `rm` that clears
-  it on stderr whenever it sees one. Fail closed **and** loud: the failure mode
-  this converts is "every merge quietly carries a disclosure forever".
+  everywhere else — but silently is not. Whenever the resolver returns `unknown`
+  *because the directory was non-empty*, `review authorize` says so on stderr:
+  the count, the directory, and the fact that `rm` on it is safe when no agent
+  is running. It needs no new event field and no second reader — the count is
+  already pinned in `channel_evidence`, and the directory is the constant
+  `cli/review.py` imports from the seam. Fail closed **and** loud: the failure
+  mode this converts is "every merge quietly carries a disclosure forever".
 
 The resolver deletes nothing. Lifetime belongs entirely to the hook pair, which
 is what keeps `core/authorization_channel.py` a pure function of its inputs.
@@ -420,8 +419,6 @@ New:
   a human channel.
 - `docs/decisions/d-authorization-channel-single-seam.md` — tier-1, with the
   executable check described above.
-- `tests/fixtures/claude_code_pre_tool_use_bash.json` — a real captured
-  `PreToolUse` payload, the pin for the `tool_use_id` extraction.
 
 Modified:
 
@@ -454,8 +451,8 @@ Modified:
 - `docs/cli-reference.md`, `docs/concepts.md`, `docs/state-machine.md`,
   `docs/getting-started.md` — all four describe the TTY requirement today.
   `docs/cli-reference.md` additionally carries the operational half: what an
-  `unattributed-` breadcrumb means and the `rm` that clears it, so the stderr
-  diagnostic in §3 has somewhere to point.
+  non-empty breadcrumb directory means, and when `rm` on it is safe, so the
+  stderr diagnostic in §3 has somewhere to point.
 - `.gitignore`, `AGENTS.md` — both regenerated (`sync`), never hand-edited.
 
 Acceptance obligations, beyond unit coverage of the resolution table:
@@ -474,9 +471,11 @@ Acceptance obligations, beyond unit coverage of the resolution table:
   (`cat > /dev/null  # super-harness-breadcrumb`) resolves False, and so does one
   carrying only the `PreToolUse` entry or only the `PostToolUse` entry. Without
   these three, the marker-only implementation ships green.
-- The `tool_use_id` extraction is pinned against a **captured hook payload**
-  committed as a fixture, so a host serialization change fails a test instead of
-  permanently poisoning the directory.
+- The hook pair is exercised as a **count**, not as identity: N simulated
+  pre-hooks followed by N post-hooks empty the directory whatever order they run
+  in, and post-hooks outnumbered by pre-hooks leave it non-empty. No test may
+  depend on which entry a post-hook removed — that is the property the design
+  gives up on purpose in exchange for parsing nothing.
 - `attest verify` fails on a change carrying an undisclosed `agent`/`unknown`
   authorization, and passes once disclosed. This is exercised on real events,
   not mocked rollups.
