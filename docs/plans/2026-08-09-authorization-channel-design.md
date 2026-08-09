@@ -100,7 +100,7 @@ the existing gate entry:
 ```json
 { "matcher": "Bash",
   "hooks": [{ "type": "command",
-              "command": "cat > <abs>/.harness/.last-agent-bash.json  # super-harness-breadcrumb",
+              "command": "<pre-command>  # super-harness-breadcrumb",
               "timeout": 5 }] }
 ```
 
@@ -109,35 +109,50 @@ matcher. That entry runs the Python gate binary, which would put a process
 launch on every shell command and — far worse — **block all Bash in gated
 states**.
 
-A matching `PostToolUse` entry removes the file when the call finishes:
+**One breadcrumb per tool call, not one shared file.** Claude Code issues
+several Bash calls in a single assistant message, and its hook payload carries a
+`tool_use_id` unique to each (verified against a captured payload). Both hooks
+key on it:
 
-```json
-{ "matcher": "Bash",
-  "hooks": [{ "type": "command",
-              "command": "rm -f <abs>/.harness/.last-agent-bash.json  # super-harness-breadcrumb",
-              "timeout": 5 }] }
+```sh
+# pre:  D=<abs>/.harness/breadcrumbs
+T=$(cat); mkdir -p "$D"
+I=$(printf %s "$T" | sed -n 's/.*"tool_use_id":"\([^"]*\)".*/\1/p')
+printf %s "$T" > "$D/${I:-unattributed-$$}.json"
+
+# post: same $D and the same extraction, then
+rm -f "$D/$I.json"
 ```
 
-The pair is what makes the file mean **an agent Bash call is in flight right
-now**, which is the only thing §3 needs it to mean. Neither hook parses or
-decides anything; the pre-hook overwrites the file with the payload Claude Code
-feeds it, so the file stays one line and the raw payload survives for later
-inspection.
+A single shared file cannot work here, and the failure is not adversarial: a
+sibling call finishing while `review authorize` runs would `rm -f` the shared
+breadcrumb, the resolver would see an empty directory, and the agent's own
+authorization would record as `human_typed`. That is a laundering route reachable
+with no pty, no uninstall and no detached process — the cheapest one in the whole
+design. Per-call files remove it: presence is `$D` being non-empty, and each
+post-hook deletes only its own.
 
-Both commands carry the trailing `# super-harness-breadcrumb` comment. That
-literal — not the path — is the marker `_settings_merge` matches on, following
-the module's existing `_OURS_MARKER` convention and keeping the path literal out
-of every file but the seam, as the decision at the end of this document
-requires. Uninstall removes both entries through that same marker-based path.
+Extraction failure falls **closed**: the pre-hook still writes a file (under
+`unattributed-$$`), so presence still holds, and the post-hook simply fails to
+match it. The residue is a leaked file, which resolves `unknown` — never a human
+channel. `$D` is emptied by a normally-completing agent Bash call only for that
+call's own entry, so a leak persists; §3 explains why that direction is the safe
+one and why there is deliberately no TTL.
 
-`.harness/.last-agent-bash.json` joins the managed gitignore block's file list in
+Both commands carry the trailing `# super-harness-breadcrumb` comment, following
+`_settings_merge`'s existing `_OURS_MARKER` convention, so the module can plan,
+find and strip the entries without ever naming the breadcrumb directory — which
+is what the decision at the end of this document requires. Uninstall removes both
+through that same path.
+
+`.harness/breadcrumbs/` joins the managed gitignore block's file list in
 `engineering/gitignore_injector.py`. This repo does not blanket-ignore
-`.harness/` — the block enumerates each volatile file, and the existing
-`.harness/.*.lock` line does not cover a `.json`. Omitted, every agent Bash call
-would leave an untracked file in the working tree, `git add -A` would commit raw
-agent command text, and the committed file would then appear in the PR diff as a
-change no lifecycle covers — the merge gate blocking on the harness's own
-breadcrumb. Because `init` writes that same constant list downstream, the
+`.harness/` — the block enumerates each volatile entry, and the existing
+`.harness/.*.lock` line does not cover it. Omitted, every agent Bash call would
+leave an untracked file in the working tree, `git add -A` would commit raw agent
+command text, and the committed files would then appear in the PR diff as
+changes no lifecycle covers — the merge gate blocking on the harness's own
+breadcrumbs. Because `init` writes that same constant list downstream, the
 omission would reach every adopter, so it is fixed in the injector rather than by
 hand-editing this repo's `.gitignore`.
 
@@ -150,8 +165,8 @@ fall through unclassified:
 
 1. the hook pair is **not installed on every registered agent adapter** →
    `unknown`
-2. a breadcrumb file **is present** → `agent` if its command text names this
-   invocation, otherwise `unknown`
+2. the breadcrumb directory **is non-empty** → `agent` if any entry's command
+   text names this invocation, otherwise `unknown`
 3. no breadcrumb, and a TTY is present on both stdin and stdout → `tty`
 4. no breadcrumb, no TTY → `human_typed`
 
@@ -193,14 +208,18 @@ Two consequences worth stating plainly:
 
 - **Concurrency is safe.** Claude Code issues several Bash calls in one
   assistant message, so a sibling call may overwrite the breadcrumb with
-  unrelated text. Under rule 2 that still resolves `unknown`, which discloses.
-  The old content-keyed predicate would have resolved `human_typed`.
-- **A leaked breadcrumb fails closed.** If `PostToolUse` never runs (crash,
-  timeout, kill), the file survives and subsequent authorizations resolve
-  `unknown` until the next normally-completing agent Bash call removes it —
-  which, in any live session, is seconds away. There is deliberately **no TTL**:
-  a time-based expiry would restore the `sleep`-past-the-window evasion the
-  in-flight formulation exists to close.
+  unrelated text, and each call's post-hook removes only its own entry. Under
+  rule 2 a sibling still in flight resolves `unknown`, which discloses. The old
+  single-file, content-keyed predicate resolved `human_typed` in both cases.
+- **A leaked breadcrumb fails closed, and stays.** If `PostToolUse` never runs
+  (crash, timeout, kill) or the `tool_use_id` could not be extracted, that
+  entry survives and every later authorization resolves `unknown`. Nothing
+  reaps it: per-call files mean no other call's post-hook will, and there is
+  deliberately **no TTL** — a time-based expiry would restore the
+  `sleep`-past-the-window evasion the in-flight formulation exists to close.
+  The recovery is a human one, `rm` on a gitignored directory, and it is named
+  in the docs. Paying for a leak in disclosures is the direction this design
+  chooses everywhere else.
 
 The resolver deletes nothing. Lifetime belongs entirely to the hook pair, which
 is what keeps `core/authorization_channel.py` a pure function of its inputs.
@@ -214,9 +233,23 @@ honest boundary of what a file written by a hook can prove.
 Whether the hook is installed is not inferred from the breadcrumb file's
 existence — a freshly installed repo has the hook but no file yet. The predicate
 is `AgentAdapter.breadcrumb_hook_installed(workspace) -> bool`, defaulting to
-`False` on the base class, implemented by `ClaudeCodeAdapter` as a marker lookup
-in `.claude/settings.local.json` through the existing `_settings_merge` marker
-machinery. `cli/review.py` reduces it with **all-True** over every agent adapter
+`False` on the base class. `ClaudeCodeAdapter` answers True only when
+`.claude/settings.local.json` holds **both** managed entries — one under
+`PreToolUse`, one under `PostToolUse` — and each command **equals the command
+this adapter would install**, rebuilt from the constant in
+`core/authorization_channel.py`.
+
+Equality, not marker presence, is the predicate. The marker only locates the
+entries; it cannot say what they do. `.claude/settings.local.json` is per-machine
+and gitignored, so it never reaches a PR diff, and an agent that rewrote the
+pre-hook to `cat > /dev/null  # super-harness-breadcrumb` would keep a
+marker-only check True while writing no breadcrumb at all — landing every
+agent-run authorization on `human_typed`, cheaper and quieter than the
+uninstall-then-pty route rule 1 exists to price. Requiring both entries closes
+the same gap at the other end: a settings file carrying only the post-hook writes
+nothing either.
+
+`cli/review.py` reduces it with **all-True** over every agent adapter
 recorded in `adapters.yaml` and passes the single boolean in;
 `core/authorization_channel.py` stays pure and never imports an adapter. Zero
 registered agent adapters, an adapter that does not implement the predicate, and
@@ -224,7 +257,10 @@ an unreadable settings file all yield `False` — and therefore `unknown`. That
 covers the Codex case: no breadcrumb hook on that host, so every authorization
 in a Codex-registered repo discloses, agent-run or human alike.
 
-The event records the verdict and the observations it came from:
+The event records the verdict and every observation it was derived from — one
+field per branch of §3, so the verdict can be recomputed from the event alone
+and an `unknown` from a missing hook is distinguishable from an `unknown` from
+an unmatched breadcrumb:
 
 ```json
 "payload": {
@@ -232,8 +268,10 @@ The event records the verdict and the observations it came from:
   "authorization_channel": "human_typed",
   "channel_evidence": {
     "breadcrumb_hook_installed": true,
+    "breadcrumbs_present": 0,
     "breadcrumb_matched": false,
-    "stdin_tty": false
+    "stdin_tty": false,
+    "stdout_tty": false
   }
 }
 ```
@@ -338,7 +376,7 @@ cut A's own attestation is the acceptance evidence.
   disclosure. This is the deliberate direction of the trade (§3 rule 2): the
   alternative reading is the one that lets an agent launder. It never costs
   work, only a line at merge.
-- **A second `PostToolUse` hook on every Bash call.** One `rm -f`, no
+- **A hook on both ends of every Bash call.** One `sed` + one `rm -f`, no
   interpreter start — but the harness now sits on both ends of every shell
   command the agent runs, which is twice the surface for a hook bug to stall a
   session.
@@ -418,7 +456,7 @@ Acceptance obligations, beyond unit coverage of the resolution table:
 ## Decision to record
 
 `d-authorization-channel-single-seam`, tier-1: **the breadcrumb has exactly one
-reader.** The path literal, and every read of it, live in
+reader.** The directory literal, and every read of it, live in
 `core/authorization_channel.py`; `claude_code.py` imports the constant to build
 the hook command rather than spelling the path itself.
 
@@ -428,17 +466,17 @@ and a counterexample, in the shape `d-core-is-base` already uses:
 
 ````
 ```check
-test -z "$(grep -rl 'last-agent-bash' --include='*.py' src/super_harness \
+test -z "$(grep -rl 'harness/breadcrumbs' --include='*.py' src/super_harness \
            | grep -v 'core/authorization_channel\.py')"
 ```
 
 ```counterexample path=src/super_harness/engineering/_ce_channel_seam.py
-BREADCRUMB = ".harness/.last-agent-bash.json"  # forbidden: a second reader
+BREADCRUMB_DIR = ".harness/breadcrumbs"  # forbidden: a second reader
 ```
 ````
 
 The check covers the mechanical half only, and the record says so. "No other
-module infers an invocation's origin" is the intent; "the path literal appears
+module infers an invocation's origin" is the intent; "the directory literal appears
 in one file" is what a grep can hold. The narrower predicate is still the one
 that matters, because a second reader has to name the file before it can invent
 its own verdict.
