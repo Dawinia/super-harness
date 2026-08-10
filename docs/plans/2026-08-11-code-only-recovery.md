@@ -35,6 +35,14 @@ form "the code does not match the plan". Satisfying them requires a source edit.
 round that rejects again for the same three findings, because the source still cannot be
 edited. A livelock, not a slow path.
 
+### How the two cuts divide that case
+
+Cut 1 keeps a change out of the livelock: at `READY_TO_MERGE`, folding the two minor
+findings in no longer requires the `plan redeclare` that started the sequence. Cut 2 gets a
+change that is already in `PLAN_REJECTED` out of it, through a disclosed
+`review skip --override`. Neither cut alone covers both ends, and Cut 1 deliberately
+does not reach into `PLAN_REJECTED` — see the state restriction below for why.
+
 ## Cut 1 — `implementation reopen`
 
 A new verb in the existing `implementation` group emits `implementation_invalidated`,
@@ -47,22 +55,36 @@ fit — the implementation is no longer valid, go back to implementing — and b
 `PLAN_APPROVED` landing would add an `implementation start` step that is pure ceremony for
 a change that has already implemented once. The proposed decision names the same event.
 
-**Precondition: the change must already carry both `plan_approved` and
-`implementation_complete`.** Read as: this change has been through the plan gate and the
-implementation gate once and needs another pass. That is the merge gate's own milestone
-set (`engineering/attestation.py:28`) minus `code_review_passed`, which is omitted so a
-reopen from `AWAITING_CODE_REVIEW` — where the reviewer has not yet returned — still
-works. Reusing the merge gate's rule keeps the CLI refusal and the merge refusal saying
-the same thing instead of drifting into two policies.
+**It is allowed from `READY_TO_MERGE` and `AWAITING_CODE_REVIEW`, and nowhere else.** Those
+are the two states that mean "the code is written and under, or past, code review", which
+is the whole population of the case this change exists for: a finding to fold in. Every
+other state either already permits edits (`PLAN_APPROVED`, `IMPLEMENTATION_IN_PROGRESS`,
+`CODE_REVIEW_REJECTED`), has nothing to reopen (`INTENT_DECLARED`,
+`AWAITING_PLAN_REVIEW`), or is terminal.
 
-Without that precondition the verb is a plan-review bypass: declare a change, run
-`plan ready`, reopen without waiting, implement anything. The merge gate does catch that
-(no `plan_approved` milestone), but only after all the work is done.
+`PLAN_REJECTED` is deliberately excluded, and that is a correction to an earlier draft of
+this plan. Reopening out of a rejection discards the rejection: the change returns to
+`IMPLEMENTATION_IN_PROGRESS`, `done` and code review carry it to `READY_TO_MERGE`, and the
+merge gate is satisfied by the stale `plan_approved` from the earlier epoch
+(`engineering/attestation.py:28,151`). The mechanism cannot tell "the reviewer's findings
+were code-level" — the case that motivated this change — from "the reviewer rejected the
+plan", so a `PLAN_REJECTED` reopen would make plan rejection advisory for any change that
+has implemented once. The exit from a rejection is Cut 2's `review skip --override
+--reason`, which emits the same `plan_approved` but stamps `skipped: true`, and is
+therefore visible to `report` and the merge attestation. Escaping a rejection should cost
+a disclosure; reopening a passed review should not.
 
-Rejected: requiring a `plan_approved` *after* the most recent `plan_redeclared`. It is the
-tighter rule and it refuses the exact case this change exists to fix — the adopter's
-change had no approval after its redeclare. Recorded because it looked right until it was
-tested against the case.
+That restriction also makes the earlier draft's milestone precondition — the change must
+carry `plan_approved` and `implementation_complete` — unnecessary, so it is dropped rather
+than kept as belt-and-braces. Both states already imply both events through the transition
+table: `AWAITING_CODE_REVIEW` is reachable only by `implementation_complete` from
+`IMPLEMENTATION_IN_PROGRESS`, which is reachable only from `PLAN_APPROVED`, which requires
+`plan_approved`. A guard that restates what the state already proves is the added structure
+this repository keeps paying for.
+
+No one is stranded by the exclusion. `PLAN_REJECTED` is only reachable by a round closing
+as rejected, so a rejected change always has a frozen round in its current epoch, which is
+exactly what Cut 2's guard asks for.
 
 ### What the verb does not do
 
@@ -72,16 +94,15 @@ boundary (`engineering/review_runs.py:13`), so the following `done` opens a fres
 any round left open by the reopen falls out of `execution.rounds` on its own. Adding
 machinery to invalidate it would duplicate a reset the fold already performs.
 
-### The hole this leaves, stated rather than guarded
+### It leaves a countable trace
 
-`READY_TO_MERGE` → `plan redeclare` with a materially wider scope → `reopen` puts newly
-scoped work into the change without a plan review of that scope. The merge gate does not
-catch it, because the old `plan_approved` satisfies the milestone.
-
-This is deliberately not guarded. Reaching it requires deliberately redeclaring and then
-deliberately reopening; `plan redeclare` records its reason in `redeclaration_history` and
-`report` renders it, so the route is disclosed rather than silent. A fourth guard here
-would be structure added to a fix, which is this repository's most repeated failure mode.
+`report` counts human authorizations one record each, because after the TTY check came out
+of `review authorize` that count *is* the mechanism — a human who remembers authorizing
+twice can falsify a `5` (`engineering/value_report.py:63-68`). A verb that voids a passed
+code review needs the same treatment for the same reason, so `report` grows a reopen count
+rendering each event's reason. Shipping the required `--reason` without a surface that
+displays it would copy the half of `review authorize` that costs something and none of the
+half that buys something.
 
 ## Cut 2 — the skip guard reads the wrong ledger
 
@@ -100,15 +121,43 @@ hatch exists for.
 
 PR#98 already found and fixed this exact confusion on the budget path and left this caller
 behind; `count_automatic_rounds`'s docstring names it ("the per-epoch fold resets on every
-rejection"). The fix reuses that primitive rather than writing a second fold: the guard's
-first arm keys on `count_automatic_rounds(events, reviewer) == 0`.
+rejection").
+
+**The guard keys on rounds frozen since the change was last re-declared** — the events
+`plan_redeclared` and `intent_redeclared` — not on the current epoch and not on the whole
+change. A first draft of this plan used the whole change, and that is wrong: a change that
+was re-declared with a wider scope and never sent to any reviewer would be passed by
+`review skip`, because its first plan cycle's rounds still count. Nothing downstream
+catches that. `verify_attestations` blocks only a skipped *code* review lacking
+`--override` (`engineering/attestation.py:283-287`) and `derive_independence` discloses
+code review alone, so a bare plan skip emits `plan_approved` and merges silently. The
+per-epoch check being replaced is today the only thing standing on that route, and a
+replacement that drops it is a net loss.
+
+Re-declaration is the right boundary because it is the event that means "this is a
+different plan now". A `plan_ready` after a rejection is the same plan revised, and its
+earlier rounds are still evidence that the reviewer was asked. A `plan_ready` after a
+re-declaration is a new scope no one has seen.
+
+**This is deliberately asymmetric with the round budget, which must keep counting across
+re-declarations.** They answer different questions. The budget asks what this change has
+cost, and money spent stays spent — resetting it on `plan redeclare` would hand back a
+laundering path PR#98 closed on purpose. The skip guard asks whether anyone was asked to
+look at *this* plan, and after a re-declaration nobody was. Reading the same ledger for
+both is what produced the defect in the first place.
+
+The new predicate belongs in `engineering/review_runs.py` beside `count_automatic_rounds`,
+not inlined in the CLI, so the two folds sit together and their difference is visible at
+the point where someone might otherwise unify them.
 
 **The trap this opens.** The guard's second arm reads `execution.rounds[-1]`, and today
 relies on the first arm's `not execution.rounds` early return for non-emptiness. Once the
-first arm keys on per-change evidence, the combination "rounds on this change, none in this
-epoch" reaches the second arm with an empty tuple and raises `IndexError`. The second arm
-must carry its own emptiness check. Written down here because introducing a new hole while
-closing one is the failure mode this repository has recorded five times.
+first arm keys on rounds-since-re-declaration, the combination "rounds since the last
+re-declaration, none in the current epoch" — which is precisely the rejected-then-
+re-submitted change this cut exists to unblock — reaches the second arm with an empty tuple
+and raises `IndexError`. The second arm must carry its own emptiness check. Written down
+here because introducing a new hole while closing one is the failure mode this repository
+has recorded five times.
 
 ## Surfaces that state the old rule
 
@@ -123,28 +172,36 @@ code-review-rejection path but not the `READY_TO_MERGE` fold-in.
 
 ## Test anchors
 
-- `implementation reopen` from `READY_TO_MERGE` and from `PLAN_REJECTED` reaches
+- `implementation reopen` from `READY_TO_MERGE` and from `AWAITING_CODE_REVIEW` reaches
   `IMPLEMENTATION_IN_PROGRESS`; the reason lands on the payload.
-- It refuses, appending nothing, when `plan_approved` is absent, and again when
-  `implementation_complete` is absent.
+- It refuses, appending nothing, from `PLAN_REJECTED` — the state whose exclusion is the
+  whole of F3 — and from `INTENT_DECLARED`.
 - The full loop closes: reopen → edit → `done` → code review → `READY_TO_MERGE`, proving
   the escape does not launder code review.
+- `report` renders the reopen count and each reason.
 - The livelock reproduction becomes a test: rounds frozen in an earlier plan epoch, a
   rejection, a re-submit, and `review skip` passes.
-- A change with no round ever frozen still refuses — the guard's original purpose.
-- The second arm is exercised with per-change rounds and an empty current epoch, which is
-  the `IndexError` regression.
+- A change re-declared after an earlier plan cycle, with no round frozen since, is still
+  refused — the route F1 named.
+- A change with no round ever frozen is still refused — the guard's original purpose.
+- The second arm is exercised with rounds since the re-declaration and an empty current
+  epoch, which is the `IndexError` regression.
+- The budget keeps counting across a `plan_redeclared`, pinning the asymmetry so a later
+  reader cannot unify the two folds without a test turning red.
 
 ## Scope
 
 `src/super_harness/cli/implementation.py`, `src/super_harness/cli/review.py`,
-`src/super_harness/gates/decisions.py`, `src/super_harness/adapters/agent/claude_code.py`,
+`src/super_harness/cli/report.py`, `src/super_harness/engineering/review_runs.py`,
+`src/super_harness/engineering/value_report.py`, `src/super_harness/gates/decisions.py`,
+`src/super_harness/adapters/agent/claude_code.py`,
 `src/super_harness/adapters/agent/codex.py`, `AGENTS.md`, `docs/cli-reference.md`,
 `docs/getting-started.md`, `docs/decisions/d-no-recovery-from-awaiting-code-review.md`
 (status → `retired`), `docs/plans/2026-08-11-code-only-recovery.md`,
 `tests/unit/cli/test_implementation.py`, `tests/unit/cli/test_review.py`,
-`tests/unit/daemon/test_hook_entry.py`, `tests/integration/daemon/test_hook_entry.py`,
-`tests/unit/gates/test_decisions.py`.
+`tests/unit/cli/test_report.py`, `tests/unit/engineering/test_review_runs.py`,
+`tests/unit/engineering/test_value_report.py`, `tests/unit/daemon/test_hook_entry.py`,
+`tests/integration/daemon/test_hook_entry.py`, `tests/unit/gates/test_decisions.py`.
 
 ## Out of scope
 
