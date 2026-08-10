@@ -552,3 +552,88 @@ def test_budget_hits_still_dedupe_retries_within_one_change(tmp_path):
     ])
     report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
     assert report.review_budget_hits == 2
+
+
+# --- 2026-08-09-authorization-channel: the count that replaced the TTY gate ---
+
+
+def _authorized(eid, change, ts, *, reviewer="code-reviewer", reason="why", payload=None):
+    return json.dumps({
+        "event_id": eid, "type": "review_round_authorized", "change_id": change,
+        "timestamp": ts, "actor": {"type": "human", "identifier": "someone@example.test"},
+        "framework": "plain",
+        "payload": {"reviewer": reviewer, "reason": reason} if payload is None else payload,
+    })
+
+
+def test_authorizations_carry_the_count_and_every_recorded_reason(tmp_path):
+    """The falsifiable core of the cut: with the TTY gate gone, the count is the whole
+    mechanism — a human who remembers authorizing twice can read `5` and know
+    something is wrong. That check needs BOTH the number and the words, so the
+    derivation keeps one record per authorization rather than a bare integer.
+    """
+    events_file = _write_events(tmp_path, [
+        _authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="expensive profile, my call"),
+        _authorized("e2", "c1", "2026-08-09T11:00:00Z", reviewer="plan-reviewer",
+                    reason="one more plan round"),
+        _authorized("e3", "c2", "2026-08-09T12:00:00Z", reason="unrelated change"),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.authorizations_total == 3
+    assert [a.reason for a in report.authorizations] == [
+        "expensive profile, my call", "one more plan round", "unrelated change",
+    ]
+    assert [a.change_id for a in report.authorizations] == ["c1", "c1", "c2"]
+    assert [a.reviewer for a in report.authorizations] == [
+        "code-reviewer", "plan-reviewer", "code-reviewer",
+    ]
+    assert report.authorizations[0].actor == "someone@example.test"
+
+
+def test_authorizations_are_not_deduped(tmp_path):
+    """Unlike `review_budget_hits`, every authorization counts separately even when
+    two are identical in every field but their id.
+
+    The brake's block is emitted by the harness once per refused invocation, so a
+    retrying agent inflates it and it must dedupe. An authorization is emitted once
+    per deliberate act; folding two identical ones together would report `1` for a
+    human who acted twice, which understates in the direction that hides the abuse.
+    """
+    events_file = _write_events(tmp_path, [
+        _authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="same words"),
+        _authorized("e2", "c1", "2026-08-09T10:00:00Z", reason="same words"),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.authorizations_total == 2
+
+
+def test_authorization_with_no_recorded_reason_reads_as_absent_not_empty(tmp_path):
+    """A malformed or reason-less payload must never render as an approved-with-no-
+    objection blank. `None` is distinguishable downstream; `""` is not.
+    """
+    events_file = _write_events(tmp_path, [
+        _authorized("e1", "c1", "2026-08-09T10:00:00Z", payload={"reviewer": "code-reviewer"}),
+        _authorized("e2", "c1", "2026-08-09T11:00:00Z", payload={"reason": 17}),
+        _authorized("e3", "c1", "2026-08-09T12:00:00Z", payload=["not", "a", "dict"]),
+    ])
+    report = build_value_report(events_file, since=None, until=None, workspace_root=tmp_path)
+    assert report.authorizations_total == 3
+    assert [a.reason for a in report.authorizations] == [None, None, None]
+    assert [a.reviewer for a in report.authorizations] == [
+        "code-reviewer", "unknown", "unknown",
+    ]
+
+
+def test_authorizations_respect_the_window(tmp_path):
+    """Windowed like every other band: a `--since` that excludes an authorization must
+    exclude it from the count too, or the number stops matching the window it is
+    printed under."""
+    events_file = _write_events(tmp_path, [
+        _authorized("e1", "c1", "2026-07-01T10:00:00Z", reason="old"),
+        _authorized("e2", "c1", "2026-08-09T10:00:00Z", reason="new"),
+    ])
+    report = build_value_report(
+        events_file, since="2026-08-01", until=None, workspace_root=tmp_path
+    )
+    assert report.authorizations_total == 1
+    assert [a.reason for a in report.authorizations] == ["new"]

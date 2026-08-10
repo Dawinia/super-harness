@@ -277,8 +277,7 @@ _EXIT_CODES: dict[str, list[str]] = {
     ],
     "review authorize": [
         "`0` one-shot authorization recorded",
-        "`1` human declined the interactive confirmation",
-        "`2` non-TTY, stale contract, invalid source set, or invalid lifecycle state",
+        "`2` stale contract, invalid source set, or invalid lifecycle state",
         "`3` no `.harness/`",
     ],
     "review begin": [

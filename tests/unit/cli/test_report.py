@@ -262,3 +262,298 @@ def test_report_human_omits_budget_line_when_the_brake_never_fired(tmp_path):
                              catch_exceptions=False)
     assert res.exit_code == 0
     assert "round budget" not in res.output
+
+
+# --- 2026-08-09-authorization-channel: the count that replaced the TTY gate ---
+
+
+def _authorized(eid, change, ts, *, reviewer="code-reviewer", reason="why"):
+    return _json.dumps({
+        "event_id": eid, "type": "review_round_authorized", "change_id": change,
+        "timestamp": ts, "actor": {"type": "human", "identifier": "someone@example.test"},
+        "framework": "plain", "payload": {"reviewer": reviewer, "reason": reason},
+    })
+
+
+def test_report_human_shows_the_count_and_every_reason(tmp_path):
+    """The acceptance obligation is the RENDERED surface, not the derivation: a
+    computed-but-unshown count is exactly the failure this cut exists to avoid.
+
+    Both halves are load-bearing. The count is what a human can falsify from memory;
+    the reasons are the only account of why each round was funded.
+    """
+    _seed(tmp_path, [
+        _authorized("e1", "c1", "2026-08-09T10:18:46Z", reason="expensive profile, my call"),
+        _authorized("e2", "c1", "2026-08-09T11:10:38Z", reviewer="plan-reviewer",
+                    reason="one more plan round"),
+    ])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "2 human authorization(s) recorded" in res.output
+    assert "expensive profile, my call" in res.output
+    assert "one more plan round" in res.output
+    assert "code-reviewer" in res.output and "plan-reviewer" in res.output
+    assert "2026-08-09" in res.output
+
+
+def test_report_human_states_zero_authorizations_rather_than_omitting_the_line(tmp_path):
+    """Unlike the budget line, a zero here is not noise — it is the reading the
+    falsify-from-memory check needs most. A human who authorized twice and sees
+    nothing at all cannot tell "none happened" from "the section isn't printed".
+    """
+    _seed(tmp_path, [])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "0 human authorization(s) recorded" in res.output
+
+
+def test_report_human_says_the_reason_is_unverified(tmp_path):
+    """`--reason` records what was typed, not what was true — a known tax of the
+    design. The surface that displays it has to say so, or it reads as a checked
+    claim."""
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="<why>")])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "<why>" in res.output          # a placeholder is rendered verbatim, not cleaned
+    assert "verified by nothing" in res.output
+
+
+def test_report_human_marks_a_missing_reason_as_absent(tmp_path):
+    """An authorization whose payload carried no reason must not render as a blank
+    where the words go — that reads as 'approved, no comment'."""
+    _seed(tmp_path, [_json.dumps({
+        "event_id": "e1", "type": "review_round_authorized", "change_id": "c1",
+        "timestamp": "2026-08-09T10:00:00Z",
+        "actor": {"type": "human", "identifier": "someone@example.test"},
+        "framework": "plain", "payload": {"reviewer": "code-reviewer"},
+    })])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "(no reason recorded)" in res.output
+
+
+def test_report_brief_carries_the_count(tmp_path):
+    """`--brief` is the one-line form people paste; the count is the mechanism, so it
+    travels with it. Still exactly one line."""
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z")])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report", "--brief"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert res.output.strip().count("\n") == 0
+    assert "1 human authorization(s)" in res.output
+
+
+def test_report_json_carries_every_authorization_record(tmp_path):
+    """The human view is the obligation; `--json` is where the full records live for
+    anything that wants to audit them."""
+    _seed(tmp_path, [
+        _authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="first"),
+        _authorized("e2", "c2", "2026-08-09T11:00:00Z", reason="second"),
+    ])
+    res = CliRunner().invoke(main, ["--json", "--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    data = _json.loads(res.output)["data"]
+    assert data["authorizations_total"] == 2
+    assert [a["reason"] for a in data["authorizations"]] == ["first", "second"]
+    assert data["authorizations"][0]["actor"] == "someone@example.test"
+
+
+def test_report_human_marks_the_timestamp_as_utc(tmp_path):
+    """AUTH-002. The whole mechanism rests on a human falsifying the record from
+    memory, and time is the field memory keys on. An unlabelled `10:18` read by
+    someone who authorized at 18:18 local is their own act looking like a stranger's
+    — the exact misreading the count exists to prevent.
+
+    Marked rather than converted: `report` also runs in CI and in other people's
+    shells, where "local" is a different answer for the same row.
+    """
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:18:46Z", reason="mine")])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "2026-08-09 10:18 UTC" in res.output
+
+
+def test_report_human_names_who_authorized(tmp_path):
+    """AUTH-003. `derive_authorizations` already computes the actor and only `--json`
+    showed it — a field derived but not read, which is the failure mode this cut
+    exists to avoid.
+
+    It matters most for the stated audience: with two people on a repo, rows with no
+    name mean neither of them can falsify the ones that are not theirs.
+    """
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="mine")])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "someone@example.test" in res.output
+
+
+def test_report_human_collapses_whitespace_that_would_forge_a_row(tmp_path):
+    """AUTH-004. A `--reason` carrying a newline plus the row's leading spaces prints
+    as two rows indistinguishable from two authorizations — a forged row in the one
+    surface the design calls the mechanism.
+
+    Tabs collapse too, for the same reason: they forge column alignment just as well
+    as a newline forges a row. The verbatim text survives in `--json`, which is where
+    an audit reads it; the human view owes one row per authorization.
+    """
+    forged = "ok\n    2026-08-09 10:00  c1  code-reviewer  someone@example.test  routine"
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason=forged)])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    rows = [ln for ln in res.output.splitlines() if "code-reviewer" in ln]
+    assert len(rows) == 1, rows
+    assert "ok 2026-08-09 10:00 c1 code-reviewer" in rows[0]   # collapsed, not dropped
+
+
+def test_report_json_keeps_the_reason_exactly_as_typed(tmp_path):
+    """The collapsing is a rendering concern only. `--json` is the audit surface and
+    must still carry the bytes that were recorded."""
+    forged = "ok\n    forged row"
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason=forged)])
+    res = CliRunner().invoke(main, ["--json", "--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert _json.loads(res.output)["data"]["authorizations"][0]["reason"] == forged
+
+
+def test_report_human_treats_an_all_whitespace_reason_as_absent(tmp_path):
+    """The AUTH-004 collapse opened this: `derive_authorizations` maps `""` to None,
+    but `"   "` is a truthy string that survives derivation and collapses to `""` at
+    render time — a row with a blank where the words go, which reads as 'approved,
+    no comment' rather than as nothing recorded.
+    """
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="  \t \n ")])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "(no reason recorded)" in res.output
+
+
+def test_report_counts_authorizations_not_funded_rounds(tmp_path):
+    """AUTH-006. The derivation counts `review_round_authorized` events; an
+    authorization can be recorded and never consumed — the human authorizes, then the
+    round is retired or never runs. This change's own history has exactly that shape
+    more than once.
+
+    The number is right and the noun was wrong: the falsify-from-memory check keys on
+    authorizing, not on rounds. `value_report.py`'s stated design law is that no
+    number may claim more than it measured, so the line says what it counted.
+    """
+    _seed(tmp_path, [
+        _authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="funded a round"),
+        _authorized("e2", "c1", "2026-08-09T11:00:00Z", reason="round was retired, never ran"),
+    ])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "2 human authorization(s) recorded" in res.output
+    # The old wording claimed each one bought a round that actually happened.
+    assert "were funded by" not in res.output
+
+
+def test_report_human_cannot_be_made_to_print_a_forged_row_by_any_field(tmp_path):
+    """AUTH-005. The AUTH-004 hardening covered `reason` alone, but every field on the
+    row is interpolated into the same single line. `actor` is the reachable vector:
+    `resolve_identity`'s `SUPER_HARNESS_ACTOR` branch only strips the ends, so an
+    interior newline survives into the record.
+
+    One authorization must print as one row no matter which field carries the
+    newline; `--json` keeps the bytes.
+    """
+    forged_actor = "me\n    2026-08-09 09:00 UTC  c1  code-reviewer  someone-else  routine"
+    _seed(tmp_path, [_json.dumps({
+        "event_id": "e1", "type": "review_round_authorized", "change_id": "c1\nsplit",
+        "timestamp": "2026-08-09T10:00:00Z",
+        "actor": {"type": "human", "identifier": forged_actor},
+        "framework": "plain", "payload": {"reviewer": "code-\nreviewer", "reason": "ok"},
+    })])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    rows = [ln for ln in res.output.splitlines() if ln.startswith("    2026-08-09")]
+    assert len(rows) == 1, rows
+
+
+def test_report_human_keeps_an_unparseable_timestamp_on_one_row(tmp_path):
+    """AUTH-005, the fallback branch: `_fmt_when` returns the raw string when the
+    timestamp will not parse, which puts unfiltered event text on the row."""
+    _seed(tmp_path, [_json.dumps({
+        "event_id": "e1", "type": "review_round_authorized", "change_id": "c1",
+        "timestamp": "not-a-date\n    forged  row  here  now",
+        "actor": {"type": "human", "identifier": "me"},
+        "framework": "plain", "payload": {"reviewer": "code-reviewer", "reason": "ok"},
+    })])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "not-a-date forged row here now  c1  code-reviewer" in res.output
+    rows = [ln for ln in res.output.splitlines() if "forged" in ln]
+    assert len(rows) == 1, rows
+
+
+def test_report_human_row_survives_control_characters(tmp_path):
+    """AUTH-008. `_one_line` collapsed whitespace, but `\\x1b` is not whitespace —
+    `str.split()` splits on `str.isspace()` alone. A reason carrying `\\x1b[1A\\x1b[2K`
+    moves the terminal cursor up and erases the authorization row already printed
+    above it, so one row can delete another from the display.
+
+    That is the direction `derive_authorizations` calls "the exact direction that
+    hides the abuse this count exists to expose", and the design accepts that an
+    agent now runs `review authorize` and supplies the reason itself.
+
+    Fixed as a whitelist, not a third blacklist: the two previous rounds each added
+    one more excluded class and each missed the next. `str.isprintable()` is False
+    for C0/C1 controls, bidi overrides, NBSP and the newlines and tabs of the earlier
+    rounds all at once, and True for ordinary text in any script.
+    """
+    _seed(tmp_path, [_authorized(
+        "e1", "c1", "2026-08-09T10:00:00Z", reason="quiet\x1b[1A\x1b[2Kgone",
+    )])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "\x1b" not in res.output
+    assert "quiet [1A [2Kgone" in res.output      # neutralised, not dropped
+
+
+def test_report_human_row_survives_a_bidi_override(tmp_path):
+    """AUTH-008, the other named vector: a right-to-left override reorders the
+    characters after it, so a reason can display as text it does not contain."""
+    _seed(tmp_path, [_authorized(
+        "e1", "c1", "2026-08-09T10:00:00Z", reason="ok‮nwonknu",
+    )])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "‮" not in res.output
+
+
+def test_report_human_row_keeps_non_ascii_text_intact(tmp_path):
+    """The whitelist must not be a latin-1 filter. Reasons are typed by humans in
+    whatever language they think in, and this repo's own records are in Chinese."""
+    _seed(tmp_path, [_authorized(
+        "e1", "c1", "2026-08-09T10:00:00Z", reason="计划正文没变 只是扩 scope 🙂",
+    )])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "计划正文没变 只是扩 scope 🙂" in res.output
+
+
+def test_report_json_keeps_control_characters_as_recorded(tmp_path):
+    """Neutralising is a rendering rule, exactly as the AUTH-004 note argues. The
+    audit surface still carries what was recorded."""
+    reason = "quiet\x1b[1A\x1b[2Kgone"
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason=reason)])
+    res = CliRunner().invoke(main, ["--json", "--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert _json.loads(res.output)["data"]["authorizations"][0]["reason"] == reason

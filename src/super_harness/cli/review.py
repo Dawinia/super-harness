@@ -1019,9 +1019,18 @@ def begin(
                 format_error(
                     subcommand=subcommand,
                     message="this automated round requires one-shot human authorization",
+                    # Addressed to the agent, which is this block's only reader and
+                    # the human's only channel. It deliberately does not mention that
+                    # the agent could run the command itself: nothing stops it
+                    # technically, and a sanctioned self-service path named at the
+                    # exact moment it is deciding whether to route around would price
+                    # the instruction instead of giving it. Host-specific ergonomics
+                    # (under Claude Code the human runs it in-session with `!`) live
+                    # in the adapter's AGENTS.md subsection.
                     hint=(
-                        "Use an interactive TTY: `super-harness review authorize "
-                        f"{change} --reviewer {reviewer} --reason <why>` ."
+                        "relay this block and ask the human to run:\n"
+                        f"        super-harness review authorize {change} "
+                        f'--reviewer {reviewer} --reason "<why>"'
                     ),
                 ),
                 err=True,
@@ -1247,19 +1256,24 @@ def authorize_round(
     sources: tuple[str, ...],
     reason: str,
 ) -> None:
-    """Interactively authorize one exact expensive or over-budget round."""
+    """Authorize one exact expensive or over-budget round.
+
+    This command carries no interactivity check. The TTY refusal it used to open
+    with stopped the honest path and nobody else: a non-interactive agent defeats
+    `isatty` with twelve lines of `pty.fork()`, while a human's own `!` prefix
+    inside an agent session supplies no TTY at all — so the one invocation that is
+    unambiguously a human act was the one being rejected. The harness cannot tell an
+    agent-run command from a human-typed one (process ancestry and environment are
+    byte-identical), so it does not pretend to. What it records instead is a count
+    and a reason a human can falsify from memory; `report` renders both.
+
+    `--reason` is required and recorded verbatim. It is the human's own words,
+    unverifiable by construction, and the only claim of approval this makes.
+
+    See docs/plans/2026-08-09-authorization-channel-design.md.
+    """
 
     subcommand = "review authorize"
-    if not _interactive_terminal():
-        click.echo(
-            format_error(
-                subcommand=subcommand,
-                message="review authorization requires an interactive TTY",
-                hint="Run the command directly in a human-owned terminal; no --yes path exists.",
-            ),
-            err=True,
-        )
-        sys.exit(EXIT_VALIDATION)
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
     except HarnessNotInitialized as exc:
@@ -1345,7 +1359,10 @@ def authorize_round(
             sys.exit(EXIT_OK)
     # Insurance, not the primary surface: by the time anyone types `review authorize`
     # the decision is usually already made from what the agent relayed. Shown anyway,
-    # because the one case that matters is the human who was told nothing.
+    # because the one case that matters is the human who was told nothing. With the
+    # confirm gone this no longer precedes a decision point — it accompanies a record
+    # that is already being written, and a human who reads it and disagrees still has
+    # a named authorization to point at.
     if execution.automatic_rounds_this_change >= role.max_automatic_rounds:
         click.echo(
             _format_budget_evidence(
@@ -1359,13 +1376,8 @@ def authorize_round(
             # keeps out of the envelope's way.
             err=True,
         )
-    prompt = (
-        f"Authorize exactly one automated {reviewer} round for "
-        f"{', '.join(selected)} at {str(packet['target_head'])[:12]}?"
-    )
-    if not click.confirm(prompt, default=False):
-        click.echo("super-harness: authorization cancelled")
-        sys.exit(EXIT_VALIDATION)
+    # No confirmation prompt. `!` supplies no stdin, so a `click.confirm` here would
+    # abort on empty input — trading the removed refusal for an identical one.
     framework = cs.framework if cs is not None else "plain"
     authorization_id = new_event_id()
     event = Event(

@@ -102,6 +102,13 @@ Human review is first-class: use `review human inspect`, validate a verdict with
 `review human draft`, then leave `review human confirm` to a human in a TTY. An
 agent must never confirm the human nonce. `review skip` remains a disclosed escape
 hatch; a code-review skip needs an explicit override and reason to pass attestation.
+
+When `review begin` reports that a round needs one-shot human authorization, relay
+the block and ask the human to run `super-harness review authorize ...` — under
+Claude Code they can do that with a `!` prefix in this session rather than opening a
+second terminal, and its output resumes your turn. The command records their
+`--reason` verbatim, and `super-harness report` shows the running count alongside
+every reason, which is the only check on it.
 <!-- /super-harness agent: claude-code -->
 
 ### Before opening PR

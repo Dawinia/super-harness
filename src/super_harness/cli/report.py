@@ -15,12 +15,14 @@ import click
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
+from super_harness.core.parse_ts import parse_ts
 from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
     find_harness_root,
 )
 from super_harness.engineering.value_report import (
+    AuthorizationRecord,
     CostBreakdownRow,
     ValueReport,
     build_value_report,
@@ -67,6 +69,117 @@ def _breakdown_lines(r: ValueReport) -> list[str]:
         lines.append(f"  {label:<22} {tokens_cell:>10}  {findings:>8}  {rounds:>6}{flag}")
     lines.append("  per-round detail: super-harness --json report -> .cost_breakdown")
     return lines
+
+
+def _one_line(text: str) -> str:
+    """Reduce a field to safe, single-line, single-spaced text.
+
+    One rule for one row: an authorization row is a single line, so nothing
+    interpolated into it may break the line, forge column alignment, or steer the
+    terminal. Applied per field rather than to the finished row so the separators
+    stay intact.
+
+    Non-printables become spaces and are then collapsed with the rest of the
+    whitespace. This is a whitelist on purpose (AUTH-008): the two rounds before it
+    each excluded one more class of character — newlines, then all whitespace — and
+    each missed the next one, because `str.split()` only knows `str.isspace()` and
+    `\\x1b` is not whitespace. A reason carrying `\\x1b[1A\\x1b[2K` moved the cursor up
+    and erased the row printed above it, so one authorization could delete another
+    from the display — understating the count, which is the direction
+    `derive_authorizations` exists to prevent. `str.isprintable()` is False for C0
+    and C1 controls, bidi overrides, NBSP and the earlier rounds' newlines and tabs
+    at once, and True for ordinary text in any script.
+
+    Rendering only. `--json` still carries the recorded bytes.
+    """
+    return " ".join("".join(c if c.isprintable() else " " for c in text).split())
+
+
+def _fmt_when(ts: str) -> str:
+    """`YYYY-MM-DD HH:MM UTC` when the timestamp parses, else the raw string.
+
+    The zone marker is not decoration. This surface asks a human to falsify the
+    record from memory, and time is the field memory keys on: a reviewer in UTC+8
+    who authorized at 18:18 local reads an unlabelled `10:18` as somebody else's
+    act — the exact misreading the count exists to prevent (AUTH-002).
+
+    Marked rather than converted to local time: `report` also runs in CI and in
+    other people's shells, where "local" is a different answer for the same row.
+
+    Never drops the value: an unparseable timestamp still identifies which
+    authorization a row is, and the row must appear either way.
+    """
+    parsed = parse_ts(ts)
+    return parsed.strftime("%Y-%m-%d %H:%M UTC") if parsed is not None else ts
+
+
+def _authorization_lines(r: ValueReport) -> list[str]:
+    """The count first, then one row per authorization.
+
+    Unlike the round-budget line, a zero is printed rather than omitted. This is the
+    surface the falsify-from-memory check runs against, and a human who authorized
+    twice needs to be able to tell "none recorded" from "the section isn't shown".
+    """
+    lines = [
+        "",
+        "Human authorizations",
+        # What was counted, not what it bought. `derive_authorizations` counts
+        # `review_round_authorized` events, and an authorization can be recorded and
+        # never consumed — the human authorizes, then the round is retired or never
+        # runs. "funded N rounds" would claim more than the derivation measured, which
+        # this module's design law forbids, and the falsify-from-memory check keys on
+        # authorizing anyway (AUTH-006).
+        f"  - {r.authorizations_total} human authorization(s) recorded, each one "
+        "permitting a single automated review round",
+    ]
+    if not r.authorizations:
+        return lines
+    lines.append(
+        "    If you remember authorizing fewer than this, the difference was not you."
+    )
+    for a in r.authorizations:
+        lines.append(_authorization_row(a))
+    lines.append("    Reasons are recorded verbatim and verified by nothing.")
+    return lines
+
+
+def _authorization_row(a: AuthorizationRecord) -> str:
+    """One authorization on one line: when, which change, which role, who, why.
+
+    The actor is here and not only in `--json` (AUTH-003). With two people on a repo
+    — the stated audience — unnamed rows leave neither of them able to falsify the
+    ones that are not theirs, and the field was already being derived.
+
+    The reason is the only account of why a round was funded, so it is rendered as
+    typed — placeholders included. A relayed `<why>` that nobody replaced is not dirt
+    to be cleaned up; it is the recorded state of that authorization, and hiding it
+    would make the record read better than the act was.
+
+    Its whitespace is collapsed, though, and never truncated: a reason carrying a
+    newline plus this row's leading spaces otherwise prints as two rows that read as
+    two authorizations (AUTH-004). Tabs collapse for the same reason — they forge
+    column alignment as well as a newline forges a row. This is a rendering rule
+    only; `--json` still carries the bytes that were recorded.
+
+    A reason that is nothing but whitespace collapses to empty and is reported as
+    absent, not as a blank column. `derive_authorizations` maps `""` to None but
+    cannot map `"   "` — that is a string somebody typed, and only this layer knows
+    it renders as nothing.
+
+    The collapse applies to EVERY field, not just the reason (AUTH-005). They all
+    land on the same single line, so any of them carrying a newline forges a row —
+    `actor` most reachably, since `resolve_identity`'s `SUPER_HARNESS_ACTOR` branch
+    only strips the ends, and `_fmt_when` passes an unparseable timestamp through
+    raw. One authorization prints as one row regardless of which field is hostile.
+    """
+    reason = _one_line(a.reason) if a.reason is not None else ""
+    return "    " + "  ".join((
+        _one_line(_fmt_when(a.timestamp)),
+        _one_line(a.change_id),
+        _one_line(a.reviewer),
+        _one_line(a.actor),
+        reason or "(no reason recorded)",
+    ))
 
 
 def _bottom_line(r: ValueReport) -> str:
@@ -138,6 +251,7 @@ def _render_human(r: ValueReport) -> str:
         "Stage 2 cut).",
     ]
     lines += _breakdown_lines(r)
+    lines += _authorization_lines(r)
     lines += [
         "",
         _bottom_line(r),
@@ -152,6 +266,10 @@ def _render_brief(r: ValueReport) -> str:
         bits.append(f"{r.edits_blocked} distinct target(s) held")
     if r.undisclosed_bypasses:
         bits.append(f"{r.undisclosed_bypasses} undisclosed bypass(es)")
+    if r.authorizations_total:
+        # The count travels with the one-line form people paste; the reasons do not
+        # fit on it and stay in the full view.
+        bits.append(f"{r.authorizations_total} human authorization(s)")
     return f"{window}: " + ", ".join(bits) + "."
 
 
