@@ -142,6 +142,12 @@ super-harness review begin: this automated round requires one-shot human authori
 
 The `STOP. Relay the block above verbatim…` paragraph is unchanged.
 
+That sentence is printed at two decision points, not one: `status`'s
+`next_command` for an exhausted budget carried the same "in a human-owned TTY"
+clause, unheld by any test. Both are corrected together — a false instruction
+surviving at the surface an agent orients by would reproduce the workflow this
+section removes.
+
 What the new text does **not** say is that the agent could run the command
 itself. That omission is placement, not obscurity — the agent reads this source.
 The block prints at the exact moment the agent is deciding whether to route
@@ -223,6 +229,11 @@ Modified:
 
 - `cli/review.py` — `review authorize` drops the TTY refusal and the confirm; the
   round-budget block's hint becomes the exact text in §3.
+- `cli/status.py` — the same false instruction at its second decision point. The
+  exhausted-budget `next_command` also told the human to authorize "in a
+  human-owned TTY", and no test held it. Found by code review, not by this
+  document: the "checked rather than assumed" paragraph below swept `docs/*.md`
+  and never swept the `.py` surfaces that print the same sentence.
 - `engineering/value_report.py` — `derive_authorizations`, built on the same
   event iteration `report` already uses. It deliberately does **not** live in
   `attestation.py`: nothing at the merge boundary consumes it, and the two
@@ -244,6 +255,11 @@ Modified:
 - `AGENTS.md` — regenerated via `sync --agents-md` from that string, never
   hand-edited.
 - `tests/unit/cli/test_report.py` — the rendered surface.
+- `tests/unit/cli/test_review_runs.py` — where every `review authorize` test
+  actually lives, including the one asserting the removed confirm's "authorization
+  cancelled"; `tests/unit/engineering/test_value_report.py` — `derive_authorizations`
+  edge cases; `tests/unit/adapters/test_claude_code.py` — the AGENTS.md subsection;
+  `tests/integration/cli/test_status.py` — the `next_command` route above.
 
 Not in scope, having been checked rather than assumed: `docs/concepts.md`,
 `docs/getting-started.md` and `docs/state-machine.md` contain no TTY claim about

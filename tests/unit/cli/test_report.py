@@ -497,3 +497,63 @@ def test_report_human_keeps_an_unparseable_timestamp_on_one_row(tmp_path):
     assert "not-a-date forged row here now  c1  code-reviewer" in res.output
     rows = [ln for ln in res.output.splitlines() if "forged" in ln]
     assert len(rows) == 1, rows
+
+
+def test_report_human_row_survives_control_characters(tmp_path):
+    """AUTH-008. `_one_line` collapsed whitespace, but `\\x1b` is not whitespace —
+    `str.split()` splits on `str.isspace()` alone. A reason carrying `\\x1b[1A\\x1b[2K`
+    moves the terminal cursor up and erases the authorization row already printed
+    above it, so one row can delete another from the display.
+
+    That is the direction `derive_authorizations` calls "the exact direction that
+    hides the abuse this count exists to expose", and the design accepts that an
+    agent now runs `review authorize` and supplies the reason itself.
+
+    Fixed as a whitelist, not a third blacklist: the two previous rounds each added
+    one more excluded class and each missed the next. `str.isprintable()` is False
+    for C0/C1 controls, bidi overrides, NBSP and the newlines and tabs of the earlier
+    rounds all at once, and True for ordinary text in any script.
+    """
+    _seed(tmp_path, [_authorized(
+        "e1", "c1", "2026-08-09T10:00:00Z", reason="quiet\x1b[1A\x1b[2Kgone",
+    )])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "\x1b" not in res.output
+    assert "quiet [1A [2Kgone" in res.output      # neutralised, not dropped
+
+
+def test_report_human_row_survives_a_bidi_override(tmp_path):
+    """AUTH-008, the other named vector: a right-to-left override reorders the
+    characters after it, so a reason can display as text it does not contain."""
+    _seed(tmp_path, [_authorized(
+        "e1", "c1", "2026-08-09T10:00:00Z", reason="ok‮nwonknu",
+    )])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "‮" not in res.output
+
+
+def test_report_human_row_keeps_non_ascii_text_intact(tmp_path):
+    """The whitelist must not be a latin-1 filter. Reasons are typed by humans in
+    whatever language they think in, and this repo's own records are in Chinese."""
+    _seed(tmp_path, [_authorized(
+        "e1", "c1", "2026-08-09T10:00:00Z", reason="计划正文没变 只是扩 scope 🙂",
+    )])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "计划正文没变 只是扩 scope 🙂" in res.output
+
+
+def test_report_json_keeps_control_characters_as_recorded(tmp_path):
+    """Neutralising is a rendering rule, exactly as the AUTH-004 note argues. The
+    audit surface still carries what was recorded."""
+    reason = "quiet\x1b[1A\x1b[2Kgone"
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason=reason)])
+    res = CliRunner().invoke(main, ["--json", "--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert _json.loads(res.output)["data"]["authorizations"][0]["reason"] == reason

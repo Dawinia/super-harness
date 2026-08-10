@@ -72,13 +72,27 @@ def _breakdown_lines(r: ValueReport) -> list[str]:
 
 
 def _one_line(text: str) -> str:
-    """Collapse every whitespace run to a single space.
+    """Reduce a field to safe, single-line, single-spaced text.
 
     One rule for one row: an authorization row is a single line, so nothing
-    interpolated into it may contain a line break or forge column alignment. Applied
-    per field rather than to the finished row so the separators stay intact.
+    interpolated into it may break the line, forge column alignment, or steer the
+    terminal. Applied per field rather than to the finished row so the separators
+    stay intact.
+
+    Non-printables become spaces and are then collapsed with the rest of the
+    whitespace. This is a whitelist on purpose (AUTH-008): the two rounds before it
+    each excluded one more class of character — newlines, then all whitespace — and
+    each missed the next one, because `str.split()` only knows `str.isspace()` and
+    `\\x1b` is not whitespace. A reason carrying `\\x1b[1A\\x1b[2K` moved the cursor up
+    and erased the row printed above it, so one authorization could delete another
+    from the display — understating the count, which is the direction
+    `derive_authorizations` exists to prevent. `str.isprintable()` is False for C0
+    and C1 controls, bidi overrides, NBSP and the earlier rounds' newlines and tabs
+    at once, and True for ordinary text in any script.
+
+    Rendering only. `--json` still carries the recorded bytes.
     """
-    return " ".join(text.split())
+    return " ".join("".join(c if c.isprintable() else " " for c in text).split())
 
 
 def _fmt_when(ts: str) -> str:
