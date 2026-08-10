@@ -192,12 +192,13 @@ def _reopen_lines(r: ValueReport) -> list[str]:
     lines = [
         "",
         "Reopened implementations",
-        # What was counted, not what it cost. A reopen voids the code review that had
-        # already passed; whether the change was reviewed again afterwards is the
-        # merge gate's question, not this line's, and claiming it here would assert
-        # more than the derivation measured.
+        # What was counted, not what it cost. Whether the change was reviewed again
+        # afterwards is the merge gate's question, not this line's, and claiming it
+        # here would assert more than the derivation measured. It also does not say
+        # the voided review had PASSED: the verb accepts AWAITING_CODE_REVIEW, where
+        # the round is still out.
         f"  - {r.reopens_total} frozen implementation(s) returned to editing, each one "
-        "voiding a code review that had already passed",
+        "sending the change back through code review",
     ]
     if not r.reopens:
         return lines

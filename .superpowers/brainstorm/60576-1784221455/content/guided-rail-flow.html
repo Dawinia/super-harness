@@ -1,0 +1,98 @@
+<style>
+  .flow-grid { display:grid; grid-template-columns:repeat(5,minmax(180px,1fr)); gap:12px; align-items:stretch; }
+  .stage { position:relative; border:1px solid #30384a; border-radius:12px; background:#11151f; overflow:hidden; }
+  .stage:not(:last-child)::after { content:'→'; position:absolute; right:-11px; top:50%; z-index:3; color:#6ee7b7; background:#0d1119; border-radius:50%; width:20px; height:20px; line-height:18px; text-align:center; }
+  .stage-head { padding:10px 12px; background:#1a2030; border-bottom:1px solid #293246; }
+  .stage-num { color:#f472b6; font:700 11px ui-monospace,SFMono-Regular,Consolas,monospace; text-transform:uppercase; letter-spacing:.08em; }
+  .stage h3 { margin:4px 0 0; color:#f8fafc; font-size:15px; }
+  .term { min-height:240px; padding:13px 12px; color:#e5e7eb; font:11px/1.58 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:pre-wrap; }
+  .cyan { color:#67e8f9; } .green { color:#6ee7b7; } .yellow { color:#fbbf24; } .pink { color:#f472b6; } .muted { color:#7f8a9f; } .red { color:#fb7185; }
+  .rules { margin-top:18px; display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .rule { padding:14px 15px; border:1px solid #30384a; border-radius:10px; background:#151a26; }
+  .rule strong { display:block; color:#f8fafc; margin-bottom:5px; } .rule span { color:#98a3b7; font-size:13px; line-height:1.5; }
+  @media(max-width:1250px){ .flow-grid{grid-template-columns:1fr 1fr;} .stage:not(:last-child)::after{display:none;} }
+</style>
+
+<h2>Guided rail · complete interaction flow</h2>
+<p class="subtitle">One continuous story, five stages. The rail stays stable while each completed answer collapses into a one-line result.</p>
+
+<div class="flow-grid">
+  <div class="stage">
+    <div class="stage-head"><span class="stage-num">01 · Preflight</span><h3>Know the target</h3></div>
+    <div class="term"><span class="pink">┌</span>  super-harness init
+<span class="pink">│</span>
+<span class="pink">●</span>  Project
+<span class="pink">│</span>  <span class="muted">C:\work\project</span>
+<span class="pink">│</span>
+<span class="pink">●</span>  Environment
+<span class="pink">│</span>  <span class="green">✓</span> Git repository
+<span class="pink">│</span>  <span class="green">✓</span> Codex detected
+<span class="pink">│</span>  <span class="green">✓</span> Claude detected</div>
+  </div>
+  <div class="stage">
+    <div class="stage-head"><span class="stage-num">02 · Configure</span><h3>Choose deliberately</h3></div>
+    <div class="term"><span class="pink">◆</span>  Integrations
+<span class="pink">│</span>  <span class="green">◉</span> Codex
+<span class="pink">│</span>  <span class="green">◉</span> Claude Code
+<span class="pink">│</span>
+<span class="pink">◆</span>  Review producers
+<span class="pink">│</span>  <span class="green">◉</span> Codex CLI
+<span class="pink">│</span>  <span class="green">◉</span> Claude CLI
+<span class="pink">│</span>
+<span class="pink">◆</span>  Model for codex
+<span class="pink">│</span>  <span class="cyan">gpt-5.4</span></div>
+  </div>
+  <div class="stage">
+    <div class="stage-head"><span class="stage-num">03 · Review</span><h3>Nothing written yet</h3></div>
+    <div class="term"><span class="pink">◇</span>  Planned setup
+<span class="pink">│</span>
+<span class="pink">│</span>  Agents      2
+<span class="pink">│</span>  Reviewers    2
+<span class="pink">│</span>  GitHub       off
+<span class="pink">│</span>
+<span class="pink">│</span>  <span class="green">+</span> .harness/
+<span class="pink">│</span>  <span class="yellow">~</span> AGENTS.md
+<span class="pink">│</span>  <span class="yellow">~</span> .gitignore
+<span class="pink">│</span>
+<span class="pink">◆</span>  Apply? <span class="cyan">Yes</span>
+<span class="pink">│</span>  <span class="muted">Back · Confirm · Cancel</span></div>
+  </div>
+  <div class="stage">
+    <div class="stage-head"><span class="stage-num">04 · Apply</span><h3>Show real work</h3></div>
+    <div class="term"><span class="pink">◒</span>  Applying setup
+<span class="pink">│</span>
+<span class="pink">●</span>  <span class="green">Created .harness/</span>
+<span class="pink">●</span>  <span class="green">Updated AGENTS.md</span>
+<span class="pink">◐</span>  Updating .gitignore
+<span class="pink">○</span>  Configuring agents
+<span class="pink">○</span>  Configuring review
+<span class="pink">│</span>
+<span class="pink">│</span>  <span class="muted">Completed steps stay visible.</span>
+<span class="pink">│</span>  <span class="muted">No fake percentage.</span></div>
+  </div>
+  <div class="stage">
+    <div class="stage-head"><span class="stage-num">05 · Outcome</span><h3>Leave a next step</h3></div>
+    <div class="term"><span class="pink">●</span>  <span class="green">Ready</span>
+<span class="pink">│</span>
+<span class="pink">│</span>  5 steps completed
+<span class="pink">│</span>  2 agents configured
+<span class="pink">│</span>  Review requires 2 sources
+<span class="pink">│</span>
+<span class="pink">│</span>  Next
+<span class="pink">│</span>  <span class="cyan">super-harness change start</span>
+<span class="pink">│</span>
+<span class="pink">└</span>  <span class="muted">Run status to inspect setup.</span></div>
+  </div>
+</div>
+
+<div class="rules">
+  <div class="rule"><strong>Cancellation is clean</strong><span>Ctrl+C or Cancel before confirmation writes nothing and exits 0 with “Setup cancelled.”</span></div>
+  <div class="rule"><strong>Fallback is deterministic</strong><span>No color, dumb terminals, redirected output, and CI use ASCII symbols and line-by-line output.</span></div>
+  <div class="rule"><strong>Failures preserve truth</strong><span>A partial-write failure names completed steps, failed step, recovery command, and a non-zero exit code.</span></div>
+</div>
+
+<div class="options" style="margin-top:18px">
+  <div class="option" data-choice="flow-approved" onclick="toggleSelect(this)">
+    <div class="letter">✓</div><div class="content"><h3>Approve this interaction flow</h3><p>Keep these five stages and the stated cancel/fallback/failure behavior.</p></div>
+  </div>
+</div>

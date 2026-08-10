@@ -99,7 +99,7 @@ whole PR ad hoc. A code-only finding fix does not trigger plan review unless the
 approved plan, scope, or requirements changed; use `plan redeclare` when they did.
 If the change is already frozen at `READY_TO_MERGE` or `AWAITING_CODE_REVIEW`, fold
 the fix in with `implementation reopen <change> --reason "<why>"`, which returns it to
-`IMPLEMENTATION_IN_PROGRESS` and voids the code review it had passed — do not
+`IMPLEMENTATION_IN_PROGRESS` and voids the code review it was under or had passed — do not
 `plan redeclare` for a code-only fix, which costs a whole plan cycle.
 
 Human review is first-class: use `review human inspect`, validate a verdict with

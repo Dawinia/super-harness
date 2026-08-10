@@ -1,4 +1,4 @@
-"""`super-harness implementation` — implementation_started emitter (HG-02.3).
+"""`super-harness implementation` — implementation-phase lifecycle emitters.
 
 `implementation start <slug> [--first-commit <sha>]` (cli-command-surface §429)
 manually emits `implementation_started`, advancing PLAN_APPROVED →
@@ -7,6 +7,12 @@ IMPLEMENTATION_IN_PROGRESS. This is the third v0.1 lifecycle-gap emitter; with
 (no `skip_validation` seeding). v1 is a manual verb; auto-detecting the first
 scope-file edit (per lifecycle-event-model §3.3) is deferred (needs activity
 events / git-hook infra, tracked under HG-11). Emit is STRICT.
+
+`implementation reopen <slug> --reason <why>` emits `implementation_invalidated`,
+returning a frozen change (AWAITING_CODE_REVIEW / READY_TO_MERGE) to
+IMPLEMENTATION_IN_PROGRESS so a review finding can be folded into the change that
+raised it. Before it existed the only CLI route back was `plan redeclare` into a whole
+plan cycle. See docs/plans/2026-08-11-code-only-recovery.md.
 
 Exit codes: 0 ok / 2 illegal transition / 3 no `.harness/` (per spec §435, 0/1/2/3/5).
 """
@@ -22,6 +28,7 @@ from super_harness.cli.output import json_envelope
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import EmitPreconditionError
 from super_harness.core.events import Actor, Event
+from super_harness.core.identity import resolve_identity
 from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
@@ -151,8 +158,9 @@ def reopen(ctx: click.Context, slug: str, reason: str) -> None:
 
     `AWAITING_CODE_REVIEW` / `READY_TO_MERGE` → `IMPLEMENTATION_IN_PROGRESS`, so a
     finding can be folded into the change that produced it without the `plan redeclare`
-    round trip through plan review. `--reason` is required: this voids a code review the
-    change already passed, which is the consequence class of `review authorize`.
+    round trip through plan review. `--reason` is required: this voids the code review
+    the change was under or had passed, which is the consequence class of
+    `review authorize`.
     """
     try:
         root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
@@ -192,7 +200,12 @@ def reopen(ctx: click.Context, slug: str, reason: str) -> None:
         type="implementation_invalidated",
         change_id=slug,
         timestamp=utc_now_iso(),
-        actor=Actor(type="human", identifier="cli"),
+        # `resolve_identity`, not the `cli` placeholder `implementation start` uses:
+        # `report` renders this actor in the reopen row, and `cli` is exactly what
+        # `attestation.PLACEHOLDER_IDENTITY` renders as "unattributed" elsewhere. The
+        # surface this verb mirrors records why (AUTH-003) — with two people on a repo,
+        # unnamed rows leave neither able to falsify the ones that are not theirs.
+        actor=Actor(type="human", identifier=resolve_identity(root, None)),
         framework=cs.framework if cs is not None else "plain",
         payload={"reason": reason},
     )
@@ -231,10 +244,14 @@ def reopen(ctx: click.Context, slug: str, reason: str) -> None:
             f"super-harness: emitted implementation_invalidated for {slug} → {new_state}"
         )
         # The cost, stated where the verb is used rather than folded into its name. An
-        # agent that reads `reopen` as free needs to be told here that the review it
-        # already passed no longer counts.
+        # agent that reads `reopen` as free needs to be told here what it just spent.
+        #
+        # "whatever ... had" rather than "already passed": this verb also accepts
+        # AWAITING_CODE_REVIEW, where the round is still out and nothing has passed.
+        # Naming a passed review there would be false in half the cases the verb exists
+        # for, and the gate's own suggestion for that state already says "the round".
         click.echo(
-            "  the code review this change already passed no longer counts; "
+            "  whatever code review this change had no longer stands; "
             "run `done` and review again before merge"
         )
     sys.exit(EXIT_OK)

@@ -141,11 +141,21 @@ def test_reopen_returns_awaiting_code_review_to_editing(tmp_path: Path) -> None:
 
 
 def test_reopen_states_the_cost_it_imposes(tmp_path: Path) -> None:
-    """The verb reads cheap; the passed review it voids is the part that is not."""
-    _seed(tmp_path, "c", *_FROZEN, "code_review_passed")
-    r = _reopen(tmp_path, "c")
-    assert "no longer counts" in r.output
-    assert "review again before merge" in r.output
+    """The verb reads cheap; the review it voids is the part that is not.
+
+    The wording must hold from AWAITING_CODE_REVIEW too, where the round is still out
+    and NOTHING has passed — claiming a passed review there would be false in half the
+    cases the verb exists for (CR-001).
+    """
+    for prefix in ((*_FROZEN, "code_review_passed"), _FROZEN):
+        ws = tmp_path / f"ws{len(prefix)}"
+        ws.mkdir()
+        _seed(ws, "c", *prefix)
+        r = _reopen(ws, "c")
+        assert r.exit_code == EXIT_OK, r.output
+        assert "no longer stands" in r.output
+        assert "review again before merge" in r.output
+        assert "already passed" not in r.output
 
 
 def test_reopen_refuses_plan_rejected(tmp_path: Path) -> None:
@@ -216,3 +226,19 @@ def test_reopen_json_envelope(tmp_path: Path) -> None:
     assert payload["data"]["event_emitted"] == "implementation_invalidated"
     assert payload["data"]["new_state"] == "IMPLEMENTATION_IN_PROGRESS"
     assert payload["data"]["reason"] == "why"
+
+
+def test_reopen_records_a_real_identity_not_the_cli_placeholder(tmp_path: Path) -> None:
+    """`report` renders this actor, and `cli` is what `PLACEHOLDER_IDENTITY` renders
+    as "unattributed" elsewhere in the same codebase. The surface this verb mirrors,
+    `review authorize`, resolves the identity for the reason AUTH-003 records: with
+    two people on a repo, unnamed rows leave neither able to falsify the other's."""
+    _seed(tmp_path, "c", *_FROZEN, "code_review_passed")
+    r = CliRunner().invoke(
+        main,
+        ["--workspace", str(tmp_path), "implementation", "reopen", "c",
+         "--reason", "fold in a finding"],
+        env={"SUPER_HARNESS_ACTOR": "bob@example.test"},
+    )
+    assert r.exit_code == EXIT_OK, r.output
+    assert _events(tmp_path)[-1]["actor"]["identifier"] == "bob@example.test"

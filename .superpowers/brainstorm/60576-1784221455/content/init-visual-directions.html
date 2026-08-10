@@ -1,0 +1,105 @@
+<style>
+  .terminal-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:18px; }
+  .terminal-card { cursor:pointer; border:1px solid #30384a; border-radius:14px; overflow:hidden; background:#11151f; transition:.18s ease; }
+  .terminal-card:hover { transform:translateY(-2px); border-color:#6ee7b7; box-shadow:0 10px 32px rgba(0,0,0,.25); }
+  .terminal-card.selected { border-color:#6ee7b7; box-shadow:0 0 0 2px rgba(110,231,183,.22); }
+  .term-head { display:flex; align-items:center; gap:7px; padding:10px 12px; background:#1a2030; color:#8d97aa; font:12px ui-monospace,SFMono-Regular,Consolas,monospace; }
+  .dot { width:8px; height:8px; border-radius:50%; background:#465065; }
+  .term-body { min-height:390px; padding:15px 14px 17px; color:#e5e7eb; font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace; white-space:pre-wrap; }
+  .cyan { color:#67e8f9; } .green { color:#6ee7b7; } .yellow { color:#fbbf24; } .pink { color:#f472b6; } .muted { color:#7f8a9f; } .white { color:#f8fafc; }
+  .card-copy { padding:15px 16px 17px; background:#171c28; border-top:1px solid #2a3243; }
+  .card-copy h3 { margin:0 0 6px; font-size:16px; color:#f8fafc; }
+  .card-copy p { margin:0; color:#98a3b7; font-size:13px; line-height:1.5; }
+  .rec { display:inline-block; margin-left:7px; padding:2px 7px; border-radius:999px; color:#06251d; background:#6ee7b7; font-size:10px; text-transform:uppercase; letter-spacing:.05em; }
+  @media(max-width:1050px){ .terminal-grid{grid-template-columns:1fr;} .term-body{min-height:0;} }
+</style>
+
+<h2>Which terminal direction should <code>super-harness init</code> use?</h2>
+<p class="subtitle">All three include keyboard selection, native Windows/macOS/Linux support, pre-write review, progress, and a final summary. Pick the information style—not the feature set.</p>
+
+<div class="terminal-grid">
+  <div class="terminal-card" data-choice="rail" onclick="toggleSelect(this)">
+    <div class="term-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span> super-harness init</div>
+    <div class="term-body"><span class="pink">┌</span>  <span class="white">super-harness init</span>
+<span class="pink">│</span>  Reliable AI coding, from the first change.
+<span class="pink">│</span>
+<span class="pink">◆</span>  Project <span class="muted">/work/my-project</span>
+<span class="pink">│</span>
+<span class="pink">◆</span>  Coding-agent integrations
+<span class="pink">│</span>  <span class="green">◉ Codex</span>          <span class="muted">detected · recommended</span>
+<span class="pink">│</span>  <span class="green">◉ Claude Code</span>    <span class="muted">detected · recommended</span>
+<span class="pink">│</span>  <span class="muted">Space toggle · Enter continue</span>
+<span class="pink">│</span>
+<span class="pink">◆</span>  Review configuration
+<span class="pink">│</span>  Codex CLI  <span class="green">gpt-5.4</span>
+<span class="pink">│</span>  Claude CLI <span class="green">claude-opus-4-6</span>
+<span class="pink">│</span>
+<span class="pink">◇</span>  Review before writing? <span class="cyan">Yes</span>
+<span class="pink">│</span>
+<span class="pink">●</span>  <span class="green">Created .harness/</span>
+<span class="pink">●</span>  <span class="green">Updated AGENTS.md</span>
+<span class="pink">●</span>  <span class="green">Updated .gitignore</span>
+<span class="pink">│</span>
+<span class="pink">└</span>  <span class="green">Ready.</span> Run <span class="cyan">super-harness change start</span></div>
+    <div class="card-copy"><h3>A · Guided rail <span class="rec">Recommended</span></h3><p>Clack-like continuity. Compact, calm, and easy to scan as one guided story.</p></div>
+  </div>
+
+  <div class="terminal-card" data-choice="panels" onclick="toggleSelect(this)">
+    <div class="term-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span> super-harness init</div>
+    <div class="term-body"><span class="cyan">SUPER-HARNESS</span>  <span class="muted">PROJECT SETUP</span>
+
+<span class="muted">╭─ Environment ─────────────────╮</span>
+<span class="muted">│</span> Project  <span class="white">/work/my-project</span>        <span class="muted">│</span>
+<span class="muted">│</span> Platform <span class="white">Windows 11</span>              <span class="muted">│</span>
+<span class="muted">│</span> Shell    <span class="white">PowerShell</span>              <span class="muted">│</span>
+<span class="muted">╰───────────────────────────────╯</span>
+
+<span class="white">Select integrations</span>
+ <span class="green">[x]</span> Codex          <span class="muted">detected</span>
+ <span class="green">[x]</span> Claude Code    <span class="muted">detected</span>
+
+<span class="muted">╭─ Planned changes ─────────────╮</span>
+<span class="muted">│</span> <span class="green">+</span> .harness/                    <span class="muted">│</span>
+<span class="muted">│</span> <span class="yellow">~</span> AGENTS.md                    <span class="muted">│</span>
+<span class="muted">│</span> <span class="yellow">~</span> .gitignore                   <span class="muted">│</span>
+<span class="muted">╰───────────────────────────────╯</span>
+
+<span class="cyan">⠋</span> Configuring review governance…
+
+<span class="green">✓ Setup complete</span>
+  3 files changed · 2 agents configured</div>
+    <div class="card-copy"><h3>B · Structured panels</h3><p>Richer at-a-glance summaries and clearer grouping, with more visual weight and terminal width sensitivity.</p></div>
+  </div>
+
+  <div class="terminal-card" data-choice="minimal" onclick="toggleSelect(this)">
+    <div class="term-head"><span class="dot"></span><span class="dot"></span><span class="dot"></span> super-harness init</div>
+    <div class="term-body"><span class="green">super-harness init</span>
+Project: <span class="white">/work/my-project</span>
+
+<span class="white">? Coding-agent integrations</span>
+  <span class="green">●</span> Codex          <span class="muted">detected</span>
+  <span class="green">●</span> Claude Code    <span class="muted">detected</span>
+  <span class="muted">↑↓ move · space select · enter confirm</span>
+
+<span class="white">? Review producers</span>
+  <span class="green">●</span> Codex CLI
+  <span class="green">●</span> Claude CLI
+
+<span class="white">? Apply this configuration?</span> <span class="green">Yes</span>
+
+<span class="green">✓</span> Create .harness/
+<span class="green">✓</span> Update AGENTS.md
+<span class="green">✓</span> Update .gitignore
+<span class="green">✓</span> Configure Codex
+<span class="green">✓</span> Configure Claude Code
+
+<span class="green">Done.</span>
+Next: <span class="cyan">super-harness change start &lt;slug&gt;</span>
+
+<span class="muted">On limited terminals, symbols fall back to:</span>
+<span class="muted">[x] selected  [ok] complete  -> next</span></div>
+    <div class="card-copy"><h3>C · Minimal native</h3><p>Lowest visual risk and strongest narrow-terminal behavior, but less distinctive and less guided.</p></div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:18px">Click one card, then tell me what you like or want changed in the terminal chat.</p>

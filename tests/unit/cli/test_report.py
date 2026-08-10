@@ -583,6 +583,7 @@ def test_report_human_shows_reopen_count_and_every_reason(tmp_path):
                              catch_exceptions=False)
     assert res.exit_code == 0
     assert "2 frozen implementation(s) returned to editing" in res.output
+    assert "already passed" not in res.output   # CR-001: half of them had not
     assert "fold in AUTH-005/006" in res.output
     assert "spotted a deadlock" in res.output
     assert "c1" in res.output and "c2" in res.output

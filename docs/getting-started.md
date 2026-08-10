@@ -486,7 +486,8 @@ starts editing. The hot-path gate enforces lifecycle rules:
   already frozen at `READY_TO_MERGE` or `AWAITING_CODE_REVIEW` — a finding you decided
   to fold in after the round passed — `implementation reopen <change> --reason "<why>"`
   returns it to `IMPLEMENTATION_IN_PROGRESS` without a plan cycle. It voids the code
-  review that had passed, so `done` and another round are required before merge, and
+  review the change was under or had passed, so `done` and another round are required
+  before merge, and
   `super-harness report` counts every reopen with its reason. A scoped
   A started round consumes the automatic-round budget even if a producer crashes.
   The default ceiling is two automated rounds per epoch; exhaustion requires a
