@@ -35,13 +35,19 @@ form "the code does not match the plan". Satisfying them requires a source edit.
 round that rejects again for the same three findings, because the source still cannot be
 edited. A livelock, not a slow path.
 
-### How the two cuts divide that case
+### How the three cuts divide that case
 
 Cut 1 keeps a change out of the livelock: at `READY_TO_MERGE`, folding the two minor
 findings in no longer requires the `plan redeclare` that started the sequence. Cut 2 gets a
 change that is already in `PLAN_REJECTED` out of it, through a disclosed
-`review skip --override`. Neither cut alone covers both ends, and Cut 1 deliberately
-does not reach into `PLAN_REJECTED` — see the state restriction below for why.
+`review skip --override`. Cut 3 is what makes that second sentence true — it puts a
+skipped plan review in front of the merge gate, which today sees only skipped code reviews.
+Neither of the first two covers both ends, and Cut 1 deliberately does not reach into
+`PLAN_REJECTED` — see the state restriction below for why.
+
+Cut 3 was not in the original design. It was pulled in on the fourth review round, which
+showed that Cut 1's rationale for excluding `PLAN_REJECTED` rests on a disclosure that does
+not exist, and that Cut 2 is what first makes the undisclosed route reachable.
 
 ## Cut 1 — `implementation reopen`
 
@@ -70,9 +76,13 @@ merge gate is satisfied by the stale `plan_approved` from the earlier epoch
 were code-level" — the case that motivated this change — from "the reviewer rejected the
 plan", so a `PLAN_REJECTED` reopen would make plan rejection advisory for any change that
 has implemented once. The exit from a rejection is Cut 2's `review skip --override
---reason`, which emits the same `plan_approved` but stamps `skipped: true`, and is
-therefore visible to `report` and the merge attestation. Escaping a rejection should cost
-a disclosure; reopening a passed review should not.
+--reason`, which emits the same `plan_approved` but stamps `skipped: true`, and — once
+Cut 3 lands — is refused at the merge gate unless the override is deliberate. Escaping a
+rejection should cost a disclosure; reopening a passed review should not.
+
+That sentence was false in an earlier draft, which claimed the merge attestation already
+saw a skipped plan review. It does not, and Cut 3 exists because this rationale needs it
+to be true.
 
 That restriction also makes the earlier draft's milestone precondition — the change must
 carry `plan_approved` and `implementation_complete` — unnecessary, so it is dropped rather
@@ -198,6 +208,31 @@ change this cut exists to unblock — reaches the second arm with an empty tuple
 introducing a new hole while closing one is the failure mode this repository has recorded
 five times.
 
+## Cut 3 — a skipped plan review reaches the merge gate
+
+`verify_attestations` blocks a skipped **code** review that carries no `--override`
+(`engineering/attestation.py:283-287`), and `derive_independence` classifies code review
+alone. A skipped **plan** review is invisible there: `review skip --reviewer plan-reviewer`
+emits `plan_approved` and merges with nothing said.
+
+That asymmetry is older than this change, and the first instinct was to defer it. The
+instinct was wrong on two counts. Cut 2 is what makes the route *reachable* — today a
+plan-reviewer skip after a rejection is refused, because `plan_ready` resets the epoch, and
+after Cut 2 it passes. And Cut 1's exclusion of `PLAN_REJECTED` is argued from a disclosure
+that does not exist, so deferring Cut 3 ships the escape hatch and the missing signal
+together and leaves the plan asserting something untrue. Every mis-drawn boundary in Cut 2
+failed *silently* for this same reason; the three rounds that found them were all reading
+the same absence.
+
+`derive_independence` grows a `plan_review` entry alongside `code_review`, from the same
+truth table applied to the last `plan_approved`. `verify_attestations` grows one blocker
+mirroring the code-review one. `cli/attest.py` renders both rows where it renders one.
+
+**This changes what merges.** A change whose plan review was skipped without `--override`
+stops passing `attest verify`, which is the point: it is the same bar code review has
+carried since slice-2 E. A bare skip becomes a blocker, `--override --reason` becomes
+pass-with-disclosure, and a plan review that actually ran is unaffected.
+
 ## Surfaces that state the old rule
 
 The gate's `SUGGESTIONS` for `READY_TO_MERGE` and `AWAITING_CODE_REVIEW`
@@ -236,31 +271,29 @@ code-review-rejection path but not the `READY_TO_MERGE` fold-in.
   which is the `IndexError` regression.
 - The budget keeps counting across a `plan_redeclared`, pinning the asymmetry so a later
   reader cannot unify the two folds without a test turning red.
+- A bare plan-review skip blocks `attest verify`; the same skip with `--override --reason`
+  passes and is rendered; a plan review that ran is untouched. The code-review blocker
+  keeps its existing tests, so the two roles cannot silently collapse into one.
 
 ## Scope
 
 `src/super_harness/cli/implementation.py`, `src/super_harness/cli/review.py`,
-`src/super_harness/cli/report.py`, `src/super_harness/engineering/review_runs.py`,
-`src/super_harness/engineering/value_report.py`, `src/super_harness/gates/decisions.py`,
+`src/super_harness/cli/report.py`, `src/super_harness/cli/attest.py`,
+`src/super_harness/engineering/review_runs.py`,
+`src/super_harness/engineering/value_report.py`,
+`src/super_harness/engineering/attestation.py`, `src/super_harness/gates/decisions.py`,
 `src/super_harness/adapters/agent/claude_code.py`,
 `src/super_harness/adapters/agent/codex.py`, `AGENTS.md`, `docs/cli-reference.md`,
 `docs/getting-started.md`, `docs/decisions/d-no-recovery-from-awaiting-code-review.md`
 (status → `retired`), `docs/plans/2026-08-11-code-only-recovery.md`,
 `tests/unit/cli/test_implementation.py`, `tests/unit/cli/test_review.py`,
-`tests/unit/cli/test_report.py`, `tests/unit/engineering/test_review_runs.py`,
-`tests/unit/engineering/test_value_report.py`, `tests/unit/daemon/test_hook_entry.py`,
+`tests/unit/cli/test_report.py`, `tests/unit/cli/test_attest.py`,
+`tests/unit/engineering/test_review_runs.py`,
+`tests/unit/engineering/test_value_report.py`,
+`tests/unit/engineering/test_attestation.py`, `tests/unit/daemon/test_hook_entry.py`,
 `tests/integration/daemon/test_hook_entry.py`, `tests/unit/gates/test_decisions.py`.
 
 ## Out of scope
-
-A skipped **plan** review is invisible at the merge gate. `verify_attestations` blocks a
-skipped code review lacking `--override` (`engineering/attestation.py:283-287`) and
-`derive_independence` classifies code review alone, so `review skip --reviewer
-plan-reviewer` emits `plan_approved` and merges with nothing said. This is why every
-mis-drawn boundary above failed *silently* rather than loudly, and it is pre-existing —
-none of the three review rounds found a route this change introduces. Fixing it means
-extending the merge gate's disclosure to a second role, which changes what merges for
-histories that predate it and deserves its own review. Filed as a GitHub issue.
 
 A plan-review verdict may name files outside its assigned inspection target. The
 plan-reviewer's assignment scope is the plan documents (`engineering/review_contract.py`),
