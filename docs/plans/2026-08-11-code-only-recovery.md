@@ -123,28 +123,52 @@ PR#98 already found and fixed this exact confusion on the budget path and left t
 behind; `count_automatic_rounds`'s docstring names it ("the per-epoch fold resets on every
 rejection").
 
-**The guard keys on rounds frozen since the change was last re-declared** — the events
-`plan_redeclared` and `intent_redeclared` — not on the current epoch and not on the whole
-change. A first draft of this plan used the whole change, and that is wrong: a change that
-was re-declared with a wider scope and never sent to any reviewer would be passed by
-`review skip`, because its first plan cycle's rounds still count. Nothing downstream
-catches that. `verify_attestations` blocks only a skipped *code* review lacking
-`--override` (`engineering/attestation.py:283-287`) and `derive_independence` discloses
-code review alone, so a bare plan skip emits `plan_approved` and merges silently. The
-per-epoch check being replaced is today the only thing standing on that route, and a
-replacement that drops it is a net loss.
+### The rule the new predicate follows
 
-Re-declaration is the right boundary because it is the event that means "this is a
-different plan now". A `plan_ready` after a rejection is the same plan revised, and its
-earlier rounds are still evidence that the reviewer was asked. A `plan_ready` after a
-re-declaration is a new scope no one has seen.
+**A role's skip evidence resets when there is genuinely new material for that role to look
+at, and not when the same material is merely re-submitted.** Everything below is that one
+sentence applied per role; it is stated first so a later reader can extend the table
+without re-deriving it.
 
-**This is deliberately asymmetric with the round budget, which must keep counting across
-re-declarations.** They answer different questions. The budget asks what this change has
-cost, and money spent stays spent — resetting it on `plan redeclare` would hand back a
-laundering path PR#98 closed on purpose. The skip guard asks whether anyone was asked to
-look at *this* plan, and after a re-declaration nobody was. Reading the same ledger for
-both is what produced the defect in the first place.
+| role | resets on | note |
+|---|---|---|
+| `plan-reviewer` | `plan_redeclared`, `intent_redeclared` | **not** `plan_ready`, its epoch boundary — a `plan_ready` after a rejection is the same plan revised, and the earlier rounds are still evidence the reviewer was asked |
+| `code-reviewer` | `implementation_complete`, `plan_redeclared`, `intent_redeclared` | its epoch boundary is kept, because a new `implementation_complete` genuinely is code nobody has reviewed |
+
+Two earlier drafts of this predicate were wrong, both recorded because each looked right:
+
+*Whole change, no boundary at all.* A change re-declared with a wider scope and never sent
+to any reviewer would be passed by `review skip`, because its first plan cycle's rounds
+still count. Nothing downstream catches that: `verify_attestations` blocks only a skipped
+*code* review lacking `--override` (`engineering/attestation.py:283-287`) and
+`derive_independence` discloses code review alone, so a bare plan skip emits
+`plan_approved` and merges silently.
+
+*Re-declaration alone, for every role.* This one is worse, because Cut 1 creates its
+victim. `READY_TO_MERGE` → `implementation reopen` → edit → `done` →
+`review skip --reviewer code-reviewer --override` would pass the guard on code-review
+rounds frozen **before** the reopen, and land `code_review_passed` on an implementation no
+reviewer ever saw. It merges as pass-with-disclosure. The two cuts have to be checked
+against each other, not only against the state machine.
+
+**The predicate is scoped to the reviewer role**, filtering `payload["reviewer"]` exactly
+as `derive_review_execution` does. Without that filter, plan-review rounds would satisfy a
+`review skip --reviewer code-reviewer` on a change where no code-review round ever ran —
+the guard's original purpose, defeated by the thing meant to repair it. The role scoping is
+free today because it comes from a fold that already filters; it is not free in a predicate
+written fresh over the raw stream, which is what this plan describes.
+
+**It counts every frozen round for the role, automatic or human-authorized.** Not inherited
+from `count_automatic_rounds`, which filters `payload.get("automatic", True)`: an
+implementer mirroring that neighbour would exclude authorized rounds, and a change whose
+only rounds since the boundary were authorized is exactly the change that has already hit
+the round budget — precisely when a wedged producer needs the escape hatch. The question
+this guard asks is "was anyone asked", not "what did it cost".
+
+**All of which is deliberately asymmetric with the round budget, which keeps counting
+across every boundary above.** The budget asks what this change has cost, and money spent
+stays spent — resetting it on `plan redeclare` would hand back a laundering path PR#98
+closed on purpose. Reading one ledger for both questions is what produced this defect.
 
 The new predicate belongs in `engineering/review_runs.py` beside `count_automatic_rounds`,
 not inlined in the CLI, so the two folds sit together and their difference is visible at
@@ -152,12 +176,12 @@ the point where someone might otherwise unify them.
 
 **The trap this opens.** The guard's second arm reads `execution.rounds[-1]`, and today
 relies on the first arm's `not execution.rounds` early return for non-emptiness. Once the
-first arm keys on rounds-since-re-declaration, the combination "rounds since the last
-re-declaration, none in the current epoch" — which is precisely the rejected-then-
-re-submitted change this cut exists to unblock — reaches the second arm with an empty tuple
-and raises `IndexError`. The second arm must carry its own emptiness check. Written down
-here because introducing a new hole while closing one is the failure mode this repository
-has recorded five times.
+first arm keys on the boundary above, the combination "rounds since the boundary, none in
+the current epoch" — which for `plan-reviewer` is precisely the rejected-then-re-submitted
+change this cut exists to unblock — reaches the second arm with an empty tuple and raises
+`IndexError`. The second arm must carry its own emptiness check. Written down here because
+introducing a new hole while closing one is the failure mode this repository has recorded
+five times.
 
 ## Surfaces that state the old rule
 
@@ -182,10 +206,16 @@ code-review-rejection path but not the `READY_TO_MERGE` fold-in.
 - The livelock reproduction becomes a test: rounds frozen in an earlier plan epoch, a
   rejection, a re-submit, and `review skip` passes.
 - A change re-declared after an earlier plan cycle, with no round frozen since, is still
-  refused — the route F1 named.
+  refused.
+- Reopen → `done` → `review skip --reviewer code-reviewer` is still refused on the fresh
+  `implementation_complete`, so Cut 1 cannot walk code past Cut 2's guard.
+- Plan-review rounds present and zero code-reviewer rounds: a code-reviewer skip is still
+  refused, pinning the role filter — the anchor that distinguishes the two readings a
+  reviewer-blind predicate would collapse.
+- A human-authorized round, and nothing else, since the boundary still counts as evidence.
 - A change with no round ever frozen is still refused — the guard's original purpose.
-- The second arm is exercised with rounds since the re-declaration and an empty current
-  epoch, which is the `IndexError` regression.
+- The second arm is exercised with rounds since the boundary and an empty current epoch,
+  which is the `IndexError` regression.
 - The budget keeps counting across a `plan_redeclared`, pinning the asymmetry so a later
   reader cannot unify the two folds without a test turning red.
 
