@@ -67,6 +67,12 @@ class ValueReport:
     # (unlike `review_budget_hits`) — see `derive_authorizations`.
     authorizations: tuple[AuthorizationRecord, ...] = ()
     authorizations_total: int = 0
+    # Reopens, one record each, for the same reason authorizations are counted:
+    # `implementation reopen` voids a code review the change already passed, nothing
+    # verifies its `--reason`, and a count a human can falsify from memory is the only
+    # check there is. Not deduped, for the reason `derive_authorizations` gives.
+    reopens: tuple[ReopenRecord, ...] = ()
+    reopens_total: int = 0
 
 
 @dataclass(frozen=True)
@@ -95,6 +101,23 @@ class AuthorizationRecord:
 
     change_id: str
     reviewer: str
+    reason: str | None
+    timestamp: str
+    actor: str
+
+
+@dataclass(frozen=True)
+class ReopenRecord:
+    """One `implementation_invalidated` event, as recorded.
+
+    Same shape and same contract as `AuthorizationRecord` minus the role, which a
+    reopen does not have: it returns the whole change to editing, not one reviewer's
+    round. `reason` is `None` when the payload carried none — `implementation reopen`
+    requires the flag, so that only happens for a hand-written or imported event, and
+    it must render as absent rather than as an empty explanation.
+    """
+
+    change_id: str
     reason: str | None
     timestamp: str
     actor: str
@@ -454,6 +477,30 @@ def derive_authorizations(events: list[Event]) -> tuple[AuthorizationRecord, ...
     return tuple(out)
 
 
+def derive_reopens(events: list[Event]) -> tuple[ReopenRecord, ...]:
+    """Every `implementation_invalidated` in these events, in append order.
+
+    Not deduped, for the reason `derive_authorizations` gives just above: each event is
+    one deliberate act, and collapsing two identical reopens would report `1` for
+    someone who voided two reviews. Never raises — a malformed payload yields a record
+    with `reason=None` rather than being dropped, because a lost reopen is the one
+    failure this count cannot tolerate.
+    """
+    out: list[ReopenRecord] = []
+    for ev in events:
+        if ev.type != "implementation_invalidated":
+            continue
+        payload = ev.payload if isinstance(ev.payload, dict) else {}
+        reason = payload.get("reason")
+        out.append(ReopenRecord(
+            change_id=ev.change_id,
+            reason=reason if isinstance(reason, str) and reason else None,
+            timestamp=ev.timestamp,
+            actor=ev.actor.identifier if ev.actor is not None else "unknown",
+        ))
+    return tuple(out)
+
+
 def _armed_decisions(workspace_root: Path) -> int:
     """Ratified decisions carrying an executable check (bite-test). Best-effort:
     any load error -> 0 (the footnote must never crash the report)."""
@@ -492,6 +539,7 @@ def build_value_report(
         runs_with_reported_cost,
     ) = _review_cost(windowed)
     authorizations = derive_authorizations(windowed)
+    reopens = derive_reopens(windowed)
     return ValueReport(
         since=since,
         until=until,
@@ -512,4 +560,6 @@ def build_value_report(
         review_budget_hits=_budget_rounds_held(windowed),
         authorizations=authorizations,
         authorizations_total=len(authorizations),
+        reopens=reopens,
+        reopens_total=len(reopens),
     )

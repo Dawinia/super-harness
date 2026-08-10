@@ -182,6 +182,40 @@ def _authorization_row(a: AuthorizationRecord) -> str:
     ))
 
 
+def _reopen_lines(r: ValueReport) -> list[str]:
+    """The count first, then one row per reopen. Zero is printed, like authorizations.
+
+    Same discipline as `_authorization_row`, and for the same reasons: every field is
+    collapsed to one line so no hostile value can forge a second row, and a reason that
+    renders as nothing is reported as absent rather than as a blank column.
+    """
+    lines = [
+        "",
+        "Reopened implementations",
+        # What was counted, not what it cost. A reopen voids the code review that had
+        # already passed; whether the change was reviewed again afterwards is the
+        # merge gate's question, not this line's, and claiming it here would assert
+        # more than the derivation measured.
+        f"  - {r.reopens_total} frozen implementation(s) returned to editing, each one "
+        "voiding a code review that had already passed",
+    ]
+    if not r.reopens:
+        return lines
+    lines.append(
+        "    If you remember reopening fewer than this, the difference was not you."
+    )
+    for record in r.reopens:
+        reason = _one_line(record.reason) if record.reason is not None else ""
+        lines.append("    " + "  ".join((
+            _one_line(_fmt_when(record.timestamp)),
+            _one_line(record.change_id),
+            _one_line(record.actor),
+            reason or "(no reason recorded)",
+        )))
+    lines.append("    Reasons are recorded verbatim and verified by nothing.")
+    return lines
+
+
 def _bottom_line(r: ValueReport) -> str:
     if (
         r.findings_resolved == 0
@@ -252,6 +286,7 @@ def _render_human(r: ValueReport) -> str:
     ]
     lines += _breakdown_lines(r)
     lines += _authorization_lines(r)
+    lines += _reopen_lines(r)
     lines += [
         "",
         _bottom_line(r),

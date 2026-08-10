@@ -48,24 +48,36 @@ class _GitError(Exception):
     """`git diff` failed — translated to a FAIL-CLOSED exit 4 by the CLI."""
 
 
-def _independence_line(item: dict[str, Any]) -> str:
-    """One plain-ASCII disclosure line for a validated attestation (HG-12 cut 1).
+_INDEPENDENCE_LABELS: dict[str, str] = {
+    "code_review": "code review independence",
+    "plan_review": "plan review independence",
+}
+
+
+def _independence_line(role: str, item: dict[str, Any]) -> str:
+    """One plain-ASCII disclosure line for one role of a validated attestation.
 
     Disclosure only — this never affects the verify pass/fail. The `ci` class is
     forward-compat (not producible via the current CLI; see design §4.1 row 2).
+
+    The role is named in the prefix, which the code-review-only version did not do.
+    Leaving one row as the bare `review independence:` beside a labelled plan row would
+    read as "the review" and quietly claim the plan row's absence of meaning — the same
+    kind of leftover narrower wording this cut had to widen elsewhere.
     """
+    label = _INDEPENDENCE_LABELS[role]
     cls, who = item["classification"], item.get("reviewer")
     if cls == "self-signed":
-        return f"review independence: self-signed (self-review) — {who}"
+        return f"{label}: self-signed (self-review) — {who}"
     if cls == "independent":
-        return f"review independence: independent — {who}"
+        return f"{label}: independent — {who}"
     if cls == "skipped":
         if item.get("override"):
-            return f"review independence: skipped (OVERRIDE: {item.get('reason')}) — {who}"
-        return f"review independence: skipped — {who}"
+            return f"{label}: skipped (OVERRIDE: {item.get('reason')}) — {who}"
+        return f"{label}: skipped — {who}"
     if cls == "ci":
-        return "review independence: ci"
-    return 'review independence: unattributed (legacy "cli" placeholder)'
+        return f"{label}: ci"
+    return f'{label}: unattributed (legacy "cli" placeholder)'
 
 
 @click.group("attest")
@@ -194,17 +206,25 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
         slug: independence_for_attestation(root / ATTESTATIONS_DIRNAME / f"{slug}.jsonl")
         for slug in verdict.attestations
     }
+    # One item per (attestation, role). `role` is carried explicitly rather than left
+    # implicit in position: the list used to be code-review-only, so a reader who
+    # remembers that shape must be able to see which role a row speaks for.
     independence = [
-        {"slug": slug, **disclosures[slug]["code_review"]}
+        {"slug": slug, "role": role, **disclosures[slug][role]}
         for slug in verdict.attestations
+        for role in ("code_review", "plan_review")
     ]
-    # Kept OFF the independence item on purpose (GitHub #96). `derive_independence`
-    # counts every `review_budget_exceeded` whatever role raised it, while the
-    # independence classification is scoped to code review by design §4.1 — so a change
-    # held only at PLAN review would print as a claim about its code reviewer. One entry
-    # per holding attestation, never a sum across slugs: `attest verify` covers a whole
-    # base..head range, and summing would present two changes held three times each as
-    # one change held six times.
+    # Kept OFF the independence item on purpose (GitHub #96), and the reason is now the
+    # SECOND half of what this comment used to say. The first half — "independence is
+    # scoped to code review" — stopped being true when plan review joined the disclosure,
+    # and an implementer finding that premise gone is exactly who would fold this back on.
+    # The surviving reason stands alone: `derive_independence` counts every
+    # `review_budget_exceeded` WHATEVER ROLE raised it, so the figure is per-change and
+    # belongs to no single role's row; attaching it to one would re-open the
+    # misattribution #96 closed, and now that there are two rows it would also print
+    # twice. One entry per holding attestation, never a sum across slugs: `attest verify`
+    # covers a whole base..head range, and summing would present two changes held three
+    # times each as one change held six times.
     holds_by_slug: dict[str, int] = {
         slug: held
         for slug in verdict.attestations
@@ -238,9 +258,13 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
         # Human path only — disclosure lines must NEVER print before the `--json`
         # branch or they would corrupt the single-line JSON envelope.
         if not ctx.obj.get("quiet"):
-            for item in independence:
-                click.echo(_independence_line(item))
-                # In the SAME per-slug loop as the line above, so a range covering two
+            # Iterates slugs rather than the flattened `independence` list, which now
+            # carries two rows per attestation: driving the hold line off that list
+            # would print it once per role.
+            for slug in verdict.attestations:
+                for role in _INDEPENDENCE_LABELS:
+                    click.echo(_independence_line(role, disclosures[slug][role]))
+                # In the SAME per-slug loop as the lines above, so a range covering two
                 # attestations attributes each hold by adjacency the way every other
                 # disclosure line here already does. A separate loop printed two
                 # byte-identical lines the reader could not attribute to a change.
@@ -248,7 +272,7 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
                 # `report`'s wording verbatim (cli/report.py:127) — one number, one
                 # phrasing. Emitted only when non-zero; a "held 0 round(s)" line on
                 # every clean change would be noise.
-                if rounds_held := holds_by_slug.get(str(item["slug"])):
+                if rounds_held := holds_by_slug.get(slug):
                     click.echo(
                         f"round budget: held {rounds_held} automatic round(s) "
                         "for a human funding decision (distinct rounds, not retries)"

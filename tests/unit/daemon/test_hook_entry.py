@@ -66,7 +66,10 @@ def test_env_override_selects_change(in_workspace: Path, monkeypatch: pytest.Mon
     monkeypatch.setenv("SUPER_HARNESS_CHANGE_ID", "frozen")
     decision, _reason, suggested = hook_entry._decide("Edit", "f.py")
     assert decision == "block"
-    assert suggested == "Open/merge the PR; do not edit further."
+    assert suggested.startswith("Open/merge the PR; do not edit further.")
+    # The suggestion must name the way back, not only the prohibition: this state used
+    # to send the reader to `plan redeclare` and a whole plan cycle for a one-line fix.
+    assert "implementation reopen" in suggested
 
 
 def test_kill_switch_allows_and_records_bypass(

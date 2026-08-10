@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from super_harness.core.events import Actor, Event
-from super_harness.engineering.review_runs import derive_review_execution
+from super_harness.engineering.review_runs import (
+    count_automatic_rounds,
+    count_rounds_since_skip_boundary,
+    derive_review_execution,
+)
 
 
 def _event(event_id: str, event_type: str, payload: dict[str, object]) -> Event:
@@ -802,3 +806,147 @@ def test_count_automatic_rounds_is_zero_before_any_round() -> None:
     from super_harness.engineering.review_runs import count_automatic_rounds
 
     assert count_automatic_rounds([], "plan-reviewer") == 0
+
+
+# --------------------------------------------------------------------------- #
+# count_rounds_since_skip_boundary — the ledger `review skip`'s guard reads
+#
+# It used to read the per-EPOCH fold, and `plan_ready` is both the plan epoch
+# boundary and the mandatory step out of PLAN_REJECTED. One rejection therefore
+# erased the evidence and the escape hatch became unreachable exactly when a wedged
+# producer needed it.
+# --------------------------------------------------------------------------- #
+def _frozen_round(event_id: str, reviewer: str, *, automatic: bool = True) -> Event:
+    return _event(event_id, "review_round_started", {
+        "reviewer": reviewer,
+        "epoch_id": "whatever",
+        "round_id": event_id,
+        "contract_digest": "cd",
+        "target_head": "th",
+        "profile_digest": "pd",
+        "automatic": automatic,
+        "runs": [],
+    })
+
+
+def _plan_ready(event_id: str, files: list[str] | None = None) -> Event:
+    payload: dict[str, object] = {}
+    if files is not None:
+        payload["scope"] = {"files": files}
+    return _event(event_id, "plan_ready", payload)
+
+
+def test_skip_evidence_survives_a_rejection_and_resubmit() -> None:
+    """The livelock, as a predicate. Round frozen, rejected, re-submitted — the round
+    still happened, so the guard must not claim nobody was asked."""
+    events = [
+        _event("e0", "intent_declared", {}),
+        _plan_ready("e1", ["src/a.py"]),
+        _frozen_round("r1", "plan-reviewer"),
+        _event("e2", "plan_rejected", {"reviewer": "plan-reviewer"}),
+        _plan_ready("e3", ["src/a.py"]),          # same plan, revised
+    ]
+    assert count_rounds_since_skip_boundary(events, "plan-reviewer") == 1
+
+
+def test_skip_evidence_resets_on_a_scope_changing_resubmit() -> None:
+    """`plan ready --scope` is legal from PLAN_REJECTED and the reducer replaces, so a
+    re-submit that moves scope is a plan nobody has seen — even without a redeclare."""
+    events = [
+        _plan_ready("e1", ["src/a.py"]),
+        _frozen_round("r1", "plan-reviewer"),
+        _event("e2", "plan_rejected", {"reviewer": "plan-reviewer"}),
+        _plan_ready("e3", ["src/a.py", "src/b.py"]),
+    ]
+    assert count_rounds_since_skip_boundary(events, "plan-reviewer") == 0
+
+
+def test_skip_evidence_ignores_order_and_duplicates_in_scope() -> None:
+    events = [
+        _plan_ready("e1", ["src/a.py", "src/b.py"]),
+        _frozen_round("r1", "plan-reviewer"),
+        _plan_ready("e2", ["src/b.py", "src/a.py", "src/a.py"]),
+    ]
+    assert count_rounds_since_skip_boundary(events, "plan-reviewer") == 1
+
+
+def test_skip_evidence_survives_a_resubmit_that_declares_no_scope() -> None:
+    """A `plan_ready` with no `scope` key declares nothing and carries the previous
+    set forward; reading it as "scope became empty" would reset on every bare re-submit."""
+    events = [
+        _plan_ready("e1", ["src/a.py"]),
+        _frozen_round("r1", "plan-reviewer"),
+        _plan_ready("e2"),
+    ]
+    assert count_rounds_since_skip_boundary(events, "plan-reviewer") == 1
+
+
+def test_skip_evidence_resets_on_redeclaration() -> None:
+    for redeclare in ("plan_redeclared", "intent_redeclared"):
+        events = [
+            _plan_ready("e1", ["src/a.py"]),
+            _frozen_round("r1", "plan-reviewer"),
+            _event("e2", redeclare, {}),
+            _plan_ready("e3", ["src/a.py"]),
+        ]
+        assert count_rounds_since_skip_boundary(events, "plan-reviewer") == 0, redeclare
+
+
+def test_code_review_evidence_resets_on_a_fresh_implementation_complete() -> None:
+    """What stops `implementation reopen` walking new code past the guard: reopen →
+    done → skip must not pass on rounds frozen before the reopen."""
+    events = [
+        _event("e1", "implementation_complete", {}),
+        _frozen_round("r1", "code-reviewer"),
+        _event("e2", "code_review_passed", {}),
+        _event("e3", "implementation_invalidated", {"reason": "fold in a finding"}),
+        _event("e4", "implementation_complete", {}),
+    ]
+    assert count_rounds_since_skip_boundary(events, "code-reviewer") == 0
+
+
+def test_skip_evidence_is_scoped_to_the_role() -> None:
+    """Plan rounds must not satisfy a code-reviewer skip — the guard's whole purpose."""
+    events = [
+        _plan_ready("e1", ["src/a.py"]),
+        _frozen_round("r1", "plan-reviewer"),
+        _frozen_round("r2", "plan-reviewer"),
+        _event("e2", "implementation_complete", {}),
+    ]
+    assert count_rounds_since_skip_boundary(events, "code-reviewer") == 0
+    assert count_rounds_since_skip_boundary(events, "plan-reviewer") == 2
+
+
+def test_skip_evidence_counts_human_authorized_rounds() -> None:
+    """A change whose only rounds since the boundary were authorized is precisely the
+    one that has hit the round budget — when a wedged producer most needs the hatch.
+    `count_automatic_rounds` filters this flag; this must not inherit that."""
+    events = [
+        _plan_ready("e1", ["src/a.py"]),
+        _frozen_round("r1", "plan-reviewer", automatic=False),
+    ]
+    assert count_rounds_since_skip_boundary(events, "plan-reviewer") == 1
+
+
+def test_round_budget_still_counts_across_a_redeclaration() -> None:
+    """The asymmetry, pinned. The budget asks what the change cost and money spent
+    stays spent; resetting it on redeclare would hand back the laundering path PR#98
+    closed. Unifying the two folds must turn this red."""
+    events = [
+        _plan_ready("e1", ["src/a.py"]),
+        _frozen_round("r1", "plan-reviewer"),
+        _event("e2", "plan_redeclared", {}),
+        _plan_ready("e3", ["src/a.py", "src/b.py"]),
+        _frozen_round("r2", "plan-reviewer"),
+    ]
+    assert count_automatic_rounds(events, "plan-reviewer") == 2
+    assert count_rounds_since_skip_boundary(events, "plan-reviewer") == 1
+
+
+def test_skip_evidence_rejects_an_unknown_role() -> None:
+    try:
+        count_rounds_since_skip_boundary([], "nobody")
+    except ValueError as exc:
+        assert "nobody" in str(exc)
+    else:                                                    # pragma: no cover
+        raise AssertionError("unknown role must not silently count zero")

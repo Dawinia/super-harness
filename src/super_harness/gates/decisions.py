@@ -87,8 +87,20 @@ SUGGESTIONS: dict[str, str] = {
     ),
     "AWAITING_PLAN_REVIEW": "Wait for the plan reviewer; `super-harness status` shows progress.",
     "PLAN_REJECTED": "Revise the plan and re-submit, then retry.",
-    "AWAITING_CODE_REVIEW": "Code is frozen during review; address feedback once it lands.",
-    "READY_TO_MERGE": "Open/merge the PR; do not edit further.",
+    # Both name `implementation reopen`, because both are states an agent reaches with
+    # working code and a reason to touch it again — a finding to fold in, or something it
+    # spotted while the reviewer was out. Before the verb existed the only route back was
+    # `plan redeclare` into a full plan cycle, and this repository's own state.yaml
+    # carries two redeclares whose recorded reason is that there was nothing else.
+    "AWAITING_CODE_REVIEW": (
+        "Code is frozen during review; address feedback once it lands. To edit before "
+        'then, `implementation reopen <change> --reason "<why>"` — it voids the round.'
+    ),
+    "READY_TO_MERGE": (
+        "Open/merge the PR; do not edit further. To fold in a finding instead, "
+        '`implementation reopen <change> --reason "<why>"` — the passed code review '
+        "then has to run again."
+    ),
     "ARCHIVED": "This change is terminal; start a new change.",
     "ABANDONED": "This change is terminal; start a new change.",
 }

@@ -557,3 +557,82 @@ def test_report_json_keeps_control_characters_as_recorded(tmp_path):
                              catch_exceptions=False)
     assert res.exit_code == 0
     assert _json.loads(res.output)["data"]["authorizations"][0]["reason"] == reason
+
+
+# --- code-only-recovery: `implementation reopen` gets the same countable trace ---
+
+
+def _reopened(eid, change, ts, *, reason="fold in two minor findings",
+              actor="someone@example.test"):
+    return _json.dumps({
+        "event_id": eid, "type": "implementation_invalidated", "change_id": change,
+        "timestamp": ts, "actor": {"type": "human", "identifier": actor},
+        "framework": "plain", "payload": {"reason": reason},
+    })
+
+
+def test_report_human_shows_reopen_count_and_every_reason(tmp_path):
+    """A verb that voids a passed code review needs the surface `review authorize`
+    has, for the same reason: nothing verifies the reason, so a count a human can
+    falsify from memory is the only check there is."""
+    _seed(tmp_path, [
+        _reopened("e1", "c1", "2026-08-11T10:18:46Z", reason="fold in AUTH-005/006"),
+        _reopened("e2", "c2", "2026-08-11T11:10:38Z", reason="spotted a deadlock"),
+    ])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "2 frozen implementation(s) returned to editing" in res.output
+    assert "fold in AUTH-005/006" in res.output
+    assert "spotted a deadlock" in res.output
+    assert "c1" in res.output and "c2" in res.output
+
+
+def test_report_human_states_zero_reopens_rather_than_omitting_the_line(tmp_path):
+    """A human has to be able to tell "none recorded" from "the section isn't shown"."""
+    _seed(tmp_path, [])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "0 frozen implementation(s) returned to editing" in res.output
+
+
+def test_report_reopen_row_survives_a_newline_in_any_field(tmp_path):
+    """One reopen prints as one row: a reason carrying a newline would otherwise
+    forge a second, and the count would stop matching what the reader can see."""
+    _seed(tmp_path, [
+        _reopened("e1", "c1", "2026-08-11T10:18:46Z", reason="line one\nline two"),
+    ])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    rows = [ln for ln in res.output.splitlines() if "line one" in ln or "line two" in ln]
+    assert len(rows) == 1
+    assert "line one line two" in rows[0]
+
+
+def test_report_reopen_without_a_reason_reads_as_absent(tmp_path):
+    _seed(tmp_path, [_json.dumps({
+        "event_id": "e1", "type": "implementation_invalidated", "change_id": "c1",
+        "timestamp": "2026-08-11T10:18:46Z",
+        "actor": {"type": "human", "identifier": "someone@example.test"},
+        "framework": "plain", "payload": {},
+    })])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert "(no reason recorded)" in res.output
+
+
+def test_report_json_carries_every_reopen_record(tmp_path):
+    _seed(tmp_path, [
+        _reopened("e1", "c1", "2026-08-11T10:18:46Z"),
+        _reopened("e2", "c1", "2026-08-11T11:10:38Z", reason="and again"),
+    ])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "--json", "report"],
+                             catch_exceptions=False)
+    data = _json.loads(res.output)["data"]
+    assert data["reopens_total"] == 2
+    # Not deduped: two identical acts are two acts, and collapsing them would
+    # understate in the direction that hides the abuse the count exists to expose.
+    assert [r["reason"] for r in data["reopens"]] == [
+        "fold in two minor findings", "and again",
+    ]

@@ -531,6 +531,73 @@ def test_verify_override_skip_passes(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
+# The same bar for plan review.
+#
+# `review skip --reviewer plan-reviewer` used to emit `plan_approved` and merge with
+# nothing said anywhere, which is why a run of mis-drawn skip-evidence boundaries all
+# failed silently rather than loudly.
+# --------------------------------------------------------------------------- #
+def _ready_plan_skip_scope(root: Path, slug: str, files: list[str], *, override: bool) -> None:
+    att_dir = root / ".harness" / "attestations"
+    att_dir.mkdir(parents=True, exist_ok=True)
+    w = EventWriter(att_dir / f"{slug}.jsonl")
+    _emit(w, "intent_declared", slug)
+    _emit(w, "plan_ready", slug, {"scope": {"files": files}})
+    pay: dict = {"reviewer": "plan-reviewer", "reason": "why", "skipped": True}
+    if override:
+        pay["override"] = True
+    _emit(w, "plan_approved", slug, pay)
+    _emit(w, "implementation_started", slug)
+    _emit(w, "verification_passed", slug)
+    _emit(w, "implementation_complete", slug)
+    _emit(w, "code_review_passed", slug, {"reviewer": "code-reviewer"})
+
+
+def test_derive_independence_classifies_plan_review_too():
+    evs = _events(
+        ("intent_declared", {}),
+        ("plan_approved", {"reviewer": "plan-reviewer", "reason": "wedged",
+                           "skipped": True, "override": True}),
+        ("code_review_passed", {"reviewer": "code-reviewer"}))
+    d = derive_independence(evs)
+    assert d["plan_review"]["skipped"] is True
+    assert d["plan_review"]["override"] is True
+    assert d["plan_review"]["reason"] == "wedged"
+    # and the two rows stay independent of one another
+    assert d["code_review"]["skipped"] is False
+
+
+def test_derive_independence_plan_review_unattributed_without_a_milestone():
+    d = derive_independence(_events(("intent_declared", {})))
+    assert d["plan_review"]["classification"] == "unattributed"
+    assert d["plan_review"]["skipped"] is False
+
+
+def test_verify_bare_plan_skip_blocks(tmp_path):
+    _ready_plan_skip_scope(tmp_path, "s", ["src/x.py"], override=False)
+    diff = [DiffEntry("A", (".harness/attestations/s.jsonl",)), DiffEntry("M", ("src/x.py",))]
+    v = verify_attestations(tmp_path, diff)
+    assert not v.ok
+    assert any("plan review was skipped without --override" in b for b in v.blockers)
+
+
+def test_verify_override_plan_skip_passes(tmp_path):
+    _ready_plan_skip_scope(tmp_path, "s", ["src/x.py"], override=True)
+    diff = [DiffEntry("A", (".harness/attestations/s.jsonl",)), DiffEntry("M", ("src/x.py",))]
+    v = verify_attestations(tmp_path, diff)
+    assert v.ok, v.blockers
+
+
+def test_verify_names_the_role_that_was_skipped(tmp_path):
+    """Two roles, one blocker wording — the reader has to be told which one."""
+    _ready_skip_scope(tmp_path, "s", ["src/x.py"], override=False)
+    diff = [DiffEntry("A", (".harness/attestations/s.jsonl",)), DiffEntry("M", ("src/x.py",))]
+    blockers = verify_attestations(tmp_path, diff).blockers
+    assert any("code review was skipped" in b for b in blockers)
+    assert not any("plan review was skipped" in b for b in blockers)
+
+
+# --------------------------------------------------------------------------- #
 # Task 6: gate-bypass disclosure helper + undisclosed-bypass merge blocker
 # --------------------------------------------------------------------------- #
 def test_gate_bypass_disclosure_counts_append_order():

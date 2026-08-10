@@ -75,6 +75,7 @@ from super_harness.engineering.review_runs import (
     ReviewExecutionState,
     ReviewRoundState,
     ReviewRunState,
+    count_rounds_since_skip_boundary,
     derive_review_execution,
 )
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
@@ -587,10 +588,19 @@ def _guard_skip_round_evidence_or_exit(
 
     What is left is the case that matters: the producers ARE resolvable and you
     simply never asked them.
+
+    Arm (a) reads `count_rounds_since_skip_boundary`, NOT `execution.rounds`. The
+    per-epoch fold it used to read resets at `plan_ready`, which is the mandatory step
+    out of `PLAN_REJECTED` — so one plan rejection erased the evidence and every later
+    skip was refused on the grounds that no round was ever frozen while the change
+    carried several. That left a wedged plan producer unskippable exactly when the
+    escape hatch was needed. PR#98 fixed the same per-epoch confusion on the budget
+    path and left this caller behind.
     """
 
-    execution = derive_review_execution(_change_events(root, change), reviewer)
-    if not execution.rounds:
+    events = _change_events(root, change)
+    execution = derive_review_execution(events, reviewer)
+    if count_rounds_since_skip_boundary(events, reviewer) == 0:
         if not review_governance_path(root).is_file():
             return
         governance = _load_governance_or_exit(root, "review skip")
@@ -616,6 +626,13 @@ def _guard_skip_round_evidence_or_exit(
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
+    # Arm (b) needs its own emptiness check now. It used to lean on arm (a)'s
+    # `not execution.rounds` early return, and arm (a) no longer reads the current
+    # epoch: "rounds since the boundary, none in this epoch" is the rejected-then-
+    # re-submitted change this whole fix exists to unblock, and it would reach
+    # `rounds[-1]` on an empty tuple.
+    if not execution.rounds:
+        return
     latest = execution.rounds[-1]
     pending = sorted(
         run.run_id for run in latest.runs.values() if run.status == "pending"

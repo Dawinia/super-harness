@@ -279,12 +279,17 @@ def verify_attestations(root: Path, diff_entries: list[DiffEntry]) -> Attestatio
             continue
         covered |= this_covered
         validated.append(slug)
-        cr = independence_for_attestation(att_path)["code_review"]
-        if cr["skipped"] and not cr["override"]:
-            blockers.append(
-                f"attestation {slug}: code review was skipped without --override "
-                "(a deliberate `review skip --override --reason ...` is required to merge)"
-            )
+        disclosure = independence_for_attestation(att_path)
+        # Both roles, same bar. Plan review joined on the cut that made a plan-reviewer
+        # skip reachable after a rejection; leaving it off would have shipped the escape
+        # hatch and the missing signal together.
+        for role, label in (("code_review", "code review"), ("plan_review", "plan review")):
+            row = disclosure[role]
+            if row["skipped"] and not row["override"]:
+                blockers.append(
+                    f"attestation {slug}: {label} was skipped without --override "
+                    "(a deliberate `review skip --override --reason ...` is required to merge)"
+                )
         gb = gate_bypass_for_attestation(att_path)
         if gb["undisclosed"] > 0:
             blockers.append(
@@ -308,49 +313,64 @@ def verify_attestations(root: Path, diff_entries: list[DiffEntry]) -> Attestatio
 # --------------------------------------------------------------------------- #
 # HG-12 cut 1: review-independence disclosure (substrate, NOT enforcement)
 # --------------------------------------------------------------------------- #
-def derive_independence(events: list[Event]) -> dict[str, Any]:
-    """Classify a change's code-review independence from its events (pure).
+def _classify_review(events: list[Event], milestone: str, author: str | None) -> dict[str, Any]:
+    """One role's disclosure row, from the last occurrence of its PASS milestone.
 
-    Discloses code-review only (per design §4.1). Truth table, first match wins:
-      1. no ``code_review_passed``                  → ``unattributed``
+    Truth table, first match wins:
+      1. no milestone event                         → ``unattributed``
       2. reviewer ``actor.type == "ci"``            → ``ci`` (forward-compat;
          not producible via the current CLI, see design §4.1 row 2)
       3. ``payload["skipped"] is True``             → ``skipped``
       4. reviewer or author is the ``"cli"`` placeholder → ``unattributed``
       5. reviewer identifier == author identifier   → ``self-signed``
       6. otherwise                                  → ``independent``
+    """
+    reviews = [e for e in events if e.type == milestone]
+    if not reviews:
+        return {
+            "classification": "unattributed", "reviewer": None, "skipped": False,
+            "override": False, "reason": None,
+        }
+    r = reviews[-1]  # last wins (reject → re-review cycles)
+    reviewer = r.actor.identifier
+    skipped = r.payload.get("skipped") is True
+    override = r.payload.get("override") is True
+    if r.actor.type == "ci":
+        cls = "ci"
+    elif skipped:
+        cls = "skipped"
+    elif reviewer == PLACEHOLDER_IDENTITY or author == PLACEHOLDER_IDENTITY:
+        cls = "unattributed"
+    elif reviewer == author:
+        cls = "self-signed"
+    else:
+        cls = "independent"
+    return {
+        "classification": cls, "reviewer": reviewer, "skipped": skipped,
+        "override": override, "reason": r.payload.get("reason"),
+    }
+
+
+def derive_independence(events: list[Event]) -> dict[str, Any]:
+    """Classify a change's review independence, per role, from its events (pure).
+
+    Both roles, from the same truth table (see ``_classify_review``) applied to their
+    PASS milestones — ``code_review_passed`` and ``plan_approved``. Plan review joined
+    code review here because ``review skip --reviewer plan-reviewer`` otherwise emitted
+    ``plan_approved`` and merged with nothing said anywhere, which is why a series of
+    mis-drawn skip-evidence boundaries all failed silently rather than loudly.
 
     This is disclosure, not enforcement: the identity is self-asserted and a solo
-    owner can set both sides freely.
+    owner can set both sides freely. The one blocker built on it lives in
+    ``verify_attestations``.
     """
     author = next(
         (e.actor.identifier for e in events if e.type == "intent_declared"), None
     )
-    reviews = [e for e in events if e.type == "code_review_passed"]
-    if not reviews:
-        cls, reviewer, skipped, override, reason = "unattributed", None, False, False, None
-    else:
-        r = reviews[-1]  # last wins (reject → re-review cycles)
-        reviewer = r.actor.identifier
-        skipped = r.payload.get("skipped") is True
-        override = r.payload.get("override") is True
-        reason = r.payload.get("reason")
-        if r.actor.type == "ci":
-            cls = "ci"
-        elif skipped:
-            cls = "skipped"
-        elif reviewer == PLACEHOLDER_IDENTITY or author == PLACEHOLDER_IDENTITY:
-            cls = "unattributed"
-        elif reviewer == author:
-            cls = "self-signed"
-        else:
-            cls = "independent"
     return {
         "author": author,
-        "code_review": {
-            "classification": cls, "reviewer": reviewer, "skipped": skipped,
-            "override": override, "reason": reason,
-        },
+        "code_review": _classify_review(events, "code_review_passed", author),
+        "plan_review": _classify_review(events, "plan_approved", author),
         # Informational, like the rest of this function — NOT a merge blocker.
         # Hitting the round budget is a legitimate, human-authorized act; it has to be
         # visible at the moment of merge, not forbidden. Deduped on (reviewer,

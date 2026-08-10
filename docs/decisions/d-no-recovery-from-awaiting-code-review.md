@@ -1,6 +1,6 @@
 ---
 id: d-no-recovery-from-awaiting-code-review
-status: proposed
+status: retired
 ---
 PROPOSED (unsettled): AWAITING_CODE_REVIEW freezes decisions and source, and neither implementation_* exit that reaches an editable state has a CLI verb, so the only recovery is plan redeclare into a full plan cycle.
 
@@ -49,3 +49,16 @@ questions (should it require a reason? should it invalidate the frozen review ro
 Ratifying this record would freeze the workaround as the rule.
 
 **Exit:** retire this record when that verb ships.
+
+## Retired 2026-08-11
+
+`super-harness implementation reopen <change> --reason "<why>"` ships that verb
+(`cli/implementation.py`), emitting `implementation_invalidated` from
+`AWAITING_CODE_REVIEW` / `READY_TO_MERGE`. The two questions this record left open
+were answered: the reason is required and counted by `report`, and the frozen round
+needs no explicit invalidation because `implementation_complete` is the code-reviewer
+epoch boundary, so the following `done` resets it.
+
+The discipline above is still worth following — a reopen costs another review round —
+but it is no longer the only thing standing between a frozen change and an edit.
+See `docs/plans/2026-08-11-code-only-recovery.md`.

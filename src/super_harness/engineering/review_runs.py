@@ -13,6 +13,30 @@ _EPOCH_BOUNDARIES: dict[str, frozenset[str]] = {
     "code-reviewer": frozenset({"implementation_complete"}),
 }
 
+# Events after which a role has genuinely NEW material in front of it, so rounds frozen
+# earlier stop counting as evidence that anybody was asked. Read `review skip`'s guard
+# with this; do not read `_EPOCH_BOUNDARIES` with it, and do not merge the two.
+#
+# The difference is one row. `plan_ready` is the plan epoch boundary AND the mandatory
+# step out of `PLAN_REJECTED`, so counting it here erases the evidence on every rejection
+# — which is exactly the defect this table exists to remove. `implementation_complete`
+# carries no such double duty: it always means code nobody has reviewed yet, so
+# code-reviewer keeps it. Re-declaration resets both, because it means a different change.
+_SKIP_EVIDENCE_BOUNDARIES: dict[str, frozenset[str]] = {
+    "plan-reviewer": frozenset({"plan_redeclared", "intent_redeclared"}),
+    "code-reviewer": frozenset(
+        {"implementation_complete", "plan_redeclared", "intent_redeclared"}
+    ),
+}
+
+# Roles for which a `plan_ready` that MOVES the declared scope is also new material.
+# It cannot live in the table above because it is decided from the payload, not the type:
+# `plan ready --scope` is legal from `PLAN_REJECTED` and the reducer replaces rather than
+# merges, so reject → re-submit wider would otherwise pass a skip on rounds frozen against
+# the older, narrower plan. Code review does not need the row — a widened scope still has
+# to go back through `done`, and that fires `implementation_complete`.
+_SCOPE_SENSITIVE_SKIP_ROLES: frozenset[str] = frozenset({"plan-reviewer"})
+
 
 @dataclass(frozen=True)
 class ReviewRunState:
@@ -154,6 +178,61 @@ def count_automatic_rounds(events: list[Event], reviewer: str) -> int:
         if event.type == "review_round_started"
         and (event.payload or {}).get("reviewer") == reviewer
         and (event.payload or {}).get("automatic", True)
+    )
+
+
+def count_rounds_since_skip_boundary(events: list[Event], reviewer: str) -> int:
+    """Rounds frozen for ``reviewer`` since it last had new material to look at.
+
+    What `review skip`'s "was anybody actually asked?" guard reads. Three deliberate
+    differences from its neighbour `count_automatic_rounds`, each of which was a real
+    defect in a draft of this function:
+
+    * **It counts every frozen round, automatic or human-authorized.** The neighbour
+      filters `automatic` because it is a spend brake and only automatic rounds are
+      spent automatically. This asks whether a producer was asked, and an authorized
+      round asked one — a change whose only rounds since the boundary were authorized is
+      precisely the change that has already hit the budget, which is when a wedged
+      producer most needs the escape hatch.
+    * **It is scoped to the role.** Without the `reviewer` filter, plan-review rounds
+      would satisfy a `review skip --reviewer code-reviewer` on a change no code
+      reviewer ever saw — the guard's original purpose, defeated by its own repair.
+    * **It resets** at `_SKIP_EVIDENCE_BOUNDARIES`, and for the scope-sensitive roles
+      also at a `plan_ready` that declares a different file set than the one in force.
+
+    Scope is compared as a SET of the strings as recorded — order and duplicates are not
+    scope changes, and no canonicalisation is applied. Two spellings of one path
+    therefore read as a change and refuse a skip that might have been allowed, which is
+    the safe direction for a guard. A `plan_ready` carrying no `scope` key declares
+    nothing, carries the previous set forward, and never resets.
+    """
+
+    boundaries = _SKIP_EVIDENCE_BOUNDARIES.get(reviewer)
+    if boundaries is None:
+        raise ValueError(f"unknown reviewer role {reviewer!r}")
+    scope_sensitive = reviewer in _SCOPE_SENSITIVE_SKIP_ROLES
+    start = 0
+    declared: frozenset[str] | None = None
+    for index, event in enumerate(events):
+        if event.type in boundaries:
+            start = index + 1
+            continue
+        if event.type != "plan_ready":
+            continue
+        raw = (event.payload or {}).get("scope")
+        files = raw.get("files") if isinstance(raw, dict) else None
+        if not isinstance(files, list):
+            continue
+        current = frozenset(str(item) for item in files)
+        # `declared is None` is the FIRST declaration, not a change to one.
+        if scope_sensitive and declared is not None and current != declared:
+            start = index + 1
+        declared = current
+    return sum(
+        1
+        for event in events[start:]
+        if event.type == "review_round_started"
+        and (event.payload or {}).get("reviewer") == reviewer
     )
 
 
