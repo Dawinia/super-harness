@@ -64,7 +64,7 @@ class ValueReport:
     # `review authorize` this count IS the mechanism: no individual event is
     # checkable and no local file is tamper-proof, but a human who remembers
     # authorizing twice can falsify a `5` from memory. Deliberately NOT deduped
-    # (unlike `review_budget_hits`) — see `_authorizations`.
+    # (unlike `review_budget_hits`) — see `derive_authorizations`.
     authorizations: tuple[AuthorizationRecord, ...] = ()
     authorizations_total: int = 0
 

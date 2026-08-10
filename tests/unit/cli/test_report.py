@@ -290,7 +290,7 @@ def test_report_human_shows_the_count_and_every_reason(tmp_path):
     res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
                              catch_exceptions=False)
     assert res.exit_code == 0
-    assert "2 automated review round(s)" in res.output
+    assert "2 human authorization(s) recorded" in res.output
     assert "expensive profile, my call" in res.output
     assert "one more plan round" in res.output
     assert "code-reviewer" in res.output and "plan-reviewer" in res.output
@@ -306,7 +306,7 @@ def test_report_human_states_zero_authorizations_rather_than_omitting_the_line(t
     res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
                              catch_exceptions=False)
     assert res.exit_code == 0
-    assert "0 automated review round(s)" in res.output
+    assert "0 human authorization(s) recorded" in res.output
 
 
 def test_report_human_says_the_reason_is_unverified(tmp_path):
@@ -435,3 +435,65 @@ def test_report_human_treats_an_all_whitespace_reason_as_absent(tmp_path):
                              catch_exceptions=False)
     assert res.exit_code == 0
     assert "(no reason recorded)" in res.output
+
+
+def test_report_counts_authorizations_not_funded_rounds(tmp_path):
+    """AUTH-006. The derivation counts `review_round_authorized` events; an
+    authorization can be recorded and never consumed — the human authorizes, then the
+    round is retired or never runs. This change's own history has exactly that shape
+    more than once.
+
+    The number is right and the noun was wrong: the falsify-from-memory check keys on
+    authorizing, not on rounds. `value_report.py`'s stated design law is that no
+    number may claim more than it measured, so the line says what it counted.
+    """
+    _seed(tmp_path, [
+        _authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="funded a round"),
+        _authorized("e2", "c1", "2026-08-09T11:00:00Z", reason="round was retired, never ran"),
+    ])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "2 human authorization(s) recorded" in res.output
+    # The old wording claimed each one bought a round that actually happened.
+    assert "were funded by" not in res.output
+
+
+def test_report_human_cannot_be_made_to_print_a_forged_row_by_any_field(tmp_path):
+    """AUTH-005. The AUTH-004 hardening covered `reason` alone, but every field on the
+    row is interpolated into the same single line. `actor` is the reachable vector:
+    `resolve_identity`'s `SUPER_HARNESS_ACTOR` branch only strips the ends, so an
+    interior newline survives into the record.
+
+    One authorization must print as one row no matter which field carries the
+    newline; `--json` keeps the bytes.
+    """
+    forged_actor = "me\n    2026-08-09 09:00 UTC  c1  code-reviewer  someone-else  routine"
+    _seed(tmp_path, [_json.dumps({
+        "event_id": "e1", "type": "review_round_authorized", "change_id": "c1\nsplit",
+        "timestamp": "2026-08-09T10:00:00Z",
+        "actor": {"type": "human", "identifier": forged_actor},
+        "framework": "plain", "payload": {"reviewer": "code-\nreviewer", "reason": "ok"},
+    })])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    rows = [ln for ln in res.output.splitlines() if ln.startswith("    2026-08-09")]
+    assert len(rows) == 1, rows
+
+
+def test_report_human_keeps_an_unparseable_timestamp_on_one_row(tmp_path):
+    """AUTH-005, the fallback branch: `_fmt_when` returns the raw string when the
+    timestamp will not parse, which puts unfiltered event text on the row."""
+    _seed(tmp_path, [_json.dumps({
+        "event_id": "e1", "type": "review_round_authorized", "change_id": "c1",
+        "timestamp": "not-a-date\n    forged  row  here  now",
+        "actor": {"type": "human", "identifier": "me"},
+        "framework": "plain", "payload": {"reviewer": "code-reviewer", "reason": "ok"},
+    })])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "not-a-date forged row here now  c1  code-reviewer" in res.output
+    rows = [ln for ln in res.output.splitlines() if "forged" in ln]
+    assert len(rows) == 1, rows

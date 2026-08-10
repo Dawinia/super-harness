@@ -71,6 +71,16 @@ def _breakdown_lines(r: ValueReport) -> list[str]:
     return lines
 
 
+def _one_line(text: str) -> str:
+    """Collapse every whitespace run to a single space.
+
+    One rule for one row: an authorization row is a single line, so nothing
+    interpolated into it may contain a line break or forge column alignment. Applied
+    per field rather than to the finished row so the separators stay intact.
+    """
+    return " ".join(text.split())
+
+
 def _fmt_when(ts: str) -> str:
     """`YYYY-MM-DD HH:MM UTC` when the timestamp parses, else the raw string.
 
@@ -99,8 +109,14 @@ def _authorization_lines(r: ValueReport) -> list[str]:
     lines = [
         "",
         "Human authorizations",
-        f"  - {r.authorizations_total} automated review round(s) were funded by a "
-        "recorded human authorization",
+        # What was counted, not what it bought. `derive_authorizations` counts
+        # `review_round_authorized` events, and an authorization can be recorded and
+        # never consumed — the human authorizes, then the round is retired or never
+        # runs. "funded N rounds" would claim more than the derivation measured, which
+        # this module's design law forbids, and the falsify-from-memory check keys on
+        # authorizing anyway (AUTH-006).
+        f"  - {r.authorizations_total} human authorization(s) recorded, each one "
+        "permitting a single automated review round",
     ]
     if not r.authorizations:
         return lines
@@ -135,14 +151,21 @@ def _authorization_row(a: AuthorizationRecord) -> str:
     absent, not as a blank column. `derive_authorizations` maps `""` to None but
     cannot map `"   "` — that is a string somebody typed, and only this layer knows
     it renders as nothing.
+
+    The collapse applies to EVERY field, not just the reason (AUTH-005). They all
+    land on the same single line, so any of them carrying a newline forges a row —
+    `actor` most reachably, since `resolve_identity`'s `SUPER_HARNESS_ACTOR` branch
+    only strips the ends, and `_fmt_when` passes an unparseable timestamp through
+    raw. One authorization prints as one row regardless of which field is hostile.
     """
-    reason = " ".join(a.reason.split()) if a.reason is not None else ""
-    if not reason:
-        reason = "(no reason recorded)"
-    return (
-        f"    {_fmt_when(a.timestamp)}  {a.change_id}  {a.reviewer}  "
-        f"{a.actor}  {reason}"
-    )
+    reason = _one_line(a.reason) if a.reason is not None else ""
+    return "    " + "  ".join((
+        _one_line(_fmt_when(a.timestamp)),
+        _one_line(a.change_id),
+        _one_line(a.reviewer),
+        _one_line(a.actor),
+        reason or "(no reason recorded)",
+    ))
 
 
 def _bottom_line(r: ValueReport) -> str:
