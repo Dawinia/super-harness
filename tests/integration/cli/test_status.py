@@ -774,6 +774,17 @@ def test_status_current_imported_source_is_not_also_stale_and_exhaustion_is_acti
     ]
     assert "human-only" in progress["next_command"]
     assert "review human inspect" not in progress["next_command"]
+    # AUTH-001. This route used to read "then in a human-owned TTY run
+    # super-harness review authorize …" — the exact clause deleted from `review
+    # begin`'s hint as false once the TTY gate came out, surviving at a second
+    # decision point that no test held. It is also the sentence that sends the human
+    # out of the session to a second terminal, which is the tax the change removes.
+    assert "TTY" not in progress["next_command"]
+    assert "ask the human to run" in progress["next_command"]
+    # `<why>` unquoted is a shell redirection, so a route that is meant to be typeable
+    # cannot ship it bare (the same fix the begin hint carries).
+    assert '--reason "<why>"' in progress["next_command"]
+    assert "--reason <why>" not in progress["next_command"]
 
 
 def test_status_does_not_retain_run_state_from_a_different_packet_contract(

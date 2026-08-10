@@ -305,14 +305,21 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                     if retry_sources and set(retry_sources).issubset(failed)
                     else f"collect required source(s): {failed_retry}"
                 )
+                # `review authorize` carries no TTY check any more, so this route no
+                # longer names a terminal — the clause was false, and it was also
+                # what sent the human out of the session to a second one. It is the
+                # same instruction `review begin`'s round-budget hint gives, at the
+                # second decision point that reaches it (AUTH-001); `<why>` is quoted
+                # here for the same reason it is quoted there, because unquoted it is
+                # a shell redirection in a route meant to be typed.
                 next_command = (
-                    f"{recovery_action}; then in a human-owned "
-                    "TTY run super-harness review authorize "
-                    f"{change_id} --reviewer {reviewer}{retry_flags} --reason <why>; "
+                    f"{recovery_action}; then ask the human to run "
+                    "super-harness review authorize "
+                    f'{change_id} --reviewer {reviewer}{retry_flags} --reason "<why>"; '
                     f"then super-harness review begin {change_id} --reviewer {reviewer}"
-                    f"{retry_flags}; otherwise human-only terminal decision: "
+                    f"{retry_flags}; otherwise human-only decision: "
                     f"super-harness review skip {change_id} --reviewer {reviewer} "
-                    "--override --reason <why>"
+                    '--override --reason "<why>"'
                 )
         else:
             next_command = (

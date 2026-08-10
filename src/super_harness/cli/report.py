@@ -72,13 +72,21 @@ def _breakdown_lines(r: ValueReport) -> list[str]:
 
 
 def _fmt_when(ts: str) -> str:
-    """`YYYY-MM-DD HH:MM` when the timestamp parses, else the raw string.
+    """`YYYY-MM-DD HH:MM UTC` when the timestamp parses, else the raw string.
+
+    The zone marker is not decoration. This surface asks a human to falsify the
+    record from memory, and time is the field memory keys on: a reviewer in UTC+8
+    who authorized at 18:18 local reads an unlabelled `10:18` as somebody else's
+    act — the exact misreading the count exists to prevent (AUTH-002).
+
+    Marked rather than converted to local time: `report` also runs in CI and in
+    other people's shells, where "local" is a different answer for the same row.
 
     Never drops the value: an unparseable timestamp still identifies which
     authorization a row is, and the row must appear either way.
     """
     parsed = parse_ts(ts)
-    return parsed.strftime("%Y-%m-%d %H:%M") if parsed is not None else ts
+    return parsed.strftime("%Y-%m-%d %H:%M UTC") if parsed is not None else ts
 
 
 def _authorization_lines(r: ValueReport) -> list[str]:
@@ -106,15 +114,35 @@ def _authorization_lines(r: ValueReport) -> list[str]:
 
 
 def _authorization_row(a: AuthorizationRecord) -> str:
-    """One authorization, reason last and never truncated.
+    """One authorization on one line: when, which change, which role, who, why.
+
+    The actor is here and not only in `--json` (AUTH-003). With two people on a repo
+    — the stated audience — unnamed rows leave neither of them able to falsify the
+    ones that are not theirs, and the field was already being derived.
 
     The reason is the only account of why a round was funded, so it is rendered as
     typed — placeholders included. A relayed `<why>` that nobody replaced is not dirt
     to be cleaned up; it is the recorded state of that authorization, and hiding it
     would make the record read better than the act was.
+
+    Its whitespace is collapsed, though, and never truncated: a reason carrying a
+    newline plus this row's leading spaces otherwise prints as two rows that read as
+    two authorizations (AUTH-004). Tabs collapse for the same reason — they forge
+    column alignment as well as a newline forges a row. This is a rendering rule
+    only; `--json` still carries the bytes that were recorded.
+
+    A reason that is nothing but whitespace collapses to empty and is reported as
+    absent, not as a blank column. `derive_authorizations` maps `""` to None but
+    cannot map `"   "` — that is a string somebody typed, and only this layer knows
+    it renders as nothing.
     """
-    reason = a.reason if a.reason is not None else "(no reason recorded)"
-    return f"    {_fmt_when(a.timestamp)}  {a.change_id}  {a.reviewer}  {reason}"
+    reason = " ".join(a.reason.split()) if a.reason is not None else ""
+    if not reason:
+        reason = "(no reason recorded)"
+    return (
+        f"    {_fmt_when(a.timestamp)}  {a.change_id}  {a.reviewer}  "
+        f"{a.actor}  {reason}"
+    )
 
 
 def _bottom_line(r: ValueReport) -> str:

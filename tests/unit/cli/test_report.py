@@ -361,3 +361,77 @@ def test_report_json_carries_every_authorization_record(tmp_path):
     assert data["authorizations_total"] == 2
     assert [a["reason"] for a in data["authorizations"]] == ["first", "second"]
     assert data["authorizations"][0]["actor"] == "someone@example.test"
+
+
+def test_report_human_marks_the_timestamp_as_utc(tmp_path):
+    """AUTH-002. The whole mechanism rests on a human falsifying the record from
+    memory, and time is the field memory keys on. An unlabelled `10:18` read by
+    someone who authorized at 18:18 local is their own act looking like a stranger's
+    — the exact misreading the count exists to prevent.
+
+    Marked rather than converted: `report` also runs in CI and in other people's
+    shells, where "local" is a different answer for the same row.
+    """
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:18:46Z", reason="mine")])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "2026-08-09 10:18 UTC" in res.output
+
+
+def test_report_human_names_who_authorized(tmp_path):
+    """AUTH-003. `derive_authorizations` already computes the actor and only `--json`
+    showed it — a field derived but not read, which is the failure mode this cut
+    exists to avoid.
+
+    It matters most for the stated audience: with two people on a repo, rows with no
+    name mean neither of them can falsify the ones that are not theirs.
+    """
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="mine")])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "someone@example.test" in res.output
+
+
+def test_report_human_collapses_whitespace_that_would_forge_a_row(tmp_path):
+    """AUTH-004. A `--reason` carrying a newline plus the row's leading spaces prints
+    as two rows indistinguishable from two authorizations — a forged row in the one
+    surface the design calls the mechanism.
+
+    Tabs collapse too, for the same reason: they forge column alignment just as well
+    as a newline forges a row. The verbatim text survives in `--json`, which is where
+    an audit reads it; the human view owes one row per authorization.
+    """
+    forged = "ok\n    2026-08-09 10:00  c1  code-reviewer  someone@example.test  routine"
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason=forged)])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    rows = [ln for ln in res.output.splitlines() if "code-reviewer" in ln]
+    assert len(rows) == 1, rows
+    assert "ok 2026-08-09 10:00 c1 code-reviewer" in rows[0]   # collapsed, not dropped
+
+
+def test_report_json_keeps_the_reason_exactly_as_typed(tmp_path):
+    """The collapsing is a rendering concern only. `--json` is the audit surface and
+    must still carry the bytes that were recorded."""
+    forged = "ok\n    forged row"
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason=forged)])
+    res = CliRunner().invoke(main, ["--json", "--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert _json.loads(res.output)["data"]["authorizations"][0]["reason"] == forged
+
+
+def test_report_human_treats_an_all_whitespace_reason_as_absent(tmp_path):
+    """The AUTH-004 collapse opened this: `derive_authorizations` maps `""` to None,
+    but `"   "` is a truthy string that survives derivation and collapses to `""` at
+    render time — a row with a blank where the words go, which reads as 'approved,
+    no comment' rather than as nothing recorded.
+    """
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="  \t \n ")])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "(no reason recorded)" in res.output
