@@ -15,12 +15,14 @@ import click
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
+from super_harness.core.parse_ts import parse_ts
 from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
     find_harness_root,
 )
 from super_harness.engineering.value_report import (
+    AuthorizationRecord,
     CostBreakdownRow,
     ValueReport,
     build_value_report,
@@ -67,6 +69,52 @@ def _breakdown_lines(r: ValueReport) -> list[str]:
         lines.append(f"  {label:<22} {tokens_cell:>10}  {findings:>8}  {rounds:>6}{flag}")
     lines.append("  per-round detail: super-harness --json report -> .cost_breakdown")
     return lines
+
+
+def _fmt_when(ts: str) -> str:
+    """`YYYY-MM-DD HH:MM` when the timestamp parses, else the raw string.
+
+    Never drops the value: an unparseable timestamp still identifies which
+    authorization a row is, and the row must appear either way.
+    """
+    parsed = parse_ts(ts)
+    return parsed.strftime("%Y-%m-%d %H:%M") if parsed is not None else ts
+
+
+def _authorization_lines(r: ValueReport) -> list[str]:
+    """The count first, then one row per authorization.
+
+    Unlike the round-budget line, a zero is printed rather than omitted. This is the
+    surface the falsify-from-memory check runs against, and a human who authorized
+    twice needs to be able to tell "none recorded" from "the section isn't shown".
+    """
+    lines = [
+        "",
+        "Human authorizations",
+        f"  - {r.authorizations_total} automated review round(s) were funded by a "
+        "recorded human authorization",
+    ]
+    if not r.authorizations:
+        return lines
+    lines.append(
+        "    If you remember authorizing fewer than this, the difference was not you."
+    )
+    for a in r.authorizations:
+        lines.append(_authorization_row(a))
+    lines.append("    Reasons are recorded verbatim and verified by nothing.")
+    return lines
+
+
+def _authorization_row(a: AuthorizationRecord) -> str:
+    """One authorization, reason last and never truncated.
+
+    The reason is the only account of why a round was funded, so it is rendered as
+    typed — placeholders included. A relayed `<why>` that nobody replaced is not dirt
+    to be cleaned up; it is the recorded state of that authorization, and hiding it
+    would make the record read better than the act was.
+    """
+    reason = a.reason if a.reason is not None else "(no reason recorded)"
+    return f"    {_fmt_when(a.timestamp)}  {a.change_id}  {a.reviewer}  {reason}"
 
 
 def _bottom_line(r: ValueReport) -> str:
@@ -138,6 +186,7 @@ def _render_human(r: ValueReport) -> str:
         "Stage 2 cut).",
     ]
     lines += _breakdown_lines(r)
+    lines += _authorization_lines(r)
     lines += [
         "",
         _bottom_line(r),
@@ -152,6 +201,10 @@ def _render_brief(r: ValueReport) -> str:
         bits.append(f"{r.edits_blocked} distinct target(s) held")
     if r.undisclosed_bypasses:
         bits.append(f"{r.undisclosed_bypasses} undisclosed bypass(es)")
+    if r.authorizations_total:
+        # The count travels with the one-line form people paste; the reasons do not
+        # fit on it and stay in the full view.
+        bits.append(f"{r.authorizations_total} human authorization(s)")
     return f"{window}: " + ", ".join(bits) + "."
 
 

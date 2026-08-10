@@ -422,13 +422,12 @@ def test_expensive_profile_requires_one_shot_authorization(
     )
 
 
-def test_interactive_authorization_is_bound_and_consumed_once(
+def test_authorization_is_bound_and_consumed_once(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     root = _repo(tmp_path, cost_class="expensive")
     _fake_codex(root, monkeypatch)
     _prepare(root)
-    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
 
     authorized = CliRunner().invoke(
         main,
@@ -443,7 +442,6 @@ def test_interactive_authorization_is_bound_and_consumed_once(
             "--reason",
             "Human selected the expensive profile for this round",
         ],
-        input="y\n",
     )
 
     assert authorized.exit_code == EXIT_OK, authorized.output
@@ -458,6 +456,41 @@ def test_interactive_authorization_is_bound_and_consumed_once(
     start = next(event for event in events if event.type == "review_round_started")
     assert start.payload["authorization_id"] == authorization_id
     assert begun["round_id"] == start.payload["round_id"]
+
+
+def test_authorize_runs_with_neither_stream_a_tty_and_no_stdin(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """The `!` case, which is the whole point of the cut.
+
+    A human's `!` prefix inside a Claude Code session runs the command with no TTY
+    and no stdin, so the one path that is unambiguously a human act is exactly the
+    one the old gate rejected. Both halves of that gate had to go: after the
+    `isatty` refusal was removed, the `click.confirm` would still have aborted on
+    empty stdin — a second refusal wearing the first one's clothes.
+
+    `CliRunner` reproduces the condition rather than simulating it: its stdin and
+    stdout are both non-TTY, and passing no `input` leaves stdin empty.
+    """
+    root = _repo(tmp_path, cost_class="expensive")
+    _fake_codex(root, monkeypatch)
+    _prepare(root)
+
+    result = CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "authorize", "change",
+        "--reviewer", "code-reviewer", "--reason", "ran it myself with `!`",
+    ])
+
+    assert result.exit_code == EXIT_OK, result.output
+    assert "TTY" not in result.output
+    authorization = next(
+        event
+        for event in read_change_events(events_path(root), "change")
+        if event.type == "review_round_authorized"
+    )
+    # `--reason` is recorded verbatim: it is the only claim of approval the design
+    # makes, and nothing validates it.
+    assert authorization.payload["reason"] == "ran it myself with `!`"
 
 
 def test_import_records_receipt_closes_round_and_emits_milestone(
@@ -1803,6 +1836,36 @@ def test_budget_block_prints_evidence(tmp_path: Path, monkeypatch: MonkeyPatch) 
     assert "do not retry" in out.lower()
 
 
+def test_budget_block_hint_does_not_send_the_human_to_a_terminal(
+    tmp_path: Path, monkeypatch: MonkeyPatch
+) -> None:
+    """After the TTY gate came out, `Hint: Use an interactive TTY: …` is false — and
+    it was also the sentence that sent the human out of the session to a second
+    terminal, which is the tax this cut removes.
+
+    The replacement addresses the agent (the block's only reader) and tells it what
+    to ask for, without describing a self-service path: the agent reads this source
+    at the exact moment it is deciding whether to route around the brake.
+    """
+    root = _repo(tmp_path)
+    _fake_codex(root, monkeypatch)
+    _exhaust_budget(root, 2)
+    _prepare(root)
+
+    blocked = CliRunner().invoke(main, [
+        "--workspace", str(root), "review", "begin", "change",
+        "--reviewer", "code-reviewer",
+    ])
+
+    assert blocked.exit_code != EXIT_OK
+    assert "interactive TTY" not in blocked.output
+    assert (
+        "  Hint: relay this block and ask the human to run:\n"
+        "        super-harness review authorize change --reviewer code-reviewer "
+        '--reason "<why>"'
+    ) in blocked.output
+
+
 def test_budget_block_emits_a_state_preserving_event(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
@@ -1835,28 +1898,32 @@ def test_budget_block_emits_a_state_preserving_event(
     assert derive_state(events_path(root))["change"].current_state == before
 
 
-def test_authorize_prompt_repeats_the_evidence(
+def test_authorize_repeats_the_evidence(
     tmp_path: Path, monkeypatch: MonkeyPatch
 ) -> None:
     """Insurance, not the primary surface — but the one case that matters is the human
-    who was told nothing by the agent."""
+    who was told nothing by the agent.
+
+    With the confirm gone the evidence no longer precedes a decision point; it is
+    printed alongside an authorization that has already been recorded. That is still
+    worth keeping: a human who reads it and disagrees can say so, and the record
+    names them.
+    """
     root = _repo(tmp_path)
     _fake_codex(root, monkeypatch)
     _exhaust_budget(root, 2)
     _prepare(root)
-    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
 
     result = CliRunner().invoke(
         main,
         ["--workspace", str(root), "review", "authorize", "change",
          "--reviewer", "code-reviewer", "--reason", "the curve is flat but I want one more"],
-        input="n\n",
     )
 
+    assert result.exit_code == EXIT_OK, result.output
     assert "Round-budget evidence" in result.output
     assert "round 3 against an automatic budget of 2" in result.output
     assert "usage limit reached" in result.output
-    assert "authorization cancelled" in result.output
 
 
 def test_authorize_json_envelope_is_not_polluted_by_the_evidence_block(
@@ -1865,29 +1932,25 @@ def test_authorize_json_envelope_is_not_polluted_by_the_evidence_block(
     """rb/f-03. The evidence is a diagnostic, so it belongs on stderr rather than
     prepended to the `--json` document.
 
-    Scoped honestly: `click.confirm` already writes its prompt to stdout, which is
-    pre-existing behaviour and its own (separate) question for `--json` callers. What
-    this pins is that the multi-line evidence block does not add to that.
+    With the confirm removed there is no longer a prompt line on stdout either, so
+    stdout is now the envelope and nothing else — the assertion is tightened to say
+    exactly that.
     """
     root = _repo(tmp_path)
     _fake_codex(root, monkeypatch)
     _exhaust_budget(root, 2)
     _prepare(root)
-    monkeypatch.setattr("super_harness.cli.review._interactive_terminal", lambda: True)
 
     result = CliRunner().invoke(
         main,
         ["--json", "--workspace", str(root), "review", "authorize", "change",
          "--reviewer", "code-reviewer", "--reason", "one more round"],
-        input="y\n",
     )
 
     assert result.exit_code == EXIT_OK, result.output
     assert "Round-budget evidence" in result.stderr
     assert "Round-budget evidence" not in result.stdout
-    # The envelope is still there, after click.confirm's own prompt line.
-    envelope = result.stdout[result.stdout.index("{"):]
-    assert json.loads(envelope)["command"] == "review authorize"
+    assert json.loads(result.stdout)["command"] == "review authorize"
 
 
 def test_import_accepts_alias_whose_bracketed_suffix_matches(

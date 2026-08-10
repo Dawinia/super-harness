@@ -60,6 +60,13 @@ class ValueReport:
     # concluded that specifications read into context and not followed is the actual
     # widespread failure, so the brake records itself.
     review_budget_hits: int = 0
+    # Human authorizations, one record each. Since the TTY gate came out of
+    # `review authorize` this count IS the mechanism: no individual event is
+    # checkable and no local file is tamper-proof, but a human who remembers
+    # authorizing twice can falsify a `5` from memory. Deliberately NOT deduped
+    # (unlike `review_budget_hits`) — see `_authorizations`.
+    authorizations: tuple[AuthorizationRecord, ...] = ()
+    authorizations_total: int = 0
 
 
 @dataclass(frozen=True)
@@ -75,6 +82,22 @@ class CostBreakdownRow:
     tokens: int | None
     findings_raised: int
     outcome: str
+
+
+@dataclass(frozen=True)
+class AuthorizationRecord:
+    """One `review_round_authorized` event, as recorded.
+
+    ``reason`` is ``None`` when the payload carried none — never ``""``, which would
+    render as an approval with no comment rather than as an absent one. It is the
+    human's own words and nothing validates them; the rendering must say so.
+    """
+
+    change_id: str
+    reviewer: str
+    reason: str | None
+    timestamp: str
+    actor: str
 
 
 def _read_all_events(events_file: Path) -> list[Event]:
@@ -395,6 +418,42 @@ def _budget_rounds_held(events: list[Event]) -> int:
     return len(seen)
 
 
+def derive_authorizations(events: list[Event]) -> tuple[AuthorizationRecord, ...]:
+    """Every `review_round_authorized` in these events, in append order.
+
+    Deliberately NOT deduped, which is the opposite of `_budget_rounds_held` right
+    above and worth stating plainly. The brake's block is emitted by the harness once
+    per refused invocation, so a retrying agent inflates it and it has to collapse
+    retries. An authorization is emitted once per deliberate act, so collapsing two
+    identical ones would report `1` for a human who acted twice — understating in the
+    exact direction that hides the abuse this count exists to expose.
+
+    It also lives here rather than in `attestation.py`: nothing at the merge boundary
+    consumes it, and the two modules read events through different parsers (strict
+    `parse_event_line` vs the tolerant dict iterator), so a shared derivation would
+    have to pick one contract and break the other's.
+
+    Never raises. A malformed payload yields a record with `reviewer='unknown'` and
+    `reason=None` rather than being dropped: the count is the mechanism, and silently
+    losing an authorization is the one failure mode that cannot be tolerated here.
+    """
+    out: list[AuthorizationRecord] = []
+    for ev in events:
+        if ev.type != "review_round_authorized":
+            continue
+        payload = ev.payload if isinstance(ev.payload, dict) else {}
+        reviewer = payload.get("reviewer")
+        reason = payload.get("reason")
+        out.append(AuthorizationRecord(
+            change_id=ev.change_id,
+            reviewer=reviewer if isinstance(reviewer, str) and reviewer else "unknown",
+            reason=reason if isinstance(reason, str) and reason else None,
+            timestamp=ev.timestamp,
+            actor=ev.actor.identifier if ev.actor is not None else "unknown",
+        ))
+    return tuple(out)
+
+
 def _armed_decisions(workspace_root: Path) -> int:
     """Ratified decisions carrying an executable check (bite-test). Best-effort:
     any load error -> 0 (the footnote must never crash the report)."""
@@ -432,6 +491,7 @@ def build_value_report(
         reported_cost,
         runs_with_reported_cost,
     ) = _review_cost(windowed)
+    authorizations = derive_authorizations(windowed)
     return ValueReport(
         since=since,
         until=until,
@@ -450,4 +510,6 @@ def build_value_report(
         review_reported_cost_usd=reported_cost,
         review_runs_with_reported_cost=runs_with_reported_cost,
         review_budget_hits=_budget_rounds_held(windowed),
+        authorizations=authorizations,
+        authorizations_total=len(authorizations),
     )

@@ -539,3 +539,20 @@ def test_claude_symlinked_config_directory_is_rejected_without_external_mutation
 
     assert settings.read_bytes() == original
     assert sorted(path.name for path in external.iterdir()) == ["settings.local.json"]
+
+
+def test_agents_md_subsection_routes_authorization_through_the_human_in_session() -> None:
+    """Host-specific ergonomics for `review authorize` belong here, not in the brake
+    block: this is guidance about what to tell the human, and the block is read by
+    the agent at the moment it is deciding whether to route around.
+
+    Under Claude Code the human's own `!` prefix runs the command in-session, so the
+    round-budget block no longer costs a trip to a second terminal.
+    """
+    block = ClaudeCodeAdapter().agents_md_subsection()
+    assert "review authorize" in block
+    assert "`!`" in block
+    # It stays the human's act. The subsection must not read as permission for the
+    # agent to fund its own round — nothing stops it technically, which is exactly
+    # why the guidance must not invite it.
+    assert "ask the human" in block or "the human runs" in block

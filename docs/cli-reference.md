@@ -829,7 +829,7 @@ super-harness review approve [OPTIONS] CHANGE
 
 ## super-harness review authorize
 
-Interactively authorize one exact expensive or over-budget round.
+Authorize one exact expensive or over-budget round.
 
 ```
 super-harness review authorize [OPTIONS] CHANGE
@@ -845,8 +845,7 @@ super-harness review authorize [OPTIONS] CHANGE
 **Exit codes:**
 
 - `0` one-shot authorization recorded
-- `1` human declined the interactive confirmation
-- `2` non-TTY, stale contract, invalid source set, or invalid lifecycle state
+- `2` stale contract, invalid source set, or invalid lifecycle state
 - `3` no `.harness/`
 
 ## super-harness review begin

@@ -262,3 +262,102 @@ def test_report_human_omits_budget_line_when_the_brake_never_fired(tmp_path):
                              catch_exceptions=False)
     assert res.exit_code == 0
     assert "round budget" not in res.output
+
+
+# --- 2026-08-09-authorization-channel: the count that replaced the TTY gate ---
+
+
+def _authorized(eid, change, ts, *, reviewer="code-reviewer", reason="why"):
+    return _json.dumps({
+        "event_id": eid, "type": "review_round_authorized", "change_id": change,
+        "timestamp": ts, "actor": {"type": "human", "identifier": "someone@example.test"},
+        "framework": "plain", "payload": {"reviewer": reviewer, "reason": reason},
+    })
+
+
+def test_report_human_shows_the_count_and_every_reason(tmp_path):
+    """The acceptance obligation is the RENDERED surface, not the derivation: a
+    computed-but-unshown count is exactly the failure this cut exists to avoid.
+
+    Both halves are load-bearing. The count is what a human can falsify from memory;
+    the reasons are the only account of why each round was funded.
+    """
+    _seed(tmp_path, [
+        _authorized("e1", "c1", "2026-08-09T10:18:46Z", reason="expensive profile, my call"),
+        _authorized("e2", "c1", "2026-08-09T11:10:38Z", reviewer="plan-reviewer",
+                    reason="one more plan round"),
+    ])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "2 automated review round(s)" in res.output
+    assert "expensive profile, my call" in res.output
+    assert "one more plan round" in res.output
+    assert "code-reviewer" in res.output and "plan-reviewer" in res.output
+    assert "2026-08-09" in res.output
+
+
+def test_report_human_states_zero_authorizations_rather_than_omitting_the_line(tmp_path):
+    """Unlike the budget line, a zero here is not noise — it is the reading the
+    falsify-from-memory check needs most. A human who authorized twice and sees
+    nothing at all cannot tell "none happened" from "the section isn't printed".
+    """
+    _seed(tmp_path, [])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "0 automated review round(s)" in res.output
+
+
+def test_report_human_says_the_reason_is_unverified(tmp_path):
+    """`--reason` records what was typed, not what was true — a known tax of the
+    design. The surface that displays it has to say so, or it reads as a checked
+    claim."""
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="<why>")])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "<why>" in res.output          # a placeholder is rendered verbatim, not cleaned
+    assert "verified by nothing" in res.output
+
+
+def test_report_human_marks_a_missing_reason_as_absent(tmp_path):
+    """An authorization whose payload carried no reason must not render as a blank
+    where the words go — that reads as 'approved, no comment'."""
+    _seed(tmp_path, [_json.dumps({
+        "event_id": "e1", "type": "review_round_authorized", "change_id": "c1",
+        "timestamp": "2026-08-09T10:00:00Z",
+        "actor": {"type": "human", "identifier": "someone@example.test"},
+        "framework": "plain", "payload": {"reviewer": "code-reviewer"},
+    })])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert "(no reason recorded)" in res.output
+
+
+def test_report_brief_carries_the_count(tmp_path):
+    """`--brief` is the one-line form people paste; the count is the mechanism, so it
+    travels with it. Still exactly one line."""
+    _seed(tmp_path, [_authorized("e1", "c1", "2026-08-09T10:00:00Z")])
+    res = CliRunner().invoke(main, ["--workspace", str(tmp_path), "report", "--brief"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    assert res.output.strip().count("\n") == 0
+    assert "1 human authorization(s)" in res.output
+
+
+def test_report_json_carries_every_authorization_record(tmp_path):
+    """The human view is the obligation; `--json` is where the full records live for
+    anything that wants to audit them."""
+    _seed(tmp_path, [
+        _authorized("e1", "c1", "2026-08-09T10:00:00Z", reason="first"),
+        _authorized("e2", "c2", "2026-08-09T11:00:00Z", reason="second"),
+    ])
+    res = CliRunner().invoke(main, ["--json", "--workspace", str(tmp_path), "report"],
+                             catch_exceptions=False)
+    assert res.exit_code == 0
+    data = _json.loads(res.output)["data"]
+    assert data["authorizations_total"] == 2
+    assert [a["reason"] for a in data["authorizations"]] == ["first", "second"]
+    assert data["authorizations"][0]["actor"] == "someone@example.test"
