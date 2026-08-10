@@ -214,3 +214,31 @@ def test_section_states_where_negative_knowledge_goes(tmp_path: Path) -> None:
     assert text.index("super-harness decision new") < text.index(
         "<!-- super-harness section end -->"
     )
+
+
+def test_agents_md_states_the_route_back_and_both_skippable_roles(tmp_path) -> None:
+    """Two sentences that Cut 3 made WRONG rather than merely incomplete.
+
+    An agent following the narrower text hits a wedged plan reviewer, skips it bare,
+    reaches READY_TO_MERGE, and fails `attest verify` in CI on a blocker its own
+    instructions said applied only to code review. And an agent stuck at
+    READY_TO_MERGE with one finding to fold in reaches for `plan redeclare` and pays
+    a whole plan cycle, which is what this change exists to stop.
+
+    Asserted once, against the RENDERED file, so the two agent adapters cannot drift
+    apart or be left behind on the old wording.
+    """
+    _write_adapters_yaml(
+        tmp_path,
+        "adapters:\n"
+        "  - {name: claude-code, type: agent, builtin: true, version: 0.1.0, enabled: true}\n"
+        "  - {name: codex, type: agent, builtin: true, version: 0.1.0, enabled: true}\n",
+    )
+    agents = tmp_path / "AGENTS.md"
+
+    render_super_harness_section(tmp_path, agents, "0.1.0")
+
+    text = agents.read_text()
+    assert text.count("implementation reopen") >= 2   # both adapters carry it
+    assert "plan or code" in text          # the skip sentence covers both roles
+    assert "a code-review skip needs" not in text   # the narrower wording is gone

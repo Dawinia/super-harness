@@ -373,8 +373,9 @@ starts editing. The hot-path gate enforces lifecycle rules:
   merge attestation both surface — `attest verify` prints one
   `round budget: held N automatic round(s) …` line per attestation that hit it, and
   carries the same per-change figure in `--json` as `budget_holds`. It is deliberately
-  separate from the `review independence:` line, which speaks only about code review: a
-  change held at *plan* review would otherwise read as a claim about its code reviewer.
+  separate from the `code review independence:` / `plan review independence:` lines: it
+  counts holds whatever role raised them, so attaching it to either row would read as a
+  claim about that one reviewer — and would now print twice.
   Authorizing another round is `review authorize`, one round at a time. If a rejection
   has landed by the time you run it, the refusal now names the step back —
   `plan ready` — instead of only the state it wanted you in.
@@ -457,8 +458,8 @@ starts editing. The hot-path gate enforces lifecycle rules:
   For a human participant, use `review human inspect`, write the structured
   verdict, validate it with `review human draft`, and have the human run
   TTY-only `review human confirm --nonce <nonce>`. A code agent must not confirm
-  that nonce. `review skip` remains the disclosed escape hatch; code-review skip
-  requires `--override --reason <why>` to pass attestation.
+  that nonce. `review skip` remains the disclosed escape hatch; a skipped review —
+  plan or code — requires `--override --reason <why>` to pass attestation.
 - Now in `IMPLEMENTATION_IN_PROGRESS`, the agent can edit source code. If it
   tries to `Edit` before the lifecycle permits it, the `PreToolUseGate` blocks
   the tool call.
@@ -481,7 +482,14 @@ starts editing. The hot-path gate enforces lifecycle rules:
   commits, then run `review prepare` once. Each source receives everything since
   its latest trustworthy baseline. Do not repeat `done` or plan review for a
   code-only fix. Use `plan redeclare` only when the approved plan, scope, or
-  requirements changed; the CLI rejects undeclared plan/spec drift. A scoped
+  requirements changed; the CLI rejects undeclared plan/spec drift. When the change is
+  already frozen at `READY_TO_MERGE` or `AWAITING_CODE_REVIEW` — a finding you decided
+  to fold in, whether the round passed or is still out —
+  `implementation reopen <change> --reason "<why>"`
+  returns it to `IMPLEMENTATION_IN_PROGRESS` without a plan cycle. It voids the code
+  review the change was under or had passed, so `done` and another round are required
+  before merge, and
+  `super-harness report` counts every reopen with its reason. A scoped
   A started round consumes the automatic-round budget even if a producer crashes.
   The default ceiling is two automated rounds per epoch; exhaustion requires a
   human reviewer or one-shot authorization for an exact additional round.

@@ -19,8 +19,10 @@ from super_harness.core.events import Actor, Event
 from super_harness.core.paths import events_path
 from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.reducer import derive_state
+from super_harness.core.review_verdict import read_change_events
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
+from super_harness.engineering.review_runs import derive_review_execution
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 
 
@@ -841,3 +843,137 @@ def test_the_scope_form_the_route_names_is_one_plan_ready_accepts(tmp_path: Path
         "--workspace", str(tmp_path), "plan", "ready", "c",
         "--scope", f"@{scope_file}"])
     assert at_form.exit_code == EXIT_OK, at_form.output
+
+
+# --------------------------------------------------------------------------- #
+# Arm A reads per-change-since-boundary evidence, not the current epoch.
+#
+# `plan_ready` is the plan epoch boundary AND the only step out of PLAN_REJECTED, so
+# the old per-epoch read erased the evidence on every rejection: the escape hatch
+# became unreachable exactly when a wedged producer needed it. An adopter livelocked
+# on this — the reproduction is `test_skip_passes_after_a_rejection_and_resubmit`.
+# --------------------------------------------------------------------------- #
+_PLAN_GOVERNANCE = _GOVERNANCE.replace(
+    "    plan-reviewer:\n"          # human-only: the `super-harness init` default
+    "      participants: [human]\n",
+    "    plan-reviewer:\n"
+    "      participants: [codex]\n",
+)
+
+
+def _plan_ready_with_scope(ws: Path, slug: str, files: list[str]) -> None:
+    _emit_payload(ws, "plan_ready", slug, {"scope": {"files": files}})
+
+
+def _plan_round_then_rejection(ws: Path, slug: str) -> None:
+    """One frozen plan round, imported as a rejection. Leaves the change PLAN_REJECTED."""
+    _freeze_round(ws, slug, reviewer="plan-reviewer", epoch_event_type="plan_ready")
+    _emit_payload(ws, "plan_rejected", slug, {"reviewer": "plan-reviewer"})
+    refresh_state_after_emit(ws)
+
+
+def test_skip_passes_after_a_rejection_and_resubmit(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared")
+    _write_governance(tmp_path, _PLAN_GOVERNANCE)
+    _write_profiles(tmp_path)
+    _plan_ready_with_scope(tmp_path, "c", ["src/a.py"])
+    refresh_state_after_emit(tmp_path)
+    _plan_round_then_rejection(tmp_path, "c")
+    assert _state(tmp_path, "c") == "PLAN_REJECTED"
+    _plan_ready_with_scope(tmp_path, "c", ["src/a.py"])     # same plan, revised
+    refresh_state_after_emit(tmp_path)
+
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "plan-reviewer", "--override", "--reason", "producer wedged"])
+    assert r.exit_code == EXIT_OK, r.output
+    assert _state(tmp_path, "c") == "PLAN_APPROVED"
+
+
+def test_skip_refuses_after_a_resubmit_that_moved_scope(tmp_path: Path) -> None:
+    """A wider re-submit is a plan nobody has seen, even without a redeclare."""
+    _seed(tmp_path, "c", "intent_declared")
+    _write_governance(tmp_path, _PLAN_GOVERNANCE)
+    _write_profiles(tmp_path)
+    _plan_ready_with_scope(tmp_path, "c", ["src/a.py"])
+    refresh_state_after_emit(tmp_path)
+    _plan_round_then_rejection(tmp_path, "c")
+    _plan_ready_with_scope(tmp_path, "c", ["src/a.py", "src/b.py"])
+    refresh_state_after_emit(tmp_path)
+
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "plan-reviewer", "--override", "--reason", "producer wedged"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "no review round" in r.output
+    assert _event_types(tmp_path) == before
+
+
+def test_skip_refuses_after_a_redeclaration_with_no_new_round(tmp_path: Path) -> None:
+    _seed(tmp_path, "c", "intent_declared")
+    _write_governance(tmp_path, _PLAN_GOVERNANCE)
+    _write_profiles(tmp_path)
+    _plan_ready_with_scope(tmp_path, "c", ["src/a.py"])
+    refresh_state_after_emit(tmp_path)
+    _freeze_round(tmp_path, "c", reviewer="plan-reviewer", epoch_event_type="plan_ready")
+    _emit_payload(tmp_path, "plan_redeclared", "c", {"reason": "wider scope"})
+    _plan_ready_with_scope(tmp_path, "c", ["src/a.py"])
+    refresh_state_after_emit(tmp_path)
+
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "plan-reviewer", "--override", "--reason", "producer wedged"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert _event_types(tmp_path) == before
+
+
+def test_code_review_skip_refuses_after_a_reopen(tmp_path: Path) -> None:
+    """`implementation reopen` must not walk fresh code past this guard.
+
+    Reopen → done → skip would otherwise pass on rounds frozen BEFORE the reopen and
+    land `code_review_passed` on an implementation no reviewer ever saw.
+    """
+    _seed(tmp_path, "c", *_PREFIX)                       # → AWAITING_CODE_REVIEW
+    _write_governance(tmp_path)
+    _write_profiles(tmp_path)
+    _freeze_round(
+        tmp_path, "c", reviewer="code-reviewer", epoch_event_type="implementation_complete"
+    )
+    _seed(tmp_path, "c", "code_review_passed")           # → READY_TO_MERGE
+    _emit_payload(tmp_path, "implementation_invalidated", "c", {"reason": "fold in"})
+    _seed(tmp_path, "c", "verification_passed", "implementation_complete")
+    assert _state(tmp_path, "c") == "AWAITING_CODE_REVIEW"
+
+    before = _event_types(tmp_path)
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "code-reviewer", "--override", "--reason", "producer wedged"])
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "no review round" in r.output
+    assert _event_types(tmp_path) == before
+
+
+def test_skip_does_not_crash_when_the_current_epoch_has_no_rounds(tmp_path: Path) -> None:
+    """Arm B's regression. It reads `execution.rounds[-1]` and used to lean on arm A's
+    `not execution.rounds` early return; "rounds since the boundary, none in this
+    epoch" is now reachable — and is exactly the case this fix exists to unblock."""
+    _seed(tmp_path, "c", "intent_declared")
+    _write_governance(tmp_path, _PLAN_GOVERNANCE)
+    _write_profiles(tmp_path)
+    _plan_ready_with_scope(tmp_path, "c", ["src/a.py"])
+    refresh_state_after_emit(tmp_path)
+    _plan_round_then_rejection(tmp_path, "c")
+    _plan_ready_with_scope(tmp_path, "c", ["src/a.py"])
+    refresh_state_after_emit(tmp_path)
+
+    execution = derive_review_execution(
+        read_change_events(events_path(tmp_path), "c"), "plan-reviewer"
+    )
+    assert execution.rounds == ()          # the empty tuple arm B would have indexed
+    r = CliRunner().invoke(main, [
+        "--workspace", str(tmp_path), "review", "skip", "c",
+        "--reviewer", "plan-reviewer", "--override", "--reason", "producer wedged"])
+    assert r.exit_code == EXIT_OK, r.output
+    assert not isinstance(r.exception, IndexError)

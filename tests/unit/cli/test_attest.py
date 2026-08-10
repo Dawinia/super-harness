@@ -131,27 +131,27 @@ def _verify(tmp_path, monkeypatch, diff: str, *, json_mode: bool = False):
 def test_verify_discloses_self_signed_line(tmp_path, monkeypatch):
     _attestation(tmp_path, "feat-x", "alice@x", "alice@x")  # author == reviewer
     r = _verify(tmp_path, monkeypatch, _DIFF)
-    assert "review independence: self-signed" in r.output
+    assert "code review independence: self-signed" in r.output
     assert r.exit_code == 0  # disclosure NEVER changes pass/fail
 
 
 def test_verify_discloses_independent_line(tmp_path, monkeypatch):
     _attestation(tmp_path, "feat-x", "alice@x", "bob@x")
     r = _verify(tmp_path, monkeypatch, _DIFF)
-    assert "review independence: independent — bob@x" in r.output
+    assert "code review independence: independent — bob@x" in r.output
     assert r.exit_code == 0
 
 
 def test_verify_no_validated_attestation_prints_no_independence_line(tmp_path, monkeypatch):
     # subject file but NO added covering attestation → FAIL, and no disclosure line
     r = _verify(tmp_path, monkeypatch, "M\tsrc/x.py\n")
-    assert "review independence:" not in r.output
+    assert "independence:" not in r.output
 
 
 def test_verify_json_has_independence_and_stays_one_line(tmp_path, monkeypatch):
     _attestation(tmp_path, "feat-x", "alice@x", "bob@x")
     r = _verify(tmp_path, monkeypatch, _DIFF, json_mode=True)
-    assert "review independence:" not in r.output  # human text must not leak to JSON
+    assert "independence:" not in r.output  # human text must not leak to JSON
     payload = json.loads(r.output)  # single parseable line
     assert "independence" in payload["data"]
     assert payload["data"]["independence"][0]["classification"] == "independent"
@@ -160,7 +160,8 @@ def test_verify_json_has_independence_and_stays_one_line(tmp_path, monkeypatch):
 def test_verify_tolerated_malformed_line_still_discloses(tmp_path, monkeypatch):
     _attestation(tmp_path, "feat-x", "alice@x", "bob@x", junk=True)
     r = _verify(tmp_path, monkeypatch, _DIFF)
-    assert "review independence:" in r.output
+    assert "code review independence:" in r.output
+    assert "plan review independence:" in r.output
     assert r.exit_code == 0  # no crash out of the non-failing path
 
 
@@ -170,7 +171,7 @@ def test_verify_fail_still_discloses_validated_attestation(tmp_path, monkeypatch
     _attestation(tmp_path, "feat-x", "alice@x", "alice@x")
     r = _verify(tmp_path, monkeypatch, _DIFF + "M\tsrc/y.py\n")
     assert r.exit_code == 2  # uncovered y.py fails the gate
-    assert "review independence: self-signed" in r.output  # disclosure still emitted
+    assert "code review independence: self-signed" in r.output  # still emitted
 
 
 def test_verify_quiet_suppresses_disclosure(tmp_path, monkeypatch):
@@ -181,7 +182,7 @@ def test_verify_quiet_suppresses_disclosure(tmp_path, monkeypatch):
         "--workspace", str(tmp_path), "--quiet",
         "attest", "verify", "--base", "main", "--head", "HEAD"])
     assert r.exit_code == 0
-    assert "review independence:" not in r.output
+    assert "independence:" not in r.output
 
 
 # --------------------------------------------------------------------------- #
@@ -242,10 +243,21 @@ def test_attest_write_disclose_gate_bypass_clears_blocker(tmp_path, monkeypatch)
 def test_independence_line_override_skip():
     from super_harness.cli.attest import _independence_line
     line = _independence_line(
+        "code_review",
         {"classification": "skipped", "reviewer": "t", "skipped": True,
          "override": True, "reason": "deadlock"})
     assert "OVERRIDE" in line
     assert "deadlock" in line
+
+
+def test_independence_line_names_its_role():
+    """A bare `review independence:` beside a labelled plan row would read as "the
+    review" and quietly claim the plan row's meaning."""
+    from super_harness.cli.attest import _independence_line
+    item = {"classification": "independent", "reviewer": "bob@x", "skipped": False,
+            "override": False, "reason": None}
+    assert _independence_line("code_review", item).startswith("code review independence:")
+    assert _independence_line("plan_review", item).startswith("plan review independence:")
 
 
 # --------------------------------------------------------------------------- #
@@ -278,18 +290,20 @@ def test_verify_prints_round_budget_holds(tmp_path, monkeypatch):
 
 
 def test_verify_budget_hold_is_not_attached_to_the_independence_line(tmp_path, monkeypatch):
-    """A PLAN-review hold must not read as a claim about the CODE reviewer.
+    """A hold must not read as a claim about either reviewer.
 
     `derive_independence` counts every `review_budget_exceeded` whatever role raised it,
-    while the independence classification is scoped to code review by design §4.1. The
+    so the figure belongs to the change and to no single role's row. Attaching it to one
+    would misattribute it (#96) and — now that there are two rows — print it twice. The
     two numbers therefore travel on separate lines and in separate envelope keys.
     """
     _attestation_with_holds(tmp_path, "feat-x", [("plan-reviewer", 7)])
     r = _verify(tmp_path, monkeypatch, _DIFF)
-    independence_line = next(
-        ln for ln in r.output.splitlines() if ln.startswith("review independence:")
-    )
-    assert independence_line == "review independence: independent — bob@x"
+    assert [ln for ln in r.output.splitlines() if "independence:" in ln] == [
+        "code review independence: independent — bob@x",
+        'plan review independence: unattributed (legacy "cli" placeholder)',
+    ]
+    assert sum(ln.startswith("round budget:") for ln in r.output.splitlines()) == 1
 
 
 def test_verify_without_a_hold_prints_no_budget_line(tmp_path, monkeypatch):
@@ -324,11 +338,13 @@ def test_verify_attributes_each_hold_to_its_own_attestation(tmp_path, monkeypatc
         "M\tsrc/x.py\n"
     )
     r = _verify(tmp_path, monkeypatch, diff)
-    prefixes = ("review independence:", "round budget:")
+    prefixes = ("code review independence:", "plan review independence:", "round budget:")
     lines = [ln for ln in r.output.splitlines() if ln.startswith(prefixes)]
-    # each hold immediately follows the independence line of its own change
+    # each hold immediately follows ITS OWN change's pair of independence lines, and is
+    # emitted once per attestation rather than once per role
     assert [ln.split(":")[0] for ln in lines] == [
-        "review independence", "round budget", "review independence", "round budget",
+        "code review independence", "plan review independence", "round budget",
+        "code review independence", "plan review independence", "round budget",
     ]
-    assert "held 1 automatic round(s)" in lines[1]
-    assert "held 2 automatic round(s)" in lines[3]
+    assert "held 1 automatic round(s)" in lines[2]
+    assert "held 2 automatic round(s)" in lines[5]

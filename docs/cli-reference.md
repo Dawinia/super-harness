@@ -568,6 +568,24 @@ Implementation-phase lifecycle verbs.
 super-harness implementation COMMAND [ARGS...]
 ```
 
+## super-harness implementation reopen
+
+Emit `implementation_invalidated` — reopen a frozen change for a code-only fix.
+
+```
+super-harness implementation reopen [OPTIONS] SLUG
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `SLUG` | text | *required* |  |
+| `--reason` | text | *required* | Why the frozen implementation is being reopened (recorded on the event and counted by `super-harness report`). |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+
 ## super-harness implementation start
 
 Emit `implementation_started` (PLAN_APPROVED → IMPLEMENTATION_IN_PROGRESS).

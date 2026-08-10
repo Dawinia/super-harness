@@ -97,11 +97,16 @@ It must continue the whole target after finding a blocker. If the target itself 
 insufficient, return `scope_sufficient: false` with a finding; never widen it to the
 whole PR ad hoc. A code-only finding fix does not trigger plan review unless the
 approved plan, scope, or requirements changed; use `plan redeclare` when they did.
+If the change is already frozen at `READY_TO_MERGE` or `AWAITING_CODE_REVIEW`, fold
+the fix in with `implementation reopen <change> --reason "<why>"`, which returns it to
+`IMPLEMENTATION_IN_PROGRESS` and voids the code review it was under or had passed — do not
+`plan redeclare` for a code-only fix, which costs a whole plan cycle.
 
 Human review is first-class: use `review human inspect`, validate a verdict with
 `review human draft`, then leave `review human confirm` to a human in a TTY. An
 agent must never confirm the human nonce. `review skip` remains a disclosed escape
-hatch; a code-review skip needs an explicit override and reason to pass attestation.
+hatch; a skipped review — plan or code — needs an explicit override and reason to
+pass attestation.
 
 When `review begin` reports that a round needs one-shot human authorization, relay
 the block and ask the human to run `super-harness review authorize ...` — under
