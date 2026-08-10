@@ -192,13 +192,16 @@ def _reopen_lines(r: ValueReport) -> list[str]:
     lines = [
         "",
         "Reopened implementations",
-        # What was counted, not what it cost. Whether the change was reviewed again
-        # afterwards is the merge gate's question, not this line's, and claiming it
-        # here would assert more than the derivation measured. It also does not say
-        # the voided review had PASSED: the verb accepts AWAITING_CODE_REVIEW, where
-        # the round is still out.
+        # What was counted, not what happened next. The trailing clause states the
+        # merge gate's RULE — a reopen lands in IMPLEMENTATION_IN_PROGRESS, and nothing
+        # merges from there without `code_review_passed` and READY_TO_MERGE — which is
+        # true of every reopen the moment it is emitted. It deliberately does not say
+        # the change WAS reviewed again: a reopened change can be abandoned, and
+        # `derive_reopens` counts `implementation_invalidated` events and nothing else.
+        # Nor does it say the voided review had PASSED — the verb accepts
+        # AWAITING_CODE_REVIEW, where the round is still out.
         f"  - {r.reopens_total} frozen implementation(s) returned to editing, each one "
-        "sending the change back through code review",
+        "requiring code review to run again before it can merge",
     ]
     if not r.reopens:
         return lines

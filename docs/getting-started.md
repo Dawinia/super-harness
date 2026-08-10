@@ -484,7 +484,8 @@ starts editing. The hot-path gate enforces lifecycle rules:
   code-only fix. Use `plan redeclare` only when the approved plan, scope, or
   requirements changed; the CLI rejects undeclared plan/spec drift. When the change is
   already frozen at `READY_TO_MERGE` or `AWAITING_CODE_REVIEW` — a finding you decided
-  to fold in after the round passed — `implementation reopen <change> --reason "<why>"`
+  to fold in, whether the round passed or is still out —
+  `implementation reopen <change> --reason "<why>"`
   returns it to `IMPLEMENTATION_IN_PROGRESS` without a plan cycle. It voids the code
   review the change was under or had passed, so `done` and another round are required
   before merge, and

@@ -584,6 +584,10 @@ def test_report_human_shows_reopen_count_and_every_reason(tmp_path):
     assert res.exit_code == 0
     assert "2 frozen implementation(s) returned to editing" in res.output
     assert "already passed" not in res.output   # CR-001: half of them had not
+    # CR-004: a rule that holds at emit time, not a prediction the events cannot make.
+    # A reopened change can be abandoned and never reviewed again.
+    assert "requiring code review to run again" in res.output
+    assert "sending the change back through code review" not in res.output
     assert "fold in AUTH-005/006" in res.output
     assert "spotted a deadlock" in res.output
     assert "c1" in res.output and "c2" in res.output
