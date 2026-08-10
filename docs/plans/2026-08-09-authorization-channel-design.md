@@ -3,8 +3,9 @@ change: 2026-08-09-authorization-channel
 ---
 # Authorization record — design
 
-The TTY gate on `review authorize` comes out, and what replaces it is a count put
-where the person merging will see it, not another wall.
+The TTY gate on `review authorize` comes out. It is replaced by a count `report`
+can show — not by another wall, and not by a claim about the merge boundary that
+this repo's plumbing cannot cash.
 
 ## Why: the gate stops the honest path and nobody else
 
@@ -55,12 +56,13 @@ is checkable by the person who remembers authorizing twice. No individual event
 is checkable that way, and no local file is tamper-proof, so the count is the
 whole mechanism.
 
-That splits into two obligations the rest of this document keeps apart.
-`.harness/attestations/*.jsonl` is the **evidence**: committed, in the PR diff,
-and already carrying every authorization event verbatim today. The PR
-description's metadata block is the **surface**: the place the count has to
-appear for anyone to actually read it. Evidence without a surface is what this
-repo already has, and it is why nobody has ever noticed an authorization.
+Evidence and surface are separate obligations, and only the first is already
+met. `.harness/attestations/*.jsonl` is the **evidence**: committed, in the PR
+diff, and carrying every authorization event verbatim today. No **surface** at
+the merge boundary survived contact with this repo (§2 lists the three that were
+tried and what killed each), so this change delivers the count where it is
+correct — `report` — and stops there rather than shipping a number that would be
+zero or stale exactly when it mattered.
 
 ## Design
 
@@ -80,7 +82,7 @@ triggers the agent's next turn — the human types one line and nothing else.
 terminal, and `--pager` is optional. `init`, `sync --agents-md` and
 `adapter uninstall` are untouched.
 
-### 2. The count is made legible at the merge boundary
+### 2. The count becomes readable locally — and no claim is made past that
 
 The evidence is already committed. An attestation file is a verbatim event
 snapshot, so every `review_round_authorized` event — reason included — is
@@ -88,33 +90,37 @@ snapshot, so every `review_round_authorized` event — reason included — is
 legibility: nobody audits raw JSONL while merging, so the anchor this design
 rests on is present and unread.
 
-So this adds a derivation and puts it in front of the person merging.
-`derive_authorizations(events)` sits beside `derive_independence` in
-`engineering/attestation.py` — one entry per attestation, never summed across
-slugs, for the reason that code already documents. It then reaches three
-surfaces, and the first is the one that matters:
+So this adds one derivation and one rendered surface. `derive_authorizations`
+computes the count and the recorded reasons; `report` shows them, via
+`value_report.py` for the field and `cli/report.py` for the rendering —
+`value_report.py` alone would compute something nothing displays.
 
-- **The PR body.** `build_metadata` already writes a `Change: / Tier: /
-  Verification:` block into the PR description; an `Authorizations: N` line joins
-  it. This is the only surface a merging human reliably reads, so it is where
-  the enforcement claim is cashed.
-- `cli/attest.py`, beside the `review_budget_rounds_held` disclosure it already
-  prints — for anyone running `attest verify` directly.
-- `report`, via `cli/report.py`'s renderer. `value_report.py` alone would compute
-  a field nothing shows.
+**That is the whole of it, and it is visibility, not enforcement.** Three
+merge-boundary surfaces were tried and each failed on a fact about this repo:
 
-The earlier draft of this section said the count would sit "in the PR diff" while
-routing it only to `attest verify` stdout — the merge-gate check log, which
-nobody reads on the way to clicking merge. That was the design's sole enforcement
-mechanism delivered to a reader it never established. A `Key: Value` line in the
-PR description is that reader's actual field of view.
+- *The attestation file.* It is a verbatim event snapshot that `derive_state` and
+  `find_ordering_violations` parse; a synthetic summary line would change a
+  format those readers depend on.
+- *`attest verify` stdout.* That is a CI check log. Nobody reads it on the way to
+  clicking merge, so a count there is delivered to a reader this design cannot
+  claim exists.
+- *The PR description's metadata block.* `build_metadata` derives from
+  `.harness/events.jsonl` — gitignored, and absent from the CI checkout where the
+  only automated writer runs. It would print `Authorizations: 0` for a change
+  with five. It is also written once at `pr_opened`, so later authorizations
+  would be missed; and this repo installs no such workflow at all, so on the
+  self-host path the line would never appear.
 
-There is **no new blocker and no new disclosure verb.** A blocker must name a
-condition, and every candidate here ("the agent did it") is one the harness
-cannot evaluate. Blocking on something unmeasurable yields either a rule that
-never fires or a rule that fires on everything — theatre, or a tax on every
-honest authorization. The `Authorizations:` line in the PR description is the
-enforcement, and its reader is the person merging.
+An understated count is worse than none: it lets the falsify-from-memory check
+pass against a number that is wrong in the direction that hides the abuse. So the
+count is not routed to the merge boundary, and this document does not claim it
+is. `report` is a command a human runs deliberately, against local events that
+are actually present — the one place the number is both correct and read on
+purpose.
+
+There is likewise **no new blocker and no new disclosure verb.** A blocker must
+name a condition, and every candidate here ("the agent did it") is one the
+harness cannot evaluate.
 
 ### 3. The brake block stops naming a terminal
 
@@ -202,8 +208,14 @@ it would matter.
   deliberate trade. It could already do so at the cost of one `pty.fork()`; now
   the act lands in a count the human reads at merge instead of being invisible.
   The tax is that the count is the only thing standing there.
-- **The count is only as good as its reader.** It fails silently against a human
-  who merges without looking. Nothing here fixes that, and nothing pretends to.
+- **The count is only as good as its reader, and nothing puts it in front of
+  them.** It appears when someone runs `report`. Routing it to the merge boundary
+  is left undone rather than faked; if that is wanted, it needs plumbing this
+  change does not build (see §2 for what each candidate surface lacks).
+- **`--reason` records what was typed, not what was true.** Of this change's own
+  four authorizations, three carry the literal placeholder from the relayed
+  command (`<你的理由>`, `<真话>`, `<why>`). Nothing validates it, and nothing
+  can.
 
 ## Scope
 
@@ -211,17 +223,15 @@ Modified:
 
 - `cli/review.py` — `review authorize` drops the TTY refusal and the confirm; the
   round-budget block's hint becomes the exact text in §3.
-- `engineering/attestation.py` — `derive_authorizations(events)`, beside
-  `derive_independence`.
-- `engineering/pr_metadata.py` — `build_metadata` gains the `Authorizations:`
-  line. This is the surface §2 cashes its enforcement claim on; without it the
-  count never reaches the person merging.
-- `cli/attest.py` — prints it beside the existing `review_budget_rounds_held`
-  disclosure.
+- `engineering/value_report.py` — `derive_authorizations`, built on the same
+  event iteration `report` already uses. It deliberately does **not** live in
+  `attestation.py`: nothing at the merge boundary consumes it, and the two
+  modules read events through different parsers (strict `parse_event_line` vs
+  the tolerant dict iterator), so a shared derivation would have to pick one
+  contract and break the other's.
 - `engineering/value_report.py` — the rollup on `ValueReport`.
-- `cli/report.py` — renders it. `value_report.py` alone computes a field nothing
-  shows, which is the same "derives but nobody prints" gap as the `attest.py`
-  bullet above.
+- `cli/report.py` — renders it. A computed field nothing shows is the failure
+  this cut is built to avoid, so the rendering is scope, not a follow-up.
 - `scripts/gen_cli_reference.py` — the **source** of the stale exit-code text
   (`_EXIT_CODES`, the `review authorize` entries only: "human declined the
   interactive confirmation" and "non-TTY, …"). The identically-worded
@@ -233,8 +243,7 @@ Modified:
   `review authorize` today.
 - `AGENTS.md` — regenerated via `sync --agents-md` from that string, never
   hand-edited.
-- `tests/unit/engineering/test_pr_metadata.py`, `tests/unit/cli/test_report.py` —
-  the two output surfaces added above.
+- `tests/unit/cli/test_report.py` — the rendered surface.
 
 Not in scope, having been checked rather than assumed: `docs/concepts.md`,
 `docs/getting-started.md` and `docs/state-machine.md` contain no TTY claim about
@@ -247,12 +256,11 @@ Acceptance obligations, beyond unit coverage:
 - `review authorize` succeeds with neither stdin nor stdout a TTY — the `!` case,
   which is the whole point, and which the confirm alone would still have blocked
   after the `isatty` check was removed.
-- Every surface is exercised on its **output**, not its derivation, because an
-  unprinted count is the failure mode this cut exists to avoid: `build_metadata`
-  emits the `Authorizations:` line, `attest verify` prints the count and reasons,
-  and `report` renders them — each against real events rather than a mocked
-  rollup.
+- `report` is exercised on its **rendered output**, not its derivation, because
+  a computed-but-unshown count is the failure mode this cut exists to avoid —
+  against real events rather than a mocked rollup.
 - `doc check` passes with no drift after regeneration, proving the exit-code text
   was fixed at its generator rather than in the generated file.
-- Live: this change's own attestation carries both of its round-7 and round-8
-  authorizations, with the reasons the human typed.
+- Live: `report` on this change shows its own authorizations — there were four,
+  and three of their reasons are the placeholder text from the command the agent
+  relayed, which is the Known tax below in its natural habitat.
