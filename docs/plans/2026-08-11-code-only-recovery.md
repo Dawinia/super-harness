@@ -132,10 +132,18 @@ without re-deriving it.
 
 | role | resets on | note |
 |---|---|---|
-| `plan-reviewer` | `plan_redeclared`, `intent_redeclared` | **not** `plan_ready`, its epoch boundary — a `plan_ready` after a rejection is the same plan revised, and the earlier rounds are still evidence the reviewer was asked |
+| `plan-reviewer` | `plan_redeclared`, `intent_redeclared`, **and a `plan_ready` that declares a different scope** | a `plan_ready` that leaves scope alone is the same plan revised, and the earlier rounds are still evidence the reviewer was asked; one that moves scope is new material |
 | `code-reviewer` | `implementation_complete`, `plan_redeclared`, `intent_redeclared` | its epoch boundary is kept, because a new `implementation_complete` genuinely is code nobody has reviewed |
 
-Two earlier drafts of this predicate were wrong, both recorded because each looked right:
+"Different scope" is decided from the same raw stream the predicate already walks.
+`plan ready --scope` writes `payload["scope"]["files"]` and the reducer replaces rather
+than merges (`core/reducer.py:141-144`); a `plan_ready` with no `scope` key changes nothing
+and carries the previous declaration forward, so it is never a reset. Compare the file
+lists as sets — order and duplicates are not scope changes. Do **not** canonicalise before
+comparing: two spellings of one path then read as a change, which refuses a skip that might
+have been allowed, and refusing is the safe direction for a guard.
+
+Three earlier drafts of this predicate were wrong, all recorded because each looked right:
 
 *Whole change, no boundary at all.* A change re-declared with a wider scope and never sent
 to any reviewer would be passed by `review skip`, because its first plan cycle's rounds
@@ -150,6 +158,13 @@ victim. `READY_TO_MERGE` → `implementation reopen` → edit → `done` →
 rounds frozen **before** the reopen, and land `code_review_passed` on an implementation no
 reviewer ever saw. It merges as pass-with-disclosure. The two cuts have to be checked
 against each other, not only against the state machine.
+
+*Re-declaration alone, for `plan-reviewer`.* `("PLAN_REJECTED", "plan_ready")` is legal
+(`core/transitions.py:38`) and accepts `--scope` from that state, so reject →
+`plan ready --scope @wider` → `review skip --reviewer plan-reviewer` would pass on rounds
+frozen against the older, narrower plan. That is the same failure as the whole-change
+draft, reached without any re-declaration at all — a cheaper route to the identical
+outcome. The top-level rule was already right; this row simply did not implement it.
 
 **The predicate is scoped to the reviewer role**, filtering `payload["reviewer"]` exactly
 as `derive_review_execution` does. Without that filter, plan-review rounds would satisfy a
@@ -207,6 +222,9 @@ code-review-rejection path but not the `READY_TO_MERGE` fold-in.
   rejection, a re-submit, and `review skip` passes.
 - A change re-declared after an earlier plan cycle, with no round frozen since, is still
   refused.
+- Reject → `plan ready --scope @wider` → a plan-reviewer skip is still refused, and the
+  same re-submit with an unchanged scope is allowed. One pair, because the pair is the
+  distinction; either test alone passes under a predicate that ignores scope.
 - Reopen → `done` → `review skip --reviewer code-reviewer` is still refused on the fresh
   `implementation_complete`, so Cut 1 cannot walk code past Cut 2's guard.
 - Plan-review rounds present and zero code-reviewer rounds: a code-reviewer skip is still
@@ -234,6 +252,15 @@ code-review-rejection path but not the `READY_TO_MERGE` fold-in.
 `tests/integration/daemon/test_hook_entry.py`, `tests/unit/gates/test_decisions.py`.
 
 ## Out of scope
+
+A skipped **plan** review is invisible at the merge gate. `verify_attestations` blocks a
+skipped code review lacking `--override` (`engineering/attestation.py:283-287`) and
+`derive_independence` classifies code review alone, so `review skip --reviewer
+plan-reviewer` emits `plan_approved` and merges with nothing said. This is why every
+mis-drawn boundary above failed *silently* rather than loudly, and it is pre-existing —
+none of the three review rounds found a route this change introduces. Fixing it means
+extending the merge gate's disclosure to a second role, which changes what merges for
+histories that predate it and deserves its own review. Filed as a GitHub issue.
 
 A plan-review verdict may name files outside its assigned inspection target. The
 plan-reviewer's assignment scope is the plan documents (`engineering/review_contract.py`),
