@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+import super_harness.core.scope_match as scope_match_module
 from super_harness.core.scope_match import (
     GitScopeError,
     committed_scope_digest,
@@ -152,6 +153,28 @@ def test_committed_scope_digest_stable_and_changes(tmp_path: Path) -> None:
     _git(tmp_path, "commit", "-aqm", "w2")
     d2 = committed_scope_digest(tmp_path, base="main", in_scope=["f.py"])
     assert d2 != d1  # committed change moves the digest
+
+
+def test_git_diff_decoding_is_explicit_utf8(tmp_path: Path, monkeypatch) -> None:
+    """Windows must not decode Git's UTF-8 output with the system GBK locale."""
+    _repo(tmp_path)
+    path = tmp_path / "plan.md"
+    path.write_text("before\n", encoding="utf-8")
+    _git(tmp_path, "add", "plan.md")
+    _git(tmp_path, "commit", "-qm", "base")
+    _git(tmp_path, "checkout", "-qb", "feat")
+    path.write_text("after — native Windows\n", encoding="utf-8")
+    _git(tmp_path, "commit", "-aqm", "unicode diff")
+
+    real_run = subprocess.run
+
+    def run_with_encoding_assertion(*args, **kwargs):
+        assert kwargs.get("encoding") == "utf-8"
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(scope_match_module.subprocess, "run", run_with_encoding_assertion)
+
+    assert committed_scope_digest(tmp_path, base="main", in_scope=["plan.md"])
 
 
 def test_committed_scope_digest_empty_scope_is_constant(tmp_path: Path) -> None:

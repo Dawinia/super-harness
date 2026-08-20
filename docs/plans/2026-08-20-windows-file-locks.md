@@ -7,9 +7,11 @@ scope:
     - src/super_harness/core/writer.py
     - src/super_harness/core/post_emit.py
     - src/super_harness/core/paths.py
+    - src/super_harness/core/scope_match.py
     - tests/unit/core/test_file_lock.py
     - tests/unit/core/test_writer.py
     - tests/unit/core/test_post_emit.py
+    - tests/unit/core/test_scope_match.py
     - tests/integration/core/test_writer_concurrency.py
     - tests/integration/cli/test_windows_lifecycle_entrypoint.py
     - docs/getting-started.md
@@ -39,6 +41,12 @@ The confirmed red command is:
 `change start`, `plan ready`, `review prepare`, and `review begin` all reach the same
 unconditional imports in `core.writer` or `core.post_emit`. The failure occurs before an
 event is appended.
+
+After the lock bootstrap made those imports reachable, native Windows exposed a second
+blocker in `review prepare`: `scope_match` launched Git with `text=True` but no explicit
+encoding, so Python decoded a UTF-8 diff using the machine's GBK locale. A non-ASCII plan
+character crashed the subprocess reader and left `stdout=None`. The same change must pin
+Git's text decoding to UTF-8 so review bundle construction is deterministic across hosts.
 
 ## Design
 
@@ -76,6 +84,9 @@ claim of Windows support. This change supports native Windows lifecycle commands
 5. Re-run the original command in native Windows PowerShell, then run `change start`,
    `plan ready`, `review prepare`, and `review begin` far enough in a disposable external
    repository to prove command reachability without disturbing a real project.
+6. Add a scope-digest regression containing non-ASCII committed content and force the
+   process preferred encoding away from UTF-8; bundle hashing must still receive decoded
+   Git output rather than `None` or a locale exception.
 
 ## Documentation and decision conformance
 
@@ -84,4 +95,3 @@ commands are supported natively on Windows while the optional observer daemon re
 POSIX-only. Reconcile `d-events-append-only` because its anchored writer changes; the
 invariant remains true because the new lock continues to cover validate and append and
 does not mutate, truncate, or reorder existing events.
-

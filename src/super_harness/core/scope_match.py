@@ -63,7 +63,12 @@ def covered_by_scope(changed_file: str, declared_files: list[str]) -> bool:
 def _git(root: Path, *args: str) -> str:
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=root, capture_output=True, text=True, check=True
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
         )
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
         raise GitScopeError(f"`git {' '.join(args)}` failed: {type(e).__name__}: {e}") from e
@@ -80,7 +85,12 @@ def is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
     args = ["merge-base", "--is-ancestor", ancestor, descendant]
     try:
         proc = subprocess.run(
-            ["git", *args], cwd=root, capture_output=True, text=True, check=False
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
         )
     except FileNotFoundError as e:
         raise GitScopeError(f"`git {' '.join(args)}` failed: FileNotFoundError: {e}") from e
