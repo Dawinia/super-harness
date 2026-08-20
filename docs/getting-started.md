@@ -173,15 +173,16 @@ the scriptable behavior: it does not prompt or read user CLI configuration and
 applies immediately from explicit flags and existing workspace defaults, so CI
 and redirected scripts do not need `--yes`.
 
-The installed `init` entrypoint is designed for native Windows (including
-Windows Terminal and PowerShell), macOS, Linux, and WSL. Its ASCII fallback,
-Windows entrypoint, and stdlib settings-lock/liveness paths have automated test
-coverage. A real Windows TTY session has not yet been manually verified, so
-report terminal-specific rendering or key-handling differences if you encounter
-them. This boundary is specifically for `super-harness init`; it does not claim
-that every lifecycle, observer, or daemon command runs natively on Windows. The
-Unix package-install commands in [Install the CLI](#1-install-the-cli) are
-examples for that shell environment, not the boundary of `init` runtime support.
+The installed `init` and event-backed lifecycle commands are designed for native
+Windows (including Windows Terminal and PowerShell), macOS, Linux, and WSL.
+Their Windows entrypoint, event lock, state-rebuild lock, and review-bundle Git
+decoding paths have automated coverage. A real Windows TTY session has not yet
+been manually verified, so report terminal-specific rendering or key-handling
+differences if you encounter them. The optional observer daemon remains
+POSIX-only because it uses `fork` and POSIX process-liveness semantics; native
+Windows lifecycle support does not imply `observe start` support. The Unix
+package-install commands in [Install the CLI](#1-install-the-cli) are examples
+for that shell environment, not a runtime requirement.
 
 What `init --setup-github` applies after interactive confirmation (or
 immediately when stdin is not a TTY):
