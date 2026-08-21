@@ -8,10 +8,12 @@ scope:
     - src/super_harness/core/post_emit.py
     - src/super_harness/core/paths.py
     - src/super_harness/core/scope_match.py
+    - src/super_harness/sensors/verification_runner.py
     - tests/unit/core/test_file_lock.py
     - tests/unit/core/test_writer.py
     - tests/unit/core/test_post_emit.py
     - tests/unit/core/test_scope_match.py
+    - tests/unit/sensors/test_verification_runner.py
     - tests/integration/core/test_writer_concurrency.py
     - tests/integration/cli/test_windows_lifecycle_entrypoint.py
     - docs/getting-started.md
@@ -47,6 +49,12 @@ blocker in `review prepare`: `scope_match` launched Git with `text=True` but no 
 encoding, so Python decoded a UTF-8 diff using the machine's GBK locale. A non-ASCII plan
 character crashed the subprocess reader and left `stdout=None`. The same change must pin
 Git's text decoding to UTF-8 so review bundle construction is deterministic across hosts.
+
+After those lifecycle fixes made `done` reachable, native Windows exposed a third blocker:
+the verification runner passes `utc_now_iso()` verbatim to the verification-results archive
+path. ISO-8601 timestamps contain `:`, which is invalid in a Windows directory segment, so
+`archive_dir.mkdir()` raises WinError 123 before any configured verification check runs. The
+archive segment must retain a unique UTC timestamp while using only portable path characters.
 
 ## Design
 
@@ -87,6 +95,10 @@ claim of Windows support. This change supports native Windows lifecycle commands
 6. Add a scope-digest regression containing non-ASCII committed content and force the
    process preferred encoding away from UTF-8; bundle hashing must still receive decoded
    Git output rather than `None` or a locale exception.
+7. At the `VerificationRunner.check` seam, pin `utc_now_iso()` to a timestamp containing
+   colons and assert that the reported, created summary path uses a portable timestamp
+   segment. This deterministic cross-platform regression must fail before the fix even on
+   POSIX, where the invalid-on-Windows segment would otherwise be accepted.
 
 ## Documentation and decision conformance
 
