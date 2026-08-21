@@ -172,7 +172,7 @@ def test_writer_rejects_non_string_timestamp(tmp_path: Path):
     assert not events_file.exists() or events_file.read_text() == ""
 
 
-# F4 (review 2026-07-02): emit takes an fcntl.flock on a `.events.lock` sentinel
+# F4 (review 2026-07-02): emit takes a process lock on a `.events.lock` sentinel
 # spanning validate+append. These pin the sentinel naming (== paths.lock_path(
 # root, "events")) and that the lock is engaged even on the skip_validation path.
 
@@ -187,7 +187,7 @@ def test_writer_lock_path_is_events_lock_sibling(tmp_path: Path):
 
 
 def test_writer_skip_validation_still_creates_lock_sentinel(tmp_path: Path):
-    """skip_validation bypasses validation but the append still holds the flock,
+    """skip_validation bypasses validation but the append still holds the process lock,
     so the `.events.lock` sentinel is created next to events.jsonl."""
     events_file = tmp_path / ".harness" / "events.jsonl"
     w = EventWriter(events_file)

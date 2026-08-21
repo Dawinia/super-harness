@@ -9,10 +9,8 @@ must_pass and treats that as tamper, so a benign race permanently dirties a
 change (append-only, no repair path).
 
 Coverage is layered:
-- A deterministic lock-scope test proves the flock is actually held across
-  validate AND append, with no sleeps/threads (a probe inside the patched
-  validate asserts a non-blocking re-acquire fails) — the timing-independent
-  proof of the invariant.
+- A deterministic lock-scope test proves the cross-platform lock context spans
+  validate AND append, with no sleeps/threads.
 - Two race tests reproduce the end-to-end bug (one thread, one cross-process) by
   widening the post-validate/pre-append window (a sleep injected into
   `validate_preconditions`) and starting the racers together at a barrier.
@@ -30,7 +28,6 @@ same idiom as `test_writer.py::test_writer_multi_process_append_no_loss`) rather
 than `multiprocessing.spawn`: it needs no importable-by-qualname worker (so no new
 package `__init__.py`), and matches the repo's established real-process test style.
 """
-import fcntl
 import json
 import os
 import subprocess
@@ -38,6 +35,7 @@ import sys
 import textwrap
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from super_harness.core.emit_validation import find_ordering_violations
@@ -78,57 +76,48 @@ def _lines_for(events_file: Path, change_id: str) -> list[dict]:
 
 
 def test_emit_holds_events_lock_across_validate_and_append(tmp_path, monkeypatch):
-    """Deterministic (timing-independent) proof that emit holds the
-    `.events.lock` flock across the WHOLE validate→append critical section.
-
-    The race tests above reproduce the end-to-end bug but depend on a widened
-    window; this one proves the invariant directly with no sleeps or threads:
-    a probe that runs INSIDE `validate_preconditions` (already under emit's lock)
-    tries a non-blocking `LOCK_EX` on the same sentinel via a fresh fd — flock
-    conflicts across open-file-descriptions even within one process, so it MUST
-    fail while emit holds the lock. A second probe after the append confirms the
-    lock has been released. If emit ever validated or appended outside the flock,
-    a probe would succeed and this fails — no scheduling luck involved.
-    """
+    """The lock interface context spans the whole validate→append operation."""
     events_file = tmp_path / ".harness" / "events.jsonl"
     change_id = "lock-scope"
     _seed_intent_declared(events_file, change_id)
     sentinel = events_file.parent / ".events.lock"
 
-    def _lock_is_held() -> bool:
-        with open(sentinel) as probe:
-            try:
-                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
-                return False
-            except BlockingIOError:
-                return True
-
     import super_harness.core.writer as writer_mod
 
     real_validate = writer_mod.validate_preconditions
     observed: dict[str, bool] = {}
+    active = False
+
+    @contextmanager
+    def observing_lock(path):
+        nonlocal active
+        assert path == sentinel
+        active = True
+        try:
+            yield
+        finally:
+            active = False
 
     def probing_validate(path, event):
-        observed["held_during_validate"] = _lock_is_held()
+        observed["held_during_validate"] = active
         real_validate(path, event)
 
+    monkeypatch.setattr(writer_mod, "exclusive_file_lock", observing_lock)
     monkeypatch.setattr(writer_mod, "validate_preconditions", probing_validate)
 
     EventWriter(events_file).emit(_event(change_id, "plan_ready"))
 
     assert observed.get("held_during_validate") is True, observed
-    # lock released once emit returns (no lingering hold)
-    assert _lock_is_held() is False
+    assert active is False
 
 
 def test_thread_race_single_slot_stays_ordered(tmp_path, monkeypatch):
-    """Two threads, two SEPARATE EventWriter instances (so flock — not the
+    """Two threads, two SEPARATE EventWriter instances (so the process lock, not the
     per-instance threading.Lock — is the layer under test) race one plan_ready.
 
     Pre-fix: both validate the seeded INTENT_DECLARED stream outside any shared
     lock, both append -> 0 rejections + an ordering violation (RED).
-    Post-fix: the flock loser validates the appended AWAITING_PLAN_REVIEW stream
+    Post-fix: the lock loser validates the appended AWAITING_PLAN_REVIEW stream
     and raises EmitPreconditionError (GREEN).
     """
     events_file = tmp_path / ".harness" / "events.jsonl"
@@ -199,7 +188,7 @@ _WORKER_SRC = textwrap.dedent(
     # before calling emit (removes process-startup skew). Combined with the
     # widened validate window below, both racers reach validate close together;
     # pre-fix that lets both validate the stale stream and append, post-fix the
-    # flock serializes them so the loser validates the advanced state and raises.
+    # process lock serializes them so the loser validates the advanced state and raises.
     (ready_dir / ("ready-" + wid)).touch()
     deadline = time.time() + 30
     while len(list(ready_dir.glob("ready-*"))) < 2:
@@ -228,7 +217,7 @@ def test_process_race_single_slot_stays_ordered(tmp_path):
     Two processes race one plan_ready on a seeded INTENT_DECLARED stream,
     synchronized by a filesystem barrier and the widened validate window.
     Pre-fix: both append -> ordering violation + two exit-0 (RED).
-    Post-fix: flock serializes -> one exit-0, one exit-3, clean stream (GREEN).
+    Post-fix: the process lock serializes -> one exit-0, one exit-3, clean stream (GREEN).
     """
     events_file = tmp_path / ".harness" / "events.jsonl"
     change_id = "race-proc"

@@ -83,7 +83,7 @@ def state_path(root: Path) -> Path:
 
 
 def lock_path(root: Path, name: str) -> Path:
-    """`.harness/.<name>.lock` — fcntl.flock sentinel files for serializing writes."""
+    """`.harness/.<name>.lock` — cross-platform sentinels for serializing writes."""
     return root / ".harness" / f".{name}.lock"
 
 

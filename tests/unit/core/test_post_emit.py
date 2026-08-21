@@ -45,7 +45,7 @@ def test_refresh_with_no_events_file(tmp_path: Path):
 def test_refresh_serializes_multiple_calls(tmp_path: Path):
     """Multiple consecutive refresh calls must produce a stable result.
 
-    No real concurrency test here (that needs subprocess + fcntl); this just
+    No real concurrency test here (covered through the shared lock module); this
     verifies the lock acquire/release cycle works repeatedly in one process.
     """
     harness = tmp_path / ".harness"
