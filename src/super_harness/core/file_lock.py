@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 if os.name == "nt":
-    import msvcrt
+    _windows_locking: Any = importlib.import_module("msvcrt")
 else:
     _posix_lock: Any = importlib.import_module("fcntl")
 
@@ -42,12 +42,14 @@ def _windows_lock(lock_file: BinaryIO) -> None:
     while True:
         lock_file.seek(0)
         try:
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            _windows_locking.locking(
+                lock_file.fileno(), _windows_locking.LK_NBLCK, 1
+            )
             return
         except OSError as exc:
             if (
                 exc.errno not in _WINDOWS_CONTENTION_ERRNOS
-                and exc.winerror not in _WINDOWS_CONTENTION_WINERRORS
+                and getattr(exc, "winerror", None) not in _WINDOWS_CONTENTION_WINERRORS
             ):
                 raise
             time.sleep(_RETRY_SECONDS)
@@ -63,7 +65,9 @@ def _lock(lock_file: BinaryIO) -> None:
 def _unlock(lock_file: BinaryIO) -> None:
     if os.name == "nt":
         lock_file.seek(0)
-        msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        _windows_locking.locking(
+            lock_file.fileno(), _windows_locking.LK_UNLCK, 1
+        )
     else:
         _posix_lock.flock(lock_file.fileno(), _posix_lock.LOCK_UN)
 
