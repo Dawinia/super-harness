@@ -879,6 +879,26 @@ def test_runner_check_end_to_end_failed(tmp_path: Path) -> None:
     assert json.loads(summary_path.read_text())["verdict"] == "failed"
 
 
+def test_runner_archive_timestamp_is_portable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _write_workspace(tmp_path, failing_must_pass="false")
+    monkeypatch.setattr(
+        "super_harness.sensors.verification_runner.utc_now_iso",
+        lambda: "2026-08-20T18:12:20.247060Z",
+    )
+
+    res = VerificationRunner().check(
+        Activity(type="cli_done", change_id="windows-done", payload={}),
+        WorkspaceContext(workspace_root=root),
+    )
+
+    assert res.details is not None
+    summary_path = Path(res.details["summary_path"])
+    assert summary_path.parts[-2] == "2026-08-20T18-12-20.247060Z"
+    assert (root / summary_path).exists()
+
+
 def test_runner_check_end_to_end_passed(tmp_path: Path) -> None:
     # Make the failing check advisory so the run passes overall.
     root = _write_workspace(tmp_path, failing_must_pass="false")

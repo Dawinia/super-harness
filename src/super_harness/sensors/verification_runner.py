@@ -1027,7 +1027,10 @@ class VerificationRunner(Sensor):
         layer = payload.get("layer")
         only_ids = payload.get("checks")
 
-        archive = verification_results_dir(context.workspace_root, change_id, utc_now_iso())
+        archive_timestamp = utc_now_iso().replace(":", "-")
+        archive = verification_results_dir(
+            context.workspace_root, change_id, archive_timestamp
+        )
         tasks = collect_checks(
             cfg,
             context=context,
