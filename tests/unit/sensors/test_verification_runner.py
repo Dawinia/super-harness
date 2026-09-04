@@ -53,7 +53,7 @@ _ENV: dict[str, str] = {"PATH": os.environ["PATH"]}
 
 def _spec(
     *,
-    command: str,
+    command: str | list[str],
     check_id: str = "c",
     must_pass: bool = True,
     timeout_seconds: int = 30,
@@ -61,6 +61,7 @@ def _spec(
     workdir: str = ".",
     env: dict[str, str] | None = None,
 ) -> CheckSpec:
+    shell = "sh" if isinstance(command, str) else None
     return CheckSpec(
         id=check_id,
         command=command,
@@ -69,6 +70,7 @@ def _spec(
         capture=capture,
         workdir=workdir,
         env=env if env is not None else {},
+        shell=shell,
     )
 
 
@@ -155,7 +157,7 @@ def test_timeout_kills_process_group(tmp_path: Path) -> None:
     assert not killed.exists()
 
 
-def test_spawn_failure_maps_to_fail_not_crash(tmp_path: Path) -> None:
+def test_spawn_failure_maps_to_spawn_error_not_crash(tmp_path: Path) -> None:
     # A bad workdir makes the shell fail to launch. This must map to a `fail`
     # result (not propagate OSError and crash `verify`), and flow through the
     # NORMAL capture matrix — only timeout is the no-archive exception.
@@ -167,11 +169,11 @@ def test_spawn_failure_maps_to_fail_not_crash(tmp_path: Path) -> None:
         archive_dir=archive,
         variables={},
     )
-    assert res.status == "fail"
+    assert res.status == "spawn_error"
     assert res.exit_code == -1
     assert res.output_path == str(archive)  # capture="both" → archive dir
     assert (archive / "c.stdout").read_text() == ""
-    assert "could not run: " in (archive / "c.stderr").read_text()
+    assert "could not run: " in (archive / "c.stderr").read_text(encoding="utf-8")
 
 
 def test_invalid_utf8_output_is_replaced_not_raised(tmp_path: Path) -> None:
@@ -185,7 +187,7 @@ def test_invalid_utf8_output_is_replaced_not_raised(tmp_path: Path) -> None:
         variables={},
     )
     assert res.status == "pass"
-    assert "�" in (archive / "c.stdout").read_text()
+    assert "�" in (archive / "c.stdout").read_text(encoding="utf-8")
 
 
 def test_capture_stdout_only(tmp_path: Path) -> None:
@@ -836,8 +838,10 @@ execution:
 checks:
   - id: passing
     command: "true"
+    shell: sh
   - id: failing
     command: "false"
+    shell: sh
     must_pass: {failing_must_pass}
 """
 

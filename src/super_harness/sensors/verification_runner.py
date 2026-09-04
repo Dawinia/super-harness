@@ -54,9 +54,10 @@ from super_harness.core.paths import (
     verification_yaml_path,
 )
 from super_harness.core.reducer import derive_state
-from super_harness.core.shell_runner import run_shell, scrubbed_environ
+from super_harness.core.shell_runner import run_command, scrubbed_environ
 from super_harness.engineering.attestation import canonical_path
 from super_harness.engineering.verification_config import (
+    Command,
     CheckSpec,
     VerificationConfig,
     interpolate,
@@ -89,7 +90,7 @@ __all__ = [
     "write_summary_json",
 ]
 
-CheckStatus = Literal["pass", "fail", "timeout"]
+CheckStatus = Literal["pass", "fail", "spawn_error", "timeout"]
 
 
 @dataclass(frozen=True)
@@ -101,9 +102,10 @@ class CheckResult:
     populated here because `run_check` is the natural place that knows them and
     task 8.4 needs them for its event payload + `--json` output:
 
-    - `command`: the INTERPOLATED command string actually run (placeholders such
-      as `${SLUG}` already substituted). This is the value reported as the
-      spec's `failed_checks[].command`.
+    - `command`: the INTERPOLATED command actually run (placeholders such as
+      `${SLUG}` already substituted). Direct argv remains an argv tuple; an
+      explicit shell command remains a string. This is the value reported as
+      the spec's `failed_checks[].command`.
     - `output_path`: where this check's captured output was archived, as a
       string, or `None` when nothing was archived:
         * `capture == "stdout"` → the `<id>.stdout` file path.
@@ -115,7 +117,7 @@ class CheckResult:
           archived — the ONLY no-archive outcome).
         * on spawn failure      → archived per the normal capture matrix above
           (empty stdout + a `could not run:` line on the stderr channel), so a
-          failed launch is `status="fail"` rather than a crash.
+          failed launch is `status="spawn_error"` rather than a crash.
 
     Frozen: results are immutable records handed to the runner/event layer.
     """
@@ -125,7 +127,7 @@ class CheckResult:
     exit_code: int
     duration_ms: int
     must_pass: bool
-    command: str
+    command: Command
     output_path: str | None
 
 
@@ -140,13 +142,13 @@ def run_check(
     """Run a single `CheckSpec` as a subprocess and return its `CheckResult`.
 
     Interpolates `check.command` with `variables` (allowlist-enforced by
-    `verification_config.interpolate`), runs it through the shell in `workdir`
-    with `check.timeout_seconds`, and archives stdout/stderr under `archive_dir`
-    according to `check.capture`.
+    `verification_config.interpolate`), executes its direct argv or explicit
+    shell form in `workdir` with `check.timeout_seconds`, and archives
+    stdout/stderr under `archive_dir` according to `check.capture`.
 
     Contracts:
         - **`env` is passed PRE-MERGED.** `run_check` hands `env` straight to
-          `run_shell(env=...)`, which REPLACES the entire child environment (it
+           `run_command(env=...)`, which REPLACES the entire child environment (it
           does NOT layer on top of `os.environ`). Building the
           scrubbed-`os.environ` (ambient minus `SUPER_HARNESS_*`) +
           `defaults.env` + `check.env` merge is the caller's job (see
@@ -155,9 +157,8 @@ def run_check(
           will fail to launch.
         - `workdir` is used verbatim as `cwd`; the caller is responsible for
           resolving any relative `check.workdir` to an absolute path.
-        - `shell=True` is intentional (see module docstring); no escaping.
-        - Timeout kills the whole process GROUP and reaps grandchildren with a
-          bounded wait (see `core.shell_runner.run_shell`); the verification
+        - Timeout kills the whole process tree and reaps grandchildren with a
+          bounded wait (see `core.shell_runner.run_command`); the verification
           twin no longer orphans a hung workload the way `subprocess.run` did.
 
     Args:
@@ -173,11 +174,11 @@ def run_check(
 
     Returns:
         A `CheckResult`. On timeout, `status == "timeout"`, `exit_code == -1`,
-        `output_path is None` (the only no-archive outcome). A shell that fails
-        to launch is `status == "fail"`, `exit_code == -1`, with an empty
-        stdout + a `could not run:` line archived per the normal capture
-        matrix — never a raised `OSError`. `command` is always the interpolated
-        command.
+        `output_path is None` (the only no-archive outcome). A command that
+        fails to launch is `status == "spawn_error"`, `exit_code == -1`, with
+        an empty stdout + a `could not run:` line archived per the normal
+        capture matrix — never a raised `OSError`. `command` is always the
+        interpolated command.
 
     Raises:
         InterpolationError: `check.command` references a non-allowlisted
@@ -186,7 +187,13 @@ def run_check(
     cmd = interpolate(check.command, variables)
     archive_dir.mkdir(parents=True, exist_ok=True)
 
-    res = run_shell(cmd, cwd=workdir, timeout=check.timeout_seconds, env=env)
+    res = run_command(
+        cmd,
+        shell=check.shell,
+        cwd=workdir,
+        timeout=check.timeout_seconds,
+        env=env,
+    )
     if res.timed_out:
         return CheckResult(
             id=check.id,
@@ -200,7 +207,7 @@ def run_check(
 
     if res.spawn_error is not None:
         out_text, err_text = "", f"could not run: {res.spawn_error}\n"
-        status: CheckStatus = "fail"
+        status: CheckStatus = "spawn_error"
         exit_code = -1
     else:
         out_text, err_text = res.stdout, res.stderr
@@ -602,6 +609,19 @@ def _config_check_task(
     """
     resolved = (context.workspace_root / spec.workdir).resolve()
     merged_env = {**scrubbed_environ(), **cfg.defaults.env, **spec.env}
+    if _is_project_check(spec.command):
+        toolchain = _project_toolchain_dir(context.workspace_root)
+        if toolchain is None:
+            # Do not let a globally installed or harness-installed Python make
+            # a missing repository runtime look like a completed check.
+            merged_env["PATH"] = ""
+        else:
+            existing_path = merged_env.get("PATH", "")
+            merged_env["PATH"] = (
+                f"{toolchain}{os.pathsep}{existing_path}"
+                if existing_path
+                else str(toolchain)
+            )
 
     # The default args snapshot this iteration's values to dodge late-binding.
     # `spec`/`workdir`/`env` are per-task-fresh, but `archive` and `variables`
@@ -626,6 +646,22 @@ def _config_check_task(
         )
 
     return CheckTask(id=spec.id, must_pass=spec.must_pass, run=_run)
+
+
+def _is_project_check(command: Command) -> bool:
+    """Whether a direct command invokes the repository project-check launcher."""
+    if not isinstance(command, tuple):
+        return False
+    return "scripts.run_project_check" in command or "scripts/run_project_check.py" in command
+
+
+def _project_toolchain_dir(root: Path) -> Path | None:
+    """Return the repository's native venv tool directory, if present."""
+    for name in ("Scripts", "bin"):
+        candidate = root / ".venv" / name
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def collect_checks(
@@ -913,7 +949,7 @@ def _repo_relative(path: str | None, workspace_root: Path) -> str | None:
     """
     if path is None:
         return None
-    return os.path.relpath(path, workspace_root)
+    return Path(os.path.relpath(path, workspace_root)).as_posix()
 
 
 def make_verification_event(

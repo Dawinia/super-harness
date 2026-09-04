@@ -55,8 +55,10 @@ execution:
 checks:
   - id: ok-1
     command: "true"
+    shell: sh
   - id: ok-2
     command: "true"
+    shell: sh
 adapter_provided: []
 """
 
@@ -78,8 +80,10 @@ execution:
 checks:
   - id: ok-1
     command: "true"
+    shell: sh
   - id: boom
     command: "false"
+    shell: sh
 adapter_provided: []
 """
 
@@ -278,6 +282,7 @@ defaults:
 checks:
   - id: deploy
     command: "deploy ${PR_URL}"
+    shell: sh
 adapter_provided: []
 """
 
@@ -611,8 +616,10 @@ execution:
 checks:
   - id: ok-1
     command: "true"
+    shell: sh
   - id: boom
     command: "false"
+    shell: sh
 adapter_provided: []
 """
 
@@ -721,6 +728,7 @@ execution:
 checks:
   - id: spec-file-exists
     command: 'test -f "${SPEC_PATH}"'
+    shell: sh
 adapter_provided: []
 """
 

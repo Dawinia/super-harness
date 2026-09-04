@@ -10,13 +10,13 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import NoReturn
 
 import click
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
 from super_harness.core.paths import HarnessNotInitialized, find_harness_root
-from super_harness.daemon import supervisor
 from super_harness.exit_codes import EXIT_GENERIC, EXIT_NO_CONFIG, EXIT_OK
 
 
@@ -37,10 +37,42 @@ def _resolve_root(ctx: click.Context, subcommand: str) -> Path:
         sys.exit(EXIT_NO_CONFIG)
 
 
+def _supervisor(ctx: click.Context, subcommand: str):
+    """Load the POSIX observer only for an operation that can use it."""
+    if os.name == "nt":
+        _unsupported_on_windows(ctx, subcommand)
+    from super_harness.daemon import supervisor
+
+    return supervisor
+
+
+def _unsupported_on_windows(ctx: click.Context, subcommand: str) -> NoReturn:
+    message = "observer operations are unsupported on native Windows"
+    hint = "use `verify`/`done`; the optional observer host currently requires POSIX"
+    if ctx.obj.get("json"):
+        click.echo(
+            json_envelope(
+                command=f"observe {subcommand}",
+                status="fail",
+                exit_code=EXIT_GENERIC,
+                errors=[{"code": "unsupported_platform", "message": message}],
+            )
+        )
+    else:
+        click.echo(
+            format_error(
+                subcommand=f"observe {subcommand}", message=message, hint=hint
+            ),
+            err=True,
+        )
+    sys.exit(EXIT_GENERIC)
+
+
 @observe_group.command("start")
 @click.pass_context
 def start(ctx: click.Context) -> None:
     """Start the observer host (idempotent; blocks until live)."""
+    supervisor = _supervisor(ctx, "start")
     root = _resolve_root(ctx, "start")
     # Flock-liveness wait budget. Production default 5s; under heavy CI contention
     # a host's spawn→double-fork→flock can exceed 5s, so the harness may widen it.
@@ -76,6 +108,7 @@ def start(ctx: click.Context) -> None:
 @click.pass_context
 def stop(ctx: click.Context) -> None:
     """SIGTERM the observer host; wait up to 2s for it to exit."""
+    supervisor = _supervisor(ctx, "stop")
     root = _resolve_root(ctx, "stop")
     if not supervisor.is_running(root):
         click.echo("not running", err=True)
@@ -97,6 +130,7 @@ def stop(ctx: click.Context) -> None:
 @click.pass_context
 def status(ctx: click.Context) -> None:
     """Report observer host state: running / not running."""
+    supervisor = _supervisor(ctx, "status")
     root = _resolve_root(ctx, "status")
     running = supervisor.is_running(root)
     pid = supervisor._read_pid(root) if running else 0

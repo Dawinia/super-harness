@@ -4,6 +4,7 @@ import time
 
 import pytest
 
+from super_harness.core import shell_runner
 from super_harness.core.check_runner import (
     CheckFailure,
     CheckRun,
@@ -160,6 +161,21 @@ def test_check_env_is_scrubbed_of_harness_knobs(tmp_path, monkeypatch):
     assert run.satisfied
 
 
+def test_missing_grep_dependency_fails_closed(tmp_path, monkeypatch):
+    real_which = shell_runner.shutil.which
+
+    def missing_grep(name, path=None):
+        if name == "grep":
+            return None
+        return real_which(name, path=path)
+
+    monkeypatch.setattr(shell_runner.shutil, "which", missing_grep)
+    run = run_one_check("! grep -rIn forbidden src/", cwd=tmp_path)
+    assert run.satisfied is False
+    assert run.exit_code == -1
+    assert "grep" in run.detail
+
+
 def test_has_runnable_check_true_for_ratified_with_check():
     assert has_runnable_check(Decision(id="d-x", status="ratified", check="! grep x src/")) is True
 
@@ -182,6 +198,7 @@ def test_sandbox_copies_inscope_and_injects(tmp_path):
     assert not sb.exists()        # cleaned up on context exit
 
 
+@pytest.mark.skipif(os.name == "nt", reason="creating symlinks needs elevated Windows privileges")
 def test_sandbox_skips_symlinks(tmp_path):
     import os
     import subprocess

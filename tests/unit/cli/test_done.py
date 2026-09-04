@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 from unittest import mock
 
+import pytest
 from click.testing import CliRunner
 
 from super_harness.cli import main
@@ -54,6 +55,7 @@ execution:
 checks:
   - id: ok-1
     command: "true"
+    shell: sh
 adapter_provided: []
 """
 
@@ -75,6 +77,49 @@ execution:
 checks:
   - id: boom
     command: "false"
+    shell: sh
+adapter_provided: []
+"""
+
+_EXIT_23_YAML = """\
+layers:
+  baseline: { enabled: false }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: true }
+defaults:
+  timeout_seconds: 30
+  must_pass: true
+  capture: both
+  workdir: .
+  env: {}
+execution:
+  mode: sequential
+  max_parallelism: 1
+  fail_fast: false
+checks:
+  - id: marker
+    command: [python, -c, "import sys; print('TARGET_EXECUTED'); sys.exit(23)"]
+adapter_provided: []
+"""
+
+_SPAWN_ERROR_YAML = """\
+layers:
+  baseline: { enabled: false }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: true }
+defaults:
+  timeout_seconds: 30
+  must_pass: true
+  capture: both
+  workdir: .
+  env: {}
+execution:
+  mode: sequential
+  max_parallelism: 1
+  fail_fast: false
+checks:
+  - id: missing-target
+    command: [super-harness-target-that-does-not-exist]
 adapter_provided: []
 """
 
@@ -147,6 +192,19 @@ def test_done_failing_verification_no_complete(tmp_path: Path) -> None:
     assert "implementation_complete" not in types
     assert types[-1] == "verification_failed"
     # State stays put — implementation_complete never advanced it.
+    assert _state_of(tmp_path, "my-change") == "IMPLEMENTATION_IN_PROGRESS"
+
+
+@pytest.mark.parametrize("yaml_text", [_EXIT_23_YAML, _SPAWN_ERROR_YAML])
+def test_done_required_check_failure_or_launch_failure_no_complete(
+    tmp_path: Path, yaml_text: str
+) -> None:
+    _init_in_progress(tmp_path, yaml_text=yaml_text)
+    r = CliRunner().invoke(
+        main, ["--workspace", str(tmp_path), "done", "my-change"]
+    )
+    assert r.exit_code == EXIT_VALIDATION, r.output
+    assert "implementation_complete" not in _event_types(tmp_path)
     assert _state_of(tmp_path, "my-change") == "IMPLEMENTATION_IN_PROGRESS"
 
 

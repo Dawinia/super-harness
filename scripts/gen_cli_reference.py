@@ -667,8 +667,15 @@ def main(argv: list[str] | None = None) -> int:
 
     root_name = "super-harness"
     # render_markdown already ends with a single trailing newline; do not add
-    # another so the emitted bytes match the committed doc exactly.
-    sys.stdout.write(render_markdown(cli_main, root_name=root_name))
+    # another so the emitted bytes match the committed doc exactly. Use bytes
+    # for real subprocesses so Windows console encoding cannot alter the doc.
+    rendered = render_markdown(cli_main, root_name=root_name)
+    stdout_buffer = getattr(sys.stdout, "buffer", None)
+    if stdout_buffer is None:  # pytest/caller-provided StringIO
+        sys.stdout.write(rendered)
+    else:
+        stdout_buffer.write(rendered.encode("utf-8"))
+        stdout_buffer.flush()
     return 0
 
 

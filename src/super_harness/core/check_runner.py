@@ -17,7 +17,7 @@ from pathlib import Path
 
 from super_harness.core.anchor_scanner import _list_files, _matches_any
 from super_harness.core.decisions import Counterexample, Decision
-from super_harness.core.shell_runner import run_shell, scrubbed_environ
+from super_harness.core.shell_runner import run_command, scrubbed_environ
 from super_harness.core.source_scope import load_source_scope
 
 DEFAULT_TIMEOUT = 30  # seconds (per-check override deferred, design §4.2)
@@ -34,12 +34,12 @@ def run_one_check(command: str, *, cwd: Path, timeout: float = DEFAULT_TIMEOUT) 
     """Run a single executable check and report whether it is satisfied.
 
     `command` MUST be a ratified, body-hash-locked check (Tool A text-lock).
-    `shell=True` (in `run_shell`) is intentional: checks are deliberately shell
-    snippets like `! grep ... | ...`. The trust boundary is the ratify-time
-    bite-test + hash lock, NOT this primitive, which runs any string handed it.
+    The ratified records are explicit POSIX-shell snippets like
+    `! grep ... | ...`; the trust boundary is the ratify-time bite-test + hash
+    lock, NOT this primitive, which runs any string handed it.
 
-    Timeout kills the whole process GROUP and reaps backgrounded grandchildren
-    with a bounded wait — see `core.shell_runner.run_shell`.
+    Timeout kills the whole process tree and reaps backgrounded grandchildren
+    with a bounded wait — see `core.shell_runner.run_command`.
 
     Checks run against `scrubbed_environ()` (ambient minus `SUPER_HARNESS_*`)
     on EVERY path (authoring Stop-hook, CI `decision check`, ratify
@@ -47,7 +47,14 @@ def run_one_check(command: str, *, cwd: Path, timeout: float = DEFAULT_TIMEOUT) 
     agree by construction. A check that genuinely needs an env value inlines it
     in its ratified snippet.
     """
-    res = run_shell(command, cwd=cwd, timeout=timeout, env=scrubbed_environ())
+    res = run_command(
+        command,
+        shell="sh",
+        required_tools=("grep",),
+        cwd=cwd,
+        timeout=timeout,
+        env=scrubbed_environ(),
+    )
     if res.spawn_error is not None:
         return CheckRun(False, -1, f"could not run: {res.spawn_error}")
     if res.timed_out:
