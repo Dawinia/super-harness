@@ -7,6 +7,7 @@ scope:
     - .harness/verification.yaml
     - .harness/derived-docs.yaml
     - src/super_harness/templates/verification_defaults.yaml
+    - src/super_harness/templates/derived_docs_defaults.yaml
     - src/super_harness/core/shell_runner.py
     - src/super_harness/core/check_runner.py
     - src/super_harness/core/doc_check.py
@@ -25,6 +26,8 @@ scope:
     - tests/unit/engineering/test_verification_config.py
     - tests/unit/sensors/test_verification_runner.py
     - tests/unit/cli/test_done.py
+    - tests/unit/cli/test_verify.py
+    - tests/unit/cli/test_doc.py
     - tests/unit/cli/test_observe.py
     - tests/unit/scripts/test_run_project_check.py
     - tests/unit/scripts/test_gen_cli_reference.py
@@ -176,7 +179,9 @@ intact. This is an explicit boundary of the optional observer implementation,
 not a new exception to the product's cross-platform verification axiom and not
 an observer-porting project.
 
-Update the architecture note and generated CLI reference only when the real
+Migrate the checked-in derived-doc template and existing CLI verification/doc
+test fixtures at the same boundary; there is no compatibility path for the old
+string-only rows. Update the architecture note and generated CLI reference only when the real
 `doc check` establishes content drift. The reference must contain the complete
 `observe start`, `observe stop` and `observe status` command tree.
 
