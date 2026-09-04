@@ -17,6 +17,9 @@ scope:
     - src/super_harness/adapters/framework/openspec.py
     - src/super_harness/cli/observe.py
     - src/super_harness/sensors/verification_runner.py
+    - src/super_harness/daemon/supervisor.py
+    - src/super_harness/daemon/server.py
+    - src/super_harness/adapters/agent/_settings_merge.py
     - scripts/run_project_check.py
     - scripts/gen_cli_reference.py
     - scripts/gen_state_machine.py
@@ -38,6 +41,9 @@ scope:
     - tests/unit/scripts/test_gen_state_machine.py
     - tests/integration/cli/test_adapter.py
     - tests/integration/cli/test_verification.py
+    - tests/integration/daemon/test_daemonize.py
+    - tests/integration/daemon/test_framework_observer.py
+    - tests/integration/daemon/test_observer_host.py
     - tests/e2e/openspec_claude_code/test_full_lifecycle.py
     - .github/workflows/test.yml
   tier_hint: Normal
@@ -183,6 +189,25 @@ commands to argv arrays; retain string commands only in tests that explicitly
 exercise `shell: sh` or reject the invalid form. The OpenSpec E2E must reload
 the resulting config through the real `done` path after its fixture edit.
 
+### 2b. POSIX-only daemon collection and cross-platform typing
+
+The remaining full-verification failures are confined to the optional POSIX
+observer boundary: mypy on native Windows cannot describe `fcntl.flock`,
+`os.fork` or `os.setsid`, while three daemon integration modules import `fcntl`
+before pytest can collect them. Do not port the observer or change its POSIX
+runtime behavior. Keep the POSIX implementation on its existing path, but make
+its platform-specific API access opaque to the cross-platform type checker
+without broad or blanket ignores. In the Windows-only branch of test
+collection, use `pytest.importorskip("fcntl")` before importing the daemon
+modules; Linux and macOS must still import and execute the same tests.
+
+The Windows-only `ctypes.WinDLL` and `ctypes.get_last_error` access in the
+settings merge module must likewise remain behaviorally unchanged while using
+portable attribute lookup so mypy does not report platform-dependent
+false-positive/unused-ignore errors. No daemon module is made into a Windows
+observer implementation, and no full test group is hidden behind a generic
+skip.
+
 ### 3. Full documentation without porting the observer
 
 Migrate `.harness/derived-docs.yaml` to the same direct argv plus structured
@@ -234,6 +259,10 @@ the same test green. The focused suite must cover:
    native Ubuntu, macOS, and Windows runners. The repository workflow must use
    one focused matrix job for this same suite on all three platforms; the
    Windows leg runs natively in PowerShell with no WSL or Docker.
+8. Full native Windows collection reaches the non-daemon suite and skips only
+   the three POSIX daemon modules before their `fcntl` imports; the same modules
+   remain collected on POSIX. Full mypy passes on Windows without changing
+   observer behavior or adding blanket ignores.
 
 ## Verification and evidence
 
@@ -268,10 +297,10 @@ matrix for Python 3.12 on `ubuntu-latest`, `macos-latest`, and
 chain proof, while local reports must still distinguish executed platform legs
 from merely declared matrix entries.
 The known baseline includes collection failures from observer `fcntl` and
-unrelated mypy errors in `daemon`/other files; do not relabel those as passes or
-expand this change into observer portability. Any remaining failure in the
-declared repair scope blocks completion; unrelated failures are reported as
-separate gaps.
+platform-dependent mypy errors in POSIX-only daemon code and Windows-only
+ctypes access. This scope repairs their typing and collection boundary only;
+it does not port the observer. Any remaining failure in the declared repair
+scope blocks completion; unrelated failures are reported as separate gaps.
 
 ## Governance and handoff
 
