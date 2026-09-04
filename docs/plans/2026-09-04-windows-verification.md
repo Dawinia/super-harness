@@ -5,182 +5,251 @@ scope:
   files:
     - docs/plans/2026-09-04-windows-verification.md
     - .harness/verification.yaml
+    - .harness/derived-docs.yaml
+    - src/super_harness/templates/verification_defaults.yaml
     - src/super_harness/core/shell_runner.py
     - src/super_harness/core/check_runner.py
     - src/super_harness/core/doc_check.py
+    - src/super_harness/engineering/verification_config.py
     - src/super_harness/cli/observe.py
+    - src/super_harness/sensors/verification_runner.py
     - scripts/run_project_check.py
     - scripts/gen_cli_reference.py
     - scripts/gen_state_machine.py
+    - docs/cli-reference.md
+    - docs/architecture.md
     - tests/unit/core/test_shell_runner.py
     - tests/unit/core/test_check_runner.py
     - tests/unit/core/test_doc_check_engine.py
+    - tests/unit/core/test_doc_check_loader.py
+    - tests/unit/engineering/test_verification_config.py
     - tests/unit/sensors/test_verification_runner.py
     - tests/unit/cli/test_done.py
     - tests/unit/cli/test_observe.py
     - tests/unit/scripts/test_run_project_check.py
     - tests/unit/scripts/test_gen_cli_reference.py
     - tests/unit/scripts/test_gen_state_machine.py
-    - docs/architecture.md
-tier_hint: Normal
+  tier_hint: Normal
 ---
 
 # Execute native Windows verification honestly
 
-## Authority, baseline and boundaries
+## Authority, product obligation and boundaries
 
-The maintainer authorized repair of false-positive verification, existing POSIX
-decision checks, and full CLI-document generation on native Windows without WSL
-or Docker. This is a separate change on `codex/2026-09-04-windows-verification`,
-starting at `49f4cf0`. The existing product-baseline change remains
-`IMPLEMENTATION_IN_PROGRESS`; do not close, merge, or change its scope. Existing
-untracked `.superpowers/` and `docs/research/` are excluded.
+This is the independent repair change on `codex/2026-09-04-windows-verification`,
+starting at `49f4cf0` and currently carrying only the earlier plan commit. Native
+Windows, macOS and Linux execution is an existing product axiom: the checks must
+have the same meaning, result categories and blocking behavior on all three
+platforms. Windows support means native Windows / PowerShell operation without
+WSL or Docker; a missing required runtime must fail explicitly and is not a
+completed portability result.
 
-Read `AGENTS.md`, `.harness/review-governance.yaml`, the local producer profile,
-the unified-shell-runner design, and the ratified checks before implementation.
-`d-core-is-base`, `d-gh-cli-not-rest`, and `d-merge-gate-pure-git` retain their
-locked bodies and bite tests. No review skip or human approval from another
-change applies here. Commit this plan and obtain the configured independent
-plan review before source changes; no agent may confirm a human nonce.
+The existing product-baseline change `2026-09-04-product-baseline` remains
+`IMPLEMENTATION_IN_PROGRESS` on its own branch. Do not edit, merge, close, or
+reconcile it. Existing untracked `.superpowers/` and `docs/research/` are not in
+this change. Do not push, merge, publish, or edit any ratified decision body.
 
-## Confirmed failures
+The previous plan's proposed Windows-only leading `NAME=value` rejection and
+unchanged string-only configuration are explicitly superseded by the maintainer's
+new direction. There is no old configuration to support: do not add a compatibility
+layer, transitional syntax, OS-specific command guessing, or silent fallback.
 
-- Direct Python prints an execution marker and exits 23. Both `shell=True` and
-  the actual `run_shell` primitive return 0 with empty stdout/stderr for
-  `PATH="$(pwd)/.venv/bin:$PATH" python -c "print(123); raise SystemExit(23)"`.
-  Windows cmd interprets this as its PATH built-in, consuming the supposed
-  program. Exit zero is a shell outcome, not evidence that pytest ran.
-- Preserve the historical summary at
-  `.harness/verification-results/2026-09-04-product-baseline/2026-09-03T17-36-52.439925Z/summary.json`.
-  SHA256: `f66229bb8a5d1db6a1b05e8fd8c3fbc40dbe1b030e6969f446538d0b06455c15`.
-  Its pytest duration is 23 ms. Ruff and mypy have the same false-positive shape.
-- Full decision check executes the three POSIX snippets through cmd and fails
-  on assignment, negation, and regular-expression syntax. The documented
-  contract is POSIX `/bin/sh`, including env prefixes, pipes, and `! grep`.
-  The installed Git for Windows native `usr/bin/sh.exe` can execute the exit-23
-  probe and the import-linter check; there is no need for WSL or a new shell for
-  ordinary verification commands.
-- CLI reference generation loads `cli.observe` then `daemon.supervisor`, whose
-  module-level `fcntl` import prevents command-tree enumeration on Windows.
-- Generator execution uses shell-free argv but bare `python` resolves to the
-  base `C:\Python311\python.exe` under Windows CreateProcess, even with the
-  venv first on PATH. That interpreter cannot import the editable package.
-  Explicit venv Python runs the state generator but emits GBK to a pipe, whereas
-  the document-check contract requires UTF-8. These are separate failures.
-- The shared timeout handler calls `os.killpg`, unavailable on Windows. It must
-  remain bounded and report failure when a real check hangs.
+## Observed failure and preserved evidence
 
-## Minimal repair and command contracts
+The current `.harness/verification.yaml` sends
+`PATH="$(pwd)/.venv/bin:$PATH" python -m pytest -q` to
+`subprocess.Popen(..., shell=True)`. Native Windows `cmd` consumes the leading
+assignment as its `PATH` builtin, launches no target, and returns zero with empty
+stdout/stderr. The direct project-venv probe prints `TARGET_EXECUTED` and exits
+23, while the current runner reports zero in roughly 20–23 ms. Ruff and mypy
+have the same false-positive shape.
 
-### Ordinary verification and the project configuration
+Retain the historical result exactly, without rewriting it:
 
-Preserve native shell string semantics for ordinary verification: `/bin/sh` on
-POSIX, cmd on Windows. Do not globally choose Git Bash, reinterpret arbitrary
-shell programs, or change the check schema. At the shared runner boundary reject
-leading shell-style `NAME=value` assignments on Windows native-shell commands
-with a clear execution/configuration error and nonzero sentinel; recommend
-structured `defaults.env` / check `env` instead. This deliberately rejects cmd's
-ambiguous PATH-assignment form too. It is a narrow guard against the demonstrated
-false success, not proof that arbitrary owner-trusted shell text runs a program.
+```
+.harness/verification-results/2026-09-04-product-baseline/2026-09-03T17-36-52.439925Z/summary.json
+SHA256 f66229bb8a5d1db6a1b05e8fd8c3fbc40dbe1b030e6969f446538d0b06455c15
+```
 
-Replace this repository's POSIX PATH prefixes with a small project-local Python
-launcher (`python -m scripts.run_project_check MODULE ...`). The launcher chooses
-the repository `.venv/Scripts/python.exe` or `.venv/bin/python`, prepends that
-scripts directory using `os.pathsep`, and executes module argv without a shell.
-Ruff, mypy and pytest use the same venv and child console scripts on both hosts.
-Missing venv/tool, nonzero exit and launch errors remain failures; never silently
-fall back to a different interpreter, omit tests, or alter `must_pass`.
+The three ratified decision checks remain locked and semantically POSIX shell:
+`d-core-is-base`, `d-gh-cli-not-rest`, and `d-merge-gate-pure-git`. Their bodies,
+counterexamples and hashes stay unchanged. The nine existing tier-2
+`REVIEW-NEEDED` reminders and the three historical `l1_update_completed` unknown
+events are preserved and reported, not bulk-reconciled.
 
-### Existing POSIX decision checks
+## Explicit command contract
 
-Make shell selection explicit at the shared primitive and have `run_one_check`
-request the established POSIX contract. On Linux/macOS retain `/bin/sh`; on
-Windows resolve a native Git for Windows sh with its companion utilities from
-the installed Git layout. Use explicit argv (`sh -c`, shell=False) for that
-mode. Preserve the caller's PATH priority and append the utility directory so
-venv tools still resolve first. Never select the Windows WSL launchers or fall
-back to cmd if the required shell/utilities are absent: return a clear failed
-execution result. Document the native Git dependency and its limits.
+Introduce one typed command contract at the configuration boundary and use it for
+all new direct subprocess calls:
 
-Keep environment replacement/scrubbing, output capture and exit-code propagation
-intact. Preserve POSIX process-group cleanup. On Windows use bounded native
-process-tree termination and reap for timeouts; cleanup errors must never turn
-timeout into success or mask it with `AttributeError`. Test a real started child,
-including descendants, rather than inferring termination from a status field.
+* `command` as a non-empty array of non-empty strings means direct execution with
+  `shell=False`. Each argument is preserved as an argument; spaces, non-ASCII
+  paths, environment values and shell metacharacters are never reparsed.
+* `command` as a non-empty string is accepted only with an explicit `shell: sh`.
+  It runs as `sh -c <command>` through the shared shell path. A string without
+  `shell`, an unknown shell, or `shell` attached to an array is a validation
+  error. No OS-dependent shell inference is allowed.
+* `env` is a structured string-to-string mapping and `workdir` is a structured
+  path field. The existing scrubbed ambient environment plus defaults and
+  per-check environment merge is retained; replacement environments must carry
+  the required `PATH` explicitly.
+* Interpolation remains allowlisted, but applies to every array element without
+  joining or shell-quoting the array. String interpolation remains text
+  substitution before the explicitly selected shell runs.
 
-### Full documentation without porting the observer
+The parsed `CheckSpec` stores the array form immutably and records the explicit
+shell separately. The loader rejects the old string-only rows; repository config,
+adapter rows and tests are migrated in the same change. The historical result
+archive is evidence only and is not migrated.
 
-Keep every observe command registered on every platform. Defer supervisor import
-until an observe operation actually runs, with an explicit unsupported-platform
-error on Windows. Help and complete document enumeration must work; do not hide
-commands, fake daemon state, or port the observer's flock/fork/signals machinery.
-Preserve POSIX observe behavior and its existing test seams where feasible.
+## Implementation slices
 
-Resolve generator executable names through PATH before subprocess launch so
-Windows honors the activated environment. Keep generator commands shell-free.
-Make the two project generators emit UTF-8 independently of the Windows locale,
-without changing their Markdown content. Run doc check without `--fix` first;
-unexpected content drift must be assessed, not overwritten for a green result.
+### 1. Shared process execution and truthful outcomes
 
-## Regression proof and actual verification
+Replace the implicit `run_shell` boundary with a shared `run_command` primitive
+used by direct checks, explicit shell checks, decision checks and document
+generators. It will:
 
-Write focused regressions before fixes and observe their failures. Follow the
-existing test suite, without adding a new framework:
+* validate the command/shell combination, resolve a bare direct executable from
+  the supplied `PATH` before `CreateProcess`/`exec`, and return a structured
+  spawn error when resolution, cwd or launch fails;
+* use `/bin/sh -c` on POSIX for `shell: sh`; on native Windows resolve Git for
+  Windows from the installed Git layout, require its native `usr/bin/sh.exe` and
+  `grep.exe`, append that utility directory after the caller's existing PATH,
+  and never use `cmd`, WSL launchers or an unverified fallback;
+* capture bytes first and decode the check contract as UTF-8 with replacement for
+  ordinary check output. The document path can request strict UTF-8 and must
+  classify invalid generator output as a generator failure;
+* preserve environment replacement, stdout/stderr capture, accurate exit codes,
+  durations and POSIX process-group cleanup;
+* on Windows create a killable process group and use bounded native process-tree
+  termination/reaping (with a direct-child fallback only as best effort). A
+  timeout remains a timeout and cleanup errors cannot turn it into success or
+  mask it with `AttributeError`.
 
-1. Real child programs write unique filesystem markers plus stdout/stderr, and
-   return both 0 and 23. Assert the marker, captured content and exact exit code
-   through the runner and verification wrapper. On Windows the legacy prefix
-   must fail clearly and leave its marker absent, never be recorded as pass.
-2. Exercise actual `done` with a required failing check in an isolated fixture:
-   program execution is proven, verify fails, and no implementation-completed
-   event/state advance occurs. Cover a launch/configuration failure separately
-   from a running program returning a violation.
-3. Exercise POSIX env assignment, negation and pipes through the decision seam,
-   including clean and counterexample cases. Prove an unavailable required shell
-   fails closed. Run the unchanged three repository decision checks and their
-   sandbox counterexamples without ratifying or modifying locked text.
-4. Prove timeout is bounded and a child actually started before termination;
-   preserve POSIX behavior and add native Windows process-tree coverage.
-5. Verify project launcher argv, paths containing spaces, venv selection, marker
-   execution, output and exit propagation. Adjust only directly affected tests
-   whose command fixtures accidentally rely on the wrong platform shell.
-6. Generate the whole CLI reference in a real subprocess; assert observe
-   start/stop/status are present. Test Windows unsupported operation separately
-   from help/enumeration. Test PATH selection and UTF-8 output with non-ASCII
-   text for both generators, and run the actual doc check.
+The result model must distinguish: `pass` (started and exited 0), `fail` (started
+and exited nonzero), `spawn_error` (not started), and `timeout` (started but not
+completed). Decision `CheckRun` and verification `CheckResult`/summary/event
+rendering will preserve that distinction. Existing POSIX behavior remains on the
+same shared path.
 
-After focused regressions, run the configured full ruff/mypy/pytest verification
-on native Windows and retain its timestamped output/summary. Run `git diff
---check`, `decision check --changed`, full `decision check`, `doc refs --gate`,
-and `doc check`. Record precise execution/configuration failures, actual code
-violations, and genuine passes separately. Do not skip POSIX-only observer tests
-or broaden into observer portability to make the full suite green. Any remaining
-unrelated failure is an explicit completion blocker, not a passed check.
+`core.check_runner.run_one_check` will call the shared primitive with the explicit
+`shell="sh"` contract. The native shell preflight checks the shell and required
+Git POSIX utility runtime before running the three locked checks, so `! grep ...`
+cannot pass merely because a missing `grep` was swallowed by shell negation. The
+clean and counterexample sides remain real executions; no stderr scanning or
+invented execution evidence is added.
 
-Linux/macOS behavior must remain covered by existing tests and unchanged POSIX
-branches; local Windows proof is not a claim of a live Linux/macOS test run.
-Store diagnostic commands and results under this change's allowed scratch area,
-and keep final verification summaries in the standard archive. Recheck the
-historical summary hash and unrelated worktree state at the end.
+### 2. Project verification configuration and interpreter selection
 
-## Governance and completion
+Update `engineering.verification_config`, the shipped template and the checked-in
+`.harness/verification.yaml` to the union command schema. Migrate the three
+self-host checks to direct argv through a new small `scripts/run_project_check.py`
+launcher. The launcher resolves only the repository's `.venv/Scripts` or
+`.venv/bin` toolchain, runs the requested tool/module without a shell, passes
+through stdout/stderr and returns the exact child exit code. Missing project
+runtime or tool is a launch failure; the harness installation's pipx/venv Python
+is never silently substituted for the project environment.
 
-The initial full decision check reports these nine existing tier-2 reminders:
-`d-dangling-check`, `d-decision-records`, `d-events-append-only`,
-`d-fixed-transition-matrix`, `d-gate-governs-git-product`,
-`d-identity-resolution-order`, `d-pitfall-is-proposed-decision`,
-`d-single-gate-policy`, and `d-state-pure-fold`. Preserve and report them; no
-bulk reconcile, betrayal, or ratification is authorized here.
+The runner and verification sensor will execute the migrated rows with exact
+argv, merged env and resolved workdir. `must_pass` is unchanged and a failed or
+unstarted required check prevents `done` from emitting `implementation_complete`
+or advancing state. Add focused tests for target markers, both zero and 23 exit
+codes, stdout/stderr, paths containing spaces and Chinese characters, argument
+boundaries, environment propagation, missing project runtime, and the actual
+`done` no-completion path for both launch failure and a started failing program.
 
-Commit only declared scope files after the relevant conformance checkpoint.
-Use the configured review participants and their exact local models/options;
-freeze and invoke every issued contract unchanged, import results or record
-producer failure once, and collect all sources before fixing findings. A blocked
-plan review leaves this change at `AWAITING_PLAN_REVIEW` with no source edits.
-If implementation is approved, only successful required checks permit `done`
-to advance; obtain code review through the same protocol. No push or merge.
+### 3. Full documentation without porting the observer
 
-Return the root causes, changed files, actual verification evidence, commits,
-lifecycle/review status, precise blockers and next permitted action. Scheduling,
-global shell migration, full observer Windows support, old tier-2 review work,
-and product-baseline redesign remain outside this change.
+Migrate `.harness/derived-docs.yaml` to the same direct argv plus structured
+workdir/env shape. `core.doc_check` will validate that shape, resolve generator
+executables explicitly through the supplied PATH, and use the shared direct
+process primitive. Both generators will write UTF-8 bytes independently of the
+Windows console locale while preserving Markdown content.
+
+Move the `daemon.supervisor` import in `cli.observe` behind an actual operation.
+The lazy command tree therefore remains complete for help and documentation on
+Windows; `observe start`, `observe stop` and `observe status` remain registered
+and report a clear unsupported-operation error on native Windows instead of
+loading POSIX-only `fcntl` code. Existing POSIX observer behavior and tests stay
+intact. This is an explicit boundary of the optional observer implementation,
+not a new exception to the product's cross-platform verification axiom and not
+an observer-porting project.
+
+Update the architecture note and generated CLI reference only when the real
+`doc check` establishes content drift. The reference must contain the complete
+`observe start`, `observe stop` and `observe status` command tree.
+
+## Regression-first proof
+
+Before each implementation slice, add the smallest test at the seam that reaches
+the failure and run it red against the current code. Then apply the fix and run
+the same test green. The focused suite must cover:
+
+1. Direct argv and explicit `sh` execution, exact exit/output/marker behavior,
+   argument and path boundaries, and invalid command/schema forms.
+2. Real `done` execution: a required check that starts and returns 23, and a
+   required check that cannot start, both leave no `implementation_complete` event
+   and no completion state advance.
+3. All three locked decision checks on clean and injected counterexample trees,
+   plus missing native POSIX-shell/utility dependencies failing closed. Do not
+   change, ratify, reconcile or weaken the decision records.
+4. A timeout child that writes a start marker and launches a descendant, followed
+   by bounded return and proof that the descendant does not perform its delayed
+   side effect. Preserve the POSIX group test and add native Windows coverage
+   without asserting a status field in place of a real marker.
+5. Project launcher selection, missing `.venv`, exact tool exit propagation and
+   non-ASCII output.
+6. Full CLI-tree generation in a real subprocess, UTF-8 output from both
+   generators, explicit Windows observer operation failure, and a real `doc check`
+   without `--fix` before assessing any drift.
+
+## Verification and evidence
+
+After focused regressions, run the migrated project checks and archive the normal
+timestamped verification summary and captured outputs. Report separately:
+
+* not executed / could not start (`spawn_error`),
+* started and found a code violation (`fail`),
+* timed out (`timeout`), and
+* started and passed (`pass`).
+
+On the native Windows host use the explicit project-vendored interpreter for
+agent-run commands, not a PATH prefix:
+
+```
+.venv\Scripts\python.exe -m ruff check src tests scripts
+.venv\Scripts\python.exe -m mypy src
+.venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\super-harness.exe verify <change>
+.venv\Scripts\super-harness.exe decision check --changed
+.venv\Scripts\super-harness.exe decision check
+.venv\Scripts\super-harness.exe doc refs --gate
+.venv\Scripts\super-harness.exe doc check
+```
+
+Also run `git diff --check` and the actual migrated checks through their normal
+verification path. Retain existing Linux/macOS test coverage and state clearly
+which platforms were actually executed; a workflow matrix alone is not evidence.
+The known baseline includes collection failures from observer `fcntl` and
+unrelated mypy errors in `daemon`/other files; do not relabel those as passes or
+expand this change into observer portability. Any remaining failure in the
+declared repair scope blocks completion; unrelated failures are reported as
+separate gaps.
+
+## Governance and handoff
+
+Commit only declared files. Run `decision check --changed` at checkpoints and
+full `decision check`, `doc refs --gate`, `doc check`, and the configured
+verification before completion. Preserve the 9 tier-2 reminders and old unknown
+events. Recheck the historical summary hash and unrelated worktree state.
+
+The revised plan must be sent through the configured independent plan review as a
+new epoch after `plan ready`, `review prepare` and `review begin`. The only
+configured automatic source is `claude-cli` with model
+`claude-opus-5[1m]` and `effort=medium`; the current Luna/Max implementation
+model does not replace that reviewer. Run every issued invocation unchanged,
+import a real result or record one producer failure exactly once, and never
+confirm a human nonce. If the configured producer or human authorization is
+blocked, stop before source edits and report the exact lifecycle state and next
+permitted command.
