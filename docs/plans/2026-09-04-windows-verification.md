@@ -12,6 +12,9 @@ scope:
     - src/super_harness/core/check_runner.py
     - src/super_harness/core/doc_check.py
     - src/super_harness/engineering/verification_config.py
+    - src/super_harness/cli/adapter.py
+    - src/super_harness/cli/verification.py
+    - src/super_harness/adapters/framework/openspec.py
     - src/super_harness/cli/observe.py
     - src/super_harness/sensors/verification_runner.py
     - scripts/run_project_check.py
@@ -24,6 +27,7 @@ scope:
     - tests/unit/core/test_doc_check_engine.py
     - tests/unit/core/test_doc_check_loader.py
     - tests/unit/engineering/test_verification_config.py
+    - tests/unit/adapters/framework/test_openspec.py
     - tests/unit/sensors/test_verification_runner.py
     - tests/unit/cli/test_done.py
     - tests/unit/cli/test_verify.py
@@ -32,6 +36,10 @@ scope:
     - tests/unit/scripts/test_run_project_check.py
     - tests/unit/scripts/test_gen_cli_reference.py
     - tests/unit/scripts/test_gen_state_machine.py
+    - tests/integration/cli/test_adapter.py
+    - tests/integration/cli/test_verification.py
+    - tests/e2e/openspec_claude_code/test_full_lifecycle.py
+    - .github/workflows/test.yml
   tier_hint: Normal
 ---
 
@@ -162,6 +170,19 @@ codes, stdout/stderr, paths containing spaces and Chinese characters, argument
 boundaries, environment propagation, missing project runtime, and the actual
 `done` no-completion path for both launch failure and a started failing program.
 
+### 2a. Adapter and registration producers
+
+Audit every internal verification producer before applying the runner change.
+The OpenSpec framework adapter must emit direct argv for its
+`openspec validate ${SLUG} --strict --json` check, and the shared adapter merge
+boundary must validate incoming rows with the same command contract before it
+writes them. `verification register` must surface that validation as a clean
+validation exit and never persist a legacy string-only row. Migrate all
+adapter-install, registration, and lifecycle fixtures that represent direct
+commands to argv arrays; retain string commands only in tests that explicitly
+exercise `shell: sh` or reject the invalid form. The OpenSpec E2E must reload
+the resulting config through the real `done` path after its fixture edit.
+
 ### 3. Full documentation without porting the observer
 
 Migrate `.harness/derived-docs.yaml` to the same direct argv plus structured
@@ -208,6 +229,11 @@ the same test green. The focused suite must cover:
 6. Full CLI-tree generation in a real subprocess, UTF-8 output from both
    generators, explicit Windows observer operation failure, and a real `doc check`
    without `--fix` before assessing any drift.
+7. The complete portable verification execution chain (config load → direct
+   subprocess → result classification → `verify`/`done` lifecycle gate) on
+   native Ubuntu, macOS, and Windows runners. The repository workflow must use
+   one focused matrix job for this same suite on all three platforms; the
+   Windows leg runs natively in PowerShell with no WSL or Docker.
 
 ## Verification and evidence
 
@@ -236,6 +262,11 @@ agent-run commands, not a PATH prefix:
 Also run `git diff --check` and the actual migrated checks through their normal
 verification path. Retain existing Linux/macOS test coverage and state clearly
 which platforms were actually executed; a workflow matrix alone is not evidence.
+The committed `.github/workflows/test.yml` adds a `verification-cross-platform`
+matrix for Python 3.12 on `ubuntu-latest`, `macos-latest`, and
+`windows-latest`; its focused pytest command is the reproducible CI execution
+chain proof, while local reports must still distinguish executed platform legs
+from merely declared matrix entries.
 The known baseline includes collection failures from observer `fcntl` and
 unrelated mypy errors in `daemon`/other files; do not relabel those as passes or
 expand this change into observer portability. Any remaining failure in the
