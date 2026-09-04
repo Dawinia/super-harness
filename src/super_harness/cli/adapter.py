@@ -82,6 +82,7 @@ from super_harness.engineering.agents_md import (
 )
 from super_harness.engineering.verification_config import (
     VerificationCheckConflict,
+    VerificationConfigError,
     merge_adapter_provided,
 )
 from super_harness.exit_codes import (
@@ -116,6 +117,12 @@ def adapter_install(ctx: click.Context, name: str) -> None:
     try:
         _merge_verification_checks(root, adapter)
     except VerificationCheckConflict as e:
+        click.echo(
+            format_error(subcommand="adapter install", message=str(e)),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    except VerificationConfigError as e:
         click.echo(
             format_error(subcommand="adapter install", message=str(e)),
             err=True,

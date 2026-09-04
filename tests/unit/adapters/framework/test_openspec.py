@@ -349,7 +349,13 @@ def test_verification_checks_check_id() -> None:
 
 def test_verification_checks_command() -> None:
     checks = OpenSpecAdapter().verification_checks()
-    assert checks[0]["command"] == "openspec validate ${SLUG} --strict --json"
+    assert checks[0]["command"] == [
+        "openspec",
+        "validate",
+        "${SLUG}",
+        "--strict",
+        "--json",
+    ]
 
 
 def test_verification_checks_must_pass() -> None:

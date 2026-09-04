@@ -45,7 +45,7 @@ def test_register_list_file_stamps_provided_by(tmp_path: Path) -> None:
     (tmp_path / ".harness").mkdir()
     cf = _write_checks_file(
         tmp_path,
-        [{"id": "custom-lint", "command": "lint --all", "must_pass": True}],
+        [{"id": "custom-lint", "command": ["lint", "--all"], "must_pass": True}],
     )
 
     r = _run(tmp_path, "register", "my-adapter", str(cf))
@@ -60,7 +60,7 @@ def test_register_mapping_file_with_checks_key(tmp_path: Path) -> None:
     """A mapping carrying a `checks:` list is also accepted."""
     (tmp_path / ".harness").mkdir()
     cf = _write_checks_file(
-        tmp_path, {"checks": [{"id": "c1", "command": "run"}]}
+        tmp_path, {"checks": [{"id": "c1", "command": ["run"]}]}
     )
 
     r = _run(tmp_path, "register", "my-adapter", str(cf))
@@ -74,7 +74,7 @@ def test_register_overwrites_file_provided_by_with_arg(tmp_path: Path) -> None:
     (tmp_path / ".harness").mkdir()
     cf = _write_checks_file(
         tmp_path,
-        [{"id": "c1", "command": "run", "provided_by": "spoofed"}],
+        [{"id": "c1", "command": ["run"], "provided_by": "spoofed"}],
     )
 
     r = _run(tmp_path, "register", "real-owner", str(cf))
@@ -86,16 +86,30 @@ def test_register_overwrites_file_provided_by_with_arg(tmp_path: Path) -> None:
 def test_register_idempotent_reregister_no_duplicate(tmp_path: Path) -> None:
     """Re-registering the SAME adapter replaces its row in place — one row, not two."""
     (tmp_path / ".harness").mkdir()
-    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": "v1"}])
+    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": ["v1"]}])
     assert _run(tmp_path, "register", "my-adapter", str(cf)).exit_code == 0
 
-    cf2 = _write_checks_file(tmp_path, [{"id": "c1", "command": "v2"}])
+    cf2 = _write_checks_file(tmp_path, [{"id": "c1", "command": ["v2"]}])
     r = _run(tmp_path, "register", "my-adapter", str(cf2))
 
     assert r.exit_code == 0, r.output
     rows = _adapter_provided(tmp_path)
     assert len(rows) == 1
-    assert rows[0]["command"] == "v2"
+    assert rows[0]["command"] == ["v2"]
+
+
+def test_register_rejects_implicit_shell_string_without_writing(
+    tmp_path: Path,
+) -> None:
+    """A legacy string command must fail before register creates a config row."""
+    (tmp_path / ".harness").mkdir()
+    cf = _write_checks_file(tmp_path, [{"id": "legacy", "command": "echo legacy"}])
+
+    r = _run(tmp_path, "register", "my-adapter", str(cf))
+
+    assert r.exit_code == 2, r.output
+    assert "requires explicit 'shell: sh'" in r.stderr
+    assert not _verification_yaml(tmp_path).exists()
 
 
 def test_register_conflict_exits_validation_two(tmp_path: Path) -> None:
@@ -106,12 +120,12 @@ def test_register_conflict_exits_validation_two(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "adapter_provided": [
-                    {"id": "shared", "command": "x", "provided_by": "other-owner"}
+                    {"id": "shared", "command": ["x"], "provided_by": "other-owner"}
                 ]
             }
         )
     )
-    cf = _write_checks_file(tmp_path, [{"id": "shared", "command": "y"}])
+    cf = _write_checks_file(tmp_path, [{"id": "shared", "command": ["y"]}])
 
     r = _run(tmp_path, "register", "my-adapter", str(cf))
 
@@ -121,7 +135,7 @@ def test_register_conflict_exits_validation_two(tmp_path: Path) -> None:
     assert "shared" in r.stderr, r.stderr
     # Conflicting row untouched (rejected before any partial merge).
     assert _adapter_provided(tmp_path) == [
-        {"id": "shared", "command": "x", "provided_by": "other-owner"}
+        {"id": "shared", "command": ["x"], "provided_by": "other-owner"}
     ]
 
 
@@ -132,11 +146,11 @@ def test_register_preserves_user_checks(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "schema_version": 1,
-                "checks": [{"id": "tests", "command": "npm test"}],
+                "checks": [{"id": "tests", "command": ["npm", "test"]}],
             }
         )
     )
-    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": "run"}])
+    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": ["run"]}])
 
     r = _run(tmp_path, "register", "my-adapter", str(cf))
 
@@ -149,7 +163,7 @@ def test_register_preserves_user_checks(tmp_path: Path) -> None:
 
 def test_register_no_harness_exits_no_config(tmp_path: Path) -> None:
     """No `.harness/` → EXIT_NO_CONFIG (3)."""
-    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": "run"}])
+    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": ["run"]}])
     r = _run(tmp_path, "register", "my-adapter", str(cf))
 
     assert r.exit_code == 3, r.output
@@ -181,7 +195,7 @@ def test_register_corrupt_verification_yaml_exits_no_config(tmp_path: Path) -> N
     """A corrupt existing verification.yaml → EXIT_NO_CONFIG (3), clean message."""
     (tmp_path / ".harness").mkdir()
     _verification_yaml(tmp_path).write_text(":\n  - [unclosed")
-    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": "run"}])
+    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": ["run"]}])
 
     r = _run(tmp_path, "register", "my-adapter", str(cf))
 
@@ -203,7 +217,7 @@ def test_register_non_utf8_verification_yaml_exits_no_config(tmp_path: Path) -> 
     _verification_yaml(tmp_path).write_bytes(
         b"adapter_provided:\n  - id: x\n\xe9\xff bad\n"
     )
-    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": "run"}])
+    cf = _write_checks_file(tmp_path, [{"id": "c1", "command": ["run"]}])
 
     r = _run(tmp_path, "register", "my-adapter", str(cf))
 

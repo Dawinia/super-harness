@@ -51,6 +51,7 @@ from super_harness.core.paths import (
 )
 from super_harness.engineering.verification_config import (
     VerificationCheckConflict,
+    VerificationConfigError,
     merge_adapter_provided,
 )
 from super_harness.exit_codes import (
@@ -120,6 +121,12 @@ def verification_register(
     try:
         merge_adapter_provided(path, stamped)
     except VerificationCheckConflict as e:
+        click.echo(
+            format_error(subcommand="verification register", message=str(e)),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    except VerificationConfigError as e:
         click.echo(
             format_error(subcommand="verification register", message=str(e)),
             err=True,

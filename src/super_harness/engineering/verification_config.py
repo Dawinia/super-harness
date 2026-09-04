@@ -325,6 +325,11 @@ def merge_adapter_provided_list(
     Returns a NEW list (the input `existing` is not mutated in place); callers
     that read→merge→write get a clean value to write back.
     """
+    # Validate producer output before merging so adapter install/register cannot
+    # persist a row that the canonical loader will reject later. Reuse the same
+    # parser and command contract; the raw dictionaries are still preserved.
+    _parse_checks(new, Defaults(), Path("<adapter_provided>"), layer="adapter_provided")
+
     # Shallow-copy so we never mutate the caller's list object; the dict
     # elements are shared by reference (we only replace/append whole dicts).
     merged: list[dict[str, Any]] = list(existing)

@@ -786,6 +786,13 @@ def test_install_openspec_writes_single_adapter_provided_row(tmp_path: Path) -> 
     rows = _read_adapter_provided(tmp_path)
     ids = [c["id"] for c in rows]
     assert ids == ["openspec-validate"]
+    assert rows[0]["command"] == [
+        "openspec",
+        "validate",
+        "${SLUG}",
+        "--strict",
+        "--json",
+    ]
     assert rows[0]["provided_by"] == "openspec-adapter"
 
 
@@ -885,7 +892,7 @@ def test_install_conflicting_check_id_exits_validation_two(tmp_path: Path) -> No
                 "adapter_provided": [
                     {
                         "id": "openspec-validate",
-                        "command": "something else",
+                        "command": ["something", "else"],
                         "provided_by": "some-other-adapter",
                     }
                 ]
@@ -904,7 +911,7 @@ def test_install_conflicting_check_id_exits_validation_two(tmp_path: Path) -> No
     assert rows == [
         {
             "id": "openspec-validate",
-            "command": "something else",
+            "command": ["something", "else"],
             "provided_by": "some-other-adapter",
         }
     ]
@@ -923,10 +930,10 @@ def test_uninstall_openspec_removes_only_its_adapter_provided_row(
     data = yaml.safe_load(_verification_yaml(tmp_path).read_text())
     for row in data["adapter_provided"]:
         if row["id"] == "openspec-validate":
-            row["command"] = "openspec validate DRIFTED"
-    data.setdefault("checks", []).append({"id": "tests", "command": "npm test"})
+            row["command"] = ["openspec", "validate", "DRIFTED"]
+    data.setdefault("checks", []).append({"id": "tests", "command": ["npm", "test"]})
     data["adapter_provided"].append(
-        {"id": "other-check", "command": "x", "provided_by": "another-adapter"}
+        {"id": "other-check", "command": ["x"], "provided_by": "another-adapter"}
     )
     _verification_yaml(tmp_path).write_text(yaml.safe_dump(data, sort_keys=False))
 

@@ -187,7 +187,7 @@ def test_full_openspec_claude_lifecycle(demo_repo: Path, mock_gh: MockGh) -> Non
     vdata = yaml.safe_load(vfile.read_text())
     vdata["layers"]["framework_adapter"]["enabled"] = False
     vdata["checks"] = [
-        {"id": "e2e-noop", "command": "true", "must_pass": True},
+        {"id": "e2e-noop", "command": ["true"], "must_pass": True},
     ]
     vfile.write_text(yaml.safe_dump(vdata, sort_keys=False))
     r2 = subprocess.run(

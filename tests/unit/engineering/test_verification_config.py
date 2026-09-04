@@ -228,7 +228,7 @@ def test_empty_file_applies_all_defaults(tmp_path: Path) -> None:
 def test_checkspec_is_frozen() -> None:
     spec = CheckSpec(
         id="t",
-        command="x",
+        command=("x",),
         must_pass=True,
         timeout_seconds=300,
         capture="both",
@@ -684,8 +684,15 @@ def test_non_string_env_key_raises(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _check(id_: str, provided_by: str, command: str = "run it") -> dict:
-    return {"id": id_, "command": command, "must_pass": True, "provided_by": provided_by}
+def _check(
+    id_: str, provided_by: str, command: list[str] | None = None
+) -> dict:
+    return {
+        "id": id_,
+        "command": command if command is not None else ["run", "it"],
+        "must_pass": True,
+        "provided_by": provided_by,
+    }
 
 
 def test_merge_list_new_id_appends() -> None:
@@ -695,15 +702,30 @@ def test_merge_list_new_id_appends() -> None:
     assert [c["id"] for c in out] == ["a", "b"]
 
 
+def test_merge_rejects_implicit_shell_string() -> None:
+    """Adapter rows cannot write a legacy string without ``shell: sh``."""
+    with pytest.raises(VerificationConfigError, match="requires explicit 'shell: sh'"):
+        merge_adapter_provided_list(
+            [],
+            [
+                {
+                    "id": "legacy",
+                    "command": "echo legacy",
+                    "provided_by": "adapter-a",
+                }
+            ],
+        )
+
+
 def test_merge_list_same_id_same_provided_by_replaces_in_place_no_dup() -> None:
     """Same id + same provided_by → replace in place (fixes duplicate accumulation)."""
-    existing = [_check("openspec-validate", "openspec-adapter", command="old")]
+    existing = [_check("openspec-validate", "openspec-adapter", command=["old"])]
     out = merge_adapter_provided_list(
-        existing, [_check("openspec-validate", "openspec-adapter", command="new")]
+        existing, [_check("openspec-validate", "openspec-adapter", command=["new"])]
     )
     # Exactly ONE row (not two) and it carries the NEW command (replaced in place).
     assert len(out) == 1
-    assert out[0]["command"] == "new"
+    assert out[0]["command"] == ["new"]
 
 
 def test_merge_list_same_id_different_provided_by_raises_conflict() -> None:
@@ -760,7 +782,7 @@ def test_merge_file_preserves_other_top_level_keys(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "schema_version": 1,
-                "checks": [{"id": "tests", "command": "npm test"}],
+                "checks": [{"id": "tests", "command": ["npm", "test"]}],
                 "adapter_provided": [],
             }
         ),
