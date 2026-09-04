@@ -361,6 +361,7 @@ defaults:
 checks:
   - id: deploy
     command: "deploy ${PR_URL}"
+    shell: sh
 adapter_provided: []
 """
 
@@ -679,8 +680,10 @@ execution:
 checks:
   - id: ok-1
     command: "true"
+    shell: sh
   - id: boom
     command: "false"
+    shell: sh
 adapter_provided: []
 """
 

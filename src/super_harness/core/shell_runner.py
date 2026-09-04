@@ -195,6 +195,7 @@ def _prepare_command(
         return None, env, "direct command must contain non-empty strings"
 
     executable = argv[0]
+    resolved: str | None
     if _has_path(executable):
         resolved = executable
     else:
@@ -293,9 +294,12 @@ def _creation_flags() -> int:
 
 def _terminate_process_tree(proc: subprocess.Popen[bytes]) -> None:
     if os.name == "posix":
+        killpg = getattr(os, "killpg", None)
+        sigkill = getattr(signal, "SIGKILL", None)
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-            return
+            if killpg is not None and sigkill is not None:
+                killpg(proc.pid, sigkill)
+                return
         except (ProcessLookupError, PermissionError, OSError):
             pass
     elif os.name == "nt":

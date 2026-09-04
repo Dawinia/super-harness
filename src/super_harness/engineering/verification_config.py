@@ -81,8 +81,8 @@ import yaml
 
 __all__ = [
     "INTERPOLATION_ALLOWLIST",
-    "Command",
     "CheckSpec",
+    "Command",
     "Defaults",
     "Execution",
     "InterpolationError",

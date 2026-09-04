@@ -71,7 +71,8 @@ def test_real_project_python_marker_and_exact_exit_code(capfd) -> None:
         [
             "python",
             "-c",
-            "import sys; print('TARGET_EXECUTED'); print('ERR_MARKER', file=sys.stderr); sys.exit(23)",
+            "import sys; print('TARGET_EXECUTED'); "
+            "print('ERR_MARKER', file=sys.stderr); sys.exit(23)",
         ],
         root=root,
     )

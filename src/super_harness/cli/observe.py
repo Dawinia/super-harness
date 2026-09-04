@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import NoReturn
 
 import click
@@ -37,7 +38,7 @@ def _resolve_root(ctx: click.Context, subcommand: str) -> Path:
         sys.exit(EXIT_NO_CONFIG)
 
 
-def _supervisor(ctx: click.Context, subcommand: str):
+def _supervisor(ctx: click.Context, subcommand: str) -> ModuleType:
     """Load the POSIX observer only for an operation that can use it."""
     if os.name == "nt":
         _unsupported_on_windows(ctx, subcommand)

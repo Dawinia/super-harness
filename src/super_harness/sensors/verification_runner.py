@@ -57,8 +57,8 @@ from super_harness.core.reducer import derive_state
 from super_harness.core.shell_runner import run_command, scrubbed_environ
 from super_harness.engineering.attestation import canonical_path
 from super_harness.engineering.verification_config import (
-    Command,
     CheckSpec,
+    Command,
     VerificationConfig,
     interpolate,
     load_verification_config,
