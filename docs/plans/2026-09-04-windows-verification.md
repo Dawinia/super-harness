@@ -20,6 +20,9 @@ scope:
     - src/super_harness/daemon/supervisor.py
     - src/super_harness/daemon/server.py
     - src/super_harness/adapters/agent/_settings_merge.py
+    - src/super_harness/core/anchor_scanner.py
+    - src/super_harness/core/decision_check.py
+    - src/super_harness/core/doc_refs.py
     - scripts/run_project_check.py
     - scripts/gen_cli_reference.py
     - scripts/gen_state_machine.py
@@ -29,6 +32,9 @@ scope:
     - tests/unit/core/test_check_runner.py
     - tests/unit/core/test_doc_check_engine.py
     - tests/unit/core/test_doc_check_loader.py
+    - tests/unit/core/test_anchor_scanner.py
+    - tests/unit/core/test_decision_check.py
+    - tests/unit/core/test_doc_refs.py
     - tests/unit/engineering/test_verification_config.py
     - tests/unit/adapters/framework/test_openspec.py
     - tests/unit/sensors/test_verification_runner.py
@@ -45,6 +51,7 @@ scope:
     - tests/integration/daemon/test_framework_observer.py
     - tests/integration/daemon/test_observer_host.py
     - tests/e2e/openspec_claude_code/test_full_lifecycle.py
+    - tests/e2e/conftest.py
     - .github/workflows/test.yml
   tier_hint: Normal
 ---
@@ -207,6 +214,43 @@ portable attribute lookup so mypy does not report platform-dependent
 false-positive/unused-ignore errors. No daemon module is made into a Windows
 observer implementation, and no full test group is hidden behind a generic
 skip.
+
+### 2c. Stable repository paths and native project-check execution
+
+The differential Windows runs leave four independent portability boundaries that
+are not fixed by the daemon changes:
+
+* Repository-relative paths are public comparison and report values. The anchor
+  scanner, decision-check result, and documentation-reference result must emit
+  `/` separators on every host; native `Path` separators remain allowed only for
+  filesystem access. Add focused regressions for the existing decision and doc
+  reference failures, including the scanner location that feeds the decision
+  result.
+* `scripts/run_project_check.py` is the repository verification execution
+  contract, not a CI-only wrapper. Its child environment will prepend the
+  repository's `.venv/Scripts` or `.venv/bin` to `PATH` so console scripts and
+  nested `gh`/hook calls resolve to the project toolchain, while preserving the
+  caller's remaining environment and exact child exit code. It will set
+  `PYTHONUTF8=1` for this verification child process so repository UTF-8 files
+  are read consistently in local verification and CI; this does not change the
+  encoding policy of ordinary application invocations. Test the environment and
+  marker/exit behavior without relying on a CI-only variable.
+* Settings backups are byte-preserving artifacts. The Windows CRT descriptor
+  used by `_write_backup_bytes` must be opened in binary mode (`O_BINARY` when
+  available), with zero behavioral change on POSIX. Existing exact-byte backup
+  regressions are the proof; no newline normalization is acceptable.
+* The `mock_gh` E2E fixture must install a Windows-resolvable `gh` command. An
+  extensionless POSIX executable is not a valid native Windows `PATHEXT` shim
+  and may lose to an installed `gh.exe`; use a minimal Windows command wrapper
+  that invokes the fixture's Python source, while retaining the extensionless
+  executable on POSIX. The fixture must still assert that `shutil.which("gh")`
+  resolves to the test shim, and the real OpenSpec lifecycle remains covered.
+
+These repairs are execution-contract, output-contract, and fixture-boundary
+fixes respectively; none changes Linux/macOS observer behavior, GitHub CLI
+governance, check exit semantics, or the required-check lifecycle gate. The
+focused proof must run the path, launcher/PATH/UTF-8, exact-byte, and E2E tests
+before the final full verification.
 
 ### 3. Full documentation without porting the observer
 
