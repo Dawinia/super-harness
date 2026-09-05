@@ -27,6 +27,8 @@ from typing import Any
 
 import pytest
 
+pytest.importorskip("fcntl", reason="POSIX observer integration tests require fcntl")
+
 from super_harness.adapters.framework.openspec import OpenSpecAdapter
 from super_harness.daemon import server as observer_server
 from super_harness.daemon.framework_observer import (

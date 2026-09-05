@@ -570,7 +570,7 @@ def _windows_process_is_alive(pid: int) -> bool:
 
     process_query_limited_information = 0x1000
     still_active = 259
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    kernel32 = vars(ctypes)["WinDLL"]("kernel32", use_last_error=True)
     kernel32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
     kernel32.OpenProcess.restype = ctypes.c_void_p
     kernel32.GetExitCodeProcess.argtypes = [
@@ -582,7 +582,7 @@ def _windows_process_is_alive(pid: int) -> bool:
     kernel32.CloseHandle.restype = ctypes.c_int
     handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
     if not handle:
-        error = ctypes.get_last_error()  # type: ignore[attr-defined]
+        error = vars(ctypes)["get_last_error"]()
         if error == 5:  # Access denied means the process exists.
             return True
         if error == 87:  # Invalid parameter means the PID does not exist.
@@ -591,7 +591,7 @@ def _windows_process_is_alive(pid: int) -> bool:
     try:
         exit_code = ctypes.c_ulong()
         if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-            error = ctypes.get_last_error()  # type: ignore[attr-defined]
+            error = vars(ctypes)["get_last_error"]()
             raise OSError(error, f"could not inspect settings lock owner pid {pid}")
         return exit_code.value == still_active
     finally:

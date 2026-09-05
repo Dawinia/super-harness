@@ -33,6 +33,12 @@ import subprocess
 import sysconfig
 import time
 from pathlib import Path
+from typing import Any
+
+# The observer is POSIX-only; mypy's Windows stdlib stubs expose the module but
+# not its POSIX locking members. Keep the runtime import and behavior unchanged
+# while making this platform boundary explicit to the type checker.
+_posix_fcntl: Any = fcntl
 
 
 def _pid_path(workspace_root: Path) -> Path:
@@ -85,14 +91,14 @@ def is_running(workspace_root: Path) -> bool:
         return False
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            _posix_fcntl.flock(fd, _posix_fcntl.LOCK_SH | _posix_fcntl.LOCK_NB)
         except BlockingIOError:
             return True  # held by a live host's LOCK_EX
         except OSError:
             return False  # can't probe → treat as not-running
         # Acquired the shared lock → no host holds LOCK_EX; release and report dead.
         try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _posix_fcntl.flock(fd, _posix_fcntl.LOCK_UN)
         except OSError:
             pass
         return False

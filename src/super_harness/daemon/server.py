@@ -21,12 +21,19 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from super_harness.daemon.framework_observer import build_manager_failsafe
 
 __all__ = ["daemonize", "main", "run_observer_host"]
 
 _log = logging.getLogger(__name__)
+
+
+# The observer host is POSIX-only. Keep its fork/flock behavior unchanged while
+# making platform-specific stdlib members opaque to mypy on native Windows.
+_posix_os: Any = os
+_posix_fcntl: Any = fcntl
 
 
 # -- JSON-lines logging (unchanged) ---------------------------------------
@@ -124,11 +131,11 @@ def daemonize(pid_path: Path, log_path: Path) -> None:
         "POSIX fork in a multi-threaded process is undefined behavior. "
         "Must run before any thread is spawned."
     )
-    if os.fork() != 0:
+    if _posix_os.fork() != 0:
         os._exit(0)
-    os.setsid()
+    _posix_os.setsid()
     os.umask(0)
-    if os.fork() != 0:
+    if _posix_os.fork() != 0:
         os._exit(0)
     os.chdir("/")
     sys.stdout.flush()
@@ -142,7 +149,9 @@ def daemonize(pid_path: Path, log_path: Path) -> None:
     os.close(logfd)
     pid_fd = os.open(str(pid_path), os.O_WRONLY | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(pid_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _posix_fcntl.flock(
+            pid_fd, _posix_fcntl.LOCK_EX | _posix_fcntl.LOCK_NB
+        )
     except BlockingIOError:
         sys.exit(1)  # another host won the race — single-instance
     os.ftruncate(pid_fd, 0)
