@@ -52,6 +52,10 @@ scope:
     - tests/integration/daemon/test_observer_host.py
     - tests/e2e/openspec_claude_code/test_full_lifecycle.py
     - tests/e2e/conftest.py
+    - src/super_harness/adapters/registry.py
+    - src/super_harness/cli/decision.py
+    - tests/unit/cli/test_review_runs.py
+    - tests/e2e/test_pre_tool_use_claude_code.py
     - .github/workflows/test.yml
   tier_hint: Normal
 ---
@@ -251,6 +255,13 @@ fixes respectively; none changes Linux/macOS observer behavior, GitHub CLI
 governance, check exit semantics, or the required-check lifecycle gate. The
 focused proof must run the path, launcher/PATH/UTF-8, exact-byte, and E2E tests
 before the final full verification.
+
+The full run narrowed the remaining failures to four related boundaries: normalize
+the decision creation message, recognize Windows rooted paths in adapter artifact
+resolution, install a Windows-resolvable fake Codex command, and invoke the
+registered hook command using the host subprocess contract rather than POSIX
+shlex parsing on Windows. Include these four files in this same repair. Keep
+the block/allow assertions and the producer-not-executed assertion intact.
 
 ### 3. Full documentation without porting the observer
 
