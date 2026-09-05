@@ -78,8 +78,11 @@ def run(argv: list[str], *, root: Path | None = None) -> int:
             return _error(f"project tool {argv[0]!r} not found under {toolchain}")
         child = [str(tool), *argv[1:]]
 
+    env = os.environ.copy()
+    env["PATH"] = str(toolchain) + os.pathsep + env.get("PATH", "")
+    env["PYTHONUTF8"] = "1"
     try:
-        completed = subprocess.run(child, cwd=root, check=False)
+        completed = subprocess.run(child, cwd=root, check=False, env=env)
     except OSError as exc:
         return _error(f"could not launch {child[0]!r}: {exc}")
     return completed.returncode

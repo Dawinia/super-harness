@@ -413,7 +413,10 @@ def _write_backup_bytes(settings_path: Path, content: bytes) -> Path:
     while True:
         backup = settings_path.with_name(f"{settings_path.name}.super-harness-backup.{stamp}")
         try:
-            fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            fd = os.open(
+                backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0),
+                0o600,
+            )
         except FileExistsError:
             stamp += 1
             continue

@@ -40,6 +40,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -402,6 +403,11 @@ def mock_gh(
     gh_path = shim_dir / "gh"
     gh_path.write_text(_GH_SHIM_SOURCE, encoding="utf-8")
     gh_path.chmod(gh_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    if os.name == "nt":
+        gh_path = shim_dir / "gh.cmd"
+        gh_path.write_text(
+            f'@"{sys.executable}" "%~dp0gh" %*\n', encoding="utf-8"
+        )
 
     calls_path = shim_dir / "calls.jsonl"
     # Start clean — pytest's tmp_path is per-test but be explicit.

@@ -45,7 +45,11 @@ def test_launcher_preserves_argv_and_child_exit_code(tmp_path: Path, monkeypatch
         (
             [str(toolchain / f"ruff{'.exe' if os.name == 'nt' else ''}"),
              "check", "path with spaces", "中文"],
-            {"cwd": tmp_path, "check": False},
+            {"cwd": tmp_path, "check": False, "env": {
+                **os.environ,
+                "PATH": str(toolchain) + os.pathsep + os.environ.get("PATH", ""),
+                "PYTHONUTF8": "1",
+            }},
         )
     ]
 
@@ -56,7 +60,10 @@ def test_launcher_supports_project_python_module_form(tmp_path: Path, monkeypatc
 
     def fake_run(argv: list[str], **kwargs: object) -> SimpleNamespace:
         calls.append(argv)
-        assert kwargs == {"cwd": tmp_path, "check": False}
+        assert kwargs["cwd"] == tmp_path
+        assert kwargs["check"] is False
+        assert kwargs["env"]["PATH"].split(os.pathsep)[0] == str(toolchain)
+        assert kwargs["env"]["PYTHONUTF8"] == "1"
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(run_project_check.subprocess, "run", fake_run)

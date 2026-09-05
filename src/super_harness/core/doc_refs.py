@@ -186,7 +186,7 @@ def scan_doc_refs(workspace_root: Path) -> DocRefsResult:
             text = f.read_text(encoding="utf-8")
         except (UnicodeDecodeError, PermissionError, OSError):
             continue
-        rel_str = str(rel)
+        rel_str = rel.as_posix()
         for symbol, lineno in extract_backtick_symbols(text, ident_re):
             if symbol not in present:
                 findings.append(DocRef(rel_str, lineno, symbol, "high"))

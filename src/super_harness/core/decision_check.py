@@ -90,7 +90,7 @@ def run_check(workspace_root: Path) -> CheckResult:
         if d.status != "ratified" or d.ratified_text_hash is None:
             continue  # missing hash → lazy-warn path (Task 5), not a violation
         if compute_body_hash(d.body) != d.ratified_text_hash:
-            rel = str(d.path.relative_to(workspace_root)) if d.path else d.id
+            rel = d.path.relative_to(workspace_root).as_posix() if d.path else d.id
             integrity_violations.append(IntegrityViolation(id=d.id, file=rel))
     integrity_violations.sort(key=lambda v: v.id)
 

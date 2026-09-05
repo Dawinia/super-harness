@@ -144,7 +144,7 @@ def scan_sentinel_locations(
             text = f.read_text(encoding="utf-8")
         except (UnicodeDecodeError, PermissionError, OSError):
             continue
-        rel_str = str(rel)
+        rel_str = rel.as_posix()
         for lineno, line in enumerate(text.splitlines(), start=1):
             for m in pattern.finditer(line):
                 locations.setdefault(m.group(1), []).append((rel_str, lineno))
