@@ -66,7 +66,8 @@ scope:
 ## Authority, product obligation and boundaries
 
 This is the independent repair change on `codex/2026-09-04-windows-verification`,
-starting at `49f4cf0` and currently carrying only the earlier plan commit. Native
+rebased onto `origin/main` at `da49e91` so the separate product-baseline change is
+not part of this branch or its PR. Native
 Windows, macOS and Linux execution is an existing product axiom: the checks must
 have the same meaning, result categories and blocking behavior on all three
 platforms. Windows support means native Windows / PowerShell operation without
