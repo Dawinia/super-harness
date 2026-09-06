@@ -23,6 +23,7 @@ scope:
     - src/super_harness/core/anchor_scanner.py
     - src/super_harness/core/decision_check.py
     - src/super_harness/core/doc_refs.py
+    - src/super_harness/core/file_lock.py
     - scripts/run_project_check.py
     - scripts/gen_cli_reference.py
     - scripts/gen_state_machine.py
@@ -262,6 +263,18 @@ resolution, install a Windows-resolvable fake Codex command, and invoke the
 registered hook command using the host subprocess contract rather than POSIX
 shlex parsing on Windows. Include these four files in this same repair. Keep
 the block/allow assertions and the producer-not-executed assertion intact.
+
+### 2d. Windows file-lock initialization
+
+The final full Windows run exposed a race in the existing cross-process lock
+primitive: every process opens the sentinel and tries to create its first byte
+before acquiring the region lock. On native Windows, concurrent buffered flushes
+can therefore fail with `PermissionError`. Acquire the existing host lock first
+on both platforms, then initialize and rewind the sentinel byte inside the
+critical section. Preserve the existing POSIX `flock` and Windows `msvcrt`
+primitives, retry behavior, unlock behavior, and append atomicity. The existing
+multi-process writer regression is the acceptance test; no lock downgrade or
+test skip is allowed.
 
 ### 3. Full documentation without porting the observer
 
