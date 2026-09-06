@@ -26,6 +26,7 @@ API stability: **experimental** (v0.1).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import yaml
@@ -93,7 +94,7 @@ def _repo_relative(root: Path, value: str) -> str:
     if not value:
         return ""
     candidate = Path(value)
-    if not candidate.is_absolute():
+    if not os.path.isabs(value):
         return value
     try:
         return candidate.relative_to(root).as_posix()
