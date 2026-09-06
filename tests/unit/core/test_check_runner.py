@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from super_harness.core import shell_runner
+from super_harness.core import check_runner, shell_runner
 from super_harness.core.check_runner import (
     CheckFailure,
     CheckRun,
@@ -159,6 +159,44 @@ def test_check_env_is_scrubbed_of_harness_knobs(tmp_path, monkeypatch):
     monkeypatch.setenv("SUPER_HARNESS_CHECK_PROBE", "1")
     run = run_one_check('test -z "$SUPER_HARNESS_CHECK_PROBE"', cwd=tmp_path)
     assert run.satisfied
+
+
+def test_check_env_prepends_repository_toolchain(tmp_path, monkeypatch):
+    toolchain = tmp_path / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    toolchain.mkdir(parents=True)
+    monkeypatch.setenv("PATH", "ambient-path")
+    captured = {}
+
+    def fake_run_command(command, **kwargs):
+        captured["env"] = kwargs["env"]
+        return shell_runner.CommandResult(0, "", "", False, 0, None)
+
+    monkeypatch.setattr(check_runner, "run_command", fake_run_command)
+    run = run_one_check("true", cwd=tmp_path)
+
+    assert run.satisfied
+    assert captured["env"]["PATH"] == f"{toolchain}{os.pathsep}ambient-path"
+
+
+@pytest.mark.parametrize(
+    ("platform", "native_dir"),
+    [("nt", "Scripts"), ("posix", "bin")],
+)
+def test_project_toolchain_prefers_native_directory(tmp_path, monkeypatch, platform, native_dir):
+    scripts = tmp_path / ".venv" / "Scripts"
+    bin_dir = tmp_path / ".venv" / "bin"
+    scripts.mkdir(parents=True)
+    bin_dir.mkdir()
+
+    monkeypatch.setattr(check_runner.os, "name", platform)
+    expected = tmp_path / ".venv" / native_dir
+    assert check_runner._project_toolchain_dir(tmp_path) == expected
+
+
+def test_missing_check_tool_fails_nonzero(tmp_path):
+    run = run_one_check("super_harness_missing_tool_9f5d", cwd=tmp_path)
+    assert run.satisfied is False
+    assert run.exit_code != 0
 
 
 def test_missing_grep_dependency_fails_closed(tmp_path, monkeypatch):

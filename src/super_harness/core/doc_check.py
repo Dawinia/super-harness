@@ -225,7 +225,8 @@ def _run_generator(workspace_root: Path, doc: DerivedDoc) -> tuple[str | None, s
 
 
 def _project_toolchain_dir(root: Path) -> Path | None:
-    for name in ("Scripts", "bin"):
+    names = ("Scripts", "bin") if os.name == "nt" else ("bin", "Scripts")
+    for name in names:
         candidate = root / ".venv" / name
         if candidate.is_dir():
             return candidate

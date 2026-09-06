@@ -657,7 +657,8 @@ def _is_project_check(command: Command) -> bool:
 
 def _project_toolchain_dir(root: Path) -> Path | None:
     """Return the repository's native venv tool directory, if present."""
-    for name in ("Scripts", "bin"):
+    names = ("Scripts", "bin") if os.name == "nt" else ("bin", "Scripts")
+    for name in names:
         candidate = root / ".venv" / name
         if candidate.is_dir():
             return candidate
