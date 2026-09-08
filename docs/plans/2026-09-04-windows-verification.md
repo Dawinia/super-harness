@@ -30,6 +30,8 @@ scope:
     - scripts/gen_state_machine.py
     - docs/cli-reference.md
     - docs/architecture.md
+    - docs/decisions/d-dangling-check.md
+    - docs/decisions/d-pitfall-is-proposed-decision.md
     - tests/unit/core/test_shell_runner.py
     - tests/unit/core/test_check_runner.py
     - tests/unit/core/test_doc_check_engine.py
@@ -104,9 +106,13 @@ SHA256 f66229bb8a5d1db6a1b05e8fd8c3fbc40dbe1b030e6969f446538d0b06455c15
 
 The three ratified decision checks remain locked and semantically POSIX shell:
 `d-core-is-base`, `d-gh-cli-not-rest`, and `d-merge-gate-pure-git`. Their bodies,
-counterexamples and hashes stay unchanged. The nine existing tier-2
-`REVIEW-NEEDED` reminders and the three historical `l1_update_completed` unknown
-events are preserved and reported, not bulk-reconciled.
+counterexamples and hashes stay unchanged. The existing tier-2 `REVIEW-NEEDED`
+reminders and the three historical `l1_update_completed` unknown events are
+preserved and reported. Do not bulk reconcile the reminders. PR CI requires fresh
+review of the two reminders whose shared anchor changed in this Change:
+`d-dangling-check` and `d-pitfall-is-proposed-decision`. Reconcile only those two
+through the CLI after confirming their recorded invariants still hold; preserve
+every other reminder.
 
 ## Explicit command contract
 
@@ -317,6 +323,18 @@ Click's public `Command.get_short_help_str` API so the declared `click>=8.4`
 range remains valid without pinning away a supported release or suppressing the
 type error.
 
+### 3b. Reviewed tier-2 reconciliation
+
+The only change to `core/decision_check.py` normalizes the displayed path of a
+ratified-body integrity violation to `/` separators. Re-read the locked review
+criteria for `d-dangling-check` and `d-pitfall-is-proposed-decision`, then confirm
+against the complete diff that dangling-up still blocks, dangling-down still warns,
+`CheckResult.ok` still excludes dangling-down, and proposed records still remain
+outside the ratified set. If all four facts hold, run two separate `decision
+reconcile` commands with precise self-review justifications. This updates only the
+generated reconciliation frontmatter; do not edit either locked decision body or
+reconcile any unrelated reminder.
+
 ## Regression-first proof
 
 Before each implementation slice, add the smallest test at the seam that reaches
@@ -330,7 +348,8 @@ the same test green. The focused suite must cover:
    and no completion state advance.
 3. All three locked decision checks on clean and injected counterexample trees,
    plus missing native POSIX-shell/utility dependencies failing closed. Do not
-   change, ratify, reconcile or weaken the decision records.
+   hand-edit, ratify or weaken decision records; only the two reviewed tier-2
+   reconciliations declared in section 3b are allowed.
 4. A timeout child that writes a start marker and launches a descendant, followed
    by bounded return and proof that the descendant does not perform its delayed
    side effect. Preserve the POSIX group test and add native Windows coverage
@@ -392,8 +411,9 @@ scope blocks completion; unrelated failures are reported as separate gaps.
 
 Commit only declared files. Run `decision check --changed` at checkpoints and
 full `decision check`, `doc refs --gate`, `doc check`, and the configured
-verification before completion. Preserve the 9 tier-2 reminders and old unknown
-events. Recheck the historical summary hash and unrelated worktree state.
+verification before completion. Preserve every tier-2 reminder except the two
+explicitly reviewed reconciliations and retain the old unknown events. Recheck the
+historical summary hash and unrelated worktree state.
 
 The revised plan must be sent through the configured independent plan review as a
 new epoch after `plan ready`, `review prepare` and `review begin`. The only
