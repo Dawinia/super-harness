@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import venv
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -72,8 +73,8 @@ def test_launcher_supports_project_python_module_form(tmp_path: Path, monkeypatc
                       "-m", "pytest", "-q"]]
 
 
-def test_real_project_python_marker_and_exact_exit_code(capfd) -> None:
-    root = run_project_check.project_root()
+def test_real_project_venv_python_marker_and_exact_exit_code(tmp_path: Path, capfd) -> None:
+    venv.EnvBuilder(with_pip=False).create(tmp_path / ".venv")
     code = run_project_check.run(
         [
             "python",
@@ -81,7 +82,7 @@ def test_real_project_python_marker_and_exact_exit_code(capfd) -> None:
             "import sys; print('TARGET_EXECUTED'); "
             "print('ERR_MARKER', file=sys.stderr); sys.exit(23)",
         ],
-        root=root,
+        root=tmp_path,
     )
     out, err = capfd.readouterr()
     assert code == 23

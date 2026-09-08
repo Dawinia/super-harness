@@ -46,10 +46,10 @@ class SuspectDecision:
 
 
 def fingerprint_file(workspace_root: Path, rel: str) -> str:
-    """sha256 of raw file bytes (byte-exact, binary-safe, subprocess/git-free).
-    Deliberately NOT normalized (unlike compute_body_hash) — any byte change to
-    anchored code should re-route the review (design coarse-by-construction)."""
-    digest = hashlib.sha256((workspace_root / rel).read_bytes()).hexdigest()
+    """Hash anchored source independent of Git checkout line-ending conversion."""
+    content = (workspace_root / rel).read_bytes()
+    canonical = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    digest = hashlib.sha256(canonical).hexdigest()
     return f"sha256:{digest}"
 
 

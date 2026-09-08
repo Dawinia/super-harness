@@ -5,14 +5,14 @@ ratified_by: dawinialo@163.com
 ratified_at: '2026-07-30T07:05:06.458059Z'
 ratified_text_hash: sha256:d18656cdb3b6adddba986e3c531f6b662ebf9bbc7483f2fd02e28bb10f58a75d
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-09-08T15:11:28.262568Z'
+last_reconciled_at: '2026-09-08T16:27:55.671468Z'
 last_reconcile_kind: self
-last_reconcile_justification: Reviewed the complete Change diff for core/decision_check.py.
-  The ratified set comprehension and its anchor are unchanged, so proposed records
-  remain outside ratified, effective_ratified, dangling_down, and tier-2 routing;
-  anchoring a proposed record still creates dangling_up.
+last_reconcile_justification: Re-reviewed after making tier-2 fingerprints line-ending
+  invariant. The anchored ratified set still excludes proposed records and continues
+  to drive effective_ratified, dangling_down, and tier-2 routing; anchoring a proposed
+  record still creates dangling_up.
 reconciled_anchors:
-  src/super_harness/core/decision_check.py: sha256:6a3e330fc7094bf5abf5173243ac0458a17c995c18db4bc661c1f5e2a69d66c3
+  src/super_harness/core/decision_check.py: sha256:cc419ccc59ffd42be58b694cbb16fe9ce07d8660a7759c86d13f48f2e12a2ca4
 ---
 Negative knowledge is recorded as a proposed decision record; super-harness grows no parallel pitfall corpus.
 

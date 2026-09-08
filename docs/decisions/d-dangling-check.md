@@ -5,14 +5,14 @@ ratified_by: dawinialo@163.com
 ratified_at: '2026-06-26T09:45:28.846809Z'
 ratified_text_hash: sha256:d1aa4710844e840396baf69320b33fa30565d79879eb8c0c0ab03d6a7f2273b2
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-09-08T15:11:26.726534Z'
+last_reconciled_at: '2026-09-08T16:27:54.708425Z'
 last_reconcile_kind: self
-last_reconcile_justification: Reviewed the complete Change diff for core/decision_check.py.
-  It only renders integrity-violation paths with as_posix(); CheckResult.ok still
-  blocks dangling_up and excludes dangling_down, while the CLI continues to report
-  dangling_down as warning-only.
+last_reconcile_justification: 'Re-reviewed after making tier-2 fingerprints line-ending
+  invariant. CheckResult.ok and CLI routing are unchanged: dangling_up blocks and
+  dangling_down remains warning-only; the fingerprint change only prevents CRLF/LF
+  checkout conversion from creating a false suspect result.'
 reconciled_anchors:
-  src/super_harness/core/decision_check.py: sha256:6a3e330fc7094bf5abf5173243ac0458a17c995c18db4bc661c1f5e2a69d66c3
+  src/super_harness/core/decision_check.py: sha256:cc419ccc59ffd42be58b694cbb16fe9ce07d8660a7759c86d13f48f2e12a2ca4
 ---
 CI checks referential integrity: dangling-up blocks, dangling-down warns.
 

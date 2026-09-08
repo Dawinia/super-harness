@@ -12,6 +12,17 @@ def _w(p: Path, text: str) -> None:
     p.write_text(text, encoding="utf-8")
 
 
+def test_fingerprint_ignores_checkout_line_ending_conversion(tmp_path: Path) -> None:
+    source = tmp_path / "src/x.py"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"first\r\nsecond\r\n")
+    windows_checkout = fingerprint_file(tmp_path, "src/x.py")
+
+    source.write_bytes(b"first\nsecond\n")
+
+    assert fingerprint_file(tmp_path, "src/x.py") == windows_checkout
+
+
 def _ratified(root: Path, did: str) -> None:
     _w(root / f"docs/decisions/{did}.md", f"---\nid: {did}\nstatus: ratified\n---\nx\n")
 
