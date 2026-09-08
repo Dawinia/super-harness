@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -196,16 +197,13 @@ def _run_generator(workspace_root: Path, doc: DerivedDoc) -> tuple[str | None, s
     """Return ``(generated_text, error)``; text is None on failure."""
     env = {**scrubbed_environ(), **doc.env}
     if doc.command and doc.command[0] in {"python", "python3"}:
-        toolchain = _project_toolchain_dir(workspace_root)
-        if toolchain is None:
-            env["PATH"] = ""
-        else:
-            existing_path = env.get("PATH", "")
-            env["PATH"] = (
-                f"{toolchain}{os.pathsep}{existing_path}"
-                if existing_path
-                else str(toolchain)
-            )
+        toolchain = _project_toolchain_dir(workspace_root) or Path(sys.executable).resolve().parent
+        existing_path = env.get("PATH", "")
+        env["PATH"] = (
+            f"{toolchain}{os.pathsep}{existing_path}"
+            if existing_path
+            else str(toolchain)
+        )
     result = run_command(
         doc.command,
         cwd=(workspace_root / doc.workdir).resolve(),

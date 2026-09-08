@@ -365,11 +365,13 @@ def _type_repr(param: click.Parameter) -> str:
 
 def _default_repr(param: click.Parameter) -> str:
     """Render a click parameter's default in a short, markdown-safe form."""
+    default = param.default
+    default_repr = repr(default)
+    unset = "Sentinel.UNSET" in default_repr or default_repr.startswith("<Sentinel")
     if isinstance(param, click.Option) and param.is_flag:
-        return "`False`" if not param.default else "`True`"
+        return "`False`" if unset or not default else "`True`"
     if param.required:
         return "*required*"
-    default = param.default
     if default is None:
         return "—"
     if callable(default):
@@ -379,8 +381,7 @@ def _default_repr(param: click.Parameter) -> str:
     # click 8.4 uses a Sentinel.UNSET singleton for "default not specified" on
     # optional positional args. Render that as em-dash, same as None, to keep
     # the table noise-free.
-    default_repr = repr(default)
-    if "Sentinel.UNSET" in default_repr or default_repr.startswith("<Sentinel"):
+    if unset:
         return "—"
     return f"`{default_repr}`"
 

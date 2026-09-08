@@ -104,6 +104,12 @@ def test_render_param_table_includes_choices_and_defaults() -> None:
     assert "--count" in md
 
 
+def test_unspecified_flag_default_renders_false() -> None:
+    option = click.Option(["--flag"], is_flag=True)
+
+    assert gen_cli_reference._default_repr(option) == "`False`"
+
+
 def test_render_is_idempotent() -> None:
     """Calling render_markdown twice on the same group yields byte-identical output."""
     group = _build_fixture_group()

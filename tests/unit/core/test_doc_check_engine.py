@@ -62,6 +62,25 @@ def test_generator_nonzero_is_failed(tmp_path):
     assert [f.path for f in r.failed] == ["docs/a.md"] and r.exit_code == 4
 
 
+def test_python_generator_uses_running_interpreter_when_project_venv_is_absent(tmp_path):
+    _w(tmp_path / "docs/a.md", "generator executed\n")
+    _reg(
+        tmp_path,
+        [
+            (
+                "docs/a.md",
+                ["python", "-c", "print('generator executed')"],
+            )
+        ],
+    )
+
+    r = run_doc_check(tmp_path)
+
+    assert [doc.path for doc in r.in_sync] == ["docs/a.md"]
+    assert r.failed == []
+    assert r.exit_code == 0
+
+
 def test_malformed_registry_dominates(tmp_path):
     _w(tmp_path / ".harness/derived-docs.yaml", "derived_docs: 7\n")
     r = run_doc_check(tmp_path)
