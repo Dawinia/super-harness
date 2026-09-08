@@ -16,6 +16,7 @@ scope:
     - src/super_harness/cli/verification.py
     - src/super_harness/adapters/framework/openspec.py
     - src/super_harness/cli/observe.py
+    - src/super_harness/cli/lazy_group.py
     - src/super_harness/sensors/verification_runner.py
     - src/super_harness/daemon/supervisor.py
     - src/super_harness/daemon/server.py
@@ -299,6 +300,22 @@ test fixtures at the same boundary; there is no compatibility path for the old
 string-only rows. Update the architecture note and generated CLI reference only when the real
 `doc check` establishes content drift. The reference must contain the complete
 `observe start`, `observe stop` and `observe status` command tree.
+
+### 3a. Installed-environment CI closure
+
+PR CI runs the installed `super-harness` entrypoint without a repository-local
+`.venv`. For managed Python documentation generators, prepend the repository
+venv tool directory when it exists and otherwise prepend the directory of the
+interpreter running `super-harness`; keep the configured argv unchanged. This
+preserves native local selection while allowing the installed Linux CI runtime
+to execute the same generator instead of clearing `PATH` and reporting a false
+missing executable.
+
+Click 8.5 also exposes the deprecated `click.utils.make_default_short_help`
+symbol as an opaque object to mypy. Render registered lazy-command help through
+Click's public `Command.get_short_help_str` API so the declared `click>=8.4`
+range remains valid without pinning away a supported release or suppressing the
+type error.
 
 ## Regression-first proof
 
