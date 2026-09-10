@@ -103,11 +103,15 @@ def _repo(
 def _fake_codex(root: Path, monkeypatch: MonkeyPatch) -> Path:
     bin_dir = root / "bin"
     bin_dir.mkdir()
-    executable = bin_dir / "codex"
-    executable.write_text(
-        "#!/bin/sh\ntouch \"$0.executed\"\nexit 99\n", encoding="utf-8"
-    )
-    executable.chmod(0o755)
+    if os.name == "nt":
+        executable = bin_dir / "codex.CMD"
+        executable.write_text("@exit /b 99\n", encoding="utf-8")
+    else:
+        executable = bin_dir / "codex"
+        executable.write_text(
+            "#!/bin/sh\ntouch \"$0.executed\"\nexit 99\n", encoding="utf-8"
+        )
+        executable.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     return executable
 
@@ -278,7 +282,7 @@ def test_begin_freezes_invocation_without_executing_producer(
     ]
     assert data["runs"][0]["requested_model"] == "gpt-review"
     assert data["runs"][0]["capture_stdout"] is True
-    assert data["runs"][0]["telemetry_path"].endswith("/events.jsonl")
+    assert Path(data["runs"][0]["telemetry_path"]).name == "events.jsonl"
     assert data["runs"][0]["stdout_path"] == data["runs"][0]["telemetry_path"]
     assert not executable.with_name("codex.executed").exists()
     assert Path(data["runs"][0]["invocation_path"]).is_file()

@@ -25,7 +25,9 @@ Coverage:
 
 from __future__ import annotations
 
+import subprocess
 import sys
+from pathlib import Path
 
 import click
 
@@ -100,6 +102,12 @@ def test_render_param_table_includes_choices_and_defaults() -> None:
     assert "{a\\|b}" in md
     # Default for --count is 0
     assert "--count" in md
+
+
+def test_unspecified_flag_default_renders_false() -> None:
+    option = click.Option(["--flag"], is_flag=True)
+
+    assert gen_cli_reference._default_repr(option) == "`False`"
 
 
 def test_render_is_idempotent() -> None:
@@ -268,3 +276,18 @@ def test_emit_mode_prints_rendered_markdown(capsys) -> None:
     assert captured.out == expected
     # No extra trailing newline beyond what render_markdown already emits.
     assert captured.out.startswith(gen_cli_reference._HEADER_NOTICE)
+
+
+def test_emit_subprocess_is_utf8_and_contains_complete_observe_tree() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.gen_cli_reference", "--emit"],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    rendered = result.stdout.decode("utf-8")
+    assert "## super-harness observe start" in rendered
+    assert "## super-harness observe stop" in rendered
+    assert "## super-harness observe status" in rendered

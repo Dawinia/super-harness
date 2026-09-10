@@ -104,19 +104,19 @@ def test_parses_full_config_with_checks(tmp_path: Path) -> None:
                     "checks": [
                         {
                             "id": "tests",
-                            "command": "npm test",
+                            "command": ["npm", "test"],
                             "must_pass": False,
                             "timeout_seconds": 600,
                             "capture": "stdout",
                             "workdir": "frontend",
                             "env": {"NODE_ENV": "test"},
                         },
-                        {"id": "lint", "command": "npm run lint"},
+                        {"id": "lint", "command": ["npm", "run", "lint"]},
                     ],
                     "adapter_provided": [
                         {
                             "id": "openspec-validate",
-                            "command": "openspec validate --strict",
+                            "command": ["openspec", "validate", "--strict"],
                             "provided_by": "openspec-adapter",
                         }
                     ],
@@ -133,7 +133,7 @@ def test_parses_full_config_with_checks(tmp_path: Path) -> None:
     tests = cfg.checks[0]
     assert isinstance(tests, CheckSpec)
     assert tests.id == "tests"
-    assert tests.command == "npm test"
+    assert tests.command == ("npm", "test")
     assert tests.must_pass is False
     assert tests.timeout_seconds == 600
     assert tests.capture == "stdout"
@@ -156,6 +156,41 @@ def test_parses_full_config_with_checks(tmp_path: Path) -> None:
     assert ap.timeout_seconds == 300
 
 
+def test_command_contract_accepts_direct_argv_and_explicit_shell(tmp_path: Path) -> None:
+    cfg = load_verification_config(
+        _write(
+            tmp_path,
+            yaml.safe_dump(
+                {
+                    "checks": [
+                        {"id": "direct", "command": ["python", "-c", "print(1)"]},
+                        {"id": "shell", "command": "printf ok", "shell": "sh"},
+                    ]
+                }
+            ),
+        )
+    )
+    assert cfg.checks[0].command == ("python", "-c", "print(1)")
+    assert cfg.checks[0].shell is None
+    assert cfg.checks[1].command == "printf ok"
+    assert cfg.checks[1].shell == "sh"
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"id": "old", "command": "echo old"},
+        {"id": "array-shell", "command": ["echo", "x"], "shell": "sh"},
+        {"id": "bad-shell", "command": "echo x", "shell": "cmd"},
+    ],
+)
+def test_command_contract_rejects_implicit_or_wrong_shell(
+    tmp_path: Path, entry: dict[str, object]
+) -> None:
+    with pytest.raises(VerificationConfigError):
+        load_verification_config(_write(tmp_path, yaml.safe_dump({"checks": [entry]})))
+
+
 def test_check_env_not_merged_with_defaults_env(tmp_path: Path) -> None:
     """defaults.env and check.env stay separate (merge happens at exec time)."""
     cfg = load_verification_config(
@@ -164,7 +199,7 @@ def test_check_env_not_merged_with_defaults_env(tmp_path: Path) -> None:
             yaml.safe_dump(
                 {
                     "defaults": {"env": {"CI": "1"}},
-                    "checks": [{"id": "t", "command": "x"}],
+                    "checks": [{"id": "t", "command": ["x"]}],
                 }
             ),
         )
@@ -193,7 +228,7 @@ def test_empty_file_applies_all_defaults(tmp_path: Path) -> None:
 def test_checkspec_is_frozen() -> None:
     spec = CheckSpec(
         id="t",
-        command="x",
+        command=("x",),
         must_pass=True,
         timeout_seconds=300,
         capture="both",
@@ -248,7 +283,7 @@ def test_bad_capture_enum_raises(tmp_path: Path) -> None:
 def test_bad_check_capture_enum_raises(tmp_path: Path) -> None:
     p = _write(
         tmp_path,
-        yaml.safe_dump({"checks": [{"id": "t", "command": "x", "capture": "nope"}]}),
+        yaml.safe_dump({"checks": [{"id": "t", "command": ["x"], "capture": "nope"}]}),
     )
     with pytest.raises(VerificationConfigError):
         load_verification_config(p)
@@ -302,8 +337,8 @@ def test_duplicate_check_ids_rejected(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "checks": [
-                    {"id": "tests", "command": "a"},
-                    {"id": "tests", "command": "b"},
+                    {"id": "tests", "command": ["a"]},
+                    {"id": "tests", "command": ["b"]},
                 ]
             }
         ),
@@ -318,8 +353,8 @@ def test_duplicate_adapter_provided_ids_rejected(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "adapter_provided": [
-                    {"id": "x", "command": "a", "provided_by": "p"},
-                    {"id": "x", "command": "b", "provided_by": "p"},
+                    {"id": "x", "command": ["a"], "provided_by": "p"},
+                    {"id": "x", "command": ["b"], "provided_by": "p"},
                 ]
             }
         ),
@@ -335,9 +370,9 @@ def test_same_id_across_layers_allowed(tmp_path: Path) -> None:
             tmp_path,
             yaml.safe_dump(
                 {
-                    "checks": [{"id": "shared", "command": "a"}],
+                    "checks": [{"id": "shared", "command": ["a"]}],
                     "adapter_provided": [
-                        {"id": "shared", "command": "b", "provided_by": "p"}
+                        {"id": "shared", "command": ["b"], "provided_by": "p"}
                     ],
                 }
             ),
@@ -522,7 +557,9 @@ def test_interpolate_empty_braces_left_untouched() -> None:
 def test_load_rejects_non_allowlisted_placeholder_in_user_check(tmp_path: Path) -> None:
     p = _write(
         tmp_path,
-        yaml.safe_dump({"checks": [{"id": "deploy", "command": "deploy ${PR_URL}"}]}),
+        yaml.safe_dump(
+            {"checks": [{"id": "deploy", "command": "deploy ${PR_URL}", "shell": "sh"}]}
+        ),
     )
     with pytest.raises(InterpolationError) as exc_info:
         load_verification_config(p)
@@ -540,6 +577,7 @@ def test_load_rejects_non_allowlisted_placeholder_in_adapter_check(tmp_path: Pat
                     {
                         "id": "ci",
                         "command": "run ${COMMIT_SHA}",
+                        "shell": "sh",
                         "provided_by": "some-adapter",
                     }
                 ]
@@ -555,7 +593,9 @@ def test_load_bad_placeholder_is_value_error_subclass(tmp_path: Path) -> None:
     """The load-time rejection maps to EXIT_VALIDATION via the ValueError catch."""
     p = _write(
         tmp_path,
-        yaml.safe_dump({"checks": [{"id": "t", "command": "x ${NOPE}"}]}),
+        yaml.safe_dump(
+            {"checks": [{"id": "t", "command": "x ${NOPE}", "shell": "sh"}]}
+        ),
     )
     with pytest.raises(ValueError):
         load_verification_config(p)
@@ -567,7 +607,15 @@ def test_load_accepts_allowlisted_placeholder_in_check(tmp_path: Path) -> None:
         _write(
             tmp_path,
             yaml.safe_dump(
-                {"checks": [{"id": "t", "command": "validate --change ${SLUG}"}]}
+                {
+                    "checks": [
+                        {
+                            "id": "t",
+                            "command": "validate --change ${SLUG}",
+                            "shell": "sh",
+                        }
+                    ]
+                }
             ),
         )
     )
@@ -584,7 +632,11 @@ def test_provided_by_rejected_on_user_checks(tmp_path: Path) -> None:
     p = _write(
         tmp_path,
         yaml.safe_dump(
-            {"checks": [{"id": "t", "command": "x", "provided_by": "some-adapter"}]}
+            {
+                "checks": [
+                    {"id": "t", "command": "x", "shell": "sh", "provided_by": "some-adapter"}
+                ]
+            }
         ),
     )
     with pytest.raises(VerificationConfigError):
@@ -599,7 +651,12 @@ def test_provided_by_accepted_on_adapter_provided(tmp_path: Path) -> None:
             yaml.safe_dump(
                 {
                     "adapter_provided": [
-                        {"id": "v", "command": "x", "provided_by": "an-adapter"}
+                        {
+                            "id": "v",
+                            "command": "x",
+                            "shell": "sh",
+                            "provided_by": "an-adapter",
+                        }
                     ]
                 }
             ),
@@ -627,8 +684,15 @@ def test_non_string_env_key_raises(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def _check(id_: str, provided_by: str, command: str = "run it") -> dict:
-    return {"id": id_, "command": command, "must_pass": True, "provided_by": provided_by}
+def _check(
+    id_: str, provided_by: str, command: list[str] | None = None
+) -> dict:
+    return {
+        "id": id_,
+        "command": command if command is not None else ["run", "it"],
+        "must_pass": True,
+        "provided_by": provided_by,
+    }
 
 
 def test_merge_list_new_id_appends() -> None:
@@ -638,15 +702,30 @@ def test_merge_list_new_id_appends() -> None:
     assert [c["id"] for c in out] == ["a", "b"]
 
 
+def test_merge_rejects_implicit_shell_string() -> None:
+    """Adapter rows cannot write a legacy string without ``shell: sh``."""
+    with pytest.raises(VerificationConfigError, match="requires explicit 'shell: sh'"):
+        merge_adapter_provided_list(
+            [],
+            [
+                {
+                    "id": "legacy",
+                    "command": "echo legacy",
+                    "provided_by": "adapter-a",
+                }
+            ],
+        )
+
+
 def test_merge_list_same_id_same_provided_by_replaces_in_place_no_dup() -> None:
     """Same id + same provided_by → replace in place (fixes duplicate accumulation)."""
-    existing = [_check("openspec-validate", "openspec-adapter", command="old")]
+    existing = [_check("openspec-validate", "openspec-adapter", command=["old"])]
     out = merge_adapter_provided_list(
-        existing, [_check("openspec-validate", "openspec-adapter", command="new")]
+        existing, [_check("openspec-validate", "openspec-adapter", command=["new"])]
     )
     # Exactly ONE row (not two) and it carries the NEW command (replaced in place).
     assert len(out) == 1
-    assert out[0]["command"] == "new"
+    assert out[0]["command"] == ["new"]
 
 
 def test_merge_list_same_id_different_provided_by_raises_conflict() -> None:
@@ -703,7 +782,7 @@ def test_merge_file_preserves_other_top_level_keys(tmp_path: Path) -> None:
         yaml.safe_dump(
             {
                 "schema_version": 1,
-                "checks": [{"id": "tests", "command": "npm test"}],
+                "checks": [{"id": "tests", "command": ["npm", "test"]}],
                 "adapter_provided": [],
             }
         ),

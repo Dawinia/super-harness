@@ -30,6 +30,7 @@ precisely because of the upstream Edit-deny caveat above).
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 from pathlib import Path
@@ -99,12 +100,14 @@ def test_pre_tool_use_blocks_then_allows(tmp_path: Path) -> None:
     def run_hook() -> subprocess.CompletedProcess[str]:
         # Invoke the EXACT registered command with the Claude-Code JSON payload
         # on stdin, from inside the workspace so the hook walks up to .harness/.
+        command = cmd if os.name == "nt" else shlex.split(cmd)
         return subprocess.run(
-            shlex.split(cmd),
+            command,
             input=_PAYLOAD,
             text=True,
             capture_output=True,
             cwd=ws,
+            shell=os.name == "nt",
         )
 
     # Blocking state → exit 2 (Claude Code BLOCK) — decided in-process, no host.

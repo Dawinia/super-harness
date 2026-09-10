@@ -92,7 +92,7 @@ def new_cmd(ctx: click.Context, decision_id: str, text: str) -> None:
         sys.exit(EXIT_VALIDATION)
     path = decisions_dir(root) / f"{decision_id}.md"
     write_decision(Decision(id=decision_id, status="proposed", body=text, path=path))
-    click.echo(f"created {path.relative_to(root)} (proposed)")
+    click.echo(f"created {path.relative_to(root).as_posix()} (proposed)")
     click.echo(
         'Note: most decisions stay context-only — that is the norm. If this one '
         'states a brittle mechanical invariant, the "Arming a decision" recipe in '

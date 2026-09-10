@@ -365,11 +365,13 @@ def _type_repr(param: click.Parameter) -> str:
 
 def _default_repr(param: click.Parameter) -> str:
     """Render a click parameter's default in a short, markdown-safe form."""
+    default = param.default
+    default_repr = repr(default)
+    unset = "Sentinel.UNSET" in default_repr or default_repr.startswith("<Sentinel")
     if isinstance(param, click.Option) and param.is_flag:
-        return "`False`" if not param.default else "`True`"
+        return "`False`" if unset or not default else "`True`"
     if param.required:
         return "*required*"
-    default = param.default
     if default is None:
         return "—"
     if callable(default):
@@ -379,8 +381,7 @@ def _default_repr(param: click.Parameter) -> str:
     # click 8.4 uses a Sentinel.UNSET singleton for "default not specified" on
     # optional positional args. Render that as em-dash, same as None, to keep
     # the table noise-free.
-    default_repr = repr(default)
-    if "Sentinel.UNSET" in default_repr or default_repr.startswith("<Sentinel"):
+    if unset:
         return "—"
     return f"`{default_repr}`"
 
@@ -667,8 +668,15 @@ def main(argv: list[str] | None = None) -> int:
 
     root_name = "super-harness"
     # render_markdown already ends with a single trailing newline; do not add
-    # another so the emitted bytes match the committed doc exactly.
-    sys.stdout.write(render_markdown(cli_main, root_name=root_name))
+    # another so the emitted bytes match the committed doc exactly. Use bytes
+    # for real subprocesses so Windows console encoding cannot alter the doc.
+    rendered = render_markdown(cli_main, root_name=root_name)
+    stdout_buffer = getattr(sys.stdout, "buffer", None)
+    if stdout_buffer is None:  # pytest/caller-provided StringIO
+        sys.stdout.write(rendered)
+    else:
+        stdout_buffer.write(rendered.encode("utf-8"))
+        stdout_buffer.flush()
     return 0
 
 

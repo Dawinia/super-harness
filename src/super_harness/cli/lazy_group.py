@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import click
-from click.utils import make_default_short_help
 
 from super_harness.cli.group_options import (
     GroupAwareCommand,
@@ -108,7 +107,8 @@ class LazyGroup(GroupAwareGroup):
         for name in names:
             spec = self._command_specs.get(name)
             if spec is not None:
-                rows.append((name, make_default_short_help(spec.help, limit)))
+                command = click.Command(name=name, help=spec.help)
+                rows.append((name, command.get_short_help_str(limit)))
                 continue
             command = self.commands[name]
             if not command.hidden:

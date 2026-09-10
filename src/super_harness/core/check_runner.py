@@ -7,6 +7,7 @@ verification runner).
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tempfile
@@ -17,10 +18,20 @@ from pathlib import Path
 
 from super_harness.core.anchor_scanner import _list_files, _matches_any
 from super_harness.core.decisions import Counterexample, Decision
-from super_harness.core.shell_runner import run_shell, scrubbed_environ
+from super_harness.core.shell_runner import run_command, scrubbed_environ
 from super_harness.core.source_scope import load_source_scope
 
 DEFAULT_TIMEOUT = 30  # seconds (per-check override deferred, design §4.2)
+
+
+def _project_toolchain_dir(root: Path) -> Path | None:
+    """Return the repository's native venv tool directory, if present."""
+    names = ("Scripts", "bin") if os.name == "nt" else ("bin", "Scripts")
+    for name in names:
+        candidate = root / ".venv" / name
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 @dataclass
@@ -30,24 +41,48 @@ class CheckRun:
     detail: str           # short human reason (stderr tail / "timeout" / "...")
 
 
-def run_one_check(command: str, *, cwd: Path, timeout: float = DEFAULT_TIMEOUT) -> CheckRun:
+def run_one_check(
+    command: str,
+    *,
+    cwd: Path,
+    timeout: float = DEFAULT_TIMEOUT,
+    toolchain_root: Path | None = None,
+) -> CheckRun:
     """Run a single executable check and report whether it is satisfied.
 
     `command` MUST be a ratified, body-hash-locked check (Tool A text-lock).
-    `shell=True` (in `run_shell`) is intentional: checks are deliberately shell
-    snippets like `! grep ... | ...`. The trust boundary is the ratify-time
-    bite-test + hash lock, NOT this primitive, which runs any string handed it.
+    The ratified records are explicit POSIX-shell snippets like
+    `! grep ... | ...`; the trust boundary is the ratify-time bite-test + hash
+    lock, NOT this primitive, which runs any string handed it.
 
-    Timeout kills the whole process GROUP and reaps backgrounded grandchildren
-    with a bounded wait — see `core.shell_runner.run_shell`.
+    Timeout kills the whole process tree and reaps backgrounded grandchildren
+    with a bounded wait — see `core.shell_runner.run_command`.
 
     Checks run against `scrubbed_environ()` (ambient minus `SUPER_HARNESS_*`)
     on EVERY path (authoring Stop-hook, CI `decision check`, ratify
-    `bite_test`), so the authoring-time verdict and the merge-gate verdict
-    agree by construction. A check that genuinely needs an env value inlines it
+    `bite_test`), with the repository's `.venv/Scripts` or `.venv/bin`
+    prepended when present. That keeps project tools such as `lint-imports`
+    resolvable from an unactivated shell without replacing the caller's
+    remaining environment. A check that genuinely needs an env value inlines it
     in its ratified snippet.
     """
-    res = run_shell(command, cwd=cwd, timeout=timeout, env=scrubbed_environ())
+    env = scrubbed_environ()
+    toolchain = _project_toolchain_dir(toolchain_root or cwd)
+    if toolchain is not None:
+        existing_path = env.get("PATH", "")
+        env["PATH"] = (
+            f"{toolchain}{os.pathsep}{existing_path}"
+            if existing_path
+            else str(toolchain)
+        )
+    res = run_command(
+        command,
+        shell="sh",
+        required_tools=("grep",),
+        cwd=cwd,
+        timeout=timeout,
+        env=env,
+    )
     if res.spawn_error is not None:
         return CheckRun(False, -1, f"could not run: {res.spawn_error}")
     if res.timed_out:
@@ -193,14 +228,24 @@ def bite_test(
     # scans the inline counterexample sitting in docs/decisions/<id>.md and
     # fails here. Do NOT add source_scope filtering to the pass side. (Same run
     # a normal `decision check` does - the runner is shared.)
-    p = run_one_check(command, cwd=workspace_root, timeout=timeout)
+    p = run_one_check(
+        command,
+        cwd=workspace_root,
+        timeout=timeout,
+        toolchain_root=workspace_root,
+    )
     if not p.satisfied:
         return BiteVerdict(False, f"check fails on current code ({p.detail}) - fix the "
                                   f"code, or scope the check away from the counterexample",
                            p, CheckRun(False, -1, "not run (pass side failed)"))
     # Bite side: sandbox with the counterexample injected.
     with build_sandbox(workspace_root, counterexample) as sb:
-        b = run_one_check(command, cwd=sb, timeout=timeout)
+        b = run_one_check(
+            command,
+            cwd=sb,
+            timeout=timeout,
+            toolchain_root=workspace_root,
+        )
     if b.satisfied:
         return BiteVerdict(False, "check did not bite: it still passed with the "
                                   "counterexample present - either the check is too weak "

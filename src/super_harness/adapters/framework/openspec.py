@@ -246,7 +246,7 @@ class OpenSpecAdapter(FrameworkAdapter):
         return [{
             "id": "openspec-validate",
             # verified openspec@1.3.1: change-id is a POSITIONAL arg, not --change.
-            "command": "openspec validate ${SLUG} --strict --json",
+            "command": ["openspec", "validate", "${SLUG}", "--strict", "--json"],
             "must_pass": True,
             "provided_by": "openspec-adapter",
         }]

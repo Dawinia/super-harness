@@ -3,11 +3,75 @@ from __future__ import annotations
 
 import os
 import shlex
+import sys
 import time
 
 import pytest
 
-from super_harness.core.shell_runner import ShellResult, run_shell, scrubbed_environ
+from super_harness.core.shell_runner import (
+    ShellResult,
+    run_command,
+    run_shell,
+    scrubbed_environ,
+)
+
+
+def test_direct_argv_preserves_boundaries_and_exit_code(tmp_path):
+    code = (
+        "import os,sys; sys.stdout.buffer.write(sys.argv[1].encode('utf-8') + b'\\n'); "
+        "sys.stderr.buffer.write(os.environ['PROBE'].encode() + b'\\n'); "
+        "sys.exit(23)"
+    )
+    res = run_command(
+        [sys.executable, "-c", code, "带 空格/值"],
+        cwd=tmp_path,
+        timeout=10,
+        env={"PATH": os.environ["PATH"], "PROBE": "stderr-value"},
+    )
+    assert res.spawn_error is None
+    assert res.exit_code == 23
+    assert res.stdout == "带 空格/值\n"
+    assert res.stderr == "stderr-value\n"
+
+
+def test_string_command_requires_explicit_shell(tmp_path):
+    res = run_command("echo should-not-run", cwd=tmp_path, timeout=10)
+    assert res.exit_code == -1
+    assert res.spawn_error and "explicit shell" in res.spawn_error
+
+
+def test_explicit_sh_command_runs_without_cmd(tmp_path):
+    res = run_command("printf 'shell-ok'", shell="sh", cwd=tmp_path, timeout=10)
+    assert res.spawn_error is None
+    assert res.exit_code == 0
+    assert res.stdout == "shell-ok"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows process-tree coverage")
+def test_windows_timeout_kills_started_descendant(tmp_path):
+    started = tmp_path / "started.marker"
+    killed = tmp_path / "late.marker"
+    child_code = (
+        "from pathlib import Path; import time; "
+        f"Path({str(started)!r}).write_text('started', encoding='utf-8'); "
+        "time.sleep(2); "
+        f"Path({str(killed)!r}).write_text('late', encoding='utf-8')"
+    )
+    parent_code = (
+        "import subprocess,sys,time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        "time.sleep(5)"
+    )
+    result = run_command(
+        [sys.executable, "-c", parent_code],
+        cwd=tmp_path,
+        timeout=0.5,
+        env={"PATH": os.environ["PATH"]},
+    )
+    assert result.timed_out is True
+    assert _wait_for(started), "descendant never started; timeout test would be vacuous"
+    time.sleep(2.5)
+    assert not killed.exists()
 
 
 def test_zero_exit_captures_stdout(tmp_path):

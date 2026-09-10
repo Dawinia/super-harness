@@ -46,10 +46,10 @@ class SuspectDecision:
 
 
 def fingerprint_file(workspace_root: Path, rel: str) -> str:
-    """sha256 of raw file bytes (byte-exact, binary-safe, subprocess/git-free).
-    Deliberately NOT normalized (unlike compute_body_hash) — any byte change to
-    anchored code should re-route the review (design coarse-by-construction)."""
-    digest = hashlib.sha256((workspace_root / rel).read_bytes()).hexdigest()
+    """Hash anchored source independent of Git checkout line-ending conversion."""
+    content = (workspace_root / rel).read_bytes()
+    canonical = content.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    digest = hashlib.sha256(canonical).hexdigest()
     return f"sha256:{digest}"
 
 
@@ -90,7 +90,7 @@ def run_check(workspace_root: Path) -> CheckResult:
         if d.status != "ratified" or d.ratified_text_hash is None:
             continue  # missing hash → lazy-warn path (Task 5), not a violation
         if compute_body_hash(d.body) != d.ratified_text_hash:
-            rel = str(d.path.relative_to(workspace_root)) if d.path else d.id
+            rel = d.path.relative_to(workspace_root).as_posix() if d.path else d.id
             integrity_violations.append(IntegrityViolation(id=d.id, file=rel))
     integrity_violations.sort(key=lambda v: v.id)
 

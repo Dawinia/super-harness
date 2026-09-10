@@ -12,5 +12,8 @@ execution:
   mode: parallel
   max_parallelism: 4
   fail_fast: false
+# Commands are direct argv lists. A command string is valid only with
+# `shell: sh`, which uses /bin/sh on POSIX and Git for Windows' native
+# usr/bin/sh.exe on Windows.
 checks: []
 adapter_provided: []

@@ -1,19 +1,22 @@
 """Derivable-doc registry + regen-and-diff engine (design 2026-06-11).
 
-Loader mirrors source_scope.py's YAML shape but decisions.py's fail-CLOSED
-error handling: a malformed registry blocks (RegistryError), never silently
-defaults to "no docs".
+The registry uses the same explicit command contract as verification: generator
+commands are direct argv lists, with structured ``workdir`` and ``env`` fields.
+A malformed registry blocks (``RegistryError``), never silently defaults to
+"no docs".
 """
 from __future__ import annotations
 
 import difflib
-import shlex
-import subprocess
+import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
+from super_harness.core.shell_runner import run_command, scrubbed_environ
 from super_harness.exit_codes import (
     EXIT_EXTERNAL_TOOL,
     EXIT_NO_CONFIG,
@@ -28,7 +31,9 @@ _DIFF_MAX_LINES = 40
 @dataclass(frozen=True)
 class DerivedDoc:
     path: str       # repo-relative, validated inside-repo
-    command: str    # generator invocation; emits canonical content to stdout
+    command: tuple[str, ...]  # direct generator argv; emits canonical stdout
+    workdir: str = "."
+    env: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -77,14 +82,42 @@ def load_derived_docs(
             errors.append(RegistryError("malformed_registry", f"entry {i} is not a mapping"))
             continue
         path = entry.get("path")
-        command = entry.get("command")
-        if not isinstance(path, str) or not isinstance(command, str):
+        raw_command = entry.get("command")
+        if not isinstance(path, str):
+            errors.append(RegistryError("malformed_registry", f"entry {i} needs a string path"))
+            continue
+        if not isinstance(raw_command, list) or not raw_command or any(
+            not isinstance(argument, str) or argument == "" for argument in raw_command
+        ):
             errors.append(
-                RegistryError("malformed_registry", f"entry {i} needs string path+command")
+                RegistryError(
+                    "malformed_registry",
+                    f"entry {i} needs a non-empty command list of non-empty strings",
+                )
             )
             continue
-        if not shlex.split(command):
-            errors.append(RegistryError("malformed_registry", f"entry {i} has empty command"))
+        if "shell" in entry:
+            errors.append(
+                RegistryError(
+                    "malformed_registry",
+                    f"entry {i} direct command may not set 'shell'",
+                )
+            )
+            continue
+        workdir = entry.get("workdir", ".")
+        if not isinstance(workdir, str) or not workdir.strip():
+            errors.append(
+                RegistryError("malformed_registry", f"entry {i} has invalid workdir")
+            )
+            continue
+        if _escapes_repo(workspace_root, workdir):
+            errors.append(RegistryError("path_escape", f"workdir escapes repo: {workdir!r}"))
+            continue
+        env = _parse_env(entry.get("env"), i)
+        if env is None:
+            errors.append(
+                RegistryError("malformed_registry", f"entry {i} env must map strings to strings")
+            )
             continue
         if path.strip() == "":
             errors.append(RegistryError("malformed_registry", f"entry {i} has empty path"))
@@ -105,8 +138,28 @@ def load_derived_docs(
             errors.append(RegistryError("duplicate_path", f"duplicate path: {path!r}"))
             continue
         seen.add(resolved)
-        docs.append(DerivedDoc(path=path, command=command))
+        docs.append(
+            DerivedDoc(
+                path=path,
+                command=tuple(raw_command),
+                workdir=workdir,
+                env=env,
+            )
+        )
     return docs, errors
+
+
+def _parse_env(value: Any, index: int) -> dict[str, str] | None:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            return None
+        result[key] = item
+    return result
 
 
 @dataclass
@@ -123,7 +176,7 @@ class Drift:
 @dataclass
 class Failed:
     path: str
-    command: str
+    command: tuple[str, ...]
     error: str
 
 
@@ -140,24 +193,42 @@ def _normalize(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _run_generator(workspace_root: Path, command: str) -> tuple[str | None, str]:
-    """Return (generated_text, error). text is None on failure."""
-    argv = shlex.split(command)
-    try:
-        proc = subprocess.run(
-            argv, cwd=workspace_root, capture_output=True,
-            timeout=_GENERATOR_TIMEOUT_S,
+def _run_generator(workspace_root: Path, doc: DerivedDoc) -> tuple[str | None, str]:
+    """Return ``(generated_text, error)``; text is None on failure."""
+    env = {**scrubbed_environ(), **doc.env}
+    if doc.command and doc.command[0] in {"python", "python3"}:
+        toolchain = _project_toolchain_dir(workspace_root) or Path(sys.executable).resolve().parent
+        existing_path = env.get("PATH", "")
+        env["PATH"] = (
+            f"{toolchain}{os.pathsep}{existing_path}"
+            if existing_path
+            else str(toolchain)
         )
-    except FileNotFoundError:
-        return None, "command not found"
-    except subprocess.TimeoutExpired:
+    result = run_command(
+        doc.command,
+        cwd=(workspace_root / doc.workdir).resolve(),
+        env=env,
+        timeout=_GENERATOR_TIMEOUT_S,
+        decode_errors="strict",
+    )
+    if result.decode_error is not None:
+        return None, result.decode_error
+    if result.spawn_error is not None:
+        return None, f"could not run: {result.spawn_error}"
+    if result.timed_out:
         return None, f"timed out after {_GENERATOR_TIMEOUT_S}s"
-    if proc.returncode != 0:
-        return None, f"exit {proc.returncode}"
-    try:
-        return proc.stdout.decode("utf-8"), ""
-    except UnicodeDecodeError:
-        return None, "invalid UTF-8 stdout"
+    if result.exit_code != 0:
+        return None, f"exit {result.exit_code}"
+    return result.stdout, ""
+
+
+def _project_toolchain_dir(root: Path) -> Path | None:
+    names = ("Scripts", "bin") if os.name == "nt" else ("bin", "Scripts")
+    for name in names:
+        candidate = root / ".venv" / name
+        if candidate.is_dir():
+            return candidate
+    return None
 
 
 def truncate_diff(diff: str) -> str:
@@ -175,7 +246,7 @@ def run_doc_check(workspace_root: Path, *, fix: bool = False) -> DocCheckResult:
 
     result = DocCheckResult()
     for doc in docs:
-        generated, err = _run_generator(workspace_root, doc.command)
+        generated, err = _run_generator(workspace_root, doc)
         if generated is None:
             result.failed.append(Failed(path=doc.path, command=doc.command, error=err))
             continue

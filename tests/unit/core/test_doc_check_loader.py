@@ -19,12 +19,34 @@ def test_absent_file_is_clean_not_error(tmp_path):
 
 def test_valid_registry_parses(tmp_path):
     _reg(tmp_path, "derived_docs:\n"
-                   "  - path: docs/a.md\n    command: echo hi\n"
-                   "  - path: docs/b.md\n    command: python -m x --emit\n")
+                   "  - path: docs/a.md\n    command: [echo, hi]\n"
+                   "  - path: docs/b.md\n    command: [python, -m, x, --emit]\n")
     docs, errors = load_derived_docs(tmp_path)
     assert errors == []
-    assert docs == [DerivedDoc(path="docs/a.md", command="echo hi"),
-                    DerivedDoc(path="docs/b.md", command="python -m x --emit")]
+    assert docs == [DerivedDoc(path="docs/a.md", command=("echo", "hi")),
+                    DerivedDoc(path="docs/b.md", command=("python", "-m", "x", "--emit"))]
+
+
+def test_registry_preserves_structured_workdir_and_env(tmp_path):
+    _reg(
+        tmp_path,
+        "derived_docs:\n"
+        "  - path: docs/a.md\n"
+        "    command: [echo, hi]\n"
+        "    workdir: generators\n"
+        "    env: {DOC_MODE: utf8}\n",
+    )
+    docs, errors = load_derived_docs(tmp_path)
+    assert errors == []
+    assert docs[0].workdir == "generators"
+    assert docs[0].env == {"DOC_MODE": "utf8"}
+
+
+def test_string_command_is_rejected_without_compatibility_fallback(tmp_path):
+    _reg(tmp_path, "derived_docs:\n  - path: docs/a.md\n    command: echo hi\n")
+    docs, errors = load_derived_docs(tmp_path)
+    assert docs == []
+    assert [e.code for e in errors] == ["malformed_registry"]
 
 
 def test_unparseable_yaml_is_malformed(tmp_path):
@@ -60,51 +82,51 @@ def test_empty_command_malformed(tmp_path):
 
 
 def test_absolute_path_is_escape(tmp_path):
-    _reg(tmp_path, "derived_docs:\n  - path: /etc/x.md\n    command: echo hi\n")
+    _reg(tmp_path, "derived_docs:\n  - path: /etc/x.md\n    command: [echo, hi]\n")
     assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["path_escape"]
 
 
 def test_dotdot_escape(tmp_path):
-    _reg(tmp_path, "derived_docs:\n  - path: ../x.md\n    command: echo hi\n")
+    _reg(tmp_path, "derived_docs:\n  - path: ../x.md\n    command: [echo, hi]\n")
     assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["path_escape"]
 
 
 def test_duplicate_path_malformed(tmp_path):
     _reg(tmp_path, "derived_docs:\n"
-                   "  - path: docs/a.md\n    command: echo 1\n"
-                   "  - path: docs/a.md\n    command: echo 2\n")
+                   "  - path: docs/a.md\n    command: [echo, '1']\n"
+                   "  - path: docs/a.md\n    command: [echo, '2']\n")
     assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["duplicate_path"]
 
 
 def test_duplicate_path_after_normalization(tmp_path):
     _reg(tmp_path, "derived_docs:\n"
-                   "  - path: docs/a.md\n    command: echo 1\n"
-                   "  - path: ./docs/a.md\n    command: echo 2\n")
+                   "  - path: docs/a.md\n    command: [echo, '1']\n"
+                   "  - path: ./docs/a.md\n    command: [echo, '2']\n")
     docs, errors = load_derived_docs(tmp_path)
     assert [d.path for d in docs] == ["docs/a.md"]
     assert [e.code for e in errors] == ["duplicate_path"]
 
 
 def test_empty_path_malformed(tmp_path):
-    _reg(tmp_path, "derived_docs:\n  - path: ''\n    command: echo hi\n")
+    _reg(tmp_path, "derived_docs:\n  - path: ''\n    command: [echo, hi]\n")
     assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["malformed_registry"]
 
 
 def test_whitespace_path_malformed(tmp_path):
-    _reg(tmp_path, "derived_docs:\n  - path: '   '\n    command: echo hi\n")
+    _reg(tmp_path, "derived_docs:\n  - path: '   '\n    command: [echo, hi]\n")
     assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["malformed_registry"]
 
 
 def test_dot_path_resolves_to_root_malformed(tmp_path):
-    _reg(tmp_path, "derived_docs:\n  - path: '.'\n    command: echo hi\n")
+    _reg(tmp_path, "derived_docs:\n  - path: '.'\n    command: [echo, hi]\n")
     assert [e.code for e in load_derived_docs(tmp_path)[1]] == ["malformed_registry"]
 
 
 def test_mixed_valid_and_invalid_aggregates(tmp_path):
     _reg(tmp_path, "derived_docs:\n"
-                   "  - path: docs/good.md\n    command: echo ok\n"
-                   "  - path: /abs.md\n    command: echo bad\n"
-                   "  - path: docs/good.md\n    command: echo dup\n")
+                   "  - path: docs/good.md\n    command: [echo, ok]\n"
+                   "  - path: /abs.md\n    command: [echo, bad]\n"
+                   "  - path: docs/good.md\n    command: [echo, dup]\n")
     docs, errors = load_derived_docs(tmp_path)
     assert [d.path for d in docs] == ["docs/good.md"]
     assert [e.code for e in errors] == ["path_escape", "duplicate_path"]

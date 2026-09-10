@@ -77,9 +77,9 @@ def exclusive_file_lock(path: Path) -> Iterator[None]:
     """Block until an exclusive lock is held on ``path``, then release it."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+b") as lock_file:
-        _prepare_lock_byte(lock_file)
         _lock(lock_file)
         try:
+            _prepare_lock_byte(lock_file)
             yield
         finally:
             _unlock(lock_file)

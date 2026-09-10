@@ -5,18 +5,14 @@ ratified_by: dawinialo@163.com
 ratified_at: '2026-07-30T07:05:06.458059Z'
 ratified_text_hash: sha256:d18656cdb3b6adddba986e3c531f6b662ebf9bbc7483f2fd02e28bb10f58a75d
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-07-30T07:05:06.680046Z'
+last_reconciled_at: '2026-09-08T16:27:55.671468Z'
 last_reconcile_kind: self
-last_reconcile_justification: "Re-ratified after the first code review. Anchor moved\
-  \ to the ratified set comprehension in core/decision_check.py \u2014 the line whose\
-  \ result drives dangling_down, effective_ratified and the tier-2 suspect/unreconciled\
-  \ loops, and therefore the line that makes a proposed record free to file. The body-hash\
-  \ integrity filter it previously sat on is redundant for a proposed record (no ratified_text_hash)\
-  \ and carries no invariant. Body also drops the unresolved backticked identifier\
-  \ that tripped doc refs --gate, and qualifies the gates-nothing claim: filing is\
-  \ free, anchoring is dangling-up."
+last_reconcile_justification: Re-reviewed after making tier-2 fingerprints line-ending
+  invariant. The anchored ratified set still excludes proposed records and continues
+  to drive effective_ratified, dangling_down, and tier-2 routing; anchoring a proposed
+  record still creates dangling_up.
 reconciled_anchors:
-  src/super_harness/core/decision_check.py: sha256:dae62495ed71c1ca3bb45c2da107ba78a12241b0cef14880c4ff15660abc4754
+  src/super_harness/core/decision_check.py: sha256:cc419ccc59ffd42be58b694cbb16fe9ce07d8660a7759c86d13f48f2e12a2ca4
 ---
 Negative knowledge is recorded as a proposed decision record; super-harness grows no parallel pitfall corpus.
 

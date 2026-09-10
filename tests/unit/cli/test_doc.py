@@ -3,21 +3,29 @@ import json
 import sys
 from pathlib import Path
 
+import yaml
 from click.testing import CliRunner
 
 from super_harness.cli import main
 
 
-def _ws(tmp_path: Path, entries: list[tuple[str, str]]) -> Path:
+def _ws(tmp_path: Path, entries: list[tuple[str, list[str]]]) -> Path:
     (tmp_path / ".harness").mkdir()
-    body = "derived_docs:\n" + "".join(
-        f"  - path: {p}\n    command: {c}\n" for p, c in entries)
-    (tmp_path / ".harness/derived-docs.yaml").write_text(body)
+    body = yaml.safe_dump({"derived_docs": [{"path": p, "command": c} for p, c in entries]})
+    (tmp_path / ".harness/derived-docs.yaml").write_text(body, encoding="utf-8")
     return tmp_path
 
 
-def _emit(text: str) -> str:
-    return f'{sys.executable} -c "import sys;sys.stdout.write({text!r})"'
+def _emit(text: str) -> list[str]:
+    return [
+        sys.executable,
+        "-c",
+        f"import sys;sys.stdout.buffer.write({text!r}.encode('utf-8'))",
+    ]
+
+
+def _run(code: str) -> list[str]:
+    return [sys.executable, "-c", code]
 
 
 def test_check_in_sync_json(tmp_path):
@@ -96,7 +104,7 @@ def test_no_harness_exit_3(tmp_path):
 def test_failed_bucket_json(tmp_path):
     (tmp_path / "docs").mkdir()
     (tmp_path / "docs/a.md").write_text("x\n")
-    _ws(tmp_path, [("docs/a.md", f'{sys.executable} -c "import sys;sys.exit(7)"')])
+    _ws(tmp_path, [("docs/a.md", _run("import sys;sys.exit(7)"))])
     r = CliRunner().invoke(main, ["--json", "--workspace", str(tmp_path), "doc", "check"])
     assert r.exit_code == 4
     env = json.loads(r.output)

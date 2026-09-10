@@ -11,6 +11,10 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
+pytest.importorskip("fcntl", reason="POSIX observer integration tests require fcntl")
+
 from super_harness.daemon import server as srv
 
 

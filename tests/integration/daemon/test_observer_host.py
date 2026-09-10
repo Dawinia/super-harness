@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip("fcntl", reason="POSIX observer integration tests require fcntl")
+
 from super_harness.daemon import supervisor
 
 

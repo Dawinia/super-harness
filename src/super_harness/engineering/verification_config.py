@@ -24,7 +24,10 @@ Schema (the canonical empty shape lives in
       fail_fast: false                       # bool
     checks:                                  # list of user CheckSpecs
       - id: tests                            # str, REQUIRED, unique-per-layer
-        command: npm test                    # str, REQUIRED
+        command: [npm, test]                # direct argv, REQUIRED
+      - id: shell-check
+        command: "printf ok"                # string requires explicit shell
+        shell: sh
         must_pass: true                      # optional → inherits defaults.must_pass
         timeout_seconds: 600                 # optional → inherits defaults.timeout_seconds
         capture: stdout                      # optional → inherits defaults.capture
@@ -32,7 +35,7 @@ Schema (the canonical empty shape lives in
         env: {}                              # optional per-check env (NOT merged here)
     adapter_provided:                        # list, same CheckSpec shape + provided_by
       - id: openspec-validate
-        command: openspec validate --strict
+        command: [openspec, validate, --strict]
         provided_by: openspec-adapter        # str, adapter_provided only
 
 **Default inheritance (load time):** a CheckSpec parsed from a check that omits
@@ -79,6 +82,7 @@ import yaml
 __all__ = [
     "INTERPOLATION_ALLOWLIST",
     "CheckSpec",
+    "Command",
     "Defaults",
     "Execution",
     "InterpolationError",
@@ -107,8 +111,8 @@ _DEFAULT_MAX_PARALLELISM = 4
 _DEFAULT_MODE = "parallel"
 _DEFAULT_FAIL_FAST = False
 
-# Variable-interpolation allowlist for check `command` strings (engineering-
-# integration §2.3 / OI-6). The gate is on the placeholder NAME, not its value:
+# Variable-interpolation allowlist for check `command` strings and argv elements
+# (engineering-integration §2.3 / OI-6). The gate is on the placeholder NAME, not its value:
 # all four names are always *accepted* (an allowlisted-but-empty value
 # substitutes to `""`); only a non-allowlisted name (`${PR_URL}`,
 # `${COMMIT_SHA}`, …) raises. `${SLUG}` and `${CHANGE_ID}` are aliases of the
@@ -117,6 +121,8 @@ _DEFAULT_FAIL_FAST = False
 INTERPOLATION_ALLOWLIST: frozenset[str] = frozenset(
     {"SLUG", "CHANGE_ID", "SPEC_PATH", "PLAN_PATH"}
 )
+
+Command = str | tuple[str, ...]
 
 # Matches a `${NAME}` placeholder where NAME is a Python-style identifier. A
 # bare `$`, an unbraced `$NAME`, or empty `${}` is NOT a placeholder and is
@@ -208,12 +214,13 @@ class CheckSpec:
     """
 
     id: str
-    command: str
+    command: Command
     must_pass: bool
     timeout_seconds: int
     capture: str
     workdir: str
     env: dict[str, str]
+    shell: str | None = None
     provided_by: str | None = None
 
 
@@ -318,6 +325,11 @@ def merge_adapter_provided_list(
     Returns a NEW list (the input `existing` is not mutated in place); callers
     that read→merge→write get a clean value to write back.
     """
+    # Validate producer output before merging so adapter install/register cannot
+    # persist a row that the canonical loader will reject later. Reuse the same
+    # parser and command contract; the raw dictionaries are still preserved.
+    _parse_checks(new, Defaults(), Path("<adapter_provided>"), layer="adapter_provided")
+
     # Shallow-copy so we never mutate the caller's list object; the dict
     # elements are shared by reference (we only replace/append whole dicts).
     merged: list[dict[str, Any]] = list(existing)
@@ -386,8 +398,8 @@ def merge_adapter_provided(path: Path, checks: list[dict[str, Any]]) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def interpolate(command: str, variables: dict[str, str]) -> str:
-    """Substitute allowlisted `${NAME}` placeholders in a check `command`.
+def interpolate(command: Command, variables: dict[str, str]) -> Command:
+    """Substitute allowlisted `${NAME}` placeholders in a check command.
 
     Pure function. Recognizes only `${NAME}` tokens where `NAME` is a Python-
     style identifier; a bare `$`, an unbraced `$NAME`, or empty `${}` is left
@@ -406,7 +418,7 @@ def interpolate(command: str, variables: dict[str, str]) -> str:
     All occurrences of each placeholder are replaced.
 
     Args:
-        command: The raw check command string from `verification.yaml`.
+        command: The raw string or immutable argv tuple from `verification.yaml`.
         variables: The resolved interpolation variables (built by a later task,
             with `SPEC_PATH`/`PLAN_PATH` hardcoded empty in v0.1).
 
@@ -417,20 +429,25 @@ def interpolate(command: str, variables: dict[str, str]) -> str:
         InterpolationError: a `${NAME}` placeholder is outside the allowlist.
     """
 
-    def _replace(match: re.Match[str]) -> str:
+    def _replace(text: str, match: re.Match[str]) -> str:
         name = match.group(1)
         if name not in INTERPOLATION_ALLOWLIST:
             raise InterpolationError(
                 f"unknown interpolation placeholder ${{{name}}} in command "
-                f"{command!r}; allowed: "
+                f"{text!r}; allowed: "
                 f"{sorted('${' + n + '}' for n in INTERPOLATION_ALLOWLIST)}"
             )
         return variables.get(name, "")
 
-    return _PLACEHOLDER_RE.sub(_replace, command)
+    def _interpolate_text(text: str) -> str:
+        return _PLACEHOLDER_RE.sub(lambda match: _replace(text, match), text)
+
+    if isinstance(command, str):
+        return _interpolate_text(command)
+    return tuple(_interpolate_text(argument) for argument in command)
 
 
-def _validate_command_placeholders(command: str, *, check_id: str) -> None:
+def _validate_command_placeholders(command: Command, *, check_id: str) -> None:
     """Reject any non-allowlisted `${NAME}` placeholder in `command` at load time.
 
     Catches a bad placeholder when the config is loaded (the `verify` / `done`
@@ -445,14 +462,16 @@ def _validate_command_placeholders(command: str, *, check_id: str) -> None:
         InterpolationError: a `${NAME}` placeholder is outside the allowlist,
             naming the offending placeholder and the owning check id.
     """
-    for match in _PLACEHOLDER_RE.finditer(command):
-        name = match.group(1)
-        if name not in INTERPOLATION_ALLOWLIST:
-            raise InterpolationError(
-                f"check {check_id!r} command references unknown interpolation "
-                f"placeholder ${{{name}}}; allowed: "
-                f"{sorted('${' + n + '}' for n in INTERPOLATION_ALLOWLIST)}"
-            )
+    values = (command,) if isinstance(command, str) else command
+    for value in values:
+        for match in _PLACEHOLDER_RE.finditer(value):
+            name = match.group(1)
+            if name not in INTERPOLATION_ALLOWLIST:
+                raise InterpolationError(
+                    f"check {check_id!r} command references unknown interpolation "
+                    f"placeholder ${{{name}}}; allowed: "
+                    f"{sorted('${' + n + '}' for n in INTERPOLATION_ALLOWLIST)}"
+                )
 
 
 # --------------------------------------------------------------------------- #
@@ -546,10 +565,37 @@ def _parse_check_entry(
         raise VerificationConfigError(
             f"{path}: {where} is missing a non-empty string 'id'"
         )
-    command = entry.get("command")
-    if not isinstance(command, str) or not command:
+    raw_command = entry.get("command")
+    if isinstance(raw_command, str):
+        if not raw_command.strip():
+            raise VerificationConfigError(
+                f"{path}: check {check_id!r} needs a non-empty 'command'"
+            )
+        if entry.get("shell") != "sh":
+            raise VerificationConfigError(
+                f"{path}: string command for check {check_id!r} requires "
+                "explicit 'shell: sh'"
+            )
+        command: Command = raw_command
+        shell = "sh"
+    elif isinstance(raw_command, list):
+        if not raw_command or any(
+            not isinstance(argument, str) or argument == "" for argument in raw_command
+        ):
+            raise VerificationConfigError(
+                f"{path}: check {check_id!r} command must be a non-empty list "
+                "of non-empty strings"
+            )
+        if "shell" in entry:
+            raise VerificationConfigError(
+                f"{path}: direct argv command for check {check_id!r} may not set 'shell'"
+            )
+        command = tuple(raw_command)
+        shell = None
+    else:
         raise VerificationConfigError(
-            f"{path}: check {check_id!r} is missing a non-empty string 'command'"
+            f"{path}: check {check_id!r} command must be a non-empty argv list "
+            "or a string with 'shell: sh'"
         )
     # Reject non-allowlisted `${NAME}` placeholders at LOAD time (not only at
     # run time in the sensor thread pool) so a typo'd `${PR_URL}` surfaces as a
@@ -585,6 +631,7 @@ def _parse_check_entry(
         capture=_enum(entry, "capture", defaults.capture, _CAPTURE_VALUES, field_ctx),
         workdir=_str(entry, "workdir", defaults.workdir, field_ctx),
         env=_env(entry.get("env"), f"{field_ctx} env"),
+        shell=shell,
         provided_by=provided_by,
     )
 
