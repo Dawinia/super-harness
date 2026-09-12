@@ -4,6 +4,7 @@ State is a derived value (reducer output, Task 1.6); this module just defines
 the dataclass + constants. Per Axiom 7 (events immutable; state derived), this
 ChangeState is the **per-change** record inside state.yaml's `changes` map.
 """
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -49,6 +50,7 @@ class ChangeState:
       (replaced each plan_ready, cleared on plan_redeclared); consulted by the
       PLAN_REJECTED plan-artifact gate carve-out (HG-PLAN-AUTHORING)
     """
+
     change_id: str
     current_state: str = "INTENT_DECLARED"
     framework: Framework = "plain"
@@ -63,3 +65,15 @@ class ChangeState:
     merge_commit_sha: str | None = None
     redeclaration_history: list[dict[str, Any]] = field(default_factory=list)
     plan_artifacts: list[str] = field(default_factory=list)
+    # New-contract authority/evidence fields.  They are derived from events;
+    # legacy streams may populate ``legacy_plan_approval`` so their historical
+    # skip/approval meaning remains visible without becoming a writable escape
+    # route for new events.
+    effective_approval: dict[str, Any] | None = None
+    legacy_plan_approval: dict[str, Any] | None = None
+    pending_revision: dict[str, Any] | None = None
+    implementation_assessments: list[dict[str, Any]] = field(default_factory=list)
+    coverage_manifest: list[dict[str, Any]] = field(default_factory=list)
+    current_code_subject: dict[str, Any] | None = None
+    current_verification: dict[str, Any] | None = None
+    evidence_references: list[dict[str, Any]] = field(default_factory=list)

@@ -684,8 +684,7 @@ class RichGuidedRenderer:
             if inline:
                 self._spine(inline)
             hidden = sum(
-                item.action in {FileAction.PRESERVE, FileAction.SKIP}
-                for item in plan.file_actions
+                item.action in {FileAction.PRESERVE, FileAction.SKIP} for item in plan.file_actions
             )
             if hidden:
                 dash = "—" if self._unicode else "--"
@@ -818,17 +817,11 @@ def _interactive_initial_choices(
         return initial
     if preflight.review_config_error is not None:
         return initial
-    models = dict(preflight.persisted_review_models)
-    models.update(initial.review_models)
     return InitChoices(
         integrations=initial.integrations,
-        review_write=ReviewWrite.UPDATE,
-        review_producers=(
-            initial.review_producers
-            if initial.review_producers is not None
-            else preflight.persisted_review_producers
-        ),
-        review_models=models,
+        review_write=ReviewWrite.PRESERVE,
+        review_producers=(),
+        review_models={},
         existing_files=initial.existing_files,
         github_decision=initial.github_decision,
         github_file_decisions=initial.github_file_decisions,
@@ -976,27 +969,8 @@ class InteractiveInitUI:
     def _collect_producers(
         self, request: InitRequest, preflight: InitPreflight, initial: InitChoices
     ) -> tuple[str, ...] | object | None:
-        if request.review_producers:
-            return initial.review_producers
-        defaults = (
-            frozenset(initial.review_producers)
-            if initial.review_producers is not None
-            else frozenset(preflight.detected_review_producers)
-        )
-        options = self._producer_options(preflight, defaults, request.review_models)
-        if not any(option.disabled is None for option in options):
-            self._renderer.render_validation(
-                "No automated reviewers are ready; install a CLI and configure its model."
-            )
-            return ()
-        self._before_prompt()
-        answer = self._prompts.checkbox(
-            "Automated reviewers",
-            options,
-        )
-        if answer is None:
-            return _CANCEL
-        return tuple(value for value in answer if value in preflight.available_review_producers)
+        del request, preflight, initial
+        return ()
 
     def _collect_models(
         self,
@@ -1005,52 +979,8 @@ class InteractiveInitUI:
         producers: tuple[str, ...] | None,
         initial: InitChoices,
     ) -> Mapping[str, str] | None:
-        selected_sources = {
-            option.source
-            for option in _REVIEW_PRODUCERS
-            if option.value in (request.review_producers or producers or ())
-        }
-        models = {
-            source: model
-            for source, model in initial.review_models.items()
-            if source in selected_sources
-        }
-        models.update(request.review_models)
-        known = dict(models)
-        options = {option.value: option for option in _REVIEW_PRODUCERS}
-        for producer in request.review_producers or producers or ():
-            option = options.get(producer)
-            if option is None or option.source is None or option.source in known:
-                continue
-            candidates = preflight.reviewer_model_candidates.get(option.source, ())
-            if not candidates:
-                self._renderer.render_validation(
-                    preflight.reviewer_model_errors.get(option.source, "model not configured")
-                )
-                return None
-            if len(candidates) == 1:
-                answer = candidates[0].model
-            else:
-                choices = tuple(
-                    GuidedPromptOption(
-                        candidate.model,
-                        f"{candidate.model}  {candidate.origin}",
-                        checked=index == 0,
-                    )
-                    for index, candidate in enumerate(candidates)
-                )
-                self._before_prompt()
-                selected_answer = self._prompts.select(
-                    f"Model for {option.label.removesuffix(' CLI')} reviewer",
-                    choices,
-                    default=candidates[0].model,
-                )
-                if selected_answer is None:
-                    return None
-                answer = selected_answer
-            models[option.source] = answer
-            known[option.source] = answer
-        return models
+        del request, preflight, producers, initial
+        return {}
 
     def collect(
         self,
@@ -1101,9 +1031,8 @@ class InteractiveInitUI:
         if models is None:
             return ChoiceCollectionResult(ChoiceCollectionDecision.CANCEL, initial)
         eff_producers = request.review_producers or typed_producers or ()
-        self._emit_answer(
-            "Automated reviewers", self._reviewers_summary(eff_producers, models)
-        )
+        del eff_producers
+        self._emit_answer("External review recognition", "disabled until owner configuration")
 
         github_decision = self.collect_github_setup(request, preflight)
         if github_decision is None:
@@ -1157,21 +1086,12 @@ class InteractiveInitUI:
 
     @staticmethod
     def _reviewers_summary(producers: tuple[str, ...], models: Mapping[str, str]) -> str:
-        options = {option.value: option for option in _REVIEW_PRODUCERS}
-        answers: list[str] = []
-        for producer in producers:
-            option = options.get(producer)
-            if option is None or option.source is None:
-                continue
-            label = option.label.removesuffix(" CLI")
-            answers.append(f"{label} ({models[option.source]})")
-        return ", ".join(answers) or "(none)"
+        del producers, models
+        return "disabled until owner configuration"
 
     @staticmethod
     def _github_summary(decision: GitHubDecision) -> str:
-        return (
-            "Workflow and PR template" if decision is GitHubDecision.CREATE else "Skipped"
-        )
+        return "Workflow and PR template" if decision is GitHubDecision.CREATE else "Skipped"
 
     def prepare_plan(
         self,
@@ -1304,17 +1224,12 @@ class _PlainInitUI:
         raise NotImplementedError
 
     def render_plan(self, plan: InitPlan) -> None:
-        """Render all primary plan values without truncating paths or model names."""
+        """Render all primary plan values without exposing retired reviewer config."""
 
         self._output("Init plan")
         self._render_values("Integrations", plan.integrations)
-        self._render_values("Review producers", plan.review_producers)
-        if plan.review_models:
-            for source, model in plan.review_models.items():
-                self._output(f"- Model {source}: {model}")
-        else:
-            self._output("- Review models: (none)")
-        self._output(f"- Review configuration: {plan.review_write.value}")
+        self._output("- External review recognition: disabled until owner configuration")
+        self._output("- Historical review configuration: preserved")
         self._output(f"- GitHub setup: {plan.github_decision.value}")
         for action in plan.file_actions:
             self._output(f"- File {action.action.value}: {action.path}")
@@ -1504,34 +1419,8 @@ class LineInitUI(_PlainInitUI):
         preflight: InitPreflight,
         initial: InitChoices,
     ) -> tuple[str, ...] | None:
-        if request.review_producers:
-            return initial.review_producers
-        defaults = (
-            frozenset(initial.review_producers)
-            if initial.review_producers is not None
-            else frozenset(preflight.detected_review_producers)
-        )
-        selected = []
-        for option in _REVIEW_PRODUCERS:
-            if option.value not in preflight.available_review_producers:
-                self._output(f"{option.label} review producer unavailable (executable not found).")
-                continue
-            has_explicit_model = option.source in request.review_models
-            has_candidate = bool(preflight.reviewer_model_candidates.get(option.source or "", ()))
-            if not has_explicit_model and not has_candidate:
-                reason = preflight.reviewer_model_errors.get(
-                    option.source or "", "model not configured"
-                )
-                self._output(f"{option.label} reviewer unavailable ({reason}).")
-                continue
-            if self._width >= _NARROW_WIDTH and option.value in preflight.detected_review_producers:
-                self._output(f"{option.label} review producer detected (recommended).")
-            if self._ask_yes_no(
-                f"Select {option.label} review producer?",
-                default=option.value in defaults,
-            ):
-                selected.append(option.value)
-        return tuple(selected)
+        del request, preflight, initial
+        return ()
 
     def _collect_models(
         self,
@@ -1540,39 +1429,8 @@ class LineInitUI(_PlainInitUI):
         selected_producers: tuple[str, ...] | None,
         initial: InitChoices,
     ) -> Mapping[str, str]:
-        producers = (
-            request.review_producers if request.review_producers else selected_producers or ()
-        )
-        selected_sources = {
-            option.source for option in _REVIEW_PRODUCERS if option.value in producers
-        }
-        entered_models = {
-            source: model
-            for source, model in initial.review_models.items()
-            if source in selected_sources
-        }
-        entered_models.update(request.review_models)
-        known_models = dict(entered_models)
-        options = {option.value: option for option in _REVIEW_PRODUCERS}
-        for producer in producers:
-            option = options.get(producer)
-            if option is None or option.source is None or option.source in known_models:
-                continue
-            candidates = preflight.reviewer_model_candidates.get(option.source, ())
-            if not candidates:
-                self._output(
-                    preflight.reviewer_model_errors.get(option.source, "model not configured")
-                )
-                raise _CollectionCancelled
-            if len(candidates) == 1:
-                candidate = candidates[0]
-                model = candidate.model
-                self._output(f"{option.label} reviewer model: {model} ({candidate.origin}).")
-            else:
-                model = self._ask_model_choice(option.label, candidates)
-            entered_models[option.source] = model
-            known_models[option.source] = model
-        return entered_models
+        del request, preflight, selected_producers, initial
+        return {}
 
     def _ask_model_choice(
         self,

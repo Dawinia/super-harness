@@ -122,6 +122,13 @@ Ensure `super-harness verify` passes (tests / lint / build / anchor sentinels).
 If using a `done` skill, run `super-harness done <slug>` instead—it triggers
 verify and emits the lifecycle event automatically.
 
+Plan and code review are supplied by an external, user-recognized process. The
+harness does not start reviewers, choose models, manage rounds, or turn a
+failed/empty result into approval. Import the exact retained conclusion with
+`super-harness review import <change> --evidence <path>`; the record must name
+the current subject and an explicit decision. A skipped review is disclosure,
+not approval.
+
 ### File scope
 
 When implementing a change, edit only files in the declared `scope.files`

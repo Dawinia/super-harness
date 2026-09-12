@@ -11,6 +11,7 @@ Exit codes:
 - `attest verify`: 0 pass / 2 blocker(s) (EXIT_VALIDATION) / 3 no `.harness/` /
   4 git failure (EXIT_EXTERNAL_TOOL, FAIL-CLOSED — never a vacuous pass).
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -199,7 +200,7 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
         )
         sys.exit(EXIT_EXTERNAL_TOOL)  # FAIL-CLOSED — never a vacuous pass
 
-    verdict = verify_attestations(root, parse_name_status(raw))
+    verdict = verify_attestations(root, parse_name_status(raw), base=base, head=head)
     # HG-12 cut 1: disclose review independence for each validated (newly-ADDED,
     # scope-covering) attestation. Disclosure only — never changes pass/fail.
     disclosures = {
@@ -233,9 +234,7 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
     # Built straight from the dict: it is already keyed in `verdict.attestations` order
     # and already holds exactly the holding slugs, so re-filtering that list would be
     # two loops where only one carries meaning.
-    budget_holds = [
-        {"slug": slug, "rounds_held": rounds} for slug, rounds in holds_by_slug.items()
-    ]
+    budget_holds = [{"slug": slug, "rounds_held": rounds} for slug, rounds in holds_by_slug.items()]
     data: dict[str, Any] = {
         "subjects": verdict.subjects,
         "covered": verdict.covered,
@@ -278,9 +277,7 @@ def attest_verify(ctx: click.Context, base: str, head: str) -> None:
                         "for a human funding decision (distinct rounds, not retries)"
                     )
             for slug in verdict.attestations:
-                gb = gate_bypass_for_attestation(
-                    root / ATTESTATIONS_DIRNAME / f"{slug}.jsonl"
-                )
+                gb = gate_bypass_for_attestation(root / ATTESTATIONS_DIRNAME / f"{slug}.jsonl")
                 if gb["bypassed"]:
                     click.echo(
                         f"gate bypass: {gb['bypassed']} bypass(es), "

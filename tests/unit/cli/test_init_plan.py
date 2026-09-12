@@ -108,13 +108,12 @@ def _write_user_models(home: Path) -> None:
     )
 
 
-def test_noninteractive_fresh_explicit_configuration_builds_plan(tmp_path: Path) -> None:
+def test_fresh_plan_leaves_review_authority_to_external_recognition(
+    tmp_path: Path,
+) -> None:
     request = _request(
         tmp_path,
         integrations=("codex",),
-        producers=("codex-cli",),
-        models={"codex": "gpt-review"},
-        review_flags_explicit=True,
         setup_github=True,
     )
 
@@ -122,102 +121,18 @@ def test_noninteractive_fresh_explicit_configuration_builds_plan(tmp_path: Path)
     plan = build_init_plan(request, preflight, InitChoices())
 
     assert preflight.harness_state is HarnessState.ABSENT
-    assert plan.review_write is ReviewWrite.UPDATE
+    assert plan.review_write is ReviewWrite.PRESERVE
     assert plan.integrations == ("codex",)
-    assert plan.review_producers == ("codex-cli",)
-    assert dict(plan.review_models) == {"codex": "gpt-review"}
+    assert plan.review_producers == ()
+    assert dict(plan.review_models) == {}
     assert plan.github_decision is GitHubDecision.CREATE
-    assert all(action.action is not FileAction.PRESERVE for action in plan.file_actions)
+    by_path = {action.path.as_posix(): action for action in plan.file_actions}
+    assert by_path[".harness/review-recognition.yaml"].action is FileAction.CREATE
+    assert by_path[".harness/review-governance.yaml"].action is FileAction.SKIP
+    assert by_path[".harness/review-profiles.local.yaml"].action is FileAction.SKIP
 
 
-def test_preflight_captures_immutable_reviewer_model_candidates(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    _write_user_models(home)
-    request = _request(tmp_path, mode=InteractionMode.GUIDED)
-
-    result = inspect_workspace(
-        request,
-        executable_lookup=_lookup("codex", "claude"),
-        home=home,
-    )
-
-    assert result.reviewer_model_candidates["codex"][0].model == "gpt-configured"
-    assert result.reviewer_model_candidates["claude"][0].model == "opus-configured"
-    with pytest.raises(TypeError):
-        result.reviewer_model_candidates["codex"] = ()  # type: ignore[index]
-    with pytest.raises(TypeError):
-        result.reviewer_model_errors["codex"] = "changed"  # type: ignore[index]
-
-
-def test_preflight_orders_persisted_model_before_user_config(tmp_path: Path) -> None:
-    _write_review_config(tmp_path, model="gpt-workspace")
-    home = tmp_path / "home"
-    _write_user_models(home)
-    request = _request(tmp_path, mode=InteractionMode.GUIDED, force=True)
-
-    result = inspect_workspace(request, executable_lookup=_lookup("codex"), home=home)
-
-    assert [item.model for item in result.reviewer_model_candidates["codex"]] == [
-        "gpt-workspace",
-        "gpt-configured",
-    ]
-
-
-def test_preflight_records_sanitized_reviewer_model_error(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    (home / ".codex").mkdir(parents=True)
-    (home / ".codex" / "config.toml").write_text("model = [", encoding="utf-8")
-
-    result = inspect_workspace(
-        _request(tmp_path, mode=InteractionMode.LINE),
-        executable_lookup=_lookup("codex"),
-        home=home,
-    )
-
-    assert dict(result.reviewer_model_errors) == {"codex": "Codex CLI config is not valid TOML"}
-
-
-def test_explicit_reviewer_model_excludes_its_provider_from_discovery(tmp_path: Path) -> None:
-    home = tmp_path / "home"
-    (home / ".codex").mkdir(parents=True)
-    (home / ".claude").mkdir(parents=True)
-    (home / ".codex" / "config.toml").write_text("model = [", encoding="utf-8")
-    (home / ".claude" / "settings.json").write_text(
-        '{"model": "opus-configured"}', encoding="utf-8"
-    )
-    request = _request(
-        tmp_path,
-        mode=InteractionMode.GUIDED,
-        models={"codex": "gpt-explicit"},
-    )
-
-    result = inspect_workspace(
-        request,
-        executable_lookup=_lookup("codex", "claude"),
-        home=home,
-    )
-
-    assert "codex" not in result.reviewer_model_candidates
-    assert "codex" not in result.reviewer_model_errors
-    assert result.reviewer_model_candidates["claude"][0].model == "opus-configured"
-
-
-def test_interactive_preflight_resolves_home_at_runtime(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home = tmp_path / "runtime-home"
-    _write_user_models(home)
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-
-    result = inspect_workspace(
-        _request(tmp_path, mode=InteractionMode.GUIDED),
-        executable_lookup=_lookup("codex"),
-    )
-
-    assert result.reviewer_model_candidates["codex"][0].model == "gpt-configured"
-
-
-def test_noninteractive_preflight_never_resolves_home_or_reads_provider_config(
+def test_preflight_never_discovers_reviewer_models_or_reads_user_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -266,224 +181,69 @@ def test_noninteractive_force_without_review_flags_preserves_opaque_review_bytes
 
 
 @pytest.mark.parametrize(
-    ("producers", "models", "message"),
+    ("producers", "models"),
     [
-        (("codex-cli",), {}, "requires an explicit model"),
-        ((), {"codex": "gpt-review"}, "has no selected producer"),
-        (("codex-cli",), {"claude": "claude-review"}, "does not match"),
-        (("codex-cli", "claude-cli"), {"codex": "gpt-review"}, "requires an explicit model"),
-        (("codex-cli",), {"codex": ""}, "non-empty"),
+        (("codex-cli",), {}),
+        ((), {"codex": "gpt-review"}),
+        (("codex-cli",), {"claude": "claude-review"}),
     ],
 )
-def test_noninteractive_explicit_review_flags_never_fill_gaps_from_persisted_config(
+def test_review_configuration_flags_are_retired(
     tmp_path: Path,
     producers: tuple[str, ...],
     models: dict[str, str],
-    message: str,
 ) -> None:
-    _write_review_config(tmp_path)
     request = _request(
         tmp_path,
-        force=True,
         producers=producers,
         models=models,
         review_flags_explicit=True,
     )
 
-    preflight = inspect_workspace(request, executable_lookup=_lookup("codex", "claude"))
-
-    with pytest.raises(InitPlanValidationError, match=message):
+    with pytest.raises(InitPlanValidationError, match="configuration is retired"):
+        preflight = inspect_workspace(request, executable_lookup=_lookup())
         build_init_plan(request, preflight, InitChoices())
 
 
-def test_noninteractive_complete_explicit_pair_updates_and_ignores_persisted_values(
-    tmp_path: Path,
-) -> None:
-    old_governance, old_profile = _write_review_config(tmp_path, model="old-model")
-    request = _request(
-        tmp_path,
-        force=True,
-        producers=("codex-cli",),
-        models={"codex": "new-model"},
-        review_flags_explicit=True,
-    )
-
-    preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
-    plan = build_init_plan(request, preflight, InitChoices())
-
-    actions = _review_actions(plan)
-    assert plan.review_write is ReviewWrite.UPDATE
-    assert dict(plan.review_models) == {"codex": "new-model"}
-    assert actions["review-governance.yaml"].content != old_governance
-    assert actions["review-profiles.local.yaml"].content != old_profile
-    assert b"new-model" in actions["review-profiles.local.yaml"].content
-    assert b"old-model" not in actions["review-profiles.local.yaml"].content
-
-
-def test_explicit_human_only_review_deletes_existing_local_profile(tmp_path: Path) -> None:
-    _write_review_config(tmp_path)
-    request = _request(
-        tmp_path,
-        force=True,
-        producers=(),
-        models={},
-        review_flags_explicit=True,
-    )
-
+def test_review_choices_are_retired(tmp_path: Path) -> None:
+    request = _request(tmp_path, mode=InteractionMode.GUIDED)
     preflight = inspect_workspace(request, executable_lookup=_lookup())
-    plan = build_init_plan(request, preflight, InitChoices())
 
-    actions = _review_actions(plan)
-    assert plan.review_producers == ()
-    assert actions["review-profiles.local.yaml"].action is FileAction.DELETE
-    assert actions["review-profiles.local.yaml"].content is None
-
-
-def test_explicit_human_only_review_skips_missing_local_profile(tmp_path: Path) -> None:
-    request = _request(
-        tmp_path,
-        producers=(),
-        models={},
-        review_flags_explicit=True,
-    )
-
-    preflight = inspect_workspace(request, executable_lookup=_lookup())
-    plan = build_init_plan(request, preflight, InitChoices())
-
-    actions = _review_actions(plan)
-    assert actions["review-profiles.local.yaml"].action is FileAction.SKIP
-    assert actions["review-profiles.local.yaml"].content is None
+    with pytest.raises(InitPlanValidationError, match="configuration is retired"):
+        build_init_plan(
+            request,
+            preflight,
+            InitChoices(review_models={"codex": "gpt-review"}),
+        )
 
 
-def test_interactive_force_edit_uses_persisted_pairs_as_defaults_and_choices_override(
-    tmp_path: Path,
-) -> None:
-    _write_review_config(tmp_path, model="persisted-model")
+def test_existing_review_files_are_opaque_and_always_preserved(tmp_path: Path) -> None:
+    governance, profile = _write_review_config(tmp_path)
     request = _request(tmp_path, mode=InteractionMode.GUIDED, force=True)
-    preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
-
-    default_plan = build_init_plan(
-        request,
-        preflight,
-        InitChoices(review_write=ReviewWrite.UPDATE),
-    )
-    override_plan = build_init_plan(
-        request,
-        preflight,
-        InitChoices(
-            review_write=ReviewWrite.UPDATE,
-            review_models={"codex": "choice-model"},
-        ),
-    )
-
-    assert preflight.persisted_review_producers == ("codex-cli",)
-    assert dict(default_plan.review_models) == {"codex": "persisted-model"}
-    assert dict(override_plan.review_models) == {"codex": "choice-model"}
-
-
-def test_interactive_explicit_pair_replaces_a_different_persisted_pair(
-    tmp_path: Path,
-) -> None:
-    _write_review_config(tmp_path, model="persisted-codex")
-    request = _request(
-        tmp_path,
-        mode=InteractionMode.GUIDED,
-        force=True,
-        producers=("claude-cli",),
-        models={"claude": "explicit-claude"},
-        review_flags_explicit=True,
-    )
-    preflight = inspect_workspace(request, executable_lookup=_lookup("codex", "claude"))
-
     plan = build_init_plan(
         request,
-        preflight,
-        InitChoices(review_write=ReviewWrite.UPDATE),
+        inspect_workspace(request, executable_lookup=_lookup()),
+        InitChoices(),
     )
 
-    assert plan.review_producers == ("claude-cli",)
-    assert dict(plan.review_models) == {"claude": "explicit-claude"}
+    actions = _review_actions(plan)
+    assert plan.review_write is ReviewWrite.PRESERVE
+    assert actions["review-governance.yaml"].action is FileAction.PRESERVE
+    assert actions["review-governance.yaml"].content == governance
+    assert actions["review-profiles.local.yaml"].action is FileAction.PRESERVE
+    assert actions["review-profiles.local.yaml"].content == profile
 
 
-@pytest.mark.parametrize(
-    ("governance", "profile"),
-    [
-        (b"not: [yaml", b"version: 1\nsources: {}\n"),
-        (b"version: 999\nreview: {}\n", b"version: 1\nsources: {}\n"),
-        (
-            b"version: 1\nreview: {sources: {}, roles: {}}\n",
-            b"version: 1\nsources:\n  alien:\n    protocol: alien-cli\n    model: x\n",
-        ),
-    ],
-)
-def test_invalid_interactive_persisted_review_requires_explicit_reset(
-    tmp_path: Path, governance: bytes, profile: bytes
-) -> None:
-    harness = tmp_path / ".harness"
-    harness.mkdir()
-    (harness / "events.jsonl").write_text("")
-    (harness / "review-governance.yaml").write_bytes(governance)
-    (harness / "review-profiles.local.yaml").write_bytes(profile)
-    request = _request(tmp_path, mode=InteractionMode.GUIDED, force=True)
-    preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
-
-    assert preflight.review_config_error is not None
-    with pytest.raises(InitPlanValidationError, match="RESET"):
-        build_init_plan(request, preflight, InitChoices(review_write=ReviewWrite.UPDATE))
-
-    reset = build_init_plan(
-        request,
-        preflight,
-        InitChoices(review_write=ReviewWrite.RESET, review_producers=(), review_models={}),
-    )
-    assert reset.review_write is ReviewWrite.RESET
-    assert reset.review_producers == ()
-
-
-def test_fresh_interactive_defaults_to_detected_integration_and_producer(tmp_path: Path) -> None:
+def test_fresh_interactive_plan_has_no_reviewer_defaults(tmp_path: Path) -> None:
     request = _request(tmp_path, mode=InteractionMode.LINE)
     preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
-
-    plan = build_init_plan(
-        request,
-        preflight,
-        InitChoices(review_models={"codex": "chosen-model"}),
-    )
+    plan = build_init_plan(request, preflight, InitChoices())
 
     assert preflight.detected_integrations == ("codex",)
-    assert preflight.detected_review_producers == ("codex-cli",)
+    assert preflight.detected_review_producers == ()
     assert plan.integrations == ("codex",)
-    assert plan.review_producers == ("codex-cli",)
-    assert dict(plan.review_models) == {"codex": "chosen-model"}
-
-
-def test_interactive_reset_uses_detected_defaults_not_persisted_defaults(tmp_path: Path) -> None:
-    _write_review_config(
-        tmp_path,
-        producer="claude-cli",
-        source="claude",
-        model="persisted-claude",
-    )
-    request = _request(tmp_path, mode=InteractionMode.GUIDED, force=True)
-    preflight = inspect_workspace(request, executable_lookup=_lookup("codex", "claude"))
-
-    plan = build_init_plan(
-        request,
-        preflight,
-        InitChoices(
-            review_write=ReviewWrite.RESET,
-            review_models={
-                "codex": "fresh-codex",
-                "claude": "fresh-claude",
-            },
-        ),
-    )
-
-    assert plan.review_producers == ("codex-cli", "claude-cli")
-    assert dict(plan.review_models) == {
-        "codex": "fresh-codex",
-        "claude": "fresh-claude",
-    }
+    assert plan.review_producers == ()
+    assert dict(plan.review_models) == {}
 
 
 def test_unavailable_integration_can_be_explicit_but_is_not_preselected(tmp_path: Path) -> None:
@@ -499,22 +259,11 @@ def test_unavailable_integration_can_be_explicit_but_is_not_preselected(tmp_path
     assert explicit_plan.integrations == ("codex",)
 
 
-def test_unavailable_producer_is_not_defaulted_and_explicit_use_raises(tmp_path: Path) -> None:
+def test_reviewer_producer_is_never_defaulted_or_selected(tmp_path: Path) -> None:
     interactive = _request(tmp_path, mode=InteractionMode.GUIDED)
     preflight = inspect_workspace(interactive, executable_lookup=_lookup())
     plan = build_init_plan(interactive, preflight, InitChoices())
     assert plan.review_producers == ()
-
-    explicit = _request(
-        tmp_path,
-        mode=InteractionMode.GUIDED,
-        producers=("codex-cli",),
-        models={"codex": "gpt-review"},
-        review_flags_explicit=True,
-    )
-    explicit_preflight = inspect_workspace(explicit, executable_lookup=_lookup())
-    with pytest.raises(InitPlanValidationError, match="not available"):
-        build_init_plan(explicit, explicit_preflight, InitChoices())
 
 
 def test_file_actions_are_ordered_before_any_apply_boundary(tmp_path: Path) -> None:
@@ -524,9 +273,6 @@ def test_file_actions_are_ordered_before_any_apply_boundary(tmp_path: Path) -> N
         tmp_path,
         mode=InteractionMode.GUIDED,
         integrations=("codex",),
-        producers=("codex-cli",),
-        models={"codex": "gpt-review"},
-        review_flags_explicit=True,
         setup_github=True,
     )
     preflight = inspect_workspace(request, executable_lookup=_lookup("codex", "gh"))
@@ -547,6 +293,7 @@ def test_file_actions_are_ordered_before_any_apply_boundary(tmp_path: Path) -> N
         ".harness/events.jsonl",
         ".harness/state.yaml",
         ".harness/adapters.yaml",
+        ".harness/review-recognition.yaml",
         ".harness/sensors.yaml",
         ".harness/gates.yaml",
         ".harness/source-paths.yaml",
@@ -568,7 +315,10 @@ def test_file_actions_are_ordered_before_any_apply_boundary(tmp_path: Path) -> N
     assert by_path[".harness/state.yaml"].action is FileAction.SKIP
     assert by_path[".harness/adapters.yaml"].action is FileAction.CREATE
     assert by_path[".harness/verification.yaml"].action is FileAction.CREATE
-    assert by_path[".harness/review-governance.yaml"].review_write is ReviewWrite.UPDATE
+    assert by_path[".harness/review-recognition.yaml"].action is FileAction.CREATE
+    assert by_path[".harness/review-governance.yaml"].action is FileAction.SKIP
+    assert by_path[".harness/review-governance.yaml"].review_write is ReviewWrite.PRESERVE
+    assert by_path[".harness/review-profiles.local.yaml"].action is FileAction.SKIP
     assert by_path[".codex/hooks.json"].action is FileAction.CREATE
     assert by_path[".claude/settings.local.json"].action is FileAction.SKIP
     assert by_path["AGENTS.md"].action is FileAction.UPDATE
@@ -757,30 +507,26 @@ def test_symlinked_integration_directory_only_blocks_selected_integration(
     assert list(external.iterdir()) == []
 
 
-def test_no_model_default_is_invented(tmp_path: Path) -> None:
+def test_no_reviewer_model_default_is_invented(tmp_path: Path) -> None:
     request = _request(tmp_path, mode=InteractionMode.GUIDED)
     preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
 
-    with pytest.raises(InitPlanValidationError, match="requires an explicit model"):
-        build_init_plan(request, preflight, InitChoices())
+    plan = build_init_plan(request, preflight, InitChoices())
+    assert dict(plan.review_models) == {}
 
 
 def test_request_choices_preflight_and_plan_are_deeply_immutable(tmp_path: Path) -> None:
-    request_models = {"codex": "gpt-review"}
     request = _request(
         tmp_path,
-        producers=("codex-cli",),
-        models=request_models,
-        review_flags_explicit=True,
+        integrations=("codex",),
     )
     choices_files = {"AGENTS.md": ExistingFileDecision.UPDATE}
     choices = InitChoices(existing_files=choices_files)
     preflight = inspect_workspace(request, executable_lookup=_lookup("codex"))
     plan = build_init_plan(request, preflight, choices)
 
-    request_models["codex"] = "mutated"
     choices_files["AGENTS.md"] = ExistingFileDecision.PRESERVE
-    assert request.review_models["codex"] == "gpt-review"
+    assert dict(request.review_models) == {}
     assert choices.existing_files["AGENTS.md"] is ExistingFileDecision.UPDATE
 
     with pytest.raises(TypeError):

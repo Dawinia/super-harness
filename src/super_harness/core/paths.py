@@ -7,6 +7,7 @@ the `.harness/` directory. `find_harness_root` walks up from a given path
 Per cli-command-surface §3.1 (workspace resolution) + lifecycle-event-model
 §2 (canonical file locations under `.harness/`).
 """
+
 from pathlib import Path
 
 
@@ -59,9 +60,7 @@ def find_harness_root(start: Path) -> Path:
             # Pass ONLY the one-line error portion — the remediation lives on
             # `HarnessNotInitialized.hint` (HINT class attr) so CLI wrap sites
             # can route it to format_error's `Hint:` line.
-            raise HarnessNotInitialized(
-                f"No .harness/ directory found from {start} or any parent"
-            )
+            raise HarnessNotInitialized(f"No .harness/ directory found from {start} or any parent")
         current = current.parent
 
 
@@ -125,6 +124,11 @@ def verification_yaml_path(root: Path) -> Path:
     a fall-back-to-defaults signal — see `engineering.verification_config`.
     """
     return root / ".harness" / "verification.yaml"
+
+
+def review_recognition_path(root: Path) -> Path:
+    """The user-recognized external review contract for new Changes."""
+    return root / ".harness" / "review-recognition.yaml"
 
 
 def verification_results_dir(root: Path, change_id: str, ts: str) -> Path:

@@ -1,0 +1,13 @@
+# User-owned activation record for the new external-evidence contract.
+# This file is intentionally disabled in the cutover Change: no concrete review
+# process has been recognized yet. Enabling it is an owner decision and must
+# bind the process identity/version to this exact policy digest.
+version: review-recognition/v1
+enabled: false
+process:
+  id: unset
+  version: unset
+  kinds: []
+  issuers: []
+  evidence_forms:
+    - json

@@ -9,6 +9,7 @@ This table is consumed by:
 - Task 1.6 reducer (reducer-time tolerant warn-skip per §3.8.1 layered validation)
 - Phase 4 daemon `gate.pre_tool_use` (state-based ALLOW/BLOCK)
 """
+
 from typing import Literal
 
 from super_harness.core.state import TERMINAL_STATES
@@ -16,15 +17,29 @@ from super_harness.core.state import TERMINAL_STATES
 INVALID: Literal["__INVALID__"] = "__INVALID__"
 
 # Per spec §3.6: events that never change state (informational sensor signals + system audit)
-_INFORMATIONAL: frozenset[str] = frozenset({
-    "verification_passed", "verification_failed",
-    "scope_drift_detected", "merged_reverted", "pr_opened",
-    "sensor_timeout_exceeded", "sensor_crashed",
-    "gate_bypassed", "gate_bypass_disclosed",
-    "review_round_started", "review_result_imported", "review_run_failed",
-    "review_round_closed", "review_round_authorized",
-    "review_budget_exceeded",
-})
+_INFORMATIONAL: frozenset[str] = frozenset(
+    {
+        "verification_passed",
+        "verification_failed",
+        "scope_drift_detected",
+        "merged_reverted",
+        "pr_opened",
+        "sensor_timeout_exceeded",
+        "sensor_crashed",
+        "gate_bypassed",
+        "gate_bypass_disclosed",
+        "review_round_started",
+        "review_result_imported",
+        "review_run_failed",
+        "review_round_closed",
+        "review_round_authorized",
+        "review_budget_exceeded",
+        "review_evidence_imported",
+        "implementation_recorded",
+        "plan_revision_submitted",
+        "plan_withdrawn",
+    }
+)
 
 # Per spec §3.7 Reachability table — explicit (current_state, event_type) -> target.
 # Order: happy path → reject/restart loops → terminal.
@@ -35,6 +50,18 @@ _TRANSITIONS: dict[tuple[str, str], str] = {
     ("AWAITING_PLAN_REVIEW", "plan_approved"): "PLAN_APPROVED",
     ("AWAITING_PLAN_REVIEW", "plan_rejected"): "PLAN_REJECTED",
     ("AWAITING_PLAN_REVIEW", "review_verdict_recorded"): "AWAITING_PLAN_REVIEW",
+    # A new approved plan candidate replaces the effective approval while work
+    # is already underway.  The shared emit validator requires the candidate
+    # and approval references; the transition table only describes the state
+    # effect.
+    ("IMPLEMENTATION_IN_PROGRESS", "plan_approved"): "IMPLEMENTATION_IN_PROGRESS",
+    ("AWAITING_CODE_REVIEW", "plan_approved"): "IMPLEMENTATION_IN_PROGRESS",
+    ("CODE_REVIEW_REJECTED", "plan_approved"): "IMPLEMENTATION_IN_PROGRESS",
+    ("READY_TO_MERGE", "plan_approved"): "IMPLEMENTATION_IN_PROGRESS",
+    ("IMPLEMENTATION_IN_PROGRESS", "plan_rejected"): "IMPLEMENTATION_IN_PROGRESS",
+    ("AWAITING_CODE_REVIEW", "plan_rejected"): "AWAITING_CODE_REVIEW",
+    ("CODE_REVIEW_REJECTED", "plan_rejected"): "CODE_REVIEW_REJECTED",
+    ("READY_TO_MERGE", "plan_rejected"): "READY_TO_MERGE",
     ("PLAN_REJECTED", "plan_ready"): "AWAITING_PLAN_REVIEW",  # revise + resubmit
     ("PLAN_APPROVED", "implementation_started"): "IMPLEMENTATION_IN_PROGRESS",
     ("IMPLEMENTATION_IN_PROGRESS", "implementation_complete"): "AWAITING_CODE_REVIEW",

@@ -14,10 +14,7 @@ def test_transition_rows_exclude_global_noop_self_loops():
 
 def test_transition_rows_include_state_specific_self_loops():
     rows = build_rows()
-    self_loops = {
-        r.frm for r in rows
-        if r.event == "review_verdict_recorded" and r.frm == r.to
-    }
+    self_loops = {r.frm for r in rows if r.event == "review_verdict_recorded" and r.frm == r.to}
     assert self_loops == {
         "AWAITING_PLAN_REVIEW",
         "AWAITING_CODE_REVIEW",
@@ -26,15 +23,18 @@ def test_transition_rows_include_state_specific_self_loops():
 
 
 def test_rows_are_deterministically_sorted():
-    assert build_rows() == build_rows()             # stable
+    assert build_rows() == build_rows()  # stable
     keys = [(("" if r.frm is None else r.frm), r.event) for r in build_rows()]
     assert keys == sorted(keys)
 
 
 def test_known_count_is_derived_not_hardcoded():
     rows = build_rows()
-    assert 40 <= len(rows) <= 60
-    assert "verification_passed" in NOOP_EVENTS     # informational = no-op
+    # New-contract B2 plan approval/rejection transitions add explicit
+    # self-loops and return paths; the assertion remains a sanity bound rather
+    # than freezing one exact table size.
+    assert 40 <= len(rows) <= 80
+    assert "verification_passed" in NOOP_EVENTS  # informational = no-op
 
 
 def test_render_is_deterministic_and_has_header():
@@ -46,6 +46,7 @@ def test_render_is_deterministic_and_has_header():
 
 def test_noop_events_match_informational_set():
     from super_harness.core.transitions import _INFORMATIONAL
+
     assert set(NOOP_EVENTS) == _INFORMATIONAL
 
 

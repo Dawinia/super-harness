@@ -32,12 +32,15 @@ UNDER the flock, BEFORE writing — illegal transitions raise
 already vetted the stream); the append still holds the flock so a skip write
 cannot slip into another writer's validate→append window.
 """
+
 import os
+import tempfile
 import threading
 from pathlib import Path
 
 from super_harness.core.emit_validation import (
     EmitPreconditionError,
+    is_new_contract_event,
     validate_preconditions,
 )
 from super_harness.core.events import Event, serialize_event
@@ -90,22 +93,60 @@ class EventWriter:
                 alive" handlers working). Type-only: `""` stays legal (the
                 dispatcher stamps blank timestamps before emit).
         """
-        if not isinstance(event.timestamp, str):
-            raise EmitPreconditionError(
-                f"timestamp must be a string, got {type(event.timestamp).__name__}"
-            )
+        self.emit_many([event], skip_validation=skip_validation)
+
+    def emit_many(self, events: list[Event], *, skip_validation: bool = False) -> None:
+        """Validate and append a small event transaction under one lock.
+
+        External evidence import needs an evidence record and its lifecycle
+        conclusion to become visible together. Validation runs against a
+        temporary copy of the append-only stream, so a failed second event
+        cannot leave a misleading orphan evidence record in the real log.
+        """
+        if not events:
+            return
+        for event in events:
+            if not isinstance(event.timestamp, str):
+                raise EmitPreconditionError(
+                    f"timestamp must be a string, got {type(event.timestamp).__name__}"
+                )
         # Pure prep stays outside the lock to keep the critical section minimal.
-        line = serialize_event(event) + "\n"
-        data = line.encode("utf-8")
+        data = b"".join((serialize_event(event) + "\n").encode("utf-8") for event in events)
         with self._lock:  # per-instance thread guard (see class docstring)
             # The process lock spans validate+append so no writer validates a
             # stale stream then appends over another writer's transition.
             with exclusive_file_lock(self._lock_path):
+                if skip_validation and any(
+                    is_new_contract_event(self.path, event) for event in events
+                ):
+                    event = next(
+                        event for event in events if is_new_contract_event(self.path, event)
+                    )
+                    raise EmitPreconditionError(
+                        f"skip_validation cannot write authorizing event {event.type!r}"
+                    )
                 if not skip_validation:
-                    validate_preconditions(self.path, event)
-                fd = os.open(
-                    self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644
-                )
+                    temp_path: Path | None = None
+                    try:
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb",
+                            dir=self.path.parent,
+                            prefix=".events-",
+                            suffix=".tmp",
+                            delete=False,
+                        ) as temp:
+                            temp_path = Path(temp.name)
+                            if self.path.exists():
+                                temp.write(self.path.read_bytes())
+                        assert temp_path is not None
+                        for event in events:
+                            validate_preconditions(temp_path, event)
+                            with temp_path.open("ab") as staged:
+                                staged.write((serialize_event(event) + "\n").encode("utf-8"))
+                    finally:
+                        if temp_path is not None:
+                            temp_path.unlink(missing_ok=True)
+                fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
                 try:
                     os.write(fd, data)
                     os.fsync(fd)

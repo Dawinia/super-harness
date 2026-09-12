@@ -42,9 +42,11 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+from super_harness.core.approval import make_code_subject
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import find_ordering_violations
 from super_harness.core.events import Actor, Event
@@ -562,13 +564,9 @@ def baseline_check_tasks(
             context: WorkspaceContext = context,
             archive: Path = archive,
         ) -> CheckResult:
-            return _baseline_lifecycle_ordering(
-                change_id, context=context, archive=archive
-            )
+            return _baseline_lifecycle_ordering(change_id, context=context, archive=archive)
 
-        tasks.append(
-            CheckTask(id=_BASELINE_LIFECYCLE, must_pass=True, run=_run_lifecycle)
-        )
+        tasks.append(CheckTask(id=_BASELINE_LIFECYCLE, must_pass=True, run=_run_lifecycle))
 
     if _included(_BASELINE_SCOPE):
 
@@ -577,13 +575,9 @@ def baseline_check_tasks(
             context: WorkspaceContext = context,
             archive: Path = archive,
         ) -> CheckResult:
-            return _baseline_scope_vs_plan(
-                change_id, context=context, archive=archive
-            )
+            return _baseline_scope_vs_plan(change_id, context=context, archive=archive)
 
-        tasks.append(
-            CheckTask(id=_BASELINE_SCOPE, must_pass=False, run=_run_scope)
-        )
+        tasks.append(CheckTask(id=_BASELINE_SCOPE, must_pass=False, run=_run_scope))
 
     return tasks
 
@@ -618,9 +612,7 @@ def _config_check_task(
         else:
             existing_path = merged_env.get("PATH", "")
             merged_env["PATH"] = (
-                f"{toolchain}{os.pathsep}{existing_path}"
-                if existing_path
-                else str(toolchain)
+                f"{toolchain}{os.pathsep}{existing_path}" if existing_path else str(toolchain)
             )
 
     # The default args snapshot this iteration's values to dodge late-binding.
@@ -713,17 +705,13 @@ def collect_checks(
 
     if want_adapter and cfg.layers.framework_adapter:
         tasks.extend(
-            _config_check_task(
-                spec, context=context, cfg=cfg, archive=archive, variables=variables
-            )
+            _config_check_task(spec, context=context, cfg=cfg, archive=archive, variables=variables)
             for spec in cfg.adapter_provided
         )
 
     if want_user and cfg.layers.user_checks:
         tasks.extend(
-            _config_check_task(
-                spec, context=context, cfg=cfg, archive=archive, variables=variables
-            )
+            _config_check_task(spec, context=context, cfg=cfg, archive=archive, variables=variables)
             for spec in cfg.checks
         )
 
@@ -738,9 +726,7 @@ def collect_checks(
     return tasks
 
 
-def collectable_check_ids(
-    cfg: VerificationConfig, *, layer: str | None = None
-) -> set[str]:
+def collectable_check_ids(cfg: VerificationConfig, *, layer: str | None = None) -> set[str]:
     """The set of check ids `collect_checks` WOULD collect for `cfg` + `layer`.
 
     Mirrors `collect_checks`'s layer selection exactly: a layer contributes its
@@ -958,6 +944,7 @@ def make_verification_event(
     change_id: str,
     results: list[CheckResult],
     archive: Path,
+    verification: dict[str, Any] | None = None,
 ) -> Event:
     """Build the `verification_passed` / `verification_failed` event to emit.
 
@@ -1005,6 +992,8 @@ def make_verification_event(
                 "then re-run `super-harness verify`."
             ),
         }
+    if verification is not None:
+        payload["verification"] = dict(verification)
 
     return Event(
         # event_id / timestamp left blank — the dispatcher stamps them.
@@ -1046,9 +1035,7 @@ class VerificationRunner(Sensor):
     )
     determinism: ClassVar[Determinism] = "computational"
 
-    def check(
-        self, trigger: Event | Activity, context: WorkspaceContext
-    ) -> SensorResult:
+    def check(self, trigger: Event | Activity, context: WorkspaceContext) -> SensorResult:
         change_id = getattr(trigger, "change_id", None) or context.active_change_id
         if change_id is None:
             # Defensive: no change to verify (neither the trigger nor the
@@ -1065,9 +1052,7 @@ class VerificationRunner(Sensor):
         only_ids = payload.get("checks")
 
         archive_timestamp = utc_now_iso().replace(":", "-")
-        archive = verification_results_dir(
-            context.workspace_root, change_id, archive_timestamp
-        )
+        archive = verification_results_dir(context.workspace_root, change_id, archive_timestamp)
         tasks = collect_checks(
             cfg,
             context=context,
@@ -1087,6 +1072,35 @@ class VerificationRunner(Sensor):
         verdict = "passed" if not must_pass_failed else "failed"
         write_summary_json(archive, results, verdict)
 
+        verification: dict[str, Any] | None = None
+        try:
+            from super_harness.core.approval import resolve_contract_base
+
+            state = derive_state(events_path(context.workspace_root)).get(change_id)
+            approval = state.effective_approval if state is not None else None
+            if isinstance(approval, dict):
+                config_digest = sha256(
+                    verification_yaml_path(context.workspace_root).read_bytes()
+                ).hexdigest()
+                code_subject = make_code_subject(
+                    context.workspace_root,
+                    change_id=change_id,
+                    approval_id=str(approval["approval_id"]),
+                    base=resolve_contract_base(context.workspace_root),
+                )
+                verification = {
+                    "subject_id": code_subject["subject_id"],
+                    "code_subject": code_subject,
+                    "config_digest": config_digest,
+                    "outcome": verdict,
+                    "checks": [result.id for result in results],
+                }
+        except Exception:
+            # Legacy streams still retain their ordinary verification result.
+            # New-contract attestation requires this richer subject object and
+            # will fail closed if it is absent.
+            verification = None
+
         evt_type: Literal["verification_passed", "verification_failed"] = (
             "verification_passed" if verdict == "passed" else "verification_failed"
         )
@@ -1094,11 +1108,16 @@ class VerificationRunner(Sensor):
         return SensorResult(
             status=status,
             summary=(
-                f"verification {verdict} "
-                f"({len(results)} checks, {len(must_pass_failed)} failed)"
+                f"verification {verdict} ({len(results)} checks, {len(must_pass_failed)} failed)"
             ),
-            details=verify_data_block(
-                change_id, results, archive, context.workspace_root
-            ),
-            emit_events=[make_verification_event(evt_type, change_id, results, archive)],
+            details=verify_data_block(change_id, results, archive, context.workspace_root),
+            emit_events=[
+                make_verification_event(
+                    evt_type,
+                    change_id,
+                    results,
+                    archive,
+                    verification=verification,
+                )
+            ],
         )

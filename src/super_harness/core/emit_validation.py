@@ -17,18 +17,35 @@ emit where N = total event count). v0.1 accepts this. v0.2 may add in-memory
 state cache + per-change_id seen-events bitmask for O(1) emit if it shows up
 in profiling.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 
+from super_harness.core.approval import (
+    ApprovalError,
+    authorizing_event,
+    evidence_digest,
+    evidence_is_recognized,
+    has_unresolved_candidate,
+    load_recognition,
+    make_code_subject,
+    missing_coverage,
+    validate_approval,
+    validate_code_subject,
+    validate_evidence,
+    validate_plan_subject,
+)
 from super_harness.core.events import Event, EventSchemaError, parse_event_line
+from super_harness.core.scope_match import GitScopeError
 from super_harness.core.transitions import INVALID, compute_target_state
 
 __all__ = [
     "EmitPreconditionError",
     "OrderingViolation",
     "find_ordering_violations",
+    "is_new_contract_event",
     "validate_preconditions",
 ]
 
@@ -151,6 +168,317 @@ def validate_preconditions(events_file: Path, new_event: Event) -> None:
                 f"event {new_event.type!r} requires prior {missing} "
                 f"(change_id={new_event.change_id})"
             )
+    _validate_authority(events_file, new_event)
+
+
+def _validate_authority(events_file: Path, new_event: Event) -> None:
+    """Enforce new-contract authority at the shared writer seam.
+
+    A state name is not evidence.  This guard therefore folds the event stream
+    and checks the approval/reference payload before an authorizing event can
+    be appended.  Legacy events already on disk are replayed by the reducer,
+    but a new writer cannot create a new legacy approval or skip this check by
+    passing ``skip_validation`` (the writer rejects that separately).
+    """
+    from super_harness.core.reducer import derive_state
+
+    current = derive_state(events_file).get(new_event.change_id)
+    payload = new_event.payload or {}
+    new_contract = bool(
+        payload.get("plan_subject")
+        or payload.get("approval")
+        or payload.get("evidence")
+        or payload.get("code_subject")
+        or (
+            current is not None
+            and (
+                current.effective_approval is not None
+                or current.pending_revision is not None
+                or current.current_code_subject is not None
+            )
+        )
+    )
+    try:
+        if new_event.type == "plan_ready":
+            subject = payload.get("plan_subject")
+            if subject is not None:
+                validate_plan_subject(subject, change_id=new_event.change_id)
+        elif new_event.type == "plan_revision_submitted":
+            validate_plan_subject(payload.get("plan_subject"), change_id=new_event.change_id)
+            if current is None or current.effective_approval is None:
+                raise ApprovalError("a plan revision requires an existing effective approval")
+            prior = payload.get("prior_approval")
+            if prior != current.effective_approval.get("approval_id"):
+                raise ApprovalError("plan revision is linked to a different approval")
+            if has_unresolved_candidate(current):
+                raise ApprovalError(
+                    "withdraw the current plan revision before submitting another candidate"
+                )
+        elif new_event.type == "review_evidence_imported":
+            evidence = validate_evidence(payload.get("evidence"), change_id=new_event.change_id)
+            if current is None:
+                raise ApprovalError("review evidence requires an existing Change")
+            if payload.get("subject_id") != evidence.get("subject_id"):
+                raise ApprovalError("review evidence event subject does not match its evidence")
+            recognition = load_recognition(events_file.parent.parent)
+            if not evidence_is_recognized(evidence, recognition):
+                raise ApprovalError("evidence process or issuer is not user-recognized")
+            if recognition.policy_digest:
+                provenance = evidence.get("provenance", {})
+                if (
+                    not isinstance(provenance, dict)
+                    or provenance.get("policy_digest") != recognition.policy_digest
+                ):
+                    raise ApprovalError("evidence policy digest is not recognized")
+            subject = _current_subject(current, str(evidence["kind"]))
+            historical_only = payload.get("historical_only") is True
+            if subject is None:
+                raise ApprovalError("review evidence requires a current subject")
+            if subject.get("subject_id") != evidence.get("subject_id") and not historical_only:
+                raise ApprovalError("review evidence does not match the current subject")
+            for prior in current.evidence_references:
+                if prior.get("evidence_id") == evidence.get("evidence_id"):
+                    if evidence_digest(prior) != evidence_digest(evidence):
+                        raise ApprovalError("evidence_id was reused with different content")
+                    raise ApprovalError("review evidence was already imported")
+        elif new_event.type == "plan_approved":
+            # Only the new evidence-backed record is writable.  Historical
+            # ``skipped`` milestones remain readable in old logs.
+            if not new_contract and payload.get("approval") is None:
+                return
+            approval = validate_approval(payload.get("approval"), change_id=new_event.change_id)
+            if payload.get("evidence_id") != approval.get("evidence_id"):
+                raise ApprovalError("plan approval evidence_id does not match approval")
+            if current is None:
+                raise ApprovalError("plan approval requires an existing Change")
+            pending = current.pending_revision
+            if not isinstance(pending, dict):
+                raise ApprovalError("plan approval requires a current plan subject")
+            if pending.get("status") == "withdrawn":
+                raise ApprovalError("a withdrawn plan candidate cannot become approved")
+            if pending.get("candidate_id") != approval.get("subject_id"):
+                raise ApprovalError("plan approval does not match the current plan candidate")
+            approved_evidence = _find_evidence(current, str(approval["evidence_id"]))
+            if approved_evidence is None or approved_evidence.get("decision") != "approve":
+                raise ApprovalError("plan approval requires its imported approving evidence")
+            if evidence_digest(approved_evidence) != approval.get("evidence_digest"):
+                raise ApprovalError("plan approval evidence digest does not match the import")
+        elif new_event.type == "plan_rejected":
+            if not new_contract:
+                return
+            evidence = validate_evidence(payload.get("evidence"), change_id=new_event.change_id)
+            if evidence.get("decision") != "reject":
+                raise ApprovalError("plan rejection requires rejecting evidence")
+            if current is None or not isinstance(current.pending_revision, dict):
+                raise ApprovalError("plan rejection requires a current plan candidate")
+            if current.pending_revision.get("candidate_id") != evidence.get("subject_id"):
+                raise ApprovalError("plan rejection does not match the current plan candidate")
+            imported = _find_evidence(current, str(evidence["evidence_id"]))
+            if imported is None or evidence_digest(imported) != evidence_digest(evidence):
+                raise ApprovalError("plan rejection requires its imported evidence")
+        elif new_event.type == "implementation_recorded":
+            if current is None or current.effective_approval is None:
+                raise ApprovalError(
+                    "implementation assessment requires an applicable plan approval"
+                )
+            assessment = payload.get("assessment")
+            coverage = payload.get("coverage")
+            if (
+                not isinstance(assessment, dict)
+                or not isinstance(coverage, list)
+                or any(not isinstance(item, dict) for item in coverage)
+            ):
+                raise ApprovalError("implementation assessment needs an object and coverage list")
+            if assessment.get("approval_id") != current.effective_approval.get("approval_id"):
+                raise ApprovalError("implementation assessment uses a different plan approval")
+        elif new_event.type in {"verification_passed", "verification_failed"}:
+            if not new_contract:
+                return
+            verification = payload.get("verification")
+            if not isinstance(verification, dict):
+                raise ApprovalError("new-contract verification needs a subject record")
+            code_subject = validate_code_subject(
+                verification.get("code_subject"), change_id=new_event.change_id
+            )
+            if verification.get("subject_id") != code_subject.get("subject_id"):
+                raise ApprovalError("verification subject_id does not match its code subject")
+            if current is None or current.effective_approval is None:
+                raise ApprovalError("verification requires an applicable plan approval")
+            if code_subject.get("approval_id") != current.effective_approval.get("approval_id"):
+                raise ApprovalError("verification uses a different plan approval")
+            _validate_git_subject(events_file, code_subject)
+        elif authorizing_event(new_event.type):
+            if not new_contract:
+                return
+            has_authority = current is not None and (
+                current.effective_approval is not None or current.legacy_plan_approval is not None
+            )
+            if not has_authority:
+                raise ApprovalError(
+                    f"event {new_event.type!r} requires an applicable plan approval"
+                )
+            if (
+                current is not None
+                and has_unresolved_candidate(current)
+                and new_event.type
+                in {
+                    "implementation_complete",
+                    "code_review_passed",
+                    "merged",
+                }
+            ):
+                raise ApprovalError(
+                    "an unresolved plan revision must be withdrawn or approved "
+                    "before completion/review/merge"
+                )
+            if new_event.type in {
+                "implementation_complete",
+                "code_review_passed",
+                "code_review_failed",
+            }:
+                subject = payload.get("code_subject")
+                if current is not None and current.effective_approval is not None:
+                    validated_subject = validate_code_subject(
+                        subject, change_id=new_event.change_id
+                    )
+                    if validated_subject.get("approval_id") != current.effective_approval.get(
+                        "approval_id"
+                    ):
+                        raise ApprovalError("code subject uses a different plan approval")
+                    if new_event.type == "implementation_complete":
+                        if not current.implementation_assessments:
+                            raise ApprovalError(
+                                "implementation completion requires an implementation assessment"
+                            )
+                        if not current.coverage_manifest:
+                            raise ApprovalError(
+                                "implementation completion requires a coverage manifest"
+                            )
+                        missing = missing_coverage(validated_subject, current.coverage_manifest)
+                        if missing:
+                            raise ApprovalError(
+                                "implementation coverage omits: " + ", ".join(missing)
+                            )
+                        verification = current.current_verification
+                        if not isinstance(verification, dict):
+                            raise ApprovalError(
+                                "implementation completion requires current verification"
+                            )
+                        if verification.get("outcome") != "passed":
+                            raise ApprovalError(
+                                "implementation completion requires a passed verification"
+                            )
+                        if verification.get("subject_id") != validated_subject.get("subject_id"):
+                            raise ApprovalError(
+                                "implementation completion uses a different verification subject"
+                            )
+                    elif new_event.type in {"code_review_passed", "code_review_failed"}:
+                        evidence_id = payload.get("evidence_id")
+                        review_evidence = (
+                            _find_evidence(current, str(evidence_id))
+                            if isinstance(evidence_id, str)
+                            else None
+                        )
+                        expected_decision = (
+                            "approve" if new_event.type == "code_review_passed" else "reject"
+                        )
+                        if (
+                            review_evidence is None
+                            or review_evidence.get("kind") != "code"
+                            or review_evidence.get("decision") != expected_decision
+                        ):
+                            raise ApprovalError(
+                                "code review outcome requires matching imported evidence"
+                            )
+                        if review_evidence.get("subject_id") != validated_subject.get("subject_id"):
+                            raise ApprovalError(
+                                "code review evidence uses a different code subject"
+                            )
+                    _validate_git_subject(events_file, validated_subject)
+            elif new_event.type == "merged":
+                if current is None:
+                    raise ApprovalError("merge requires an existing Change")
+                if not isinstance(current.current_code_subject, dict):
+                    raise ApprovalError("merge requires a current code subject")
+                verification = current.current_verification
+                if not isinstance(verification, dict) or verification.get("outcome") != "passed":
+                    raise ApprovalError("merge requires current passed verification")
+        elif new_event.type == "plan_withdrawn":
+            if current is None or not isinstance(current.pending_revision, dict):
+                raise ApprovalError("plan withdrawal requires a current revision candidate")
+            pending = current.pending_revision
+            if payload.get("candidate_id") != pending.get("candidate_id"):
+                raise ApprovalError("plan withdrawal does not match the current candidate")
+            if pending.get("status") not in {"pending", "rejected"}:
+                raise ApprovalError("only pending or rejected candidates can be withdrawn")
+            if payload.get("effective_approval") != (current.effective_approval or {}).get(
+                "approval_id"
+            ):
+                raise ApprovalError("plan withdrawal is linked to a different approval")
+    except (ApprovalError, GitScopeError, TypeError, KeyError) as exc:
+        raise EmitPreconditionError(str(exc)) from exc
+
+
+def _current_subject(state: object, kind: str) -> dict[str, object] | None:
+    if kind == "code":
+        subject = getattr(state, "current_code_subject", None)
+        return subject if isinstance(subject, dict) else None
+    pending = getattr(state, "pending_revision", None)
+    if isinstance(pending, dict):
+        subject = pending.get("subject")
+        if isinstance(subject, dict):
+            return subject
+    approval = getattr(state, "effective_approval", None)
+    if isinstance(approval, dict):
+        subject = approval.get("subject")
+        return subject if isinstance(subject, dict) else None
+    return None
+
+
+def _find_evidence(state: object, evidence_id: str) -> dict[str, object] | None:
+    for evidence in getattr(state, "evidence_references", []):
+        if isinstance(evidence, dict) and evidence.get("evidence_id") == evidence_id:
+            return evidence
+    return None
+
+
+def _validate_git_subject(events_file: Path, subject: dict[str, object]) -> None:
+    """Recompute a code subject before accepting a new-contract milestone."""
+    expected = make_code_subject(
+        events_file.parent.parent,
+        change_id=str(subject["change_id"]),
+        approval_id=str(subject["approval_id"]),
+        base=str(subject["base"]),
+        head=str(subject["head"]),
+    )
+    if expected["subject_id"] != subject.get("subject_id"):
+        raise ApprovalError("code subject does not match the complete Git change set")
+
+
+def is_new_contract_event(events_file: Path, event: Event) -> bool:
+    """Whether an event belongs to a new-contract stream.
+
+    Legacy events remain replayable for historical attestations.  A subject or
+    evidence payload, or a current state carrying one of the derived new
+    authority fields, opts the write into the stricter contract.
+    """
+    from super_harness.core.reducer import derive_state
+
+    payload = event.payload or {}
+    if any(
+        payload.get(key) is not None
+        for key in ("plan_subject", "approval", "evidence", "code_subject")
+    ):
+        return True
+    current = derive_state(events_file).get(event.change_id)
+    return bool(
+        current is not None
+        and (
+            current.effective_approval is not None
+            or current.pending_revision is not None
+            or current.current_code_subject is not None
+        )
+    )
 
 
 def find_ordering_violations(events_file: Path, change_id: str) -> list[OrderingViolation]:

@@ -8,7 +8,6 @@ overwrites all skeleton files including user edits. Per `cli-command-surface` §
 from __future__ import annotations
 
 import os
-import shutil
 import sys
 from collections.abc import Mapping
 from importlib.resources import files
@@ -37,14 +36,12 @@ from super_harness.cli.init_github import (
     resolve_github_plan,
 )
 from super_harness.cli.init_plan import (
-    FileAction,
     GithubFileDecision,
     HarnessState,
     InitPlan,
     InitPlanValidationError,
     InitRequest,
     InteractionMode,
-    ReviewWrite,
     inspect_workspace,
 )
 from super_harness.core.clock import utc_now_iso
@@ -66,23 +63,6 @@ if TYPE_CHECKING:
     from super_harness.engineering.gh import GhError
 
 _TEMPLATES = files("super_harness.templates")
-
-_REVIEW_PRODUCERS: dict[str, dict[str, object]] = {
-    "codex-cli": {
-        "source": "codex",
-        "executable": "codex",
-        "agent_options": {
-            "reasoning_effort": "medium",
-            "sandbox": "read-only",
-        },
-    },
-    "claude-cli": {
-        "source": "claude",
-        "executable": "claude",
-        "agent_options": {"effort": "medium"},
-    },
-}
-
 
 def detect_runtime_terminal_capabilities(
     stdin: Any,
@@ -196,6 +176,18 @@ def _verification_default() -> str:
 
 def _skeleton_files() -> dict[str, str]:
     return {
+        "review-recognition.yaml": (
+            "# User-owned recognition for externally supplied review evidence.\n"
+            "# This remains disabled until an owner recognizes one concrete process.\n"
+            "version: review-recognition/v1\n"
+            "enabled: false\n"
+            "process:\n"
+            "  id: unset\n"
+            "  version: unset\n"
+            "  kinds: []\n"
+            "  issuers: []\n"
+            "  evidence_forms: [json]\n"
+        ),
         "review-governance.yaml": (
             "# Shared review governance. Commit this file.\n"
             "# Local producer/model choices live in the gitignored\n"
@@ -248,99 +240,6 @@ def _skeleton_files() -> dict[str, str]:
     }
 
 
-def _parse_review_models(values: tuple[str, ...]) -> dict[str, str]:
-    models: dict[str, str] = {}
-    for value in values:
-        source, separator, model = value.partition("=")
-        if not separator or not source or not model:
-            raise ValueError(
-                "--review-model must use SOURCE=MODEL, for example --review-model codex=gpt-review"
-            )
-        if source in models:
-            raise ValueError(f"duplicate --review-model source {source!r}")
-        models[source] = model
-    return models
-
-
-def _configure_review_producers(
-    root: Path,
-    producers: tuple[str, ...],
-    model_values: tuple[str, ...],
-) -> None:
-    """Write governance/profile selections without executing a producer."""
-
-    if len(set(producers)) != len(producers):
-        raise ValueError("duplicate --review-producer selection")
-    models = _parse_review_models(model_values)
-    unknown_models = set(models)
-    selected_sources: list[str] = []
-    profile_sources: dict[str, object] = {}
-    governance_sources: dict[str, object] = {}
-    for producer in producers:
-        definition = _REVIEW_PRODUCERS[producer]
-        source = str(definition["source"])
-        executable = str(definition["executable"])
-        unknown_models.discard(source)
-        model = models.get(source)
-        if model is None:
-            raise ValueError(
-                f"--review-producer {producer} requires --review-model {source}=<model>"
-            )
-        if shutil.which(executable) is None:
-            raise ValueError(
-                f"selected review producer {producer!r} is not installed "
-                f"({executable!r} not found on PATH); super-harness does not install it"
-            )
-        selected_sources.append(source)
-        governance_sources[source] = {"kind": "automated"}
-        raw_options = definition["agent_options"]
-        if not isinstance(raw_options, dict):
-            raise ValueError(f"built-in review producer {producer!r} has invalid agent_options")
-        profile_sources[source] = {
-            "protocol": producer,
-            "model": model,
-            "cost_class": "standard",
-            "agent_options": dict(raw_options),
-        }
-    if unknown_models:
-        source = sorted(unknown_models)[0]
-        raise ValueError(f"--review-model source {source!r} has no selected --review-producer")
-
-    governance_sources["human"] = {"kind": "human"}
-    participants = selected_sources or ["human"]
-    # Per-role budgets: the two roles genuinely differ now that the budget
-    # accumulates per change instead of resetting on every epoch boundary. A shared
-    # template cannot express that, so it is split.
-    def _role(max_automatic_rounds: int) -> dict[str, object]:
-        return {
-            "participants": participants,
-            "min_independent": len(participants),
-            "max_automatic_rounds": max_automatic_rounds,
-        }
-    governance = {
-        "version": 1,
-        "review": {
-            "base_branch": "main",
-            "sources": governance_sources,
-            "roles": {
-                "plan-reviewer": _role(6),
-                "code-reviewer": _role(4),
-            },
-            "require_distinct_model_families": False,
-        },
-    }
-    governance_path = root / ".harness" / "review-governance.yaml"
-    governance_path.write_text(yaml.safe_dump(governance, sort_keys=False), encoding="utf-8")
-    profile_path = root / ".harness" / "review-profiles.local.yaml"
-    if profile_sources:
-        profile_path.write_text(
-            yaml.safe_dump({"version": 1, "sources": profile_sources}, sort_keys=False),
-            encoding="utf-8",
-        )
-    else:
-        profile_path.unlink(missing_ok=True)
-
-
 def build_init_operations(
     *,
     ctx: click.Context,
@@ -368,9 +267,9 @@ def build_init_operations(
         try:
             skeletons = _skeleton_files()
             for name, content in skeletons.items():
-                if name == "review-governance.yaml":
-                    continue
                 path = harness / name
+                if name in {"review-recognition.yaml", "review-governance.yaml"} and path.exists():
+                    continue
                 if path.exists() and not request.force:
                     continue
                 path.write_text(content, encoding="utf-8")
@@ -383,32 +282,11 @@ def build_init_operations(
         return InitOperationResult("Wrote skeleton configuration.")
 
     def review_config(plan: InitPlan) -> InitOperationResult:
-        if plan.review_write is ReviewWrite.PRESERVE:
-            return InitOperationResult("Preserved existing review configuration.")
-        try:
-            review_paths = {
-                ".harness/review-governance.yaml",
-                ".harness/review-profiles.local.yaml",
-            }
-            for action in plan.file_actions:
-                if action.path.as_posix() not in review_paths:
-                    continue
-                path = root / action.path
-                if action.action in {FileAction.CREATE, FileAction.UPDATE}:
-                    if action.content is None:
-                        raise ValueError(f"reviewed write for {action.path} has no content")
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_bytes(action.content)
-                elif action.action is FileAction.DELETE:
-                    path.unlink(missing_ok=True)
-        except (OSError, UnicodeDecodeError, ValueError, yaml.YAMLError) as error:
-            raise InitOperationError(
-                f"could not configure review producers: {error}",
-                exit_code=EXIT_GENERIC,
-                hint="Select an installed producer and pass one explicit model per source.",
-            ) from error
-        verb = "Reset" if plan.review_write is ReviewWrite.RESET else "Configured"
-        return InitOperationResult(f"{verb} review configuration.")
+        del plan
+        return InitOperationResult(
+            "Preserved historical review configuration; external review recognition "
+            "remains disabled."
+        )
 
     def agent_integrations(plan: InitPlan) -> InitOperationResult:
         configured: list[str] = []
@@ -545,15 +423,15 @@ def build_init_operations(
     "--review-producer",
     "review_producers",
     multiple=True,
-    type=click.Choice(sorted(_REVIEW_PRODUCERS)),
-    help="Local review producer protocol to configure; repeat for multiple selections.",
+    type=str,
+    help="Retired; reviewer producers are configured outside super-harness.",
 )
 @click.option(
     "--review-model",
     "review_models",
     multiple=True,
     metavar="SOURCE=MODEL",
-    help="Explicit model for a selected review source; repeat per source.",
+    help="Retired; super-harness does not select reviewer models.",
 )
 @click.option(
     "--yes",
@@ -582,26 +460,26 @@ def init_cmd(
     quiet = bool(ctx.obj.get("quiet"))
     json_output = bool(ctx.obj.get("json"))
     capabilities = detect_runtime_terminal_capabilities(sys.stdin, sys.stdout, os.environ)
-    try:
-        parsed_models = _parse_review_models(review_models)
-    except ValueError as error:
+    if review_producers or review_models:
         click.echo(
             format_error(
                 subcommand="init",
-                message=f"could not configure review producers: {error}",
-                hint="Select an installed producer and pass one explicit model per source.",
+                message="review producer/model configuration is retired",
+                hint=(
+                    "Configure one owner-recognized external process in "
+                    "`.harness/review-recognition.yaml`; init does not discover or run reviewers."
+                ),
             ),
             err=True,
         )
         ctx.exit(EXIT_GENERIC)
-
     request = InitRequest(
         workspace=root,
         interaction_mode=capabilities.mode,
         force=force,
         integrations=integrations,
         review_producers=review_producers,
-        review_models=parsed_models,
+        review_models={},
         review_flags_explicit=bool(review_producers or review_models),
         framework=framework,
         no_agent=no_agent,

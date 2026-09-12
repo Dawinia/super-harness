@@ -66,6 +66,7 @@ Exit codes (cli-command-surface §2.2):
 - 5 — concurrency conflict (reserved; not raised by v0.1 in practice).
 - 1 — the sensor crashed / timed out (no verdict came back).
 """
+
 from __future__ import annotations
 
 import sys
@@ -79,6 +80,13 @@ from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
 from super_harness.cli.verify_render import render_failure_summary
 from super_harness.core.active_change import read_active_change_id
+from super_harness.core.approval import (
+    ApprovalError,
+    has_unresolved_candidate,
+    make_code_subject,
+    missing_coverage,
+    resolve_contract_base,
+)
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import (
@@ -89,6 +97,7 @@ from super_harness.core.paths import (
 )
 from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.reducer import derive_state
+from super_harness.core.scope_match import GitScopeError, working_tree_dirty
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
 from super_harness.engineering import gh
@@ -182,10 +191,7 @@ def done_cmd(
                 format_error(
                     subcommand="done",
                     message=f"could not fetch PR #{pr_int}: {e}",
-                    hint=(
-                        "Check the PR number, `gh auth status`, and the "
-                        "current repo."
-                    ),
+                    hint=("Check the PR number, `gh auth status`, and the current repo."),
                 ),
                 err=True,
             )
@@ -235,6 +241,93 @@ def done_cmd(
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
+
+    current_change = derive_state(events_path(root)).get(resolved)
+    if current_change is not None and has_unresolved_candidate(current_change):
+        click.echo(
+            format_error(
+                subcommand="done",
+                message="an unresolved plan revision blocks completion",
+                hint=(
+                    "Withdraw the exact pending/rejected candidate with `plan withdraw`, "
+                    "or obtain and import its recognized approval."
+                ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if current_change is not None and isinstance(current_change.effective_approval, dict):
+        if not current_change.implementation_assessments:
+            click.echo(
+                format_error(
+                    subcommand="done",
+                    message="implementation assessment is required before completion",
+                    hint="Record the actual reasoning and coverage with `implementation record`.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
+        if not current_change.coverage_manifest:
+            click.echo(
+                format_error(
+                    subcommand="done",
+                    message="implementation coverage is required before completion",
+                    hint="Record the actual changed paths with `implementation record`.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
+        declared = [path for path in current_change.scope.get("files", []) if isinstance(path, str)]
+        try:
+            dirty = working_tree_dirty(root, declared)
+        except GitScopeError as exc:
+            click.echo(
+                format_error(
+                    subcommand="done",
+                    message=f"cannot establish a clean committed subject: {exc}",
+                    hint="Run done from a checkout with reachable Git state.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
+        if dirty:
+            click.echo(
+                format_error(
+                    subcommand="done",
+                    message="in-scope files have uncommitted changes",
+                    hint="Commit the complete implementation before running done.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
+        try:
+            code_subject = make_code_subject(
+                root,
+                change_id=resolved,
+                approval_id=str(current_change.effective_approval["approval_id"]),
+                base=resolve_contract_base(root),
+            )
+            missing = missing_coverage(code_subject, current_change.coverage_manifest)
+        except (ApprovalError, KeyError, ValueError) as exc:
+            click.echo(
+                format_error(
+                    subcommand="done",
+                    message=f"cannot establish implementation coverage subject: {exc}",
+                    hint="Commit the complete product change and retry done.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
+        if missing:
+            click.echo(
+                format_error(
+                    subcommand="done",
+                    message="implementation coverage omits: " + ", ".join(missing),
+                    hint="Record every added, modified, deleted, and renamed product path.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
 
     writer = EventWriter(events_path(root))
 
@@ -300,9 +393,7 @@ def done_cmd(
     # The dispatcher emits verification_passed/failed + refreshes state.yaml
     # internally. On a pass, that verification_passed satisfies the
     # implementation_complete hard-prereq we rely on below.
-    results = dispatcher.on_activity(
-        Activity(type="cli_done", change_id=resolved, payload={})
-    )
+    results = dispatcher.on_activity(Activity(type="cli_done", change_id=resolved, payload={}))
 
     if not results:
         click.echo(
@@ -339,13 +430,9 @@ def done_cmd(
                 format_error(
                     subcommand="done",
                     message=(
-                        f"verification failed for {resolved}; "
-                        "implementation_complete not emitted"
+                        f"verification failed for {resolved}; implementation_complete not emitted"
                     ),
-                    hint=(
-                        "Fix the failing checks below, then re-run "
-                        "`super-harness done`."
-                    ),
+                    hint=("Fix the failing checks below, then re-run `super-harness done`."),
                 ),
                 err=True,
             )
@@ -414,6 +501,26 @@ def _emit_implementation_complete(
     never actually observed by the caller (the sys.exit raises first); the bool
     keeps the call sites readable.
     """
+    payload: dict[str, object] = {"pr_url": pr} if pr else {}
+    current = derive_state(events_path(root)).get(slug)
+    if current is not None and isinstance(current.effective_approval, dict):
+        try:
+            payload["code_subject"] = make_code_subject(
+                root,
+                change_id=slug,
+                approval_id=str(current.effective_approval["approval_id"]),
+                base=resolve_contract_base(root),
+            )
+        except (ApprovalError, KeyError, ValueError) as exc:
+            click.echo(
+                format_error(
+                    subcommand="done",
+                    message=f"cannot bind implementation to a code subject: {exc}",
+                    hint="Commit the complete product change and retry done.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
     ev = Event(
         event_id=new_event_id(),
         type="implementation_complete",
@@ -421,7 +528,7 @@ def _emit_implementation_complete(
         timestamp=utc_now_iso(),
         actor=Actor(type="human", identifier="cli"),
         framework="plain",
-        payload={"pr_url": pr} if pr else {},
+        payload=payload,
     )
     try:
         # Strict — the prior verification_passed (dispatcher-emitted on the

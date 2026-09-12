@@ -9,44 +9,68 @@ Public surface:
 - parse_event_line / serialize_event — JSON ↔ Event with schema validation
 - EventSchemaError — raised by parse_event_line on validation failure
 """
+
 import json
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 # Per lifecycle-event-model §3.1-3.5: 5 core lifecycle events
-CORE_EVENT_TYPES: frozenset[str] = frozenset({
-    "intent_declared",
-    "plan_ready",
-    "implementation_started",
-    "implementation_complete",
-    "merged",
-})
+CORE_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "intent_declared",
+        "plan_ready",
+        "implementation_started",
+        "implementation_complete",
+        "merged",
+    }
+)
 
 # Per lifecycle-event-model §3.6: extension events (sensor-emitted /
 # user-initiated / system-detected / sensor lifecycle)
-EXTENSION_EVENT_TYPES: frozenset[str] = frozenset({
-    # sensor-emitted (state-changing)
-    "plan_approved", "plan_rejected",
-    "verification_passed", "verification_failed",
-    "code_review_passed", "code_review_failed",
-    "review_verdict_recorded",
-    "review_round_started", "review_result_imported", "review_run_failed",
-    "review_round_closed", "review_round_authorized",
-    "scope_drift_detected",
-    # user-initiated
-    "intent_redeclared", "intent_abandoned",
-    "plan_redeclared", "implementation_restarted",
-    "implementation_invalidated",
-    # system-detected
-    "implementation_withdrawn", "merged_reverted", "pr_opened",
-    # sensor lifecycle (added by SensorDispatcher on timeout / crash)
-    "sensor_timeout_exceeded", "sensor_crashed",
-    # gate-bypass disclosure (state-preserving audit signals)
-    "gate_bypassed", "gate_bypass_disclosed",
-    # round-budget brake (state-preserving: hitting the budget is a legitimate,
-    # human-authorized act — it must be VISIBLE, not forbidden)
-    "review_budget_exceeded",
-})
+EXTENSION_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        # sensor-emitted (state-changing)
+        "plan_approved",
+        "plan_rejected",
+        "verification_passed",
+        "verification_failed",
+        "code_review_passed",
+        "code_review_failed",
+        "review_verdict_recorded",
+        "review_round_started",
+        "review_result_imported",
+        "review_run_failed",
+        "review_round_closed",
+        "review_round_authorized",
+        "scope_drift_detected",
+        # user-initiated
+        "intent_redeclared",
+        "intent_abandoned",
+        "plan_redeclared",
+        "implementation_restarted",
+        "implementation_invalidated",
+        # system-detected
+        "implementation_withdrawn",
+        "merged_reverted",
+        "pr_opened",
+        # sensor lifecycle (added by SensorDispatcher on timeout / crash)
+        "sensor_timeout_exceeded",
+        "sensor_crashed",
+        # gate-bypass disclosure (state-preserving audit signals)
+        "gate_bypassed",
+        "gate_bypass_disclosed",
+        # round-budget brake (state-preserving: hitting the budget is a legitimate,
+        # human-authorized act — it must be VISIBLE, not forbidden)
+        "review_budget_exceeded",
+        # New-contract external evidence and implementation accounting.  These are
+        # informational by themselves; the accompanying milestone is still gated
+        # by the shared approval predicates.
+        "review_evidence_imported",
+        "implementation_recorded",
+        "plan_revision_submitted",
+        "plan_withdrawn",
+    }
+)
 
 KNOWN_EVENT_TYPES: frozenset[str] = CORE_EVENT_TYPES | EXTENSION_EVENT_TYPES
 
@@ -55,9 +79,16 @@ Framework = Literal["openspec", "spec-kit", "superpowers", "plain"]
 
 _VALID_ACTOR_TYPES: frozenset[str] = frozenset({"human", "agent", "adapter", "sensor", "ci"})
 _VALID_FRAMEWORKS: frozenset[str] = frozenset({"openspec", "spec-kit", "superpowers", "plain"})
-_REQUIRED_FIELDS: frozenset[str] = frozenset({
-    "event_id", "type", "change_id", "timestamp", "actor", "framework",
-})
+_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    {
+        "event_id",
+        "type",
+        "change_id",
+        "timestamp",
+        "actor",
+        "framework",
+    }
+)
 
 
 class EventSchemaError(ValueError):
@@ -72,6 +103,7 @@ class EventSchemaError(ValueError):
 @dataclass(frozen=True)
 class Actor:
     """Who/what emitted an event. Frozen — events are immutable (Axiom 7)."""
+
     type: ActorType
     identifier: str
 
@@ -93,6 +125,7 @@ class Event:
         framework_state: optional opaque adapter-specific state
         payload: type-specific fields (per §3.1-3.6)
     """
+
     event_id: str
     type: str
     change_id: str
@@ -137,23 +170,19 @@ def parse_event_line(line: str) -> Event:
         # concern). A non-str value would crash tolerant readers' string ops —
         # e.g. the reducer drift check — instead of the warn+skip they promise.
         # "" stays legal: the dispatcher stamps blank timestamps post-hoc.
-        raise EventSchemaError(
-            f"timestamp must be a string, got {type(obj['timestamp']).__name__}"
-        )
+        raise EventSchemaError(f"timestamp must be a string, got {type(obj['timestamp']).__name__}")
     actor_raw = obj["actor"]
     if not isinstance(actor_raw, dict):
         raise EventSchemaError("actor must be an object with 'type' and 'identifier'")
     if actor_raw.get("type") not in _VALID_ACTOR_TYPES:
         raise EventSchemaError(
-            f"actor.type must be one of {sorted(_VALID_ACTOR_TYPES)}, "
-            f"got {actor_raw.get('type')!r}"
+            f"actor.type must be one of {sorted(_VALID_ACTOR_TYPES)}, got {actor_raw.get('type')!r}"
         )
     if "identifier" not in actor_raw:
         raise EventSchemaError("actor.identifier is required")
     if obj["framework"] not in _VALID_FRAMEWORKS:
         raise EventSchemaError(
-            f"framework must be one of {sorted(_VALID_FRAMEWORKS)}, "
-            f"got {obj['framework']!r}"
+            f"framework must be one of {sorted(_VALID_FRAMEWORKS)}, got {obj['framework']!r}"
         )
     return Event(
         event_id=obj["event_id"],
