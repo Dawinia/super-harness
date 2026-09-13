@@ -1,9 +1,13 @@
 """Lifecycle seam tests for external evidence and plan authority."""
 
+import hashlib
+import io
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -377,24 +381,57 @@ def test_active_recognition_does_not_accept_legacy_authority(tmp_path: Path) -> 
 
 
 def test_a17_candidate_import_path_cannot_replace_trusted_verifier(tmp_path: Path) -> None:
-    trusted = tmp_path / "trusted-site"
-    candidate = tmp_path / "candidate-site"
-    trusted.mkdir()
-    candidate.mkdir()
-    (trusted / "isolated_verifier.py").write_text(
-        "IDENTITY = 'trusted-baseline'\n", encoding="utf-8"
-    )
-    (candidate / "isolated_verifier.py").write_text(
-        "IDENTITY = 'candidate'\n", encoding="utf-8"
-    )
+    candidate_checkout = Path(__file__).resolve().parents[3]
+    base = _git(candidate_checkout, "rev-parse", "origin/main")
+    trusted_checkout = tmp_path / "trusted-checkout"
+    trusted_site = tmp_path / "trusted-site-packages"
+    trusted_checkout.mkdir()
+    trusted_site.mkdir()
+
+    archive = subprocess.run(
+        ["git", "archive", base],
+        cwd=candidate_checkout,
+        capture_output=True,
+        check=True,
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+        members = tar.getmembers()
+        root = trusted_checkout.resolve()
+        for member in members:
+            extracted = (trusted_checkout / member.name).resolve()
+            assert extracted == root or root in extracted.parents
+        tar.extractall(trusted_checkout)
+    shutil.copytree(trusted_checkout / "src" / "super_harness", trusted_site / "super_harness")
+
+    expected_events = hashlib.sha256(
+        (trusted_checkout / "src" / "super_harness" / "core" / "events.py").read_bytes()
+    ).hexdigest()
     env = os.environ.copy()
-    env["PYTHONPATH"] = str(trusted)
+    # Deliberately put the candidate checkout on PYTHONPATH.  The verifier
+    # bootstrap must still put its isolated, trusted site-packages first.
+    env["PYTHONPATH"] = str(candidate_checkout / "src")
     result = subprocess.run(
-        [sys.executable, "-c", "import isolated_verifier; print(isolated_verifier.IDENTITY)"],
+        [
+            sys.executable,
+            "-c",
+            "import hashlib, pathlib, sys; "
+            "trusted = pathlib.Path(sys.argv[1]).resolve(); expected = sys.argv[2]; "
+            "sys.path.insert(0, str(trusted)); "
+            "from super_harness.cli import attest; from super_harness.core import events; "
+            "verifier = pathlib.Path(attest.__file__).resolve(); "
+            "loaded = pathlib.Path(events.__file__).resolve(); "
+            "assert str(verifier).startswith(str(trusted)); "
+            "assert str(loaded).startswith(str(trusted)); "
+            "assert hashlib.sha256(loaded.read_bytes()).hexdigest() == expected; "
+            "print(verifier); print(loaded)",
+            str(trusted_site),
+            expected_events,
+        ],
+        cwd=tmp_path,
         env=env,
         capture_output=True,
         text=True,
         check=True,
     )
-    assert result.stdout.strip() == "trusted-baseline"
-    assert str(candidate) not in result.stdout
+    assert str(candidate_checkout / "src") not in result.stdout
+    assert "trusted-site-packages" in result.stdout

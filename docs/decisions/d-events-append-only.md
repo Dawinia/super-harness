@@ -5,14 +5,14 @@ ratified_by: dawinialo@163.com
 ratified_at: '2026-06-26T09:45:08.963090Z'
 ratified_text_hash: sha256:8db7275f6ea859c6e8ada8b4e77ec8a954024d45bffcc6a822ede1d62f69254b
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-08-21T15:50:43.696735Z'
+last_reconciled_at: '2026-09-13T15:51:05.609826Z'
 last_reconcile_kind: self
-last_reconcile_justification: EventWriter still appends one serialized line with O_APPEND
-  and fsync; the cross-platform process lock covers validation plus append, and the
-  Windows typing-only adjustment does not mutate, truncate, or reorder events.
+last_reconcile_justification: 'Re-reviewed EventWriter and Event: writes remain append-only
+  serialized lines under the exclusive lock with fsync; historical replay is explicit
+  and does not mutate or reorder existing events.'
 reconciled_anchors:
-  src/super_harness/core/events.py: sha256:5a143f7e90c9ecac9cd92d7f0ed9b82859862e0c58d37a3c1dfeacca49d41b6e
-  src/super_harness/core/writer.py: sha256:90a61715d0daac863c53229bdc9b0cc715f54f990ae3848dacf4cb0874c35bba
+  src/super_harness/core/events.py: sha256:84a7262fe7689cd2d3f0be78e110eb2699140b74cdc1345748bc6bec5b5eb585
+  src/super_harness/core/writer.py: sha256:2ced0979ac6cefdf3c4ff9071532e5fba8149c986048a54f4474cd3c7385c11c
 ---
 Events are append-only; the log is the source of truth, state is derived.
 

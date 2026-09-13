@@ -5,13 +5,13 @@ ratified_by: dawinialo@163.com
 ratified_at: '2026-06-22T19:25:38.517675Z'
 ratified_text_hash: sha256:8a106295b2f00df8c9f657c22e02af8cf6b37cee29ee005e772647d62be48ed0
 last_reconciled_by: dawinialo@163.com
-last_reconciled_at: '2026-07-16T10:49:37.146170Z'
+last_reconciled_at: '2026-09-13T15:51:06.569880Z'
 last_reconcile_kind: self
-last_reconcile_justification: "reducer plan_ready branch now also records plan_artifacts\
-  \ (shape-validated list) + plan_redeclared clears it; still a pure left-fold over\
-  \ events with no I/O \u2014 the pure-fold invariant holds."
+last_reconcile_justification: 'Re-reviewed reducer.py: derive_state still constructs
+  a fresh per-change fold over the append-only event stream; added authority/evidence
+  fields are derived during replay and no external state mutation or I/O was introduced.'
 reconciled_anchors:
-  src/super_harness/core/reducer.py: sha256:c2f8b1152f71d36ad5273fad52f0a1f3f2af1783614c3770611e4f3fc7c58802
+  src/super_harness/core/reducer.py: sha256:70e4224febc6b56938a44df9dbc8ab8af768852d22bf5e26ff6788b2916475f2
 ---
 State is a pure left-fold over the event log; never mutated in place.
 

@@ -160,6 +160,45 @@ def test_code_subject_contains_rename_mode_and_blob_identity(tmp_path: Path) -> 
     assert subject["subject_id"] == f"code:{digest_record(unsigned)}"
 
 
+def test_code_subject_uses_merge_base_when_target_branch_advances(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    shared = tmp_path / "shared.py"
+    shared.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "shared.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "checkout", "-qb", "candidate"], cwd=tmp_path, check=True)
+    shared.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "shared.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "candidate change"], cwd=tmp_path, check=True)
+    candidate_head = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    subprocess.run(["git", "checkout", "main", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "target-only.py").write_text("target = True\n", encoding="utf-8")
+    subprocess.run(["git", "add", "target-only.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "target branch advanced"], cwd=tmp_path, check=True)
+    advanced_base = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    subprocess.run(["git", "checkout", "candidate", "-q"], cwd=tmp_path, check=True)
+
+    subject = make_code_subject(
+        tmp_path,
+        change_id="c",
+        approval_id="approval:e1",
+        base=advanced_base,
+        head=candidate_head,
+    )
+
+    merge_base = subprocess.check_output(
+        ["git", "merge-base", advanced_base, candidate_head], cwd=tmp_path, text=True
+    ).strip()
+    assert subject["base"] == merge_base
+    assert [row["path"] for row in subject["manifest"]] == ["shared.py"]
+
+
 def test_new_contract_base_ignores_legacy_review_governance(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)

@@ -1,11 +1,11 @@
 ---
 change: 2026-09-11-plan-authority
 stage: plan
-status: submitted
+status: code_review
 proposed_change: 2026-09-11-plan-authority
 baseline_commit: d33eeea7c794deb26d129b90fe69ae66adfb7f0d
 implementation_authorized: false
-review_status: awaiting_plan_review
+review_status: disclosed_plan_skip
 ---
 
 # Implementation plan: plan authority and external review evidence

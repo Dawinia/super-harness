@@ -29,10 +29,13 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/super-harness-verifier"
           verifier="$RUNNER_TEMP/super-harness-verifier/bin"
+          trusted_sha="$(git -C .harness-trusted-base rev-parse HEAD)"
+          test "$trusted_sha" = "$BASE_SHA"
           "$verifier/python" -m pip install --disable-pip-version-check \
             "$GITHUB_WORKSPACE/.harness-trusted-base[dev]"
-          BASE_SHA="$BASE_SHA" "$verifier/python" -c \
-            'import os, pathlib, super_harness; p = pathlib.Path(super_harness.__file__).resolve(); assert ".harness-trusted-base" not in str(p); assert "site-packages" in str(p); base_sha = os.environ["BASE_SHA"]; print(f"A17 verifier loaded from {p} for BASE_SHA={base_sha}")'
+          env -u PYTHONPATH TRUSTED_ROOT="$GITHUB_WORKSPACE/.harness-trusted-base" \
+            BASE_SHA="$BASE_SHA" "$verifier/python" -c \
+            'import hashlib, os, pathlib, subprocess; from super_harness.cli import attest; from super_harness.core import events; trusted = pathlib.Path(os.environ["TRUSTED_ROOT"]); verifier = pathlib.Path(attest.__file__).resolve(); installed = pathlib.Path(events.__file__).resolve(); expected = trusted / "src" / "super_harness" / "core" / "events.py"; assert subprocess.check_output(["git", "-C", str(trusted), "rev-parse", "HEAD"], text=True).strip() == os.environ["BASE_SHA"]; assert "site-packages" in str(verifier); assert "site-packages" in str(installed); assert ".harness-trusted-base" not in str(verifier); assert ".harness-trusted-base" not in str(installed); assert hashlib.sha256(installed.read_bytes()).hexdigest() == hashlib.sha256(expected.read_bytes()).hexdigest(); print("A17 verifier loaded from {} and matches trusted BASE_SHA={}".format(verifier, os.environ["BASE_SHA"]))'
       - name: Verify lifecycle attestations cover the diff
         shell: bash
         run: |

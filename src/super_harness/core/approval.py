@@ -29,7 +29,12 @@ from typing import Any
 
 import yaml
 
-from super_harness.core.scope_match import GitScopeError, file_text_at_commit, resolve_commit
+from super_harness.core.scope_match import (
+    GitScopeError,
+    file_text_at_commit,
+    merge_base_commit,
+    resolve_commit,
+)
 
 PLAN_SUBJECT_VERSION = "plan-authority/v1"
 CODE_SUBJECT_VERSION = "code-subject/v1"
@@ -668,9 +673,14 @@ def make_code_subject(
     head: str = "HEAD",
     verification_config_digest: str | None = None,
 ) -> dict[str, Any]:
-    manifest = git_change_manifest(root, base=base, head=head)
-    resolved_base = resolve_commit(root, base)
+    requested_base = resolve_commit(root, base)
     resolved_head = resolve_commit(root, head)
+    # The merge gate compares a PR with base...head (the merge-base tree to the
+    # candidate tree).  Store that resolved review base in the subject so local
+    # preparation, verification, and the final gate hash the same change even
+    # when the target branch advanced after the candidate branch was created.
+    resolved_base = merge_base_commit(root, requested_base, resolved_head)
+    manifest = git_change_manifest(root, base=resolved_base, head=resolved_head)
     subject: dict[str, Any] = {
         "version": CODE_SUBJECT_VERSION,
         "change_id": change_id,
