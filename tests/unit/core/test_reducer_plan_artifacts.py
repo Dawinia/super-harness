@@ -25,7 +25,11 @@ def _emit(root: Path, **kw: object) -> None:
         timestamp="2026-07-16T00:00:00Z",
         **kw,  # type: ignore[arg-type]
     )
-    EventWriter(events_path(root)).emit(ev, skip_validation=True)
+    EventWriter(events_path(root)).emit(
+        ev,
+        skip_validation=True,
+        historical_replay=True,
+    )
 
 
 def _seed(root: Path, slug: str = "c") -> None:

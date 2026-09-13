@@ -51,7 +51,11 @@ import yaml
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
-from super_harness.core.approval import ApprovalError, make_plan_subject
+from super_harness.core.approval import (
+    ApprovalError,
+    make_plan_subject,
+    recognition_contract_active,
+)
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import EmitPreconditionError
 from super_harness.core.events import Actor, Event
@@ -213,6 +217,31 @@ def ready(
         sys.exit(EXIT_NO_CONFIG)
 
     cs = derive_state(events_path(root)).get(slug)
+    try:
+        active_recognition = recognition_contract_active(root)
+    except ApprovalError as exc:
+        click.echo(format_error(subcommand="plan ready", message=str(exc)), err=True)
+        sys.exit(EXIT_VALIDATION)
+    if active_recognition and plan_path is None:
+        click.echo(
+            format_error(
+                subcommand="plan ready",
+                message="active review recognition requires a complete plan subject",
+                hint="Pass --plan and at least one --commitment.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if active_recognition and not commitments:
+        click.echo(
+            format_error(
+                subcommand="plan ready",
+                message="active review recognition requires plan commitments",
+                hint="Pass one or more --commitment ID=TEXT values.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
 
     payload: dict[str, object] = {}
     # The artifacts THIS emit will carry. Stays `[]` when `--scope` is omitted, and

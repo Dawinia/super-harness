@@ -187,6 +187,7 @@ def _skeleton_files() -> dict[str, str]:
             "  kinds: []\n"
             "  issuers: []\n"
             "  evidence_forms: [json]\n"
+            "  requirements: {}\n"
         ),
         "review-governance.yaml": (
             "# Shared review governance. Commit this file.\n"

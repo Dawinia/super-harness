@@ -38,6 +38,7 @@ import tempfile
 import threading
 from pathlib import Path
 
+from super_harness.core.approval import authorizing_event
 from super_harness.core.emit_validation import (
     EmitPreconditionError,
     is_new_contract_event,
@@ -69,7 +70,13 @@ class EventWriter:
         # new on first emit. mkdir(parents=True, exist_ok=True) is idempotent.
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def emit(self, event: Event, *, skip_validation: bool = False) -> None:
+    def emit(
+        self,
+        event: Event,
+        *,
+        skip_validation: bool = False,
+        historical_replay: bool = False,
+    ) -> None:
         """Append one event to events.jsonl.
 
         Args:
@@ -79,6 +86,9 @@ class EventWriter:
                 strict per spec §3.8.1 and raises EmitPreconditionError before
                 touching disk. Set True only for replay/import paths where the
                 event stream has already been vetted.
+            historical_replay: explicit escape hatch for reconstructing an
+                immutable historical stream. Normal callers cannot combine
+                ``skip_validation`` with an authorizing or new-contract event.
 
         Raises:
             EmitPreconditionError: if `skip_validation=False` and the event
@@ -93,9 +103,19 @@ class EventWriter:
                 alive" handlers working). Type-only: `""` stays legal (the
                 dispatcher stamps blank timestamps before emit).
         """
-        self.emit_many([event], skip_validation=skip_validation)
+        self.emit_many(
+            [event],
+            skip_validation=skip_validation,
+            historical_replay=historical_replay,
+        )
 
-    def emit_many(self, events: list[Event], *, skip_validation: bool = False) -> None:
+    def emit_many(
+        self,
+        events: list[Event],
+        *,
+        skip_validation: bool = False,
+        historical_replay: bool = False,
+    ) -> None:
         """Validate and append a small event transaction under one lock.
 
         External evidence import needs an evidence record and its lifecycle
@@ -116,14 +136,18 @@ class EventWriter:
             # The process lock spans validate+append so no writer validates a
             # stale stream then appends over another writer's transition.
             with exclusive_file_lock(self._lock_path):
-                if skip_validation and any(
-                    is_new_contract_event(self.path, event) for event in events
-                ):
-                    event = next(
-                        event for event in events if is_new_contract_event(self.path, event)
-                    )
+                guarded = [
+                    event
+                    for event in events
+                    if authorizing_event(event.type)
+                    or is_new_contract_event(self.path, event)
+                ]
+                if skip_validation and guarded and not historical_replay:
+                    event = guarded[0]
                     raise EmitPreconditionError(
-                        f"skip_validation cannot write authorizing event {event.type!r}"
+                        f"skip_validation cannot write authorizing or new-contract "
+                        f"event {event.type!r}; use the strict writer or explicit "
+                        "historical_replay"
                     )
                 if not skip_validation:
                     temp_path: Path | None = None

@@ -11,3 +11,4 @@ process:
   issuers: []
   evidence_forms:
     - json
+  requirements: {}

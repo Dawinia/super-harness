@@ -336,6 +336,10 @@ class Recognition:
     kinds: frozenset[str]
     issuers: frozenset[str]
     evidence_forms: frozenset[str]
+    # Opaque owner-selected requirements are retained and covered by the
+    # policy digest.  The core only recognizes the process structurally; it
+    # does not interpret the reviewer's substantive judgment.
+    requirements: dict[str, Any]
     policy_digest: str | None = None
 
 
@@ -377,6 +381,9 @@ def _recognition_from_mapping(raw: object) -> Recognition:
         raise ApprovalError("recognized process issuers are invalid")
     if not isinstance(forms, list) or not all(isinstance(x, str) for x in forms):
         raise ApprovalError("recognized evidence forms are invalid")
+    requirements = process.get("requirements", {})
+    if not isinstance(requirements, dict):
+        raise ApprovalError("recognized review requirements must be an object")
     policy_digest = process.get("policy_digest")
     if not isinstance(policy_digest, str) or not policy_digest:
         raise ApprovalError("enabled review recognition needs a policy digest")
@@ -389,6 +396,7 @@ def _recognition_from_mapping(raw: object) -> Recognition:
         kinds=frozenset(kinds),
         issuers=frozenset(issuers),
         evidence_forms=frozenset(forms),
+        requirements=dict(requirements),
         policy_digest=policy_digest,
     )
 
@@ -410,6 +418,55 @@ def load_recognition(root: Path, *, ref: str | None = None) -> Recognition:
     except (GitScopeError, OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
         raise ApprovalError(f"review recognition policy is invalid: {exc}") from exc
     return _recognition_from_mapping(raw)
+
+
+def recognition_contract_active(root: Path) -> bool:
+    """Return whether the owner has enabled the new recognition contract.
+
+    A missing policy and an explicitly disabled policy are the first-cutover
+    legacy mode.  Any other malformed or enabled policy fails closed: an
+    operator must not be able to downgrade an active contract by making its
+    recognition record unreadable.
+    """
+    path = root / ".harness" / "review-recognition.yaml"
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raw = None
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ApprovalError(f"review recognition policy is invalid: {exc}") from exc
+    if raw is not None:
+        if not isinstance(raw, dict) or not isinstance(raw.get("enabled"), bool):
+            raise ApprovalError("review recognition policy needs a boolean enabled field")
+        if raw["enabled"] is True:
+            # This validates the complete record, including its digest, and
+            # therefore rejects enabled-but-malformed policies.
+            load_recognition(root)
+            return True
+
+    # A later PR must not downgrade a contract that was enabled by its trusted
+    # base simply by changing the candidate copy to ``enabled: false`` or
+    # deleting the file.  The first cutover base has no enabled policy, so this
+    # remains false for that one transition.
+    for ref in ("origin/main", "main"):
+        try:
+            commit = resolve_commit(root, ref)
+            base_text = file_text_at_commit(
+                root, commit, ".harness/review-recognition.yaml"
+            )
+        except GitScopeError:
+            continue
+        try:
+            base_raw = yaml.safe_load(base_text)
+        except yaml.YAMLError as exc:
+            raise ApprovalError(f"review recognition policy is invalid at {ref}: {exc}") from exc
+        if not isinstance(base_raw, dict) or not isinstance(base_raw.get("enabled"), bool):
+            raise ApprovalError(f"review recognition policy at {ref} is malformed")
+        if base_raw["enabled"] is True:
+            load_recognition(root, ref=commit)
+            return True
+        return False
+    return False
 
 
 def evidence_is_recognized(evidence: dict[str, Any], recognition: Recognition) -> bool:
@@ -469,6 +526,60 @@ def validate_evidence_supersession(
         raise ApprovalError(
             "a new conclusion for this subject must explicitly supersede the current conclusion"
         )
+
+
+def validate_implementation_assessment(
+    value: object, *, approval: dict[str, Any], change_id: str
+) -> dict[str, Any]:
+    """Validate the auditable shape of an implementation assessment.
+
+    This predicate checks references and completeness only.  Fields such as
+    ``within_approval`` are deliberately not treated as semantic proof.
+    """
+    if not isinstance(value, dict):
+        raise ApprovalError("implementation assessment must be an object")
+    if value.get("change_id") != change_id:
+        raise ApprovalError("implementation assessment belongs to another Change")
+    if value.get("approval_id") != approval.get("approval_id"):
+        raise ApprovalError("implementation assessment uses a different plan approval")
+    affected = value.get("affected_commitments")
+    if not isinstance(affected, list) or not affected or not all(
+        isinstance(item, str) and item for item in affected
+    ):
+        raise ApprovalError("implementation assessment needs affected commitment ids")
+    subject = validate_plan_subject(approval.get("subject"), change_id=change_id)
+    available = {
+        item["id"]
+        for item in subject.get("commitments", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    }
+    if not available:
+        raise ApprovalError("implementation assessment has no plan commitments to reference")
+    if any(item not in available for item in affected):
+        raise ApprovalError("implementation assessment references an unknown commitment")
+    conclusion = value.get("conclusion")
+    if not isinstance(conclusion, str) or not conclusion.strip():
+        raise ApprovalError("implementation assessment needs a conclusion")
+    reasons = value.get("reasons")
+    if not isinstance(reasons, list) or not reasons or not all(
+        isinstance(item, str) and item.strip() for item in reasons
+    ):
+        raise ApprovalError("implementation assessment needs non-empty reasons")
+    references = value.get("references")
+    if not isinstance(references, list) or not references:
+        raise ApprovalError("implementation assessment needs implementation references")
+    for reference in references:
+        if isinstance(reference, str) and reference.strip():
+            continue
+        if isinstance(reference, dict) and any(
+            isinstance(reference.get(key), str) and reference[key].strip()
+            for key in ("path", "file", "implementation", "ref")
+        ):
+            continue
+        raise ApprovalError(
+            "implementation assessment references need a path or implementation ref"
+        )
+    return dict(value)
 
 
 def _git(root: Path, *args: str) -> str:
@@ -703,6 +814,7 @@ __all__ = [
     "missing_coverage",
     "normalize_plan_text",
     "plan_approval_is_applicable",
+    "recognition_contract_active",
     "recognition_policy_digest",
     "resolve_contract_base",
     "validate_approval",
@@ -710,4 +822,5 @@ __all__ = [
     "validate_evidence",
     "validate_evidence_reuse",
     "validate_evidence_supersession",
+    "validate_implementation_assessment",
 ]

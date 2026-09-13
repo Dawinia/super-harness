@@ -26,7 +26,12 @@ import click
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
-from super_harness.core.approval import ApprovalError, load_json_record
+from super_harness.core.approval import (
+    ApprovalError,
+    load_json_record,
+    recognition_contract_active,
+    validate_implementation_assessment,
+)
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import EmitPreconditionError
 from super_harness.core.events import Actor, Event
@@ -41,6 +46,21 @@ from super_harness.core.reducer import derive_state
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
+
+
+def _has_applicable_authority(root: Path, cs: object, *, subcommand: str) -> bool:
+    """Do not let an active recognition contract fall back to legacy approval."""
+    try:
+        active = recognition_contract_active(root)
+    except ApprovalError as exc:
+        click.echo(format_error(subcommand=subcommand, message=str(exc)), err=True)
+        sys.exit(EXIT_VALIDATION)
+    if cs is None:
+        return False
+    effective = getattr(cs, "effective_approval", None)
+    if isinstance(effective, dict):
+        return True
+    return not active and getattr(cs, "legacy_plan_approval", None) is not None
 
 
 @click.group("implementation")
@@ -68,7 +88,9 @@ def start(ctx: click.Context, slug: str, first_commit: str | None) -> None:
         sys.exit(EXIT_NO_CONFIG)
 
     cs = derive_state(events_path(root)).get(slug)
-    if cs is None or (cs.effective_approval is None and cs.legacy_plan_approval is None):
+    if cs is None or not _has_applicable_authority(
+        root, cs, subcommand="implementation start"
+    ):
         click.echo(
             format_error(
                 subcommand="implementation start",
@@ -204,7 +226,9 @@ def reopen(ctx: click.Context, slug: str, reason: str) -> None:
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
-    if cs is None or (cs.effective_approval is None and cs.legacy_plan_approval is None):
+    if cs is None or not _has_applicable_authority(
+        root, cs, subcommand="implementation reopen"
+    ):
         click.echo(
             format_error(
                 subcommand="implementation reopen",
@@ -290,7 +314,9 @@ def record(ctx: click.Context, slug: str, assessment: str) -> None:
         )
         sys.exit(EXIT_NO_CONFIG)
     cs = derive_state(events_path(root)).get(slug)
-    if cs is None or (cs.effective_approval is None and cs.legacy_plan_approval is None):
+    if cs is None or not _has_applicable_authority(
+        root, cs, subcommand="implementation record"
+    ):
         click.echo(
             format_error(subcommand=subcommand, message="no applicable plan approval"),
             err=True,
@@ -333,11 +359,24 @@ def record(ctx: click.Context, slug: str, assessment: str) -> None:
             err=True,
         )
         sys.exit(EXIT_VALIDATION)
+    assessment_value = {
+        **assessment_value,
+        "approval_id": approval_id,
+        "change_id": slug,
+    }
+    if isinstance(cs.effective_approval, dict):
+        try:
+            validate_implementation_assessment(
+                assessment_value,
+                approval=cs.effective_approval,
+                change_id=slug,
+            )
+        except ApprovalError as exc:
+            click.echo(format_error(subcommand=subcommand, message=str(exc)), err=True)
+            sys.exit(EXIT_VALIDATION)
     payload = {
         "assessment": {
             **assessment_value,
-            "approval_id": approval_id,
-            "change_id": slug,
         },
         "coverage": [dict(item) for item in coverage],
     }

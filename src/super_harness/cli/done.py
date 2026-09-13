@@ -85,6 +85,7 @@ from super_harness.core.approval import (
     has_unresolved_candidate,
     make_code_subject,
     missing_coverage,
+    recognition_contract_active,
     resolve_contract_base,
 )
 from super_harness.core.clock import utc_now_iso
@@ -243,6 +244,36 @@ def done_cmd(
         sys.exit(EXIT_VALIDATION)
 
     current_change = derive_state(events_path(root)).get(resolved)
+    try:
+        active_recognition = recognition_contract_active(root)
+    except ApprovalError as exc:
+        click.echo(format_error(subcommand="done", message=str(exc)), err=True)
+        sys.exit(EXIT_VALIDATION)
+    if active_recognition and (
+        current_change is None or not isinstance(current_change.effective_approval, dict)
+    ):
+        click.echo(
+            format_error(
+                subcommand="done",
+                message="active review recognition requires an effective plan approval",
+                hint="Import recognized plan evidence before running done.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if skip_verify and (
+        active_recognition
+        or (current_change is not None and isinstance(current_change.effective_approval, dict))
+    ):
+        click.echo(
+            format_error(
+                subcommand="done",
+                message="new-contract changes require actual verification",
+                hint="Run `super-harness done` without `--skip-verify`.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
     if current_change is not None and has_unresolved_candidate(current_change):
         click.echo(
             format_error(

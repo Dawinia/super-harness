@@ -169,7 +169,11 @@ def _emit_via_writer(
         framework_state=None,
         payload={},
     )
-    EventWriter(demo_repo / ".harness" / "events.jsonl").emit(event, skip_validation=True)
+    EventWriter(demo_repo / ".harness" / "events.jsonl").emit(
+        event,
+        skip_validation=True,
+        historical_replay=True,
+    )
     refresh_state_after_emit(demo_repo)
     return event_id
 

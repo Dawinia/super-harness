@@ -8,15 +8,18 @@ import yaml
 
 from super_harness.core.approval import (
     ApprovalError,
+    approval_record,
     artifact_digest,
     digest_record,
     load_recognition,
     make_code_subject,
     make_plan_subject,
+    recognition_contract_active,
     recognition_policy_digest,
     resolve_contract_base,
     validate_evidence,
     validate_evidence_reuse,
+    validate_implementation_assessment,
     validate_plan_subject,
 )
 
@@ -169,3 +172,72 @@ def test_new_contract_base_ignores_legacy_review_governance(tmp_path: Path) -> N
     subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
 
     assert len(resolve_contract_base(tmp_path)) == 40
+
+
+def test_recognition_contract_activation_fails_closed(tmp_path: Path) -> None:
+    harness = tmp_path / ".harness"
+    harness.mkdir()
+    path = harness / "review-recognition.yaml"
+    path.write_text("version: review-recognition/v1\nenabled: false\n", encoding="utf-8")
+    assert recognition_contract_active(tmp_path) is False
+
+    policy = {
+        "version": "review-recognition/v1",
+        "enabled": True,
+        "process": {
+            "id": "owner-review",
+            "version": "1",
+            "kinds": ["plan", "code"],
+            "issuers": ["owner"],
+            "evidence_forms": ["json"],
+            "requirements": {"substantive": ["scope", "tests"]},
+        },
+    }
+    policy["process"]["policy_digest"] = recognition_policy_digest(policy)
+    path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+    assert recognition_contract_active(tmp_path) is True
+    assert load_recognition(tmp_path).requirements == {"substantive": ["scope", "tests"]}
+
+    path.write_text("version: review-recognition/v1\nenabled: true\n", encoding="utf-8")
+    with pytest.raises(ApprovalError):
+        recognition_contract_active(tmp_path)
+
+    path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "enable recognition"], cwd=tmp_path, check=True)
+    path.write_text("version: review-recognition/v1\nenabled: false\n", encoding="utf-8")
+    assert recognition_contract_active(tmp_path) is True
+
+
+def test_implementation_assessment_requires_auditable_references(tmp_path: Path) -> None:
+    plan = tmp_path / "plan.md"
+    plan.write_text("# plan\n", encoding="utf-8")
+    subject = make_plan_subject(
+        tmp_path,
+        change_id="c",
+        artifacts=[("plan.md", "plan")],
+        commitments=[{"id": "goal", "text": "ship it"}],
+    )
+    approval = approval_record(subject=subject, evidence_id="e1", evidence_digest="digest")
+    valid = {
+        "approval_id": approval["approval_id"],
+        "change_id": "c",
+        "affected_commitments": ["goal"],
+        "conclusion": "implemented",
+        "reasons": ["the committed change covers the goal"],
+        "references": [{"path": "src/app.py"}],
+    }
+    assert validate_implementation_assessment(valid, approval=approval, change_id="c") == valid
+    with pytest.raises(ApprovalError, match="commitment"):
+        validate_implementation_assessment(
+            {**valid, "affected_commitments": ["unknown"]},
+            approval=approval,
+            change_id="c",
+        )
+    with pytest.raises(ApprovalError, match="conclusion"):
+        validate_implementation_assessment(
+            {**valid, "conclusion": ""}, approval=approval, change_id="c"
+        )

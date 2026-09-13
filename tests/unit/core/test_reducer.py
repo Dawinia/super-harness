@@ -90,7 +90,7 @@ def test_reducer_illegal_transition_preserves_state(tmp_path: Path, caplog):
     w.emit(_make_event("c1", "intent_declared"))
     # `merged` from INTENT_DECLARED is illegal (per transition table)
     # bypass emit-time validation to put it on disk
-    w.emit(_make_event("c1", "merged"), skip_validation=True)
+    w.emit(_make_event("c1", "merged"), skip_validation=True, historical_replay=True)
     with caplog.at_level(logging.WARNING, logger="super_harness.reducer"):
         state = derive_state(f)
     # state preserved at INTENT_DECLARED

@@ -158,15 +158,12 @@ def test_codex_agents_md_mentions_source_profiles():
 def test_codex_agents_md_teaches_compiled_review_contract():
     sub = " ".join(CodexAdapter().agents_md_subsection().split()).lower()
     assert "does not start, spawn, or host reviewers" in sub
-    assert "review prepare" in sub
-    assert "review begin" in sub
-    assert "review result import" in sub
+    assert "review import" in sub
     assert "outside super-harness" in sub
-    assert "do not edit while any issued run is pending" in sub
-    assert "does not trigger plan review" in sub
+    assert "do not edit while an external review is pending" in sub
+    assert "a skipped review is disclosure" in sub
     assert "plan, scope, or requirements changed" in sub
-    assert "never widen it to the whole pr" in sub
-    assert "must never confirm the human nonce" in sub
+    assert "never widens the target" in sub
 
 
 def test_codex_fresh_install_uninstall_removes_managed_only_file(tmp_path, monkeypatch):

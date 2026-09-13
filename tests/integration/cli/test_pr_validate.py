@@ -84,7 +84,7 @@ def _seed(root: Path, change_id: str, types: list[str], *, skip: bool = False) -
     """
     w = EventWriter(events_path(root))
     for t in types:
-        w.emit(_evt(change_id, t), skip_validation=skip)
+        w.emit(_evt(change_id, t), skip_validation=skip, historical_replay=skip)
 
 
 # The happy-path event sequence that reaches READY_TO_MERGE (transitions.py):

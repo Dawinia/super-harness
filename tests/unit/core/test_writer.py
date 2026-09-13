@@ -10,7 +10,7 @@ import pytest
 
 from super_harness.core.events import Actor, Event
 from super_harness.core.ulid import new_event_id
-from super_harness.core.writer import EventWriter
+from super_harness.core.writer import EmitPreconditionError, EventWriter
 
 
 def _make_event(change_id: str, event_type: str = "intent_declared") -> Event:
@@ -149,6 +149,26 @@ def test_writer_skip_validation_bypasses_illegal(tmp_path: Path):
     # plan_ready as first event is illegal (must follow intent_declared);
     # default emit would raise EmitPreconditionError. skip_validation=True bypasses.
     w.emit(_make_event("c1", "plan_ready"), skip_validation=True)
+    assert events_file.read_text().count("\n") == 1
+
+
+def test_writer_skip_validation_cannot_create_authorizing_event(tmp_path: Path):
+    """A normal bypass must not manufacture lifecycle authority."""
+    events_file = tmp_path / "events.jsonl"
+    w = EventWriter(events_file)
+    with pytest.raises(EmitPreconditionError, match="authorizing"):
+        w.emit(_make_event("c1", "plan_approved"), skip_validation=True)
+    assert not events_file.exists() or events_file.read_text() == ""
+
+
+def test_writer_historical_replay_is_explicit(tmp_path: Path):
+    events_file = tmp_path / "events.jsonl"
+    w = EventWriter(events_file)
+    w.emit(
+        _make_event("c1", "plan_approved"),
+        skip_validation=True,
+        historical_replay=True,
+    )
     assert events_file.read_text().count("\n") == 1
 
 

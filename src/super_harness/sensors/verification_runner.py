@@ -46,7 +46,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
-from super_harness.core.approval import make_code_subject
+from super_harness.core.approval import ApprovalError, make_code_subject, resolve_contract_base
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import find_ordering_violations
 from super_harness.core.events import Actor, Event
@@ -56,6 +56,7 @@ from super_harness.core.paths import (
     verification_yaml_path,
 )
 from super_harness.core.reducer import derive_state
+from super_harness.core.scope_match import GitScopeError
 from super_harness.core.shell_runner import run_command, scrubbed_environ
 from super_harness.engineering.attestation import canonical_path
 from super_harness.engineering.verification_config import (
@@ -1013,6 +1014,81 @@ def _all_pass_must(results: list[CheckResult]) -> bool:
     return all(r.status == "pass" for r in results if r.must_pass)
 
 
+def _git_bytes(root: Path, *args: str) -> bytes:
+    """Run a Git query without decoding arbitrary workspace bytes."""
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise GitScopeError(f"`git {' '.join(args)}` failed: {exc}") from exc
+    return proc.stdout
+
+
+def _working_tree_digest(root: Path, declared_paths: list[str]) -> str:
+    """Hash relevant dirty state and untracked content for verification."""
+    if not declared_paths:
+        return sha256(b"").hexdigest()
+    parts = [
+        _git_bytes(
+            root,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            *sorted(declared_paths),
+        ),
+        _git_bytes(root, "diff", "--binary", "HEAD", "--", *sorted(declared_paths)),
+    ]
+    untracked = _git_bytes(
+        root,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        *sorted(declared_paths),
+    )
+    for raw_path in untracked.split(b"\0"):
+        if not raw_path:
+            continue
+        path = root / os.fsdecode(raw_path)
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise GitScopeError(f"cannot read untracked file {path}: {exc}") from exc
+        parts.extend((raw_path, b"\0", content))
+    return sha256(b"\0".join(parts)).hexdigest()
+
+
+def _verification_identity_snapshot(
+    root: Path,
+    *,
+    change_id: str,
+    approval_id: str,
+    declared_paths: list[str],
+) -> dict[str, Any]:
+    """Capture the identity that a new-contract verification actually tests."""
+    code_subject = make_code_subject(
+        root,
+        change_id=change_id,
+        approval_id=approval_id,
+        base=resolve_contract_base(root),
+    )
+    config_digest = sha256(
+        verification_yaml_path(root).read_bytes()
+    ).hexdigest()
+    return {
+        "subject_id": code_subject["subject_id"],
+        "code_subject": code_subject,
+        "config_digest": config_digest,
+        "working_tree_digest": _working_tree_digest(root, declared_paths),
+    }
+
+
 class VerificationRunner(Sensor):
     """Sensor that runs `.harness/verification.yaml` checks and emits a verdict.
 
@@ -1045,14 +1121,35 @@ class VerificationRunner(Sensor):
                 summary="verification skipped: no change_id available",
             )
 
-        cfg = load_verification_config(verification_yaml_path(context.workspace_root))
+        root = context.workspace_root
+        cfg = load_verification_config(verification_yaml_path(root))
         variables = build_variables(change_id, context)
         payload = getattr(trigger, "payload", {}) or {}
         layer = payload.get("layer")
         only_ids = payload.get("checks")
 
+        state_before = derive_state(events_path(root)).get(change_id)
+        approval_before = state_before.effective_approval if state_before is not None else None
+        before_snapshot: dict[str, Any] | None = None
+        snapshot_error: str | None = None
+        if isinstance(approval_before, dict):
+            try:
+                declared_paths = [
+                    path
+                    for path in (state_before.scope.get("files", []) if state_before else [])
+                    if isinstance(path, str)
+                ]
+                before_snapshot = _verification_identity_snapshot(
+                    root,
+                    change_id=change_id,
+                    approval_id=str(approval_before["approval_id"]),
+                    declared_paths=declared_paths,
+                )
+            except (ApprovalError, GitScopeError, KeyError, OSError, ValueError) as exc:
+                snapshot_error = str(exc)
+
         archive_timestamp = utc_now_iso().replace(":", "-")
-        archive = verification_results_dir(context.workspace_root, change_id, archive_timestamp)
+        archive = verification_results_dir(root, change_id, archive_timestamp)
         tasks = collect_checks(
             cfg,
             context=context,
@@ -1070,36 +1167,74 @@ class VerificationRunner(Sensor):
 
         must_pass_failed = [r for r in results if r.must_pass and r.status != "pass"]
         verdict = "passed" if not must_pass_failed else "failed"
-        write_summary_json(archive, results, verdict)
 
         verification: dict[str, Any] | None = None
-        try:
-            from super_harness.core.approval import resolve_contract_base
-
-            state = derive_state(events_path(context.workspace_root)).get(change_id)
-            approval = state.effective_approval if state is not None else None
-            if isinstance(approval, dict):
-                config_digest = sha256(
-                    verification_yaml_path(context.workspace_root).read_bytes()
-                ).hexdigest()
-                code_subject = make_code_subject(
-                    context.workspace_root,
-                    change_id=change_id,
-                    approval_id=str(approval["approval_id"]),
-                    base=resolve_contract_base(context.workspace_root),
-                )
+        if isinstance(approval_before, dict):
+            if before_snapshot is None:
+                verdict = "failed"
                 verification = {
-                    "subject_id": code_subject["subject_id"],
-                    "code_subject": code_subject,
-                    "config_digest": config_digest,
-                    "outcome": verdict,
+                    "outcome": "failed",
+                    "snapshot_unchanged": False,
+                    "snapshot_error": snapshot_error or "unable to capture verification subject",
                     "checks": [result.id for result in results],
                 }
-        except Exception:
-            # Legacy streams still retain their ordinary verification result.
-            # New-contract attestation requires this richer subject object and
-            # will fail closed if it is absent.
-            verification = None
+            else:
+                try:
+                    state_after = derive_state(events_path(root)).get(change_id)
+                    approval_after = (
+                        state_after.effective_approval if state_after is not None else None
+                    )
+                    declared_paths_after = [
+                        path
+                        for path in (state_after.scope.get("files", []) if state_after else [])
+                        if isinstance(path, str)
+                    ]
+                    after_snapshot = _verification_identity_snapshot(
+                        root,
+                        change_id=change_id,
+                        approval_id=str(approval_before["approval_id"]),
+                        declared_paths=declared_paths_after,
+                    )
+                    unchanged = (
+                        isinstance(approval_after, dict)
+                        and approval_after.get("approval_id") == approval_before.get("approval_id")
+                        and before_snapshot["subject_id"] == after_snapshot["subject_id"]
+                        and before_snapshot["config_digest"] == after_snapshot["config_digest"]
+                        and before_snapshot["working_tree_digest"]
+                        == after_snapshot["working_tree_digest"]
+                    )
+                except (ApprovalError, GitScopeError, KeyError, OSError, ValueError) as exc:
+                    after_snapshot = None
+                    unchanged = False
+                    snapshot_error = str(exc)
+                if not unchanged:
+                    verdict = "failed"
+                subject_snapshot = after_snapshot or before_snapshot
+                verification = {
+                    "subject_id": subject_snapshot["subject_id"],
+                    "code_subject": subject_snapshot["code_subject"],
+                    "config_digest": subject_snapshot["config_digest"],
+                    "outcome": verdict,
+                    "checks": [result.id for result in results],
+                    "snapshot_unchanged": unchanged,
+                    "before_subject_id": before_snapshot["subject_id"],
+                    "after_subject_id": (
+                        after_snapshot["subject_id"] if after_snapshot is not None else None
+                    ),
+                    "before_config_digest": before_snapshot["config_digest"],
+                    "after_config_digest": (
+                        after_snapshot["config_digest"] if after_snapshot is not None else None
+                    ),
+                    "before_working_tree_digest": before_snapshot["working_tree_digest"],
+                    "after_working_tree_digest": (
+                        after_snapshot["working_tree_digest"]
+                        if after_snapshot is not None
+                        else None
+                    ),
+                    **({"snapshot_error": snapshot_error} if snapshot_error else {}),
+                }
+
+        write_summary_json(archive, results, verdict)
 
         evt_type: Literal["verification_passed", "verification_failed"] = (
             "verification_passed" if verdict == "passed" else "verification_failed"
@@ -1110,7 +1245,7 @@ class VerificationRunner(Sensor):
             summary=(
                 f"verification {verdict} ({len(results)} checks, {len(must_pass_failed)} failed)"
             ),
-            details=verify_data_block(change_id, results, archive, context.workspace_root),
+            details=verify_data_block(change_id, results, archive, root),
             emit_events=[
                 make_verification_event(
                     evt_type,

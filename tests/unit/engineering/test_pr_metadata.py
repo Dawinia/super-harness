@@ -470,7 +470,7 @@ def _seed_lifecycle(tmp_path: Path, change_id: str) -> Path:
     ep = events_path(tmp_path)
     w = EventWriter(ep)
     for etype in ("intent_declared", "plan_ready", "plan_approved", "implementation_started"):
-        w.emit(_make_ev(change_id, etype), skip_validation=True)
+        w.emit(_make_ev(change_id, etype), skip_validation=True, historical_replay=True)
     return tmp_path
 
 
@@ -525,7 +525,11 @@ class TestBuildMetadataTier:
         """events.jsonl exists but has no events for this change → Tier: unknown."""
         ep = events_path(tmp_path)
         w = EventWriter(ep)
-        w.emit(_make_ev("other-change", "intent_declared"), skip_validation=True)
+        w.emit(
+            _make_ev("other-change", "intent_declared"),
+            skip_validation=True,
+            historical_replay=True,
+        )
         result = build_metadata("my-change", tmp_path)
         block = parse_metadata_block(result)
         assert block.fields["Tier"] == "unknown"
@@ -534,10 +538,15 @@ class TestBuildMetadataTier:
         """plan_ready with tier_hint → Tier rendered with that value."""
         ep = events_path(tmp_path)
         w = EventWriter(ep)
-        w.emit(_make_ev("my-change", "intent_declared"), skip_validation=True)
+        w.emit(
+            _make_ev("my-change", "intent_declared"),
+            skip_validation=True,
+            historical_replay=True,
+        )
         w.emit(
             _make_ev("my-change", "plan_ready", payload={"tier_hint": "Normal"}),
             skip_validation=True,
+            historical_replay=True,
         )
         result = build_metadata("my-change", tmp_path)
         block = parse_metadata_block(result)
@@ -546,10 +555,15 @@ class TestBuildMetadataTier:
     def test_tier_critical_value(self, tmp_path: Path) -> None:
         ep = events_path(tmp_path)
         w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(
+            _make_ev("c1", "intent_declared"),
+            skip_validation=True,
+            historical_replay=True,
+        )
         w.emit(
             _make_ev("c1", "plan_ready", payload={"tier_hint": "Critical"}),
             skip_validation=True,
+            historical_replay=True,
         )
         result = build_metadata("c1", tmp_path)
         block = parse_metadata_block(result)
@@ -572,7 +586,11 @@ class TestBuildMetadataVerification:
         """Events exist but no verification event → Verification: pending."""
         ep = events_path(tmp_path)
         w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
+        w.emit(
+            _make_ev("c1", "intent_declared"),
+            skip_validation=True,
+            historical_replay=True,
+        )
         result = build_metadata("c1", tmp_path)
         block = parse_metadata_block(result)
         assert block.fields["Verification"] == "pending"
@@ -580,13 +598,18 @@ class TestBuildMetadataVerification:
     def test_verification_passed(self, tmp_path: Path) -> None:
         ep = events_path(tmp_path)
         w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
-        w.emit(_make_ev("c1", "implementation_started"), skip_validation=True)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True, historical_replay=True)
+        w.emit(
+            _make_ev("c1", "implementation_started"),
+            skip_validation=True,
+            historical_replay=True,
+        )
         w.emit(
             _make_ev("c1", "verification_passed", payload={}),
             skip_validation=True,
+            historical_replay=True,
         )
         result = build_metadata("c1", tmp_path)
         block = parse_metadata_block(result)
@@ -595,13 +618,18 @@ class TestBuildMetadataVerification:
     def test_verification_failed(self, tmp_path: Path) -> None:
         ep = events_path(tmp_path)
         w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
-        w.emit(_make_ev("c1", "implementation_started"), skip_validation=True)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True, historical_replay=True)
+        w.emit(
+            _make_ev("c1", "implementation_started"),
+            skip_validation=True,
+            historical_replay=True,
+        )
         w.emit(
             _make_ev("c1", "verification_failed", payload={}),
             skip_validation=True,
+            historical_replay=True,
         )
         result = build_metadata("c1", tmp_path)
         block = parse_metadata_block(result)
@@ -611,15 +639,20 @@ class TestBuildMetadataVerification:
         """verification_passed with payload.skipped=True → Verification: skipped."""
         ep = events_path(tmp_path)
         w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
-        w.emit(_make_ev("c1", "implementation_started"), skip_validation=True)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True, historical_replay=True)
+        w.emit(
+            _make_ev("c1", "implementation_started"),
+            skip_validation=True,
+            historical_replay=True,
+        )
         w.emit(
             _make_ev(
                 "c1", "verification_passed", payload={"skipped": True, "reason": "--skip-verify"}
             ),
             skip_validation=True,
+            historical_replay=True,
         )
         result = build_metadata("c1", tmp_path)
         block = parse_metadata_block(result)
@@ -629,12 +662,20 @@ class TestBuildMetadataVerification:
         """If verification_failed then verification_passed: latest wins → passed."""
         ep = events_path(tmp_path)
         w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
-        w.emit(_make_ev("c1", "implementation_started"), skip_validation=True)
-        w.emit(_make_ev("c1", "verification_failed"), skip_validation=True)
-        w.emit(_make_ev("c1", "verification_passed", payload={}), skip_validation=True)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True, historical_replay=True)
+        w.emit(
+            _make_ev("c1", "implementation_started"),
+            skip_validation=True,
+            historical_replay=True,
+        )
+        w.emit(_make_ev("c1", "verification_failed"), skip_validation=True, historical_replay=True)
+        w.emit(
+            _make_ev("c1", "verification_passed", payload={}),
+            skip_validation=True,
+            historical_replay=True,
+        )
         result = build_metadata("c1", tmp_path)
         block = parse_metadata_block(result)
         assert block.fields["Verification"] == "passed"
@@ -673,9 +714,9 @@ class TestBuildMetadataImplementationStarted:
         ts = "2026-05-30T12:00:00Z"
         ep = events_path(tmp_path)
         w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True, historical_replay=True)
         w.emit(
             _make_ev(
                 "c1",
@@ -684,6 +725,7 @@ class TestBuildMetadataImplementationStarted:
                 timestamp=ts,
             ),
             skip_validation=True,
+            historical_replay=True,
         )
         result = build_metadata("c1", tmp_path)
         block = parse_metadata_block(result)
@@ -704,12 +746,13 @@ class TestBuildMetadataImplementationStarted:
         """implementation_started event without first_commit in payload → key absent."""
         ep = events_path(tmp_path)
         w = EventWriter(ep)
-        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True)
-        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True)
+        w.emit(_make_ev("c1", "intent_declared"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_ready"), skip_validation=True, historical_replay=True)
+        w.emit(_make_ev("c1", "plan_approved"), skip_validation=True, historical_replay=True)
         w.emit(
             _make_ev("c1", "implementation_started", payload={}),
             skip_validation=True,
+            historical_replay=True,
         )
         result = build_metadata("c1", tmp_path)
         block = parse_metadata_block(result)

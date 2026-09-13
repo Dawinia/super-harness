@@ -32,10 +32,12 @@ from super_harness.core.approval import (
     load_recognition,
     make_code_subject,
     missing_coverage,
+    recognition_contract_active,
     validate_approval,
     validate_code_subject,
     validate_evidence,
     validate_evidence_supersession,
+    validate_implementation_assessment,
     validate_plan_subject,
 )
 from super_harness.core.events import Event, EventSchemaError, parse_event_line
@@ -183,26 +185,33 @@ def _validate_authority(events_file: Path, new_event: Event) -> None:
     """
     from super_harness.core.reducer import derive_state
 
-    current = derive_state(events_file).get(new_event.change_id)
-    payload = new_event.payload or {}
-    new_contract = bool(
-        payload.get("plan_subject")
-        or payload.get("approval")
-        or payload.get("evidence")
-        or payload.get("code_subject")
-        or (
-            current is not None
-            and (
-                current.effective_approval is not None
-                or current.pending_revision is not None
-                or current.current_code_subject is not None
+    try:
+        root = events_file.parent.parent
+        active_recognition = recognition_contract_active(root)
+        current = derive_state(events_file).get(new_event.change_id)
+        payload = new_event.payload or {}
+        new_contract = active_recognition or bool(
+            payload.get("plan_subject")
+            or payload.get("approval")
+            or payload.get("evidence")
+            or payload.get("code_subject")
+            or (
+                current is not None
+                and (
+                    current.effective_approval is not None
+                    or current.pending_revision is not None
+                    or current.current_code_subject is not None
+                )
             )
         )
-    )
-    try:
         if new_event.type == "plan_ready":
             subject = payload.get("plan_subject")
-            if subject is not None:
+            if subject is None:
+                if active_recognition:
+                    raise ApprovalError(
+                        "active review recognition requires a complete plan subject"
+                    )
+            else:
                 validate_plan_subject(subject, change_id=new_event.change_id)
         elif new_event.type == "plan_revision_submitted":
             validate_plan_subject(payload.get("plan_subject"), change_id=new_event.change_id)
@@ -285,20 +294,26 @@ def _validate_authority(events_file: Path, new_event: Event) -> None:
                 )
             assessment = payload.get("assessment")
             coverage = payload.get("coverage")
-            if (
-                not isinstance(assessment, dict)
-                or not isinstance(coverage, list)
-                or any(not isinstance(item, dict) for item in coverage)
+            if not isinstance(coverage, list) or any(
+                not isinstance(item, dict) for item in coverage
             ):
                 raise ApprovalError("implementation assessment needs an object and coverage list")
-            if assessment.get("approval_id") != current.effective_approval.get("approval_id"):
-                raise ApprovalError("implementation assessment uses a different plan approval")
+            validate_implementation_assessment(
+                assessment,
+                approval=current.effective_approval,
+                change_id=new_event.change_id,
+            )
         elif new_event.type in {"verification_passed", "verification_failed"}:
             if not new_contract:
                 return
             verification = payload.get("verification")
             if not isinstance(verification, dict):
                 raise ApprovalError("new-contract verification needs a subject record")
+            expected_outcome = "passed" if new_event.type == "verification_passed" else "failed"
+            if verification.get("outcome") != expected_outcome:
+                raise ApprovalError(
+                    f"{new_event.type} outcome does not match its verification record"
+                )
             code_subject = validate_code_subject(
                 verification.get("code_subject"), change_id=new_event.change_id
             )
@@ -313,7 +328,12 @@ def _validate_authority(events_file: Path, new_event: Event) -> None:
             if not new_contract:
                 return
             has_authority = current is not None and (
-                current.effective_approval is not None or current.legacy_plan_approval is not None
+                current.effective_approval is not None
+                if new_contract
+                else (
+                    current.effective_approval is not None
+                    or current.legacy_plan_approval is not None
+                )
             )
             if not has_authority:
                 raise ApprovalError(

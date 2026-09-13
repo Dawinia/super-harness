@@ -332,6 +332,7 @@ tests/unit/core/test_writer.py
 tests/unit/core/test_state_snapshot.py
 tests/unit/core/test_state_yaml.py
 tests/unit/core/test_post_emit.py
+tests/unit/core/test_reducer_plan_artifacts.py
 tests/unit/core/test_review_bundle.py
 tests/unit/core/test_review_verdict.py
 tests/unit/core/test_review_checklist.py
@@ -350,6 +351,8 @@ tests/unit/cli/test_review_verdict_gate.py
 tests/unit/cli/test_attest.py
 tests/unit/cli/test_report.py
 tests/unit/cli/test_entrypoint.py
+tests/unit/cli/test_init_plan.py
+tests/unit/cli/test_init_ui.py
 tests/unit/engineering/test_attestation.py
 tests/unit/engineering/test_pr_metadata.py
 tests/unit/engineering/test_review_contract.py
@@ -372,6 +375,7 @@ tests/unit/scripts/test_gen_cli_reference.py
 tests/unit/scripts/test_gen_state_machine.py
 tests/integration/cli/test_change.py
 tests/integration/cli/test_init.py
+tests/integration/cli/test_pr_validate.py
 tests/integration/cli/test_status.py
 tests/integration/cli/test_on_merge.py
 tests/integration/cli/test_verification.py

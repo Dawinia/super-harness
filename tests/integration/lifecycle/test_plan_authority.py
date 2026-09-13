@@ -1,13 +1,16 @@
 """Lifecycle seam tests for external evidence and plan authority."""
 
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
 from click.testing import CliRunner
 
+import super_harness.sensors.verification_runner as verification_runner
 from super_harness.cli import main
 from super_harness.core.approval import (
     evidence_digest,
@@ -21,6 +24,7 @@ from super_harness.core.post_emit import refresh_state_after_emit
 from super_harness.core.reducer import derive_state
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EmitPreconditionError, EventWriter
+from super_harness.sensors import Activity, WorkspaceContext
 
 
 def _git(root: Path, *args: str) -> str:
@@ -185,7 +189,14 @@ def test_external_plan_and_code_evidence_drive_only_matching_subjects(tmp_path: 
             "c",
             "implementation_recorded",
             {
-                "assessment": {"approval_id": code_subject["approval_id"], "within_approval": True},
+                "assessment": {
+                    "approval_id": code_subject["approval_id"],
+                    "change_id": "c",
+                    "affected_commitments": ["goal"],
+                    "conclusion": "implemented the approved goal",
+                    "reasons": ["the committed source change matches the plan"],
+                    "references": [{"path": "src/a.py"}],
+                },
                 "coverage": [{"path": "src/a.py", "reason": "implemented"}],
             },
         )
@@ -257,3 +268,133 @@ def test_plan_redeclare_withdraws_previous_authority(tmp_path: Path) -> None:
 
     blocked = CliRunner().invoke(main, ["--workspace", str(root), "implementation", "start", "c"])
     assert blocked.exit_code != 0
+
+
+def test_verification_rejects_a_scope_change_during_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path
+    (root / ".harness").mkdir()
+    _recognition(root)
+    (root / "plan.md").write_text("# plan\n", encoding="utf-8")
+    (root / "src").mkdir()
+    source = root / "src" / "a.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, check=True)
+    subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=root, check=True)
+    subprocess.run(["git", "checkout", "-qb", "candidate"], cwd=root, check=True)
+    source.write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "src/a.py"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "implementation"], cwd=root, check=True)
+    (root / ".harness" / "verification.yaml").write_text(
+        """\
+layers:
+  baseline: { enabled: false }
+  framework_adapter: { enabled: false }
+  user_checks: { enabled: true }
+defaults:
+  timeout_seconds: 30
+  must_pass: true
+  capture: none
+  workdir: .
+  env: {}
+execution:
+  mode: sequential
+  max_parallelism: 1
+  fail_fast: false
+checks:
+  - id: ok
+    command: "true"
+    shell: sh
+adapter_provided: []
+""",
+        encoding="utf-8",
+    )
+
+    writer = EventWriter(events_path(root))
+    writer.emit(_event("c", "intent_declared"))
+    ready = CliRunner().invoke(
+        main,
+        [
+            "--workspace",
+            str(root),
+            "plan",
+            "ready",
+            "c",
+            "--scope",
+            "[src/a.py]",
+            "--plan",
+            "plan.md",
+            "--commitment",
+            "goal=ship the change",
+        ],
+    )
+    assert ready.exit_code == 0, ready.output
+    subject = derive_state(events_path(root))["c"].pending_revision["subject"]
+    evidence = _evidence(root, kind="plan", subject_id=subject["subject_id"], evidence_id="plan-1")
+    assert CliRunner().invoke(
+        main, ["--workspace", str(root), "review", "import", "c", "--evidence", str(evidence)]
+    ).exit_code == 0
+    assert CliRunner().invoke(
+        main, ["--workspace", str(root), "implementation", "start", "c"]
+    ).exit_code == 0
+
+    original_run_checks = verification_runner.run_checks
+
+    def change_scope_before_checks(*args: object, **kwargs: object) -> list[object]:
+        source.write_text("value = 3\n", encoding="utf-8")
+        return original_run_checks(*args, **kwargs)  # type: ignore[arg-type,return-value]
+
+    monkeypatch.setattr(verification_runner, "run_checks", change_scope_before_checks)
+    result = verification_runner.VerificationRunner().check(
+        Activity(type="cli_verify", change_id="c", payload={}),
+        WorkspaceContext(workspace_root=root, active_change_id="c"),
+    )
+    assert result.status == "fail"
+    event = result.emit_events[0]
+    assert event.type == "verification_failed"
+    assert event.payload["verification"]["snapshot_unchanged"] is False
+    assert event.payload["verification"]["outcome"] == "failed"
+
+
+def test_active_recognition_does_not_accept_legacy_authority(tmp_path: Path) -> None:
+    root = tmp_path
+    (root / ".harness").mkdir()
+    _recognition(root)
+    writer = EventWriter(events_path(root))
+    for event_type in ("intent_declared", "plan_ready", "plan_approved"):
+        writer.emit(_event("c", event_type), skip_validation=True, historical_replay=True)
+    blocked = CliRunner().invoke(
+        main, ["--workspace", str(root), "implementation", "start", "c"]
+    )
+    assert blocked.exit_code != 0
+    assert "effective" in (blocked.output + (blocked.stderr or "")) or "applicable" in (
+        blocked.output + (blocked.stderr or "")
+    )
+
+
+def test_a17_candidate_import_path_cannot_replace_trusted_verifier(tmp_path: Path) -> None:
+    trusted = tmp_path / "trusted-site"
+    candidate = tmp_path / "candidate-site"
+    trusted.mkdir()
+    candidate.mkdir()
+    (trusted / "isolated_verifier.py").write_text(
+        "IDENTITY = 'trusted-baseline'\n", encoding="utf-8"
+    )
+    (candidate / "isolated_verifier.py").write_text(
+        "IDENTITY = 'candidate'\n", encoding="utf-8"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(trusted)
+    result = subprocess.run(
+        [sys.executable, "-c", "import isolated_verifier; print(isolated_verifier.IDENTITY)"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "trusted-baseline"
+    assert str(candidate) not in result.stdout
