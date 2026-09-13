@@ -256,6 +256,7 @@ docs/product-foundations.md
 docs/plans/2026-09-11-plan-authority-spec.md
 docs/plans/2026-09-11-plan-authority-implementation.md
 .harness/review-recognition.yaml
+.harness/attestations/2026-09-11-plan-authority.jsonl
 .github/workflows/merge-gate.yml
 AGENTS.md
 src/super_harness/core/approval.py
