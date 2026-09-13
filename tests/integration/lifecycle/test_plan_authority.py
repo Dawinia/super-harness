@@ -435,3 +435,82 @@ def test_a17_candidate_import_path_cannot_replace_trusted_verifier(tmp_path: Pat
     )
     assert str(candidate_checkout / "src") not in result.stdout
     assert "trusted-site-packages" in result.stdout
+
+    # The first cutover still uses the old verifier, so an incomplete legacy
+    # attestation must fail against the candidate checkout.  Invoke the actual
+    # baseline CLI imported from the trusted package rather than a stand-in
+    # module, with the candidate checkout deliberately present on PYTHONPATH.
+    cutover_checkout = tmp_path / "cutover-candidate"
+    (cutover_checkout / ".harness" / "attestations").mkdir(parents=True)
+    (cutover_checkout / "app.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=cutover_checkout, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"], cwd=cutover_checkout, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=cutover_checkout, check=True
+    )
+    subprocess.run(["git", "add", "-A"], cwd=cutover_checkout, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=cutover_checkout, check=True)
+    cutover_base = _git(cutover_checkout, "rev-parse", "HEAD")
+    subprocess.run(["git", "checkout", "-qb", "candidate"], cwd=cutover_checkout, check=True)
+    (cutover_checkout / "app.py").write_text("value = 2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "app.py"], cwd=cutover_checkout, check=True)
+    subprocess.run(["git", "commit", "-qm", "candidate"], cwd=cutover_checkout, check=True)
+    cutover_head = _git(cutover_checkout, "rev-parse", "HEAD")
+    baseline_cli_script = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "from super_harness.cli import main; "
+        "sys.argv = ['super-harness', '--workspace', sys.argv[2], 'attest', 'verify', "
+        "'--base', sys.argv[3], '--head', sys.argv[4]]; main()"
+    )
+    baseline_env = os.environ.copy()
+    baseline_env["PYTHONPATH"] = str(candidate_checkout / "src")
+    incomplete = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            baseline_cli_script,
+            str(trusted_site),
+            str(cutover_checkout),
+            cutover_base,
+            cutover_head,
+        ],
+        cwd=cutover_checkout,
+        env=baseline_env,
+        capture_output=True,
+        text=True,
+    )
+    assert incomplete.returncode != 0
+    assert "changed file not covered" in incomplete.stdout + incomplete.stderr
+    assert str(candidate_checkout / "src") not in incomplete.stdout + incomplete.stderr
+
+    # Once the new verifier is the trusted base for a later PR, a legacy
+    # plan_approved event cannot downgrade an active recognition contract.
+    new_trusted_site = tmp_path / "new-trusted-site-packages"
+    shutil.copytree(candidate_checkout / "src" / "super_harness", new_trusted_site / "super_harness")
+    later_change = tmp_path / "later-change"
+    (later_change / ".harness").mkdir(parents=True)
+    _recognition(later_change)
+    later_writer = EventWriter(later_change / ".harness" / "events.jsonl")
+    for event_type in ("intent_declared", "plan_ready", "plan_approved"):
+        later_writer.emit(
+            _event("later-change", event_type), skip_validation=True, historical_replay=True
+        )
+    new_cli_script = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "from super_harness.cli import main; "
+        "sys.argv = ['super-harness', '--workspace', sys.argv[2], 'implementation', 'start', "
+        "'later-change']; main()"
+    )
+    downgrade_env = os.environ.copy()
+    downgrade_env["PYTHONPATH"] = str(trusted_site)
+    downgrade = subprocess.run(
+        [sys.executable, "-c", new_cli_script, str(new_trusted_site), str(later_change)],
+        cwd=later_change,
+        env=downgrade_env,
+        capture_output=True,
+        text=True,
+    )
+    assert downgrade.returncode != 0
+    assert "applicable plan approval" in downgrade.stdout + downgrade.stderr
