@@ -488,7 +488,9 @@ def test_a17_candidate_import_path_cannot_replace_trusted_verifier(tmp_path: Pat
     # Once the new verifier is the trusted base for a later PR, a legacy
     # plan_approved event cannot downgrade an active recognition contract.
     new_trusted_site = tmp_path / "new-trusted-site-packages"
-    shutil.copytree(candidate_checkout / "src" / "super_harness", new_trusted_site / "super_harness")
+    shutil.copytree(
+        candidate_checkout / "src" / "super_harness", new_trusted_site / "super_harness"
+    )
     later_change = tmp_path / "later-change"
     (later_change / ".harness").mkdir(parents=True)
     _recognition(later_change)
