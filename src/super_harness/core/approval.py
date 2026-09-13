@@ -425,6 +425,21 @@ def load_recognition(root: Path, *, ref: str | None = None) -> Recognition:
     return _recognition_from_mapping(raw)
 
 
+def _contract_base_refs(root: Path) -> tuple[str, ...]:
+    """Return local candidates for the repository's trusted default base."""
+    refs: list[str] = []
+    try:
+        default_ref = _git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD").strip()
+    except GitScopeError:
+        default_ref = ""
+    if default_ref:
+        refs.append(default_ref)
+    for ref in ("origin/main", "main"):
+        if ref not in refs:
+            refs.append(ref)
+    return tuple(refs)
+
+
 def recognition_contract_active(root: Path) -> bool:
     """Return whether the owner has enabled the new recognition contract.
 
@@ -453,7 +468,7 @@ def recognition_contract_active(root: Path) -> bool:
     # base simply by changing the candidate copy to ``enabled: false`` or
     # deleting the file.  The first cutover base has no enabled policy, so this
     # remains false for that one transition.
-    for ref in ("origin/main", "main"):
+    for ref in _contract_base_refs(root):
         try:
             commit = resolve_commit(root, ref)
             base_text = file_text_at_commit(
@@ -470,7 +485,8 @@ def recognition_contract_active(root: Path) -> bool:
         if base_raw["enabled"] is True:
             load_recognition(root, ref=commit)
             return True
-        return False
+        # A disabled candidate is not authoritative by itself; continue to
+        # inspect the remaining local base candidates before choosing legacy.
     return False
 
 
@@ -604,12 +620,12 @@ def _git(root: Path, *args: str) -> str:
 
 def resolve_contract_base(root: Path) -> str:
     """Resolve the new contract's default base without old review policy."""
-    for candidate in ("origin/main", "main"):
+    for candidate in _contract_base_refs(root):
         try:
             return resolve_commit(root, candidate)
         except GitScopeError:
             continue
-    raise ApprovalError("new-contract code subjects require a reachable main baseline")
+    raise ApprovalError("new-contract code subjects require a reachable trusted baseline")
 
 
 def _tree_entries(root: Path, ref: str) -> dict[str, tuple[str, str]]:

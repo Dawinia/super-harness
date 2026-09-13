@@ -251,6 +251,55 @@ def test_recognition_contract_activation_fails_closed(tmp_path: Path) -> None:
     assert recognition_contract_active(tmp_path) is True
 
 
+def test_recognition_contract_uses_default_remote_head_and_skips_disabled_ref(
+    tmp_path: Path,
+) -> None:
+    harness = tmp_path / ".harness"
+    harness.mkdir()
+    path = harness / "review-recognition.yaml"
+    policy = {
+        "version": "review-recognition/v1",
+        "enabled": True,
+        "process": {
+            "id": "owner-review",
+            "version": "1",
+            "kinds": ["plan", "code"],
+            "issuers": ["owner"],
+            "evidence_forms": ["json"],
+        },
+    }
+    policy["process"]["policy_digest"] = recognition_policy_digest(policy)
+    path.write_text(yaml.safe_dump(policy, sort_keys=False), encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "enabled main"], cwd=tmp_path, check=True)
+    main_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+
+    path.write_text("version: review-recognition/v1\nenabled: false\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "disabled remote"], cwd=tmp_path, check=True)
+    disabled_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, text=True
+    ).strip()
+    subprocess.run(
+        ["git", "update-ref", "refs/remotes/origin/main", disabled_commit],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "update-ref", "refs/heads/main", main_commit], cwd=tmp_path, check=True)
+
+    assert recognition_contract_active(tmp_path) is True
+
+
 def test_implementation_assessment_requires_auditable_references(tmp_path: Path) -> None:
     plan = tmp_path / "plan.md"
     plan.write_text("# plan\n", encoding="utf-8")
