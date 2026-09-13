@@ -36,7 +36,7 @@ from super_harness.core.approval import (
 from super_harness.core.emit_validation import find_ordering_violations
 from super_harness.core.events import Event, EventSchemaError, parse_event_line
 from super_harness.core.reducer import derive_state
-from super_harness.core.scope_match import GitScopeError, resolve_commit
+from super_harness.core.scope_match import GitScopeError, resolve_commit, tracked_files_at_commit
 
 ATTESTATIONS_DIRNAME = ".harness/attestations"
 PLACEHOLDER_IDENTITY = "cli"
@@ -227,8 +227,14 @@ def _trusted_recognition(root: Path, *, base: str | None) -> Recognition | None:
         # synthetic base ref while preserving strict policy parsing whenever
         # the trusted commit is reachable.
         try:
-            resolve_commit(root, base)
+            commit = resolve_commit(root, base)
         except GitScopeError:
+            return None
+        try:
+            tracked = tracked_files_at_commit(root, commit)
+        except GitScopeError:
+            return None
+        if ".harness/review-recognition.yaml" not in tracked:
             return None
     try:
         return load_recognition(root, ref=base) if base is not None else load_recognition(root)
