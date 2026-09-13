@@ -35,6 +35,7 @@ from super_harness.core.approval import (
     validate_approval,
     validate_code_subject,
     validate_evidence,
+    validate_evidence_supersession,
     validate_plan_subject,
 )
 from super_harness.core.events import Event, EventSchemaError, parse_event_line
@@ -241,6 +242,7 @@ def _validate_authority(events_file: Path, new_event: Event) -> None:
                     if evidence_digest(prior) != evidence_digest(evidence):
                         raise ApprovalError("evidence_id was reused with different content")
                     raise ApprovalError("review evidence was already imported")
+            validate_evidence_supersession(evidence, current.evidence_references)
         elif new_event.type == "plan_approved":
             # Only the new evidence-backed record is writable.  Historical
             # ``skipped`` milestones remain readable in old logs.

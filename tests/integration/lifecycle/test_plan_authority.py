@@ -9,7 +9,11 @@ import yaml
 from click.testing import CliRunner
 
 from super_harness.cli import main
-from super_harness.core.approval import make_code_subject, recognition_policy_digest
+from super_harness.core.approval import (
+    evidence_digest,
+    make_code_subject,
+    recognition_policy_digest,
+)
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.events import Actor, Event
 from super_harness.core.paths import events_path
@@ -124,6 +128,27 @@ def test_external_plan_and_code_evidence_drive_only_matching_subjects(tmp_path: 
     )
     assert imported.exit_code == 0, imported.output
     assert derive_state(events_path(root))["c"].effective_approval is not None
+
+    # The CLI performs this check before writing, but the writer must repeat it
+    # under its append lock so two concurrent imports cannot install conflicting
+    # conclusions for the same subject.
+    second_evidence = {
+        **json.loads(plan_evidence.read_text(encoding="utf-8")),
+        "evidence_id": "plan-2",
+        "decision": "reject",
+    }
+    with pytest.raises(EmitPreconditionError, match="supersede"):
+        writer.emit(
+            _event(
+                "c",
+                "review_evidence_imported",
+                {
+                    "evidence": second_evidence,
+                    "evidence_digest": evidence_digest(second_evidence),
+                    "subject_id": subject["subject_id"],
+                },
+            )
+        )
 
     # A new-contract raw milestone cannot be smuggled through the writer.
     with pytest.raises(EmitPreconditionError):

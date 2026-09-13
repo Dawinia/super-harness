@@ -16,6 +16,7 @@ from super_harness.core.approval import (
     recognition_policy_digest,
     resolve_contract_base,
     validate_evidence,
+    validate_evidence_reuse,
     validate_plan_subject,
 )
 
@@ -92,6 +93,41 @@ def test_evidence_rejects_empty_original_and_unknown_version() -> None:
     unknown = {**base, "version": "review-evidence/v0"}
     with pytest.raises(ApprovalError, match="version"):
         validate_evidence(unknown)
+
+
+def test_evidence_replacement_must_supersede_latest_subject_conclusion() -> None:
+    base = {
+        "version": "review-evidence/v1",
+        "evidence_id": "e1",
+        "kind": "plan",
+        "subject_id": "plan:x",
+        "decision": "approve",
+        "process": {"id": "p", "version": "1"},
+        "issuer": "owner",
+        "original_evidence": {"verdict": "approve"},
+        "provenance": {"change_id": "c"},
+    }
+    assert validate_evidence_reuse(base, [], subject_id="plan:x") == "new"
+    with pytest.raises(ApprovalError, match="supersede"):
+        validate_evidence_reuse(
+            {**base, "evidence_id": "e2", "decision": "reject"},
+            [base],
+            subject_id="plan:x",
+        )
+    assert (
+        validate_evidence_reuse(
+            {**base, "evidence_id": "e2", "decision": "reject", "supersedes": "e1"},
+            [base],
+            subject_id="plan:x",
+        )
+        == "new"
+    )
+    with pytest.raises(ApprovalError, match="current conclusion"):
+        validate_evidence_reuse(
+            {**base, "evidence_id": "e3", "supersedes": "unrelated"},
+            [base],
+            subject_id="plan:x",
+        )
 
 
 def test_code_subject_contains_rename_mode_and_blob_identity(tmp_path: Path) -> None:

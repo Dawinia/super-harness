@@ -317,6 +317,9 @@ def validate_evidence(value: object, *, change_id: str | None = None) -> dict[st
         raise ApprovalError("review evidence needs provenance")
     if change_id is not None and provenance.get("change_id") not in {None, change_id}:
         raise ApprovalError("review evidence provenance belongs to another Change")
+    supersedes = value.get("supersedes")
+    if supersedes is not None and (not isinstance(supersedes, str) or not supersedes):
+        raise ApprovalError("review evidence supersedes must be a non-empty evidence_id")
     subject = value.get("subject_id")
     if not isinstance(subject, str) or not subject:
         raise ApprovalError("review evidence needs a subject identifier")
@@ -440,7 +443,32 @@ def validate_evidence_reuse(
         if evidence_digest(old) != current_digest:
             raise ApprovalError("evidence_id was reused with different content")
         return "idempotent"
+    validate_evidence_supersession(validated, prior)
     return "new"
+
+
+def validate_evidence_supersession(
+    evidence: dict[str, Any], prior: Iterable[dict[str, Any]]
+) -> None:
+    """Require replacements to name the latest conclusion for their subject."""
+    validated = validate_evidence(evidence)
+    same_subject = [
+        item
+        for item in prior
+        if isinstance(item, dict) and item.get("subject_id") == validated["subject_id"]
+    ]
+    supersedes = validated.get("supersedes")
+    if not same_subject:
+        if supersedes is not None:
+            raise ApprovalError(
+                "review evidence supersedes a subject with no current conclusion"
+            )
+        return
+    current = same_subject[-1]
+    if supersedes != current.get("evidence_id"):
+        raise ApprovalError(
+            "a new conclusion for this subject must explicitly supersede the current conclusion"
+        )
 
 
 def _git(root: Path, *args: str) -> str:
@@ -681,4 +709,5 @@ __all__ = [
     "validate_code_subject",
     "validate_evidence",
     "validate_evidence_reuse",
+    "validate_evidence_supersession",
 ]
