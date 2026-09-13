@@ -22,6 +22,7 @@ from typing import Any
 
 from super_harness.core.approval import (
     ApprovalError,
+    Recognition,
     evidence_digest,
     evidence_is_recognized,
     has_unresolved_candidate,
@@ -35,7 +36,7 @@ from super_harness.core.approval import (
 from super_harness.core.emit_validation import find_ordering_violations
 from super_harness.core.events import Event, EventSchemaError, parse_event_line
 from super_harness.core.reducer import derive_state
-from super_harness.core.scope_match import GitScopeError
+from super_harness.core.scope_match import GitScopeError, resolve_commit
 
 ATTESTATIONS_DIRNAME = ".harness/attestations"
 PLACEHOLDER_IDENTITY = "cli"
@@ -218,6 +219,28 @@ def _review_receipt_blockers(events: list[Event], slug: str) -> list[str]:
     return []
 
 
+def _trusted_recognition(root: Path, *, base: str | None) -> Recognition | None:
+    """Load the trusted-base contract, or identify the legacy first-cutover case."""
+    if base is not None:
+        # The CLI has already failed closed if Git cannot resolve the merge
+        # base.  Keep the pure verifier's legacy/unit-test path tolerant of a
+        # synthetic base ref while preserving strict policy parsing whenever
+        # the trusted commit is reachable.
+        try:
+            resolve_commit(root, base)
+        except GitScopeError:
+            return None
+    try:
+        return load_recognition(root, ref=base) if base is not None else load_recognition(root)
+    except ApprovalError as exc:
+        if str(exc) in {
+            "review recognition policy is not configured",
+            "no review process is enabled by user recognition",
+        }:
+            return None
+        raise
+
+
 @dataclass
 class AttestationVerdict:
     ok: bool
@@ -286,9 +309,26 @@ def verify_attestations(
             blockers.extend(att_blockers)
             continue
         cs = derive_state(att_path)[slug]
-        if cs.effective_approval is not None:
+        try:
+            recognition = _trusted_recognition(root, base=base)
+        except ApprovalError as exc:
+            blockers.append(f"attestation {slug}: review recognition is not usable: {exc}")
+            recognition = None
+        if recognition is not None and cs.effective_approval is None:
+            blockers.append(
+                f"attestation {slug}: active review recognition requires an effective plan approval"
+            )
+        elif recognition is not None:
             blockers.extend(
-                _new_contract_blockers(root, cs, slug, diff_entries, base=base, head=head)
+                _new_contract_blockers(
+                    root,
+                    cs,
+                    slug,
+                    diff_entries,
+                    recognition=recognition,
+                    base=base,
+                    head=head,
+                )
             )
         this_covered = {canonical_path(f) for f in cs.scope.get("files", [])}
         if not (this_covered & subjects):
@@ -336,6 +376,7 @@ def _new_contract_blockers(
     slug: str,
     diff_entries: list[DiffEntry],
     *,
+    recognition: Recognition,
     base: str | None,
     head: str | None,
 ) -> list[str]:
@@ -345,16 +386,6 @@ def _new_contract_blockers(
         approval = validate_approval(state.effective_approval, change_id=slug)
     except ApprovalError as exc:
         return [f"attestation {slug}: invalid effective plan approval: {exc}"]
-
-    try:
-        # Merge verification must consult the policy from the trusted base.
-        # Reading the candidate's policy here would let the same PR widen the
-        # process that is supposed to recognize its own evidence.
-        recognition = (
-            load_recognition(root, ref=base) if base is not None else load_recognition(root)
-        )
-    except ApprovalError as exc:
-        return [f"attestation {slug}: review recognition is not usable: {exc}"]
 
     evidence_by_id = {
         item.get("evidence_id"): item

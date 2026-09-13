@@ -516,3 +516,79 @@ def test_a17_candidate_import_path_cannot_replace_trusted_verifier(tmp_path: Pat
     )
     assert downgrade.returncode != 0
     assert "applicable plan approval" in downgrade.stdout + downgrade.stderr
+
+    # The merge verifier must apply the same trusted-base rule: once the base
+    # contains the recognition contract, a legacy READY_TO_MERGE attestation
+    # cannot pass merely because it has no new-contract receipt fields.
+    subsequent_checkout = tmp_path / "subsequent-candidate"
+    (subsequent_checkout / ".harness" / "attestations").mkdir(parents=True)
+    _recognition(subsequent_checkout)
+    (subsequent_checkout / "app.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "init", "-q", "-b", "main"], cwd=subsequent_checkout, check=True
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=subsequent_checkout,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"], cwd=subsequent_checkout, check=True
+    )
+    subprocess.run(["git", "add", "-A"], cwd=subsequent_checkout, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "trusted base"], cwd=subsequent_checkout, check=True
+    )
+    subsequent_base = _git(subsequent_checkout, "rev-parse", "HEAD")
+    subprocess.run(
+        ["git", "checkout", "-qb", "candidate"], cwd=subsequent_checkout, check=True
+    )
+    (subsequent_checkout / "app.py").write_text("value = 2\n", encoding="utf-8")
+    legacy_attestation = subsequent_checkout / ".harness" / "attestations" / "legacy.jsonl"
+    legacy_writer = EventWriter(legacy_attestation)
+    for event_type, payload in (
+        ("intent_declared", {}),
+        ("plan_ready", {"scope": {"files": ["app.py"]}}),
+        ("plan_approved", {}),
+        ("implementation_started", {}),
+        ("verification_passed", {}),
+        ("implementation_complete", {}),
+        ("code_review_passed", {}),
+    ):
+        legacy_writer.emit(
+            _event("legacy", event_type, payload),
+            skip_validation=True,
+            historical_replay=True,
+        )
+    subprocess.run(["git", "add", "-A"], cwd=subsequent_checkout, check=True)
+    subprocess.run(
+        ["git", "commit", "-qm", "legacy candidate"], cwd=subsequent_checkout, check=True
+    )
+    subsequent_head = _git(subsequent_checkout, "rev-parse", "HEAD")
+    current_cli_script = (
+        "import sys; sys.path.insert(0, sys.argv[1]); "
+        "from super_harness.cli import main; "
+        "sys.argv = ['super-harness', '--workspace', sys.argv[2], 'attest', 'verify', "
+        "'--base', sys.argv[3], '--head', sys.argv[4]]; main()"
+    )
+    legacy_env = os.environ.copy()
+    legacy_env["PYTHONPATH"] = str(candidate_checkout / "src")
+    legacy_result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            current_cli_script,
+            str(candidate_checkout / "src"),
+            str(subsequent_checkout),
+            subsequent_base,
+            subsequent_head,
+        ],
+        cwd=subsequent_checkout,
+        env=legacy_env,
+        capture_output=True,
+        text=True,
+    )
+    assert legacy_result.returncode != 0
+    assert "active review recognition requires an effective plan approval" in (
+        legacy_result.stdout + legacy_result.stderr
+    )
