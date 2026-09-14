@@ -200,10 +200,19 @@ whether someone genuinely performed thoughtful review. Do not claim resistance
 to a same-account process forging the entire provenance. Independent credentials
 or a stronger signature trust root would be a separate trust-strength decision.
 
-No concrete new process has been recognized in this discussion. The suggested
-"explicit review step v1", allowing the implementing agent to perform a separate
-plan/code review step, remains a proposal. The implementation must not enable it
-by default based on the general permission to recognize such processes.
+The owner has now recognized one concrete process for new-contract operation in
+the 2026-09-14 delivery authorization: process
+`codex-subagent-review` (`codex-subagent-review/v1`), performed by the
+implementation agent outside the super-harness core using an independent Codex
+subagent. It accepts `plan` and `code` conclusions issued as `codex-subagent`
+JSON evidence. The complete requirements and source record are in
+`.harness/review-recognition.yaml`; its `policy_digest` covers the process,
+requirements, and recognition record. The process must retain the exact frozen
+subject, original result, object identifier, provenance, and explicit
+`approve`/`reject` conclusion. Blocking findings require fix and re-review;
+execution failure, empty output, and skip are not approval. This recognition
+does not retroactively change historical skips and does not expand beyond this
+process.
 
 ## Commands, lifecycle, and shared enforcement
 

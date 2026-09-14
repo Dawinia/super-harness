@@ -51,12 +51,19 @@ implementation. A producer failure is recorded as failure, never replaced by an
 in-session receipt, silently substituted model, or reused historical skip. Do not
 start the new runtime implementation before approval.
 
-The specific new recognized review process is a separate activation decision.
-It may remain unconfigured while implementing/testing the contract with fixtures;
-actual cutover cannot claim a usable recognized flow until the user recognizes it.
+The owner has recognized the concrete `codex-subagent-review` process for the
+new contract in the current delivery authorization. Its complete identity,
+issuer, evidence form, behavioral requirements, and source record are bound in
+`.harness/review-recognition.yaml` by `process.policy_digest`. The recognition
+applies to later new-contract plan/code evidence; it does not retroactively
+change this Change's historical skip records or authorize a broader process.
+The runtime/default switch still occurs only after the trusted-baseline
+cutover checks, CI, and merge.
 
-**Entry completion:** exact artifacts/scope are committed and an applicable
-plan-review approval exists. At present this condition is not met.
+**Entry completion:** exact artifacts/scope are committed, the owner-recognized
+process record is included, and the applicable review/skip history is retained
+without claiming a skip as approval. This Change's historical baseline review
+skip remains disclosed rather than being rewritten as a plan approval.
 
 ## Execution order
 
@@ -187,10 +194,12 @@ Complete the self-hosting cutover in this order:
    with the real base/head arguments. Never pip-install the candidate package as
    this gate's verifier. Scrub import-path overrides and avoid editable installs;
    prove the loaded verifier revision with A17 before final code review. Include
-   this workflow, its tests, the new recognition file, and the actual owner-
-   recognition record in the final reviewed target. Mere inclusion does not
-   activate the new contract. Finish code review and verification under the
-   still-effective baseline contract; plan approval already precedes implementation.
+   this workflow, its tests, the active recognition file, and the actual
+   owner-recognition record in the final reviewed target. The policy is
+   owner-recognized by the delivery authorization, but first-cutover lifecycle
+   completion still uses the trusted baseline contract; the candidate does not
+   approve itself. Finish code review and verification under that baseline
+   contract, then activate the new runtime only after merge.
 3. Run the already-reviewed CI workflow against that exact delivery without
    changing its artifacts. Candidate test jobs separately run the new code and
    its new-contract acceptance scenarios. Any required artifact correction follows
