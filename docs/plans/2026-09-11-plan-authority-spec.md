@@ -18,11 +18,12 @@ confirmed; this specification has not received plan-review approval and is not a
 implementation authorization. The [implementation plan](2026-09-11-plan-authority-implementation.md)
 defines the execution order and proposed file scope.
 
-The documents are drafts on `main`, inspected at the baseline commit above.
-They deliberately omit lifecycle frontmatter: the installed Superpowers adapter
-interprets a `change` marker as an intent declaration and a plan-stage artifact
-as a plan submission. Merely saving these drafts must not start a Change. The
-foundations file remains unchanged, and no existing Change is reopened.
+The documents were drafts on `main`, inspected at the baseline commit above, and
+now carry explicit `change`/`stage` frontmatter so they can be registered as this
+Change's plan artifacts. That lifecycle marker is not a review receipt or an
+implementation authorization, and merely saving the drafts must not start
+implementation. The foundations file remains unchanged, and no unrelated Change
+is reopened.
 
 The user subsequently clarified that there is only one current user: perform a
 direct local cutover, preserve historical meaning, and handle the actual leftover

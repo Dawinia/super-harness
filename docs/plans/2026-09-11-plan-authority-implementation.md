@@ -29,8 +29,9 @@ When the user authorizes formal submission, verify current main, create the new
 working branch from it, and register a distinct Change through the current
 lifecycle. Do not attach this work to product-baseline or either Windows Change.
 Recheck the installed framework/skills and use the existing repository's native
-plan submission path. The present draft intentionally has no `change`/`stage`
-frontmatter that could cause the framework observer to register it automatically.
+plan submission path. These artifacts carry explicit `change`/`stage` frontmatter
+so they can be registered as this Change's plan artifacts; that marker is not a
+review receipt or implementation authorization.
 
 Convert the proposed file inventory below into the exact declared scope, register
 the spec and plan as reviewable artifacts, and commit the precise review target.
