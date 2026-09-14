@@ -195,7 +195,7 @@ Complete the self-hosting cutover in this order:
    with the real base/head arguments. Never pip-install the candidate package as
    this gate's verifier. Scrub import-path overrides and avoid editable installs;
    prove the loaded verifier revision with A17 before final code review. Include
-   this workflow, its tests, the active recognition file, and the actual
+   the `merge-gate` and pytest `test` workflows, their tests, the active recognition file, and the actual
    owner-recognition record in the final reviewed target. The policy is
    owner-recognized by the delivery authorization, but first-cutover lifecycle
    completion still uses the trusted baseline contract; the candidate does not
@@ -243,7 +243,7 @@ rules still apply. Do not use this plan to claim an exemption from today's gate.
 | Reporting | cli/status.py, report.py; engineering/value_report.py | New approval/evidence display; old outcomes retain meaning. |
 | Onboarding | cli/__init__.py, init.py, init_plan.py, init_models.py, init_ui.py, init_executor.py; engineering/gitignore_injector.py | Remove core producer/model setup and adjust command/config surfaces. |
 | Framework/agent guidance | adapters/framework/superpowers.py, openspec.py; adapters/agent/claude_code.py, codex.py; engineering/agents_md_render.py; AGENTS.md | Shared submission validation and regenerated instructions. |
-| Configuration and delivery | .harness/review-recognition.yaml (new); .github/workflows/merge-gate.yml; src/super_harness/templates/super_harness_workflow.yml | New active recognition contract and trusted-base verifier installation; keep the old governance file unchanged/inert after cutover. |
+| Configuration and delivery | .harness/review-recognition.yaml (new); .github/workflows/merge-gate.yml; .github/workflows/test.yml; src/super_harness/templates/super_harness_workflow.yml | New active recognition contract and trusted-base verifier installation; keep the old governance file unchanged/inert after cutover. The pytest matrix checkout retains full history so A17 can resolve the trusted `origin/main` baseline. |
 | Documentation | docs/architecture.md, getting-started.md, cli-reference.md, state-machine.md; scripts/gen_cli_reference.py, gen_state_machine.py | Changed responsibilities and regenerated contract surfaces. |
 | Decision reconciliation | docs/decisions/d-events-append-only.md, d-state-pure-fold.md, d-fixed-transition-matrix.md, d-single-gate-policy.md, d-gate-governs-git-product.md; other changed anchored decisions discovered before freeze | Only fresh, justified lifecycle reconciliation; never edit a ratified body to suppress a failure. |
 | New behavioral tests | tests/unit/core/test_approval.py; tests/integration/lifecycle/test_plan_authority.py | Contract/semantic-scenario harness at the shared interface and lifecycle seam. |
@@ -268,6 +268,7 @@ docs/plans/2026-09-11-plan-authority-implementation.md
 .harness/review-recognition.yaml
 .harness/attestations/2026-09-11-plan-authority.jsonl
 .github/workflows/merge-gate.yml
+.github/workflows/test.yml
 AGENTS.md
 src/super_harness/core/approval.py
 src/super_harness/core/events.py
