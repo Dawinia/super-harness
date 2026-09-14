@@ -1003,7 +1003,11 @@ def _seed_events(root: Path, change_id: str, items: list[tuple[str, dict[str, An
     """Append events (bypassing emit-time validation) to root/.harness/events.jsonl."""
     w = EventWriter(events_path(root))
     for evt_type, payload in items:
-        w.emit(_evt(change_id, evt_type, payload), skip_validation=True)
+        w.emit(
+            _evt(change_id, evt_type, payload),
+            skip_validation=True,
+            historical_replay=True,
+        )
 
 
 def _plan_items(

@@ -283,14 +283,12 @@ def test_agents_md_subsection_has_markers() -> None:
 def test_agents_md_subsection_teaches_compiled_review_contract() -> None:
     block = " ".join(ClaudeCodeAdapter().agents_md_subsection().split()).lower()
     assert "does not start, spawn, or host reviewers" in block
-    assert "review prepare" in block
-    assert "review begin" in block
-    assert "review result import" in block
+    assert "review import" in block
     assert "outside super-harness" in block
-    assert "do not edit while any issued run is pending" in block
-    assert "does not trigger plan review" in block
+    assert "do not edit while an external review is pending" in block
+    assert "a skipped review is disclosure" in block
     assert "plan, scope, or requirements changed" in block
-    assert "never widen it to the whole pr" in block
+    assert "never widens the target" in block
 
 
 def test_agents_md_subsection_has_review_protocol() -> None:
@@ -298,10 +296,7 @@ def test_agents_md_subsection_has_review_protocol() -> None:
     assert ".harness/review-governance.yaml" in block
     assert ".harness/review-profiles.local.yaml" in block
     assert "explicit model" in block
-    assert "review run fail" in block
-    assert "review human draft" in block
-    assert "review human confirm" in block
-    assert "must never confirm the human nonce" in block
+    assert "original evidence" in block
     assert "supporting context" in block
 
 
@@ -541,18 +536,8 @@ def test_claude_symlinked_config_directory_is_rejected_without_external_mutation
     assert sorted(path.name for path in external.iterdir()) == ["settings.local.json"]
 
 
-def test_agents_md_subsection_routes_authorization_through_the_human_in_session() -> None:
-    """Host-specific ergonomics for `review authorize` belong here, not in the brake
-    block: this is guidance about what to tell the human, and the block is read by
-    the agent at the moment it is deciding whether to route around.
-
-    Under Claude Code the human's own `!` prefix runs the command in-session, so the
-    round-budget block no longer costs a trip to a second terminal.
-    """
+def test_agents_md_subsection_does_not_offer_retired_reviewer_authorization() -> None:
     block = ClaudeCodeAdapter().agents_md_subsection()
-    assert "review authorize" in block
-    assert "`!`" in block
-    # It stays the human's act. The subsection must not read as permission for the
-    # agent to fund its own round — nothing stops it technically, which is exactly
-    # why the guidance must not invite it.
-    assert "ask the human" in block or "the human runs" in block
+    assert "review authorize" not in block
+    assert "review begin" not in block
+    assert "review import" in block

@@ -16,6 +16,7 @@ plan cycle. See docs/plans/2026-08-11-code-only-recovery.md.
 
 Exit codes: 0 ok / 2 illegal transition / 3 no `.harness/` (per spec §435, 0/1/2/3/5).
 """
+
 from __future__ import annotations
 
 import sys
@@ -25,6 +26,12 @@ import click
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
+from super_harness.core.approval import (
+    ApprovalError,
+    load_json_record,
+    recognition_contract_active,
+    validate_implementation_assessment,
+)
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import EmitPreconditionError
 from super_harness.core.events import Actor, Event
@@ -39,6 +46,21 @@ from super_harness.core.reducer import derive_state
 from super_harness.core.ulid import new_event_id
 from super_harness.core.writer import EventWriter
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
+
+
+def _has_applicable_authority(root: Path, cs: object, *, subcommand: str) -> bool:
+    """Do not let an active recognition contract fall back to legacy approval."""
+    try:
+        active = recognition_contract_active(root)
+    except ApprovalError as exc:
+        click.echo(format_error(subcommand=subcommand, message=str(exc)), err=True)
+        sys.exit(EXIT_VALIDATION)
+    if cs is None:
+        return False
+    effective = getattr(cs, "effective_approval", None)
+    if isinstance(effective, dict):
+        return True
+    return not active and getattr(cs, "legacy_plan_approval", None) is not None
 
 
 @click.group("implementation")
@@ -66,6 +88,18 @@ def start(ctx: click.Context, slug: str, first_commit: str | None) -> None:
         sys.exit(EXIT_NO_CONFIG)
 
     cs = derive_state(events_path(root)).get(slug)
+    if cs is None or not _has_applicable_authority(
+        root, cs, subcommand="implementation start"
+    ):
+        click.echo(
+            format_error(
+                subcommand="implementation start",
+                message="implementation requires an applicable plan approval",
+                hint="Import a recognized plan approval before starting implementation.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
     framework = cs.framework if cs is not None else "plain"
     payload: dict[str, str] = {}
     if first_commit:
@@ -110,9 +144,7 @@ def start(ctx: click.Context, slug: str, first_commit: str | None) -> None:
             )
         )
     elif not ctx.obj.get("quiet"):
-        click.echo(
-            f"super-harness: emitted implementation_started for {slug} → {new_state}"
-        )
+        click.echo(f"super-harness: emitted implementation_started for {slug} → {new_state}")
     sys.exit(EXIT_OK)
 
 
@@ -187,9 +219,20 @@ def reopen(ctx: click.Context, slug: str, reason: str) -> None:
                 hint=(
                     "`reopen` returns a frozen implementation to editing. From "
                     "PLAN_REJECTED, revise and re-submit the plan; if the reviewer is "
-                    "genuinely stuck, `review skip --override --reason \"<why>\"` is the "
+                    'genuinely stuck, `review skip --override --reason "<why>"` is the '
                     "disclosed escape hatch."
                 ),
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if cs is None or not _has_applicable_authority(
+        root, cs, subcommand="implementation reopen"
+    ):
+        click.echo(
+            format_error(
+                subcommand="implementation reopen",
+                message="cannot reopen without an applicable plan approval",
             ),
             err=True,
         )
@@ -240,9 +283,7 @@ def reopen(ctx: click.Context, slug: str, reason: str) -> None:
             )
         )
     elif not ctx.obj.get("quiet"):
-        click.echo(
-            f"super-harness: emitted implementation_invalidated for {slug} → {new_state}"
-        )
+        click.echo(f"super-harness: emitted implementation_invalidated for {slug} → {new_state}")
         # The cost, stated where the verb is used rather than folded into its name. An
         # agent that reads `reopen` as free needs to be told here what it just spent.
         #
@@ -254,4 +295,115 @@ def reopen(ctx: click.Context, slug: str, reason: str) -> None:
             "  whatever code review this change had no longer stands; "
             "run `done` and review again before merge"
         )
+    sys.exit(EXIT_OK)
+
+
+@implementation_group.command("record")
+@click.argument("slug")
+@click.option("--assessment", required=True, type=click.Path(exists=True, dir_okay=False))
+@click.pass_context
+def record(ctx: click.Context, slug: str, assessment: str) -> None:
+    """Record implementation reasoning and the actual coverage manifest."""
+    subcommand = "implementation record"
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as exc:
+        click.echo(
+            format_error(subcommand=subcommand, message=exc.message, hint=exc.hint),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
+    cs = derive_state(events_path(root)).get(slug)
+    if cs is None or not _has_applicable_authority(
+        root, cs, subcommand="implementation record"
+    ):
+        click.echo(
+            format_error(subcommand=subcommand, message="no applicable plan approval"),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    try:
+        value = load_json_record(Path(assessment))
+    except ApprovalError as exc:
+        click.echo(format_error(subcommand=subcommand, message=str(exc)), err=True)
+        sys.exit(EXIT_VALIDATION)
+    assessment_value = value.get("assessment", value)
+    coverage = value.get("coverage", value.get("coverage_manifest", []))
+    if not isinstance(assessment_value, dict) or not isinstance(coverage, list):
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message="assessment must contain an object and a coverage list",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    approval_id = (
+        cs.effective_approval.get("approval_id")
+        if isinstance(cs.effective_approval, dict)
+        else "legacy"
+    )
+    requested = assessment_value.get("approval_id", value.get("approval_id", approval_id))
+    if requested != approval_id:
+        click.echo(
+            format_error(
+                subcommand=subcommand,
+                message="assessment does not reference the effective approval",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if not all(isinstance(item, dict) for item in coverage):
+        click.echo(
+            format_error(subcommand=subcommand, message="coverage entries must be objects"),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    assessment_value = {
+        **assessment_value,
+        "approval_id": approval_id,
+        "change_id": slug,
+    }
+    if isinstance(cs.effective_approval, dict):
+        try:
+            validate_implementation_assessment(
+                assessment_value,
+                approval=cs.effective_approval,
+                change_id=slug,
+            )
+        except ApprovalError as exc:
+            click.echo(format_error(subcommand=subcommand, message=str(exc)), err=True)
+            sys.exit(EXIT_VALIDATION)
+    payload = {
+        "assessment": {
+            **assessment_value,
+        },
+        "coverage": [dict(item) for item in coverage],
+    }
+    ev = Event(
+        event_id=new_event_id(),
+        type="implementation_recorded",
+        change_id=slug,
+        timestamp=utc_now_iso(),
+        actor=Actor(type="human", identifier=resolve_identity(root, None)),
+        framework=cs.framework,
+        payload=payload,
+    )
+    try:
+        EventWriter(events_path(root)).emit(ev)
+    except EmitPreconditionError as exc:
+        click.echo(format_error(subcommand=subcommand, message=str(exc)), err=True)
+        sys.exit(EXIT_VALIDATION)
+    refresh_state_after_emit(root)
+    if ctx.obj.get("json"):
+        click.echo(
+            json_envelope(
+                command=subcommand,
+                status="pass",
+                exit_code=EXIT_OK,
+                data={"change": slug, "coverage": len(coverage)},
+            )
+        )
+    elif not ctx.obj.get("quiet"):
+        click.echo(f"super-harness: recorded implementation assessment for {slug}")
     sys.exit(EXIT_OK)

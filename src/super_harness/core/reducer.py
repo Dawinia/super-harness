@@ -18,11 +18,17 @@ Invariants enforced (§3.8.5):
    JSON, which is skipped via the malformed-JSON path (crash recovery)
 5. event_counts excludes unknown event types
 """
+
 from __future__ import annotations
 
 import logging
 from pathlib import Path
 
+from super_harness.core.approval import (
+    validate_approval,
+    validate_code_subject,
+    validate_plan_subject,
+)
 from super_harness.core.events import (
     KNOWN_EVENT_TYPES,
     EventSchemaError,
@@ -93,7 +99,8 @@ def derive_state(events_file: Path) -> dict[str, ChangeState]:
                 if drift > CLOCK_DRIFT_WARN_THRESHOLD_S:
                     log.warning(
                         "events.jsonl line %d: timestamp drift %.1fs (append order preserved)",
-                        line_num, drift,
+                        line_num,
+                        drift,
                     )
         last_ts[ev.change_id] = ev.timestamp
 
@@ -147,23 +154,173 @@ def derive_state(events_file: Path) -> dict[str, ChangeState]:
             # authorization. Trusted only as a list of str — a mapping / non-str
             # must not smuggle a path into the gate carve-out.
             cs.plan_artifacts = _valid_artifacts(p.get("plan_artifacts"))
+            subject = p.get("plan_subject")
+            if isinstance(subject, dict):
+                try:
+                    validated = validate_plan_subject(subject, change_id=ev.change_id)
+                except ValueError:
+                    log.warning("line %d: invalid plan subject; ignoring payload", line_num)
+                else:
+                    cs.pending_revision = {
+                        "candidate_id": validated["subject_id"],
+                        "subject": validated,
+                        "status": "pending",
+                        "submitted_event_id": ev.event_id,
+                    }
         elif ev.type == "implementation_complete":
             if "pr_url" in p:
                 cs.pr_url = p["pr_url"]
+            subject = p.get("code_subject")
+            if isinstance(subject, dict):
+                try:
+                    cs.current_code_subject = validate_code_subject(subject, change_id=ev.change_id)
+                except ValueError:
+                    log.warning("line %d: invalid code subject; ignoring payload", line_num)
+        elif ev.type in {
+            "implementation_started",
+            "implementation_restarted",
+            "implementation_invalidated",
+        }:
+            if cs.effective_approval is not None:
+                # A new implementation epoch cannot inherit code or
+                # verification evidence from the previous candidate.
+                cs.current_code_subject = None
+                cs.current_verification = None
         elif ev.type == "merged":
             if "merge_commit_sha" in p:
                 cs.merge_commit_sha = p["merge_commit_sha"]
+        elif ev.type == "plan_approved":
+            approval = p.get("approval")
+            if isinstance(approval, dict):
+                previous_subject = (
+                    cs.effective_approval.get("subject_id")
+                    if isinstance(cs.effective_approval, dict)
+                    else None
+                )
+                try:
+                    cs.effective_approval = validate_approval(approval, change_id=ev.change_id)
+                except ValueError:
+                    log.warning("line %d: invalid approval; not deriving authority", line_num)
+                else:
+                    if cs.pending_revision is not None and cs.pending_revision.get(
+                        "candidate_id"
+                    ) == cs.effective_approval.get("subject_id"):
+                        cs.pending_revision = None
+                    if previous_subject != cs.effective_approval.get("subject_id"):
+                        # A changed commitment set keeps the plan authority only;
+                        # code and verification evidence must be re-established
+                        # for the newly approved subject.
+                        cs.current_code_subject = None
+                        cs.current_verification = None
+            elif p.get("skipped") is True:
+                # Historical baseline evidence remains readable.  It is not
+                # accepted by the new writer as an authorizing record.
+                cs.legacy_plan_approval = {
+                    "event_id": ev.event_id,
+                    "reviewer": p.get("reviewer"),
+                    "reason": p.get("reason"),
+                    "skipped": True,
+                    "override": p.get("override") is True,
+                }
+            elif approval is None:
+                # Preserve ordinary pre-cutover plan approvals for historical
+                # Changes.  This discriminator is intentionally never accepted
+                # as new-contract authority; it only keeps old streams
+                # replayable with their original meaning.
+                cs.legacy_plan_approval = {
+                    "event_id": ev.event_id,
+                    "reviewer": p.get("reviewer"),
+                    "reason": p.get("reason"),
+                    "skipped": False,
+                    "override": False,
+                }
+        elif ev.type == "plan_rejected":
+            candidate_id = p.get("candidate_id")
+            if isinstance(cs.pending_revision, dict) and (
+                candidate_id is None or candidate_id == cs.pending_revision.get("candidate_id")
+            ):
+                cs.pending_revision = {
+                    **cs.pending_revision,
+                    "status": "rejected",
+                    "rejection_event_id": ev.event_id,
+                }
+        elif ev.type == "plan_revision_submitted":
+            subject = p.get("plan_subject")
+            if isinstance(subject, dict):
+                try:
+                    validated = validate_plan_subject(subject, change_id=ev.change_id)
+                except ValueError:
+                    log.warning("line %d: invalid plan revision; ignoring payload", line_num)
+                else:
+                    cs.pending_revision = {
+                        "candidate_id": validated["subject_id"],
+                        "subject": validated,
+                        "status": "pending",
+                        "submitted_event_id": ev.event_id,
+                        "prior_approval": p.get("prior_approval"),
+                    }
+        elif ev.type == "plan_withdrawn":
+            candidate_id = p.get("candidate_id")
+            if isinstance(cs.pending_revision, dict) and candidate_id == cs.pending_revision.get(
+                "candidate_id"
+            ):
+                cs.pending_revision = {
+                    **cs.pending_revision,
+                    "status": "withdrawn",
+                    "withdrawal_event_id": ev.event_id,
+                    "withdrawal_reason": p.get("reason"),
+                }
+        elif ev.type == "implementation_recorded":
+            assessment = p.get("assessment")
+            if isinstance(assessment, dict):
+                cs.implementation_assessments.append(dict(assessment))
+            coverage = p.get("coverage")
+            if isinstance(coverage, list) and all(isinstance(item, dict) for item in coverage):
+                cs.coverage_manifest = [dict(item) for item in coverage]
+        elif ev.type == "review_evidence_imported":
+            evidence = p.get("evidence")
+            if isinstance(evidence, dict):
+                evidence_id = evidence.get("evidence_id")
+                if isinstance(evidence_id, str) and not any(
+                    item.get("evidence_id") == evidence_id for item in cs.evidence_references
+                ):
+                    cs.evidence_references.append(dict(evidence))
+        elif ev.type in {"verification_passed", "verification_failed"}:
+            verification = p.get("verification")
+            if isinstance(verification, dict):
+                cs.current_verification = dict(verification)
+        elif ev.type == "code_review_passed":
+            subject = p.get("code_subject")
+            if isinstance(subject, dict):
+                try:
+                    cs.current_code_subject = validate_code_subject(subject, change_id=ev.change_id)
+                except ValueError:
+                    log.warning("line %d: invalid code subject; ignoring payload", line_num)
         elif ev.type in ("intent_redeclared", "plan_redeclared"):
-            cs.redeclaration_history.append({
-                "event_id": ev.event_id,
-                "type": ev.type,
-                "reason": p.get("reason"),
-                "at": ev.timestamp,
-            })
+            cs.redeclaration_history.append(
+                {
+                    "event_id": ev.event_id,
+                    "type": ev.type,
+                    "reason": p.get("reason"),
+                    "at": ev.timestamp,
+                }
+            )
             # A redeclare rewinds to INTENT_DECLARED; the prior plan submission (and
             # its recorded artifacts) no longer authorizes anything until re-submitted.
             if ev.type == "plan_redeclared":
                 cs.plan_artifacts = []
+                cs.effective_approval = None
+                cs.legacy_plan_approval = None
+                cs.pending_revision = None
+                cs.current_code_subject = None
+                cs.current_verification = None
+            else:
+                # A new intent is a new commitment object.  It cannot inherit
+                # authority for the previous intent, although the old event
+                # remains in the append-only history.
+                cs.effective_approval = None
+                cs.legacy_plan_approval = None
+                cs.pending_revision = None
 
     return state
 

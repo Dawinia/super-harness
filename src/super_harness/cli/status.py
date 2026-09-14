@@ -16,6 +16,7 @@ helper exists solely to keep state.yaml current after a write. Reads always
 recompute from events.jsonl (same trade-off as `change list`: freshness over
 O(1) state.yaml lookup; Phase 8 daemon hot path will read state.yaml instead).
 """
+
 from __future__ import annotations
 
 import json
@@ -33,22 +34,9 @@ from super_harness.core.paths import (
     HarnessNotInitialized,
     events_path,
     find_harness_root,
-    pending_reviews_dir,
 )
 from super_harness.core.reducer import derive_state
-from super_harness.core.review_verdict import read_change_events
-from super_harness.core.scope_match import GitScopeError, resolve_commit
-from super_harness.engineering.review_governance import (
-    ReviewGovernance,
-    ReviewGovernanceError,
-    automated_participants,
-    load_review_governance,
-)
-from super_harness.engineering.review_profiles import (
-    ReviewProfilesError,
-    load_review_profiles,
-)
-from super_harness.engineering.review_runs import derive_review_execution
+from super_harness.core.scope_match import GitScopeError
 from super_harness.exit_codes import EXIT_NO_CONFIG, EXIT_OK, EXIT_VALIDATION
 from super_harness.gates.decisions import SUGGESTIONS
 
@@ -89,8 +77,7 @@ def _format_agent_option_value(value: object) -> str:
 
 def _format_agent_options(options: dict[str, object]) -> str:
     return ", ".join(
-        f"{key}={_format_agent_option_value(value)}"
-        for key, value in sorted(options.items())
+        f"{key}={_format_agent_option_value(value)}" for key, value in sorted(options.items())
     )
 
 
@@ -114,10 +101,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             format_error(
                 subcommand="status",
                 message="--all cannot be combined with a slug argument",
-                hint=(
-                    "Use `status <slug>` to query one change OR "
-                    "`status --all` to list all."
-                ),
+                hint=("Use `status <slug>` to query one change OR `status --all` to list all."),
             ),
             err=True,
         )
@@ -160,7 +144,22 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             (cid, cs.current_state, cs.last_event_at) for cid, cs in derived.items()
         )
         target = [derived[active_id]] if active_id else []
-    def _reviewer_info(cs: Any) -> tuple[str | None, ReviewGovernance | None]:
+
+    def _reviewer_info(cs: Any) -> tuple[str | None, Any | None]:
+        # New-contract Changes carry their own immutable approval/evidence
+        # references.  Do not load the retired producer governance/profile
+        # files just because the state happens to be an awaiting-review state.
+        if (
+            getattr(cs, "effective_approval", None) is not None
+            or getattr(cs, "pending_revision", None) is not None
+            or getattr(cs, "evidence_references", [])
+        ):
+            return None, None
+        from super_harness.engineering.review_governance import (
+            ReviewGovernanceError,
+            load_review_governance,
+        )
+
         reviewer = REVIEW_STATE_REVIEWER.get(cs.current_state)
         if reviewer is None:
             return None, None
@@ -170,14 +169,19 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
         return reviewer, governance
 
     def _review_progress(
-        change_id: str, reviewer: str, governance: ReviewGovernance
+        change_id: str, reviewer: str, governance: Any
     ) -> _ReviewProgress:
+        from super_harness.core.paths import pending_reviews_dir
+        from super_harness.core.review_verdict import read_change_events
+        from super_harness.core.scope_match import resolve_commit
+        from super_harness.engineering.review_governance import automated_participants
+        from super_harness.engineering.review_profiles import load_review_profiles
+        from super_harness.engineering.review_runs import derive_review_execution
+
         events = read_change_events(events_path(root), change_id)
         execution = derive_review_execution(events, reviewer)
         role = governance.roles[reviewer]
-        packet_path = (
-            pending_reviews_dir(root, change_id) / reviewer / "draft.packet.json"
-        )
+        packet_path = pending_reviews_dir(root, change_id) / reviewer / "draft.packet.json"
         packet: dict[str, Any] | None = None
         try:
             raw_packet: object = json.loads(packet_path.read_text(encoding="utf-8"))
@@ -193,9 +197,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
         except GitScopeError:
             current_head = None
         packet_stale = (
-            packet is not None
-            and current_head is not None
-            and target_head != current_head
+            packet is not None and current_head is not None and target_head != current_head
         )
 
         def matches_packet(round_state: Any) -> bool:
@@ -215,17 +217,11 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                     latest[source] = run
                 elif run.status == "imported":
                     stale.add(source)
-        imported = sorted(
-            source for source, run in latest.items() if run.status == "imported"
-        )
+        imported = sorted(source for source, run in latest.items() if run.status == "imported")
         stale.difference_update(imported)
         current_round = execution.rounds[-1] if execution.rounds else None
-        current_round_matches = bool(
-            current_round is not None and matches_packet(current_round)
-        )
-        retained = (
-            list(execution.retained_sources) if current_round_matches else []
-        )
+        current_round_matches = bool(current_round is not None and matches_packet(current_round))
+        retained = list(execution.retained_sources) if current_round_matches else []
         if packet_stale:
             stale.update(imported)
             stale.update(retained)
@@ -233,14 +229,10 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             retained = []
         if current_round is not None and current_round_matches:
             pending = sorted(
-                source
-                for source, run in current_round.runs.items()
-                if run.status == "pending"
+                source for source, run in current_round.runs.items() if run.status == "pending"
             )
             failed = sorted(
-                source
-                for source, run in current_round.runs.items()
-                if run.status == "failed"
+                source for source, run in current_round.runs.items() if run.status == "failed"
             )
         else:
             pending = []
@@ -266,22 +258,16 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             source_profiles[source] = profile_payload
         automated = list(automated_participants(governance, reviewer))
         human_participants = [
-            source
-            for source in role.participants
-            if governance.sources[source].kind == "human"
+            source for source in role.participants if governance.sources[source].kind == "human"
         ]
-        human_flags = (
-            f" --source {human_participants[0]}" if human_participants else ""
-        )
+        human_flags = f" --source {human_participants[0]}" if human_participants else ""
         retry_sources = [source for source in automated if source not in imported]
         retry_flags = "".join(f" --source {source}" for source in retry_sources)
         remaining_rounds = max(
             role.max_automatic_rounds - execution.automatic_rounds_this_change, 0
         )
         if packet is None or packet_stale:
-            next_command = (
-                f"super-harness review prepare {change_id} --reviewer {reviewer}"
-            )
+            next_command = f"super-harness review prepare {change_id} --reviewer {reviewer}"
         elif pending:
             next_command = (
                 "super-harness review result import ... or review run fail ... "
@@ -323,8 +309,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                 )
         else:
             next_command = (
-                f"super-harness review begin {change_id} --reviewer {reviewer}"
-                f"{retry_flags}"
+                f"super-harness review begin {change_id} --reviewer {reviewer}{retry_flags}"
             )
         return {
             "reviewer": reviewer,
@@ -363,13 +348,13 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                 if reviewer is not None:
                     assert governance is not None
                     entry["reviewer"] = reviewer
-                    entry["review_progress"] = _review_progress(
-                        cs.change_id, reviewer, governance
-                    )
+                    entry["review_progress"] = _review_progress(cs.change_id, reviewer, governance)
                 changes_data.append(entry)
             click.echo(
                 json_envelope(
-                    command="status", status="pass", exit_code=EXIT_OK,
+                    command="status",
+                    status="pass",
+                    exit_code=EXIT_OK,
                     data={"changes": changes_data},
                 )
             )
@@ -377,6 +362,28 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
             for cs in target:
                 click.echo(f"{cs.change_id}: {cs.current_state}")
                 click.echo(f"  last: {cs.last_event_type} @ {cs.last_event_at}")
+                if cs.effective_approval is not None:
+                    approval_id = cs.effective_approval.get("approval_id")
+                    click.echo(f"  effective approval: {approval_id}")
+                if cs.pending_revision is not None:
+                    candidate_id = cs.pending_revision.get("candidate_id")
+                    candidate_status = cs.pending_revision.get("status")
+                    click.echo(f"  plan candidate: {candidate_id} ({candidate_status})")
+                if cs.implementation_assessments:
+                    click.echo(
+                        f"  implementation assessments: {len(cs.implementation_assessments)}"
+                    )
+                if cs.coverage_manifest:
+                    click.echo(f"  actual coverage: {len(cs.coverage_manifest)} file record(s)")
+                if cs.current_code_subject is not None:
+                    click.echo(f"  code subject: {cs.current_code_subject.get('subject_id')}")
+                if cs.current_verification is not None:
+                    click.echo(
+                        f"  verification: {cs.current_verification.get('subject_id')} "
+                        f"({cs.current_verification.get('outcome', 'unknown')})"
+                    )
+                if cs.evidence_references:
+                    click.echo(f"  external evidence: {len(cs.evidence_references)} record(s)")
                 # `scope` is `dict[str, Any]` defaulting to {} — empty dict is
                 # correctly falsy, so this skips changes that haven't reached
                 # `plan_ready` yet (scope is populated from plan_ready payload).
@@ -413,21 +420,13 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                     if remaining:
                         click.echo(f"    remaining: {', '.join(remaining)}")
                     if progress["pending_sources"]:
-                        click.echo(
-                            f"    pending: {', '.join(progress['pending_sources'])}"
-                        )
+                        click.echo(f"    pending: {', '.join(progress['pending_sources'])}")
                     if progress["failed_sources"]:
-                        click.echo(
-                            f"    failed: {', '.join(progress['failed_sources'])}"
-                        )
+                        click.echo(f"    failed: {', '.join(progress['failed_sources'])}")
                     if progress["retained_sources"]:
-                        click.echo(
-                            f"    retained: {', '.join(progress['retained_sources'])}"
-                        )
+                        click.echo(f"    retained: {', '.join(progress['retained_sources'])}")
                     if progress["stale_sources"]:
-                        click.echo(
-                            f"    stale: {', '.join(progress['stale_sources'])}"
-                        )
+                        click.echo(f"    stale: {', '.join(progress['stale_sources'])}")
                     for source in required:
                         click.echo(f"    {source}:")
                         profile = progress["source_profiles"].get(source, {})
@@ -447,7 +446,7 @@ def status_cmd(ctx: click.Context, slug: str | None, all_changes: bool) -> None:
                 nxt = SUGGESTIONS.get(cs.current_state)
                 if nxt:
                     click.echo(f"  next: {nxt}")
-    except (ReviewGovernanceError, ReviewProfilesError) as e:
+    except (ValueError, GitScopeError) as e:
         click.echo(format_error(subcommand="status", message=str(e)), err=True)
         sys.exit(EXIT_VALIDATION)
     sys.exit(EXIT_OK)

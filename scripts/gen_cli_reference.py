@@ -270,66 +270,9 @@ _EXIT_CODES: dict[str, list[str]] = {
         "`3` registry malformed or `.harness/` missing",
         "`4` a generator command failed",
     ],
-    "review prepare": [
-        "`0` draft packet written",
-        "`2` governance/profile/lifecycle/clean-tree/Git validation failure",
-        "`3` no `.harness/`",
-    ],
-    "review authorize": [
-        "`0` one-shot authorization recorded",
-        "`2` stale contract, invalid source set, or invalid lifecycle state",
-        "`3` no `.harness/`",
-    ],
-    "review begin": [
-        "`0` round and caller-owned invocation contracts frozen; no producer executed",
-        "`2` stale/missing packet, open round, incomplete retry set, exhausted or "
-        "unauthorized budget, or invalid profile",
-        "`3` no `.harness/`",
-    ],
-    "review approve": [
-        "`2` direct evidence is disabled; use `review result import` or the human "
-        "draft/confirm workflow",
-        "`3` no `.harness/`",
-    ],
-    "review reject": [
-        "`2` direct evidence is disabled; use `review result import` or the human "
-        "draft/confirm workflow",
-        "`3` no `.harness/`",
-    ],
-    "review skip": [
-        "`0` skip recorded (`code_review_passed` / `plan_approved` emitted, `skipped=True`)",
-        "`2` --override without --reason",
-        "`2` no round was ever frozen for a role whose automated producers resolve "
-        "(nobody was asked, so there is no stuck reviewer to skip)",
-        "`2` the latest round is still open with pending run(s) — retire them with "
-        "`review result import` or `review run fail --run-id <id>`",
-        "`3` no `.harness/`",
-    ],
-    "review result import": [
-        "`0` result and receipt imported (byte-identical duplicate is idempotent)",
-        "`2` unknown/terminal run, conflicting duplicate, malformed or stale result, "
-        "binding/checklist/model/disposition failure, or invalid lifecycle state",
-        "`3` no `.harness/`",
-    ],
-    "review run fail": [
-        "`0` external producer failure recorded (same reason is idempotent)",
-        "`2` unknown/imported run, conflicting failure, or invalid lifecycle state",
-        "`3` no `.harness/`",
-    ],
-    "review human inspect": [
-        "`0` compact packet metadata shown, or packet paged in a human TTY",
-        "`2` missing packet, invalid lifecycle state, or `--pager` without a TTY",
-        "`3` no `.harness/`",
-    ],
-    "review human draft": [
-        "`0` validated human verdict and short-lived confirmation nonce written",
-        "`2` invalid source/verdict/checklist/dispositions, stale packet, or invalid state",
-        "`3` no `.harness/`",
-    ],
-    "review human confirm": [
-        "`0` human receipt recorded (already-confirmed nonce is idempotent)",
-        "`1` human declined the interactive confirmation",
-        "`2` non-TTY, invalid/expired/stale nonce, or invalid lifecycle state",
+    "review import": [
+        "`0` recognized conclusion imported (same evidence id/content is idempotent)",
+        "`2` unrecognized process, malformed/stale/conflicting evidence, or invalid state",
         "`3` no `.harness/`",
     ],
 }

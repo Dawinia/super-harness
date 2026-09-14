@@ -61,11 +61,12 @@ state × event transition table is generated into
 [`state-machine.md`](./state-machine.md) (kept in sync by `doc check`).
 
 The lifecycle is **plain-mode complete via the CLI** (`change start`, `plan ready`,
-`review prepare|begin|result import|run fail|human`, `implementation start`,
-`done`, `on-merge`). super-harness records and enforces frozen review receipts; it
-does not produce a verdict or start a reviewer. Direct `review approve|reject`
-remains fail-loud compatibility surface, while `review skip` is the disclosed
-escape hatch.
+`review import`, `implementation start|record`, `done`, `attest write`, and
+`on-merge`). Review execution is outside the core: an owner-recognized external
+process produces a structured conclusion, and super-harness imports the exact
+subject, conclusion, provenance, and original evidence. There is no active
+producer, model profile, round, retry, or TTY reviewer executor. A skipped
+review is disclosure only; it is not a plan authority or review approval.
 
 ## 4. Gates: where enforcement happens
 
@@ -103,21 +104,16 @@ Adapters keep the core framework- and agent-agnostic:
   and `codex` write the PreToolUse + SessionStart + Stop hooks and inject an `AGENTS.md`
   section that tells the agent the conventions (lifecycle, review protocol, scope
   discipline); Codex additionally needs a one-time `/hooks` trust step.
-- **Reviewer protocol adapters** are separate from agent adapters. The built-in
-  `codex-cli` and `claude-cli` adapters validate explicit local profiles, compile
-  argv/stdin/output/schema contracts, and parse completed output. They expose no
-  execution method: the caller runs each process outside super-harness.
-
-Review execution configuration has two owners. Tracked
-`.harness/review-governance.yaml` defines provenance sources, role participants,
-independence, and automatic-round ceilings. Gitignored, user-editable
-`.harness/review-profiles.local.yaml` selects the installed producer protocol,
-explicit model, cost class, and producer-specific options. `review prepare`
-creates a replaceable packet; `review begin` freezes an epoch round and unique
-runs; result imports and failures append durable receipts; closure waits for the
-entire source set before emitting the existing lifecycle milestone. Findings are
-limited to the frozen Git target, while unchanged repository context remains
-available for architectural understanding.
+- **External review evidence** is intentionally outside the core. The tracked
+  `.harness/review-recognition.yaml` records whether the owner has recognized one
+  concrete process, its version, accepted kinds, issuers, and evidence forms. It
+  is disabled by default. `.harness/review-governance.yaml` and the gitignored
+  `.harness/review-profiles.local.yaml` remain historical configuration for old
+  streams; new Changes do not load them to choose producers or models. Once an
+  owner enables a concrete recognition policy, `review import` validates the
+  immutable plan/code subject, explicit approve/reject conclusion, provenance,
+  and retained original evidence. Failed, empty, stale, or unrecognized output
+  cannot become authority.
 
 ## 6. Verification
 
@@ -180,11 +176,13 @@ sedimentation arm's territory.)
 
 `attest write` snapshots a change's complete, ordered event slice to
 `.harness/attestations/<slug>.jsonl`; the CI `attest-verify` job blocks a merge
-unless every changed file is covered by such an attestation. Review streams that
-use the execution protocol must bind automated milestones to imported receipt IDs;
-a receipt-less direct approval cannot satisfy the gate. Deliberate skips remain
-separately disclosed. This is a trail and floor, not cryptographic proof of the
-producer identity; see §11.
+unless every changed file is covered by such an attestation. For a new-contract
+Change, the attestation must also carry an applicable plan approval, complete
+Git code subject, implementation coverage, and verification bound to that same
+subject. `review import` evidence must be recognized by the owner policy and
+retain its original object; an empty result, failure to produce evidence, or old
+skip record is never treated as approval. This is a trail and floor, not
+cryptographic proof of the external process; see §11.
 
 ## 10. Design principles (recurring across the code)
 
@@ -222,11 +220,11 @@ super-harness deliberately does not claim more than it can guarantee
   raise the cost of, and leave a trail for, silent drift; they are not a proof
   against a determined owner. The hard guarantees are strongest **across actors**
   (a second contributor is bound by gates they didn't author).
-- **Receipt ceiling.** A receipt proves the exact contract and the result that was
-  imported, plus whatever model/usage telemetry the producer reported. It cannot
-  prove an undeclared context was never read or cryptographically attest the
-  physical human at a TTY. Explicit contradictions fail; absent telemetry stays
-  unknown.
+- **External-evidence ceiling.** Imported evidence proves only the exact subject,
+  conclusion, provenance, and original object accepted by the owner-recognized
+  process. It cannot prove an undeclared context was never read or cryptographically
+  attest the physical producer. Explicit contradictions fail; absent evidence is
+  not approval.
 - **AI-written checks can be shallow.** An executable check + counterexample is
   written by the agent; "show it biting" raises the bar but a determined agent can
   craft a weak check. Real teeth, bounded to *what the check actually tests*.

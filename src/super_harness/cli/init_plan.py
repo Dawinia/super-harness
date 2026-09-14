@@ -15,21 +15,10 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TypeVar
 
-import yaml
-
 from super_harness.adapters.install import AgentIntegrationPlan, preview_agent_integration
 from super_harness.cli.init_models import (
     ReviewerModelCandidate,
     ReviewerModelDiscovery,
-    discover_reviewer_models,
-)
-from super_harness.engineering.review_governance import (
-    ReviewGovernanceError,
-    load_review_governance,
-)
-from super_harness.engineering.review_profiles import (
-    ReviewProfilesError,
-    load_review_profiles,
 )
 
 
@@ -276,34 +265,10 @@ class _IntegrationDefinition:
     path: Path
 
 
-@dataclass(frozen=True)
-class _ReviewProducerDefinition:
-    source: str
-    executable: str
-    agent_options: Mapping[str, str]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "agent_options", _frozen_mapping(self.agent_options))
-
-
 _INTEGRATIONS: Mapping[str, _IntegrationDefinition] = MappingProxyType(
     {
         "codex": _IntegrationDefinition("codex", Path(".codex/hooks.json")),
         "claude-code": _IntegrationDefinition("claude", Path(".claude/settings.local.json")),
-    }
-)
-_REVIEW_PRODUCERS: Mapping[str, _ReviewProducerDefinition] = MappingProxyType(
-    {
-        "codex-cli": _ReviewProducerDefinition(
-            source="codex",
-            executable="codex",
-            agent_options={"reasoning_effort": "medium", "sandbox": "read-only"},
-        ),
-        "claude-cli": _ReviewProducerDefinition(
-            source="claude",
-            executable="claude",
-            agent_options={"effort": "medium"},
-        ),
     }
 )
 _SCAFFOLD_FILES: tuple[tuple[Path, bytes], ...] = (
@@ -312,6 +277,7 @@ _SCAFFOLD_FILES: tuple[tuple[Path, bytes], ...] = (
     (Path(".harness/adapters.yaml"), b"version: 1\nadapters: []\n"),
 )
 _SKELETON_PATHS = (
+    Path(".harness/review-recognition.yaml"),
     Path(".harness/sensors.yaml"),
     Path(".harness/gates.yaml"),
     Path(".harness/source-paths.yaml"),
@@ -343,37 +309,6 @@ _ALL_OBSERVED_PATHS = (
     + _USER_FILES
     + tuple(path for path, _ in _GITHUB_FILES)
 )
-
-
-def _inspect_persisted_review(root: Path) -> tuple[tuple[str, ...], Mapping[str, str]]:
-    governance = load_review_governance(root)
-    profiles = load_review_profiles(root)
-    automated_sources = {
-        source for source, item in governance.sources.items() if item.kind == "automated"
-    }
-    producers: list[str] = []
-    models: dict[str, str] = {}
-    for source, profile in profiles.sources.items():
-        definition = _REVIEW_PRODUCERS.get(profile.protocol)
-        if definition is None:
-            raise ReviewProfilesError(
-                f"unsupported persisted review producer protocol {profile.protocol!r}"
-            )
-        if definition.source != source:
-            raise ReviewProfilesError(
-                f"persisted producer {profile.protocol!r} does not match source {source!r}"
-            )
-        if source not in automated_sources:
-            raise ReviewProfilesError(
-                f"persisted profile source {source!r} is not automated in governance"
-            )
-        producers.append(profile.protocol)
-        models[source] = profile.model
-    missing_profiles = automated_sources.difference(models)
-    if missing_profiles:
-        source = sorted(missing_profiles)[0]
-        raise ReviewProfilesError(f"automated source {source!r} has no persisted profile")
-    return tuple(producers), MappingProxyType(models)
 
 
 def inspect_workspace(
@@ -417,43 +352,20 @@ def inspect_workspace(
         executable_paths[name] is not None for name in ("super-harness-hook", "super-harness")
     )
     available_integrations = frozenset(_INTEGRATIONS) if management_available else frozenset()
-    available_producers = frozenset(
-        name
-        for name, definition in _REVIEW_PRODUCERS.items()
-        if executable_paths[definition.executable] is not None
-    )
+    # Reviewer execution is no longer an init concern.  Keep the historical
+    # fields in the preflight value object so old callers can deserialize it,
+    # but never inspect producer binaries or user model configuration here.
+    available_producers: frozenset[str] = frozenset()
     detected_integrations = tuple(
         name
         for name, definition in _INTEGRATIONS.items()
         if name in available_integrations and executable_paths[definition.executable] is not None
     )
-    detected_producers = tuple(name for name in _REVIEW_PRODUCERS if name in available_producers)
-
+    detected_producers: tuple[str, ...] = ()
     persisted_producers: tuple[str, ...] = ()
     persisted_models: Mapping[str, str] = MappingProxyType({})
     review_error: str | None = None
-    should_parse_review = (
-        request.interaction_mode is not InteractionMode.NON_INTERACTIVE
-        and request.force
-        and any(path.as_posix() in existing for path in _REVIEW_PATHS)
-    )
-    if should_parse_review:
-        try:
-            persisted_producers, persisted_models = _inspect_persisted_review(root)
-        except (ReviewGovernanceError, ReviewProfilesError) as exc:
-            review_error = str(exc)
-
     discovery = ReviewerModelDiscovery()
-    if request.interaction_mode is not InteractionMode.NON_INTERACTIVE:
-        discovery_sources = frozenset(
-            definition.source for definition in _REVIEW_PRODUCERS.values()
-        ).difference(request.review_models)
-        if discovery_sources:
-            discovery = discover_reviewer_models(
-                home=home if home is not None else Path.home(),
-                persisted_models=persisted_models,
-                sources=discovery_sources,
-            )
 
     integration_plans: dict[str, AgentIntegrationPlan] = {}
     integration_plan_errors: dict[str, str] = {}
@@ -504,18 +416,10 @@ def _resolve_review_write(
     preflight: InitPreflight,
     choices: InitChoices,
 ) -> ReviewWrite:
-    if request.review_flags_explicit:
-        return ReviewWrite.UPDATE
-    if (
-        request.interaction_mode is InteractionMode.NON_INTERACTIVE
-        and request.force
-        and any(path.as_posix() in preflight.existing_file_bytes for path in _REVIEW_PATHS)
-    ):
-        return ReviewWrite.PRESERVE
-    if preflight.harness_state is HarnessState.ABSENT:
-        return ReviewWrite.UPDATE
-    if choices.review_write is not None:
-        return choices.review_write
+    del request, preflight, choices
+    # Existing governance/profile files are historical inputs only.  Init must
+    # never rewrite, reset, or delete them while setting up the new recognition
+    # boundary.
     return ReviewWrite.PRESERVE
 
 
@@ -545,111 +449,18 @@ def _resolve_reviews(
     choices: InitChoices,
     review_write: ReviewWrite,
 ) -> tuple[tuple[str, ...], Mapping[str, str]]:
-    if review_write is ReviewWrite.PRESERVE:
-        return preflight.persisted_review_producers, preflight.persisted_review_models
-
-    noninteractive_explicit = (
-        request.interaction_mode is InteractionMode.NON_INTERACTIVE
-        and request.review_flags_explicit
-    )
-    if noninteractive_explicit:
-        producers = request.review_producers
-        models: dict[str, str] = dict(request.review_models)
-    else:
-        use_persisted = review_write is ReviewWrite.UPDATE and request.force
-        if request.review_producers:
-            producers = request.review_producers
-        elif choices.review_producers is not None:
-            producers = choices.review_producers
-        elif use_persisted:
-            producers = preflight.persisted_review_producers
-        elif request.interaction_mode is not InteractionMode.NON_INTERACTIVE:
-            producers = preflight.detected_review_producers
-        else:
-            producers = ()
-
-        models = dict(preflight.persisted_review_models) if use_persisted else {}
-        if request.review_producers or choices.review_producers is not None:
-            selected_sources = {
-                _REVIEW_PRODUCERS[producer].source
-                for producer in producers
-                if producer in _REVIEW_PRODUCERS
-            }
-            models = {
-                source: model for source, model in models.items() if source in selected_sources
-            }
-        models.update(choices.review_models)
-        models.update(request.review_models)
-
-    _validate_known_unique(producers, _REVIEW_PRODUCERS, "review producer")
-    for producer in producers:
-        if producer not in preflight.available_review_producers:
-            raise InitPlanValidationError(f"review producer {producer!r} is not available")
-
-    sources = {_REVIEW_PRODUCERS[producer].source for producer in producers}
-    for source, model in models.items():
-        if not source or not isinstance(model, str) or not model:
-            raise InitPlanValidationError("review models must be non-empty strings")
-        if source not in sources:
-            if producers:
-                raise InitPlanValidationError(
-                    f"review model source {source!r} does not match a selected producer"
-                )
-            raise InitPlanValidationError(
-                f"review model source {source!r} has no selected producer"
-            )
-    for producer in producers:
-        source = _REVIEW_PRODUCERS[producer].source
-        if source not in models:
-            raise InitPlanValidationError(
-                f"review producer {producer!r} requires an explicit model for {source!r}"
-            )
-    return producers, MappingProxyType(models)
-
-
-def _review_content(
-    producers: tuple[str, ...], models: Mapping[str, str]
-) -> tuple[bytes, bytes | None]:
-    selected_sources = [_REVIEW_PRODUCERS[producer].source for producer in producers]
-    governance_sources: dict[str, object] = {
-        source: {"kind": "automated"} for source in selected_sources
-    }
-    governance_sources["human"] = {"kind": "human"}
-    participants = selected_sources or ["human"]
-    # Per-role budgets: the two roles genuinely differ now that the budget
-    # accumulates per change instead of resetting on every epoch boundary. A shared
-    # template cannot express that, so it is split.
-    def _role(max_automatic_rounds: int) -> dict[str, object]:
-        return {
-            "participants": participants,
-            "min_independent": len(participants),
-            "max_automatic_rounds": max_automatic_rounds,
-        }
-    governance = {
-        "version": 1,
-        "review": {
-            "base_branch": "main",
-            "sources": governance_sources,
-            "roles": {"plan-reviewer": _role(6), "code-reviewer": _role(4)},
-            "require_distinct_model_families": False,
-        },
-    }
-    profile_sources: dict[str, object] = {}
-    for producer in producers:
-        definition = _REVIEW_PRODUCERS[producer]
-        profile_sources[definition.source] = {
-            "protocol": producer,
-            "model": models[definition.source],
-            "cost_class": "standard",
-            "agent_options": dict(definition.agent_options),
-        }
-    governance_bytes = yaml.safe_dump(governance, sort_keys=False).encode()
-    if not profile_sources:
-        return governance_bytes, None
-    profile_bytes = yaml.safe_dump(
-        {"version": 1, "sources": profile_sources}, sort_keys=False
-    ).encode()
-    return governance_bytes, profile_bytes
+    del preflight, review_write
+    if request.review_flags_explicit or request.review_producers or request.review_models:
+        raise InitPlanValidationError(
+            "review producer/model configuration is retired; configure the owner-"
+            "recognized `.harness/review-recognition.yaml` policy instead"
+        )
+    if choices.review_producers or choices.review_models:
+        raise InitPlanValidationError(
+            "review producer/model configuration is retired; configure the owner-"
+            "recognized `.harness/review-recognition.yaml` policy instead"
+        )
+    return (), MappingProxyType({})
 
 
 def _ordinary_action(
@@ -668,36 +479,13 @@ def _review_file_actions(
     governance: bytes,
     profile: bytes | None,
 ) -> tuple[PlannedFileAction, PlannedFileAction]:
-    if review_write is ReviewWrite.PRESERVE:
-        actions: list[PlannedFileAction] = []
-        for path in _REVIEW_PATHS:
-            content = preflight.existing_file_bytes.get(path.as_posix())
-            action = FileAction.PRESERVE if content is not None else FileAction.SKIP
-            actions.append(PlannedFileAction(path, action, content, review_write))
-        return actions[0], actions[1]
-
-    governance_path, profile_path = _REVIEW_PATHS
-    governance_action = (
-        FileAction.UPDATE
-        if governance_path.as_posix() in preflight.existing_file_bytes
-        else FileAction.CREATE
-    )
-    if profile is None:
-        profile_action = (
-            FileAction.DELETE
-            if profile_path.as_posix() in preflight.existing_file_bytes
-            else FileAction.SKIP
-        )
-    else:
-        profile_action = (
-            FileAction.UPDATE
-            if profile_path.as_posix() in preflight.existing_file_bytes
-            else FileAction.CREATE
-        )
-    return (
-        PlannedFileAction(governance_path, governance_action, governance, review_write),
-        PlannedFileAction(profile_path, profile_action, profile, review_write),
-    )
+    del governance, profile
+    actions: list[PlannedFileAction] = []
+    for path in _REVIEW_PATHS:
+        content = preflight.existing_file_bytes.get(path.as_posix())
+        action = FileAction.PRESERVE if content is not None else FileAction.SKIP
+        actions.append(PlannedFileAction(path, action, content, ReviewWrite.PRESERVE))
+    return actions[0], actions[1]
 
 
 def build_init_plan(
@@ -714,13 +502,6 @@ def build_init_plan(
         )
 
     review_write = _resolve_review_write(request, preflight, choices)
-    if preflight.review_config_error is not None and review_write is not ReviewWrite.RESET:
-        raise InitPlanValidationError(
-            "persisted review configuration is invalid or unsupported; choose explicit RESET: "
-            f"{preflight.review_config_error}",
-            code="review-reset-required",
-        )
-
     integrations = _resolve_integrations(request, preflight, choices, review_write)
     selected_plan_errors = [
         (name, preflight.integration_plan_errors[name])
@@ -744,7 +525,6 @@ def build_init_plan(
             f"integration {missing_plans[0]!r}"
         )
     producers, models = _resolve_reviews(request, preflight, choices, review_write)
-    governance, profile = _review_content(producers, models)
 
     if request.setup_github:
         github_decision = GitHubDecision.CREATE
@@ -782,8 +562,19 @@ def build_init_plan(
             adapters_content,
         ),
     ]
-    actions.extend(_ordinary_action(path, b"", preflight) for path in _SKELETON_PATHS)
-    actions.extend(_review_file_actions(preflight, review_write, governance, profile))
+    for path in _SKELETON_PATHS:
+        if path.name == "review-recognition.yaml":
+            existing = preflight.existing_file_bytes.get(path.as_posix())
+            actions.append(
+                PlannedFileAction(
+                    path,
+                    FileAction.PRESERVE if existing is not None else FileAction.CREATE,
+                    existing,
+                )
+            )
+        else:
+            actions.append(_ordinary_action(path, b"", preflight))
+    actions.extend(_review_file_actions(preflight, review_write, b"", None))
     for name, definition in _INTEGRATIONS.items():
         if name in integrations:
             transaction = preflight.integration_plans.get(name)

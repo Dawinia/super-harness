@@ -9,11 +9,7 @@ _RAW_PATTERNS = ("${{ github.", "${{ steps.", "${{ inputs.")
 
 
 def _load_template() -> str:
-    return (
-        files("super_harness.templates")
-        .joinpath("super_harness_workflow.yml")
-        .read_text()
-    )
+    return files("super_harness.templates").joinpath("super_harness_workflow.yml").read_text()
 
 
 def _assert_no_runblock_raw_interpolation(yaml_text: str) -> None:
@@ -70,7 +66,7 @@ def _assert_no_runblock_raw_interpolation(yaml_text: str) -> None:
             continue
 
         run_indent = len(line) - len(line.lstrip())
-        after_run = stripped[len("run:"):].strip()
+        after_run = stripped[len("run:") :].strip()
 
         if after_run in ("|", ">", "|-", ">-", "|+", ">+"):
             # Block scalar — continuation lines carry the shell content.
@@ -78,9 +74,7 @@ def _assert_no_runblock_raw_interpolation(yaml_text: str) -> None:
         else:
             # Single-line run: check only this line for raw interpolation.
             for pat in _RAW_PATTERNS:
-                assert pat not in stripped, (
-                    f"raw interpolation {pat!r} on run: line: {line!r}"
-                )
+                assert pat not in stripped, f"raw interpolation {pat!r} on run: line: {line!r}"
 
 
 def test_workflow_template_yaml_parses() -> None:
@@ -191,7 +185,11 @@ def test_template_has_attest_verify_job() -> None:
         s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout")
     )
     assert checkout["with"]["fetch-depth"] == 0
-    assert _load_template().count("super-harness attest verify") == 1
+    template = _load_template()
+    assert template.count("attest verify --base") == 1
+    assert "Checkout trusted baseline verifier source" in template
+    assert "env -u PYTHONPATH" in template
+    assert "candidate-acceptance" in parsed["jobs"]
 
 
 def test_template_has_doc_check_job() -> None:

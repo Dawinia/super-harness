@@ -40,6 +40,7 @@ per the house convention used by the sibling emitters.
 
 Exit codes: 0 ok / 2 illegal transition or bad `--scope` / 3 no `.harness/`.
 """
+
 from __future__ import annotations
 
 import sys
@@ -50,6 +51,11 @@ import yaml
 
 from super_harness.cli.errors import format_error
 from super_harness.cli.output import json_envelope
+from super_harness.core.approval import (
+    ApprovalError,
+    make_plan_subject,
+    recognition_contract_active,
+)
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import EmitPreconditionError
 from super_harness.core.events import Actor, Event
@@ -101,9 +107,7 @@ def _resolve_scope_files(raw: str) -> list[str]:
     except yaml.YAMLError as exc:
         raise _ScopeError(f"--scope is not valid yaml: {exc}") from exc
     if not isinstance(parsed, list):
-        raise _ScopeError(
-            f"--scope must be a yaml list of files, got {type(parsed).__name__}"
-        )
+        raise _ScopeError(f"--scope must be a yaml list of files, got {type(parsed).__name__}")
     return [str(item) for item in parsed]
 
 
@@ -181,12 +185,26 @@ def _warn_revoked_plan_artifacts(outgoing: list[str], prev: ChangeState | None) 
     default=None,
     help="Optional tier estimate (Micro/Normal/Large); recorded as tier_hint → cs.tier.",
 )
+@click.option(
+    "--plan",
+    "plan_path",
+    default=None,
+    help="Plan artifact to snapshot into a new-contract plan subject.",
+)
+@click.option(
+    "--commitment",
+    "commitments",
+    multiple=True,
+    help="Binding commitment as ID=TEXT (repeatable).",
+)
 @click.pass_context
 def ready(
     ctx: click.Context,
     slug: str,
     scope_raw: str | None,
     tier_hint: str | None,
+    plan_path: str | None,
+    commitments: tuple[str, ...],
 ) -> None:
     """Emit `plan_ready` (INTENT_DECLARED / PLAN_REJECTED → AWAITING_PLAN_REVIEW)."""
     try:
@@ -199,12 +217,37 @@ def ready(
         sys.exit(EXIT_NO_CONFIG)
 
     cs = derive_state(events_path(root)).get(slug)
+    try:
+        active_recognition = recognition_contract_active(root)
+    except ApprovalError as exc:
+        click.echo(format_error(subcommand="plan ready", message=str(exc)), err=True)
+        sys.exit(EXIT_VALIDATION)
+    if active_recognition and plan_path is None:
+        click.echo(
+            format_error(
+                subcommand="plan ready",
+                message="active review recognition requires a complete plan subject",
+                hint="Pass --plan and at least one --commitment.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if active_recognition and not commitments:
+        click.echo(
+            format_error(
+                subcommand="plan ready",
+                message="active review recognition requires plan commitments",
+                hint="Pass one or more --commitment ID=TEXT values.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
 
     payload: dict[str, object] = {}
     # The artifacts THIS emit will carry. Stays `[]` when `--scope` is omitted, and
     # also when a passed scope happens to contain no marked plan doc — the reducer
     # replaces the stored list either way, so both are the same revocation.
-    artifacts: list[str] = []
+    recorded_artifacts: list[str] = []
     if scope_raw is not None:
         try:
             files = _resolve_scope_files(scope_raw)
@@ -221,11 +264,61 @@ def ready(
         payload["scope"] = {"files": files}
         # Record the change's plan artifacts (marked `.md` in the declared scope) so
         # the PLAN_REJECTED gate carve-out can authorize revising them (HG-PLAN-AUTHORING).
-        artifacts = _detect_plan_artifacts(root, slug, files)
-        if artifacts:
-            payload["plan_artifacts"] = artifacts
+        recorded_artifacts = _detect_plan_artifacts(root, slug, files)
+        if recorded_artifacts:
+            payload["plan_artifacts"] = recorded_artifacts
     if tier_hint is not None:
         payload["tier_hint"] = tier_hint
+
+    if plan_path is None and commitments:
+        click.echo(
+            format_error(
+                subcommand="plan ready",
+                message="--commitment requires --plan",
+                hint="Snapshot the plan and its commitments together.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if plan_path is not None:
+        try:
+            commitment_records = []
+            for raw in commitments:
+                if "=" not in raw:
+                    raise ApprovalError("--commitment must use ID=TEXT")
+                identifier, text = raw.split("=", 1)
+                if not identifier or not text:
+                    raise ApprovalError("--commitment must have non-empty ID and text")
+                commitment_records.append({"id": identifier, "text": text})
+            rel_plan = plan_path
+            # The plan is always the first adopted artifact.  If the repository
+            # contains the matching design and foundations documents, include
+            # them as independent snapshots rather than leaving them as mutable
+            # links.  A caller can still use a minimal plan-only subject in a
+            # small fixture repository.
+            adopted_artifacts: list[tuple[str, str]] = [(rel_plan, "plan")]
+            for candidate, role in (
+                (f"docs/plans/{slug}-spec.md", "spec"),
+                ("docs/product-foundations.md", "foundation"),
+            ):
+                if (root / candidate).is_file():
+                    adopted_artifacts.append((candidate, role))
+            payload["plan_subject"] = make_plan_subject(
+                root,
+                change_id=slug,
+                artifacts=adopted_artifacts,
+                commitments=commitment_records,
+            )
+        except ApprovalError as exc:
+            click.echo(
+                format_error(
+                    subcommand="plan ready",
+                    message=str(exc),
+                    hint="Pass a readable plan path and commitments as ID=TEXT.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
 
     framework = cs.framework if cs is not None else "plain"  # like the sibling emitters
     ev = Event(
@@ -250,7 +343,7 @@ def ready(
         )
         sys.exit(EXIT_VALIDATION)
     refresh_state_after_emit(root)
-    _warn_revoked_plan_artifacts(artifacts, cs)
+    _warn_revoked_plan_artifacts(recorded_artifacts, cs)
 
     new_cs = derive_state(events_path(root)).get(slug)
     new_state = new_cs.current_state if new_cs is not None else None
@@ -279,8 +372,26 @@ def ready(
     default="",
     help="Optional reason for reopening the change (recorded in redeclaration_history).",
 )
+@click.option(
+    "--plan",
+    "plan_path",
+    default=None,
+    help="Submit a revision candidate as a new-contract plan subject.",
+)
+@click.option(
+    "--commitment",
+    "commitments",
+    multiple=True,
+    help="Binding revision commitment as ID=TEXT (repeatable).",
+)
 @click.pass_context
-def redeclare(ctx: click.Context, slug: str, reason: str) -> None:
+def redeclare(
+    ctx: click.Context,
+    slug: str,
+    reason: str,
+    plan_path: str | None,
+    commitments: tuple[str, ...],
+) -> None:
     """Emit `plan_redeclared` (any active state → INTENT_DECLARED).
 
     Rewinds a change to the first lifecycle stage so its scope can be
@@ -305,9 +416,65 @@ def redeclare(ctx: click.Context, slug: str, reason: str) -> None:
     payload: dict[str, object] = {}
     if reason:
         payload["reason"] = reason
+    event_type = "plan_redeclared"
+    if plan_path is None and commitments:
+        click.echo(
+            format_error(
+                subcommand="plan redeclare",
+                message="--commitment requires --plan",
+                hint="Snapshot the revised plan and its commitments together.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if plan_path is not None:
+        try:
+            commitment_records = []
+            for raw in commitments:
+                if "=" not in raw:
+                    raise ApprovalError("--commitment must use ID=TEXT")
+                identifier, text = raw.split("=", 1)
+                if not identifier or not text:
+                    raise ApprovalError("--commitment must have non-empty ID and text")
+                commitment_records.append({"id": identifier, "text": text})
+            adopted_artifacts: list[tuple[str, str]] = [(plan_path, "plan")]
+            for candidate, role in (
+                (f"docs/plans/{slug}-spec.md", "spec"),
+                ("docs/product-foundations.md", "foundation"),
+            ):
+                if (root / candidate).is_file():
+                    adopted_artifacts.append((candidate, role))
+            subject = make_plan_subject(
+                root,
+                change_id=slug,
+                artifacts=adopted_artifacts,
+                commitments=commitment_records,
+                prior_approval=(
+                    cs.effective_approval.get("approval_id")
+                    if cs is not None and isinstance(cs.effective_approval, dict)
+                    else None
+                ),
+            )
+            payload["plan_subject"] = subject
+            payload["prior_approval"] = (
+                cs.effective_approval.get("approval_id")
+                if cs is not None and isinstance(cs.effective_approval, dict)
+                else None
+            )
+            event_type = "plan_revision_submitted"
+        except ApprovalError as exc:
+            click.echo(
+                format_error(
+                    subcommand="plan redeclare",
+                    message=str(exc),
+                    hint="Pass a readable plan path and commitments as ID=TEXT.",
+                ),
+                err=True,
+            )
+            sys.exit(EXIT_VALIDATION)
     ev = Event(
         event_id=new_event_id(),
-        type="plan_redeclared",
+        type=event_type,
         change_id=slug,
         timestamp=utc_now_iso(),
         actor=Actor(type="human", identifier="cli"),
@@ -339,11 +506,109 @@ def redeclare(ctx: click.Context, slug: str, reason: str) -> None:
                 exit_code=EXIT_OK,
                 data={
                     "change": slug,
-                    "event_emitted": "plan_redeclared",
+                    "event_emitted": event_type,
                     "new_state": new_state,
                 },
             )
         )
     elif not ctx.obj.get("quiet"):
         click.echo(f"super-harness: emitted plan_redeclared for {slug} → {new_state}")
+    sys.exit(EXIT_OK)
+
+
+@plan_group.command("withdraw")
+@click.argument("slug")
+@click.option("--candidate", required=True, help="Exact pending candidate subject id.")
+@click.option("--reason", required=True, help="Why this unapproved candidate is not adopted.")
+@click.pass_context
+def withdraw(ctx: click.Context, slug: str, candidate: str, reason: str) -> None:
+    """Withdraw one pending or rejected plan revision without approving it."""
+    try:
+        root = find_harness_root(Path(ctx.obj.get("workspace") or "."))
+    except HarnessNotInitialized as exc:
+        click.echo(
+            format_error(subcommand="plan withdraw", message=exc.message, hint=exc.hint),
+            err=True,
+        )
+        sys.exit(EXIT_NO_CONFIG)
+    cs = derive_state(events_path(root)).get(slug)
+    pending = cs.pending_revision if cs is not None else None
+    if not isinstance(pending, dict) or pending.get("candidate_id") != candidate:
+        click.echo(
+            format_error(
+                subcommand="plan withdraw",
+                message=f"candidate {candidate!r} is not the current pending revision",
+                hint="Use `super-harness status` and name the exact candidate id.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if pending.get("status") == "withdrawn":
+        if ctx.obj.get("json"):
+            click.echo(
+                json_envelope(
+                    command="plan withdraw",
+                    status="pass",
+                    exit_code=EXIT_OK,
+                    data={"change": slug, "candidate": candidate, "idempotent": True},
+                )
+            )
+        elif not ctx.obj.get("quiet"):
+            click.echo(f"super-harness: candidate {candidate} is already withdrawn")
+        sys.exit(EXIT_OK)
+    if pending.get("status") not in {"pending", "rejected"}:
+        click.echo(
+            format_error(
+                subcommand="plan withdraw",
+                message="only pending or rejected candidates can be withdrawn",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    if cs is None or not isinstance(cs.effective_approval, dict):
+        click.echo(
+            format_error(
+                subcommand="plan withdraw",
+                message="a revision can be withdrawn only while an effective approval exists",
+                hint="First-plan rejection needs a new plan submission, not withdrawal.",
+            ),
+            err=True,
+        )
+        sys.exit(EXIT_VALIDATION)
+    ev = Event(
+        event_id=new_event_id(),
+        type="plan_withdrawn",
+        change_id=slug,
+        timestamp=utc_now_iso(),
+        actor=Actor(type="human", identifier="cli"),
+        framework=cs.framework if cs is not None else "plain",
+        payload={
+            "candidate_id": candidate,
+            "reason": reason,
+            "effective_approval": (
+                cs.effective_approval.get("approval_id")
+                if cs is not None and isinstance(cs.effective_approval, dict)
+                else None
+            ),
+        },
+    )
+    try:
+        EventWriter(events_path(root)).emit(ev)
+    except EmitPreconditionError as exc:
+        click.echo(format_error(subcommand="plan withdraw", message=str(exc)), err=True)
+        sys.exit(EXIT_VALIDATION)
+    refresh_state_after_emit(root)
+    new_state = derive_state(events_path(root)).get(slug)
+    state_name = new_state.current_state if new_state is not None else None
+    if ctx.obj.get("json"):
+        click.echo(
+            json_envelope(
+                command="plan withdraw",
+                status="pass",
+                exit_code=EXIT_OK,
+                data={"change": slug, "candidate": candidate, "new_state": state_name},
+            )
+        )
+    elif not ctx.obj.get("quiet"):
+        click.echo(f"super-harness: withdrew plan candidate {candidate} for {slug}")
     sys.exit(EXIT_OK)

@@ -11,6 +11,7 @@ correctly-ordered lifecycle reaching READY_TO_MERGE incl. a genuine
 path (an actor who bypasses the editor but also runs a trivial covering
 lifecycle passes — deferred forgery-resistance, HG-12/B).
 """
+
 from __future__ import annotations
 
 import json
@@ -19,9 +20,23 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from super_harness.core.approval import (
+    ApprovalError,
+    Recognition,
+    evidence_digest,
+    evidence_is_recognized,
+    has_unresolved_candidate,
+    load_recognition,
+    make_code_subject,
+    missing_coverage,
+    validate_approval,
+    validate_code_subject,
+    validate_evidence,
+)
 from super_harness.core.emit_validation import find_ordering_violations
 from super_harness.core.events import Event, EventSchemaError, parse_event_line
 from super_harness.core.reducer import derive_state
+from super_harness.core.scope_match import GitScopeError, resolve_commit, tracked_files_at_commit
 
 ATTESTATIONS_DIRNAME = ".harness/attestations"
 PLACEHOLDER_IDENTITY = "cli"
@@ -145,9 +160,7 @@ def check_attestation(attestation_path: Path, slug: str) -> list[str]:
         )
     cs = states[slug]
     if cs.current_state != REQUIRED_STATE:
-        blockers.append(
-            f"attestation {slug}: state is {cs.current_state}, not {REQUIRED_STATE}"
-        )
+        blockers.append(f"attestation {slug}: state is {cs.current_state}, not {REQUIRED_STATE}")
     missing = sorted(MILESTONE_EVENTS - set(cs.event_counts.keys()))
     if missing:
         blockers.append(f"attestation {slug}: missing milestone event(s) {missing}")
@@ -175,12 +188,12 @@ def _review_receipt_blockers(events: list[Event], slug: str) -> list[str]:
     if milestone is None or milestone.payload.get("skipped") is True:
         return []
     receipt_ids = milestone.payload.get("receipt_ids")
-    if not isinstance(receipt_ids, list) or not receipt_ids or any(
-        not isinstance(receipt_id, str) or not receipt_id for receipt_id in receipt_ids
+    if (
+        not isinstance(receipt_ids, list)
+        or not receipt_ids
+        or any(not isinstance(receipt_id, str) or not receipt_id for receipt_id in receipt_ids)
     ):
-        return [
-            f"attestation {slug}: protocol code review approval has no imported receipt_ids"
-        ]
+        return [f"attestation {slug}: protocol code review approval has no imported receipt_ids"]
     imported: dict[str, str] = {}
     for event in events:
         if event.type != "review_result_imported":
@@ -202,10 +215,36 @@ def _review_receipt_blockers(events: list[Event], slug: str) -> list[str]:
     if isinstance(expected_sources, list) and set(expected_sources) != {
         imported[receipt_id] for receipt_id in receipt_ids
     }:
-        return [
-            f"attestation {slug}: imported receipt sources do not match independent_sources"
-        ]
+        return [f"attestation {slug}: imported receipt sources do not match independent_sources"]
     return []
+
+
+def _trusted_recognition(root: Path, *, base: str | None) -> Recognition | None:
+    """Load the trusted-base contract, or identify the legacy first-cutover case."""
+    if base is not None:
+        # The CLI has already failed closed if Git cannot resolve the merge
+        # base.  Keep the pure verifier's legacy/unit-test path tolerant of a
+        # synthetic base ref while preserving strict policy parsing whenever
+        # the trusted commit is reachable.
+        try:
+            commit = resolve_commit(root, base)
+        except GitScopeError:
+            return None
+        try:
+            tracked = tracked_files_at_commit(root, commit)
+        except GitScopeError:
+            return None
+        if ".harness/review-recognition.yaml" not in tracked:
+            return None
+    try:
+        return load_recognition(root, ref=base) if base is not None else load_recognition(root)
+    except ApprovalError as exc:
+        if str(exc) in {
+            "review recognition policy is not configured",
+            "no review process is enabled by user recognition",
+        }:
+            return None
+        raise
 
 
 @dataclass
@@ -225,7 +264,13 @@ def _is_attestation_path(canonical: str) -> bool:
     return canonical.startswith(ATTESTATIONS_DIRNAME + "/") and canonical.endswith(".jsonl")
 
 
-def verify_attestations(root: Path, diff_entries: list[DiffEntry]) -> AttestationVerdict:
+def verify_attestations(
+    root: Path,
+    diff_entries: list[DiffEntry],
+    *,
+    base: str | None = None,
+    head: str | None = None,
+) -> AttestationVerdict:
     """Core merge-gate verdict (design §4.2). Fail-closed: any blocker → not ok.
 
     A subject file (every changed path that is NOT under the attestations dir)
@@ -270,6 +315,27 @@ def verify_attestations(root: Path, diff_entries: list[DiffEntry]) -> Attestatio
             blockers.extend(att_blockers)
             continue
         cs = derive_state(att_path)[slug]
+        try:
+            recognition = _trusted_recognition(root, base=base)
+        except ApprovalError as exc:
+            blockers.append(f"attestation {slug}: review recognition is not usable: {exc}")
+            recognition = None
+        if recognition is not None and cs.effective_approval is None:
+            blockers.append(
+                f"attestation {slug}: active review recognition requires an effective plan approval"
+            )
+        elif recognition is not None:
+            blockers.extend(
+                _new_contract_blockers(
+                    root,
+                    cs,
+                    slug,
+                    diff_entries,
+                    recognition=recognition,
+                    base=base,
+                    head=head,
+                )
+            )
         this_covered = {canonical_path(f) for f in cs.scope.get("files", [])}
         if not (this_covered & subjects):
             blockers.append(
@@ -310,6 +376,169 @@ def verify_attestations(root: Path, diff_entries: list[DiffEntry]) -> Attestatio
     )
 
 
+def _new_contract_blockers(
+    root: Path,
+    state: Any,
+    slug: str,
+    diff_entries: list[DiffEntry],
+    *,
+    recognition: Recognition,
+    base: str | None,
+    head: str | None,
+) -> list[str]:
+    """Check authority and subjects for a new-contract attestation."""
+    blockers: list[str] = []
+    try:
+        approval = validate_approval(state.effective_approval, change_id=slug)
+    except ApprovalError as exc:
+        return [f"attestation {slug}: invalid effective plan approval: {exc}"]
+
+    evidence_by_id = {
+        item.get("evidence_id"): item
+        for item in state.evidence_references
+        if isinstance(item, dict) and isinstance(item.get("evidence_id"), str)
+    }
+    plan_evidence = evidence_by_id.get(approval.get("evidence_id"))
+    if not isinstance(plan_evidence, dict):
+        blockers.append(f"attestation {slug}: effective approval evidence is not retained")
+    else:
+        try:
+            validate_evidence(plan_evidence, change_id=slug)
+        except ApprovalError:
+            plan_valid = False
+        else:
+            plan_valid = True
+        if not (
+            plan_valid
+            and plan_evidence.get("kind") == "plan"
+            and plan_evidence.get("decision") == "approve"
+            and plan_evidence.get("subject_id") == approval.get("subject_id")
+            and evidence_digest(plan_evidence) == approval.get("evidence_digest")
+            and evidence_is_recognized(plan_evidence, recognition)
+        ):
+            blockers.append(
+                f"attestation {slug}: effective approval is not backed by recognized plan evidence"
+            )
+        provenance = plan_evidence.get("provenance")
+        if recognition.policy_digest and (
+            not isinstance(provenance, dict)
+            or provenance.get("policy_digest") != recognition.policy_digest
+        ):
+            blockers.append(
+                f"attestation {slug}: plan evidence is bound to another recognition policy"
+            )
+
+    if has_unresolved_candidate(state):
+        blockers.append(f"attestation {slug}: unresolved plan revision candidate")
+    code_subject = state.current_code_subject
+    if not isinstance(code_subject, dict):
+        blockers.append(f"attestation {slug}: missing current code subject")
+        return blockers
+    try:
+        validated_code = validate_code_subject(code_subject, change_id=slug)
+        expected = make_code_subject(
+            root,
+            change_id=slug,
+            approval_id=str(approval["approval_id"]),
+            base=base or str(validated_code["base"]),
+            head=head or str(validated_code["head"]),
+        )
+    except (ApprovalError, GitScopeError, KeyError) as exc:
+        blockers.append(f"attestation {slug}: cannot recompute code subject: {exc}")
+    else:
+        if expected["subject_id"] != validated_code.get("subject_id"):
+            blockers.append(
+                f"attestation {slug}: code subject does not match the complete Git change set"
+            )
+        actual_paths = {
+            path for entry in diff_entries for path in entry.paths if not _is_attestation_path(path)
+        }
+        subject_paths = set()
+        for item in validated_code.get("manifest", []):
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("path"), str):
+                subject_paths.add(item["path"])
+            if isinstance(item.get("old_path"), str):
+                subject_paths.add(item["old_path"])
+        if actual_paths != subject_paths:
+            blockers.append(
+                f"attestation {slug}: code subject manifest does not cover the exact PR paths"
+            )
+    verification = state.current_verification
+    if not isinstance(verification, dict):
+        blockers.append(f"attestation {slug}: missing verification subject")
+    elif verification.get("subject_id") != code_subject.get("subject_id"):
+        blockers.append(f"attestation {slug}: verification is for a different code subject")
+    elif verification.get("outcome") != "passed":
+        blockers.append(f"attestation {slug}: current verification did not pass")
+
+    attestation_events = events_from_stateful_attestation(root, slug)
+    code_review = next(
+        (event for event in reversed(attestation_events) if event.type == "code_review_passed"),
+        None,
+    )
+    if code_review is None:
+        blockers.append(f"attestation {slug}: missing code review pass event")
+    else:
+        evidence_id = code_review.payload.get("evidence_id")
+        code_evidence = evidence_by_id.get(evidence_id)
+        if not isinstance(code_evidence, dict):
+            blockers.append(f"attestation {slug}: code review evidence is not retained")
+        else:
+            try:
+                validate_evidence(code_evidence, change_id=slug)
+            except ApprovalError:
+                code_valid = False
+            else:
+                code_valid = True
+            if not (
+                code_valid
+                and code_evidence.get("kind") == "code"
+                and code_evidence.get("decision") == "approve"
+                and code_evidence.get("subject_id") == code_subject.get("subject_id")
+                and evidence_is_recognized(code_evidence, recognition)
+            ):
+                blockers.append(
+                    f"attestation {slug}: code review is not backed by recognized code evidence"
+                )
+        if isinstance(code_evidence, dict) and recognition.policy_digest:
+            provenance = code_evidence.get("provenance")
+            if (
+                not isinstance(provenance, dict)
+                or provenance.get("policy_digest") != recognition.policy_digest
+            ):
+                blockers.append(
+                    f"attestation {slug}: code evidence is bound to another recognition policy"
+                )
+    coverage = state.coverage_manifest
+    try:
+        missing = missing_coverage(code_subject, coverage)
+    except ApprovalError:
+        missing = ["<invalid code subject>"]
+    if missing:
+        blockers.append(f"attestation {slug}: implementation coverage omits a changed file")
+    return blockers
+
+
+def events_from_stateful_attestation(root: Path, slug: str) -> list[Event]:
+    """Read one attestation's valid event lines for new-contract checks."""
+    path = root / ATTESTATIONS_DIRNAME / f"{slug}.jsonl"
+    events: list[Event] = []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return events
+    for raw in lines:
+        try:
+            event = parse_event_line(raw)
+        except EventSchemaError:
+            continue
+        if event.change_id == slug:
+            events.append(event)
+    return events
+
+
 # --------------------------------------------------------------------------- #
 # HG-12 cut 1: review-independence disclosure (substrate, NOT enforcement)
 # --------------------------------------------------------------------------- #
@@ -328,8 +557,11 @@ def _classify_review(events: list[Event], milestone: str, author: str | None) ->
     reviews = [e for e in events if e.type == milestone]
     if not reviews:
         return {
-            "classification": "unattributed", "reviewer": None, "skipped": False,
-            "override": False, "reason": None,
+            "classification": "unattributed",
+            "reviewer": None,
+            "skipped": False,
+            "override": False,
+            "reason": None,
         }
     r = reviews[-1]  # last wins (reject → re-review cycles)
     reviewer = r.actor.identifier
@@ -346,8 +578,11 @@ def _classify_review(events: list[Event], milestone: str, author: str | None) ->
     else:
         cls = "independent"
     return {
-        "classification": cls, "reviewer": reviewer, "skipped": skipped,
-        "override": override, "reason": r.payload.get("reason"),
+        "classification": cls,
+        "reviewer": reviewer,
+        "skipped": skipped,
+        "override": override,
+        "reason": r.payload.get("reason"),
     }
 
 
@@ -364,9 +599,7 @@ def derive_independence(events: list[Event]) -> dict[str, Any]:
     owner can set both sides freely. The one blocker built on it lives in
     ``verify_attestations``.
     """
-    author = next(
-        (e.actor.identifier for e in events if e.type == "intent_declared"), None
-    )
+    author = next((e.actor.identifier for e in events if e.type == "intent_declared"), None)
     return {
         "author": author,
         "code_review": _classify_review(events, "code_review_passed", author),
@@ -376,13 +609,16 @@ def derive_independence(events: list[Event]) -> dict[str, Any]:
         # visible at the moment of merge, not forbidden. Deduped on (reviewer,
         # attempted_round) so a retrying agent cannot inflate a figure presented as
         # rounds; an event without that field counts once via its own id.
-        "review_budget_rounds_held": len({
-            (
-                (e.payload or {}).get("reviewer"),
-                (e.payload or {}).get("attempted_round", f"event:{e.event_id}"),
-            )
-            for e in events if e.type == "review_budget_exceeded"
-        }),
+        "review_budget_rounds_held": len(
+            {
+                (
+                    (e.payload or {}).get("reviewer"),
+                    (e.payload or {}).get("attempted_round", f"event:{e.event_id}"),
+                )
+                for e in events
+                if e.type == "review_budget_exceeded"
+            }
+        ),
     }
 
 
@@ -425,8 +661,10 @@ def gate_bypass_disclosure(events: list[Event]) -> dict[str, Any]:
     disclosed = sum(1 for e in events if e.type == "gate_bypass_disclosed")
     reasons = [e.payload.get("reason") for e in events if e.type == "gate_bypass_disclosed"]
     return {
-        "bypassed": bypassed, "disclosed": disclosed,
-        "undisclosed": undisclosed, "reasons": reasons,
+        "bypassed": bypassed,
+        "disclosed": disclosed,
+        "undisclosed": undisclosed,
+        "reasons": reasons,
     }
 
 

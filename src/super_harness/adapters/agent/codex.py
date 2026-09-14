@@ -84,44 +84,29 @@ When a tool call is blocked:
 
 #### Review protocol
 
-super-harness does NOT start, spawn, or host reviewers. It compiles immutable
-contracts and records independent receipts. Tracked project requirements live in
-`.harness/review-governance.yaml`; each user's explicit models and producer options
-live in the gitignored `.harness/review-profiles.local.yaml`. Do not assume a Codex
-agent can spawn another agent, and do not substitute an in-session self-review for
-an external or human source.
+super-harness does NOT start, spawn, or host reviewers. It records the exact
+conclusion from an external or human process. The active recognition contract is
+`.harness/review-recognition.yaml`; `.harness/review-governance.yaml` and the
+gitignored `.harness/review-profiles.local.yaml` are historical data and do not
+select a reviewer or explicit model.
 
 For each review epoch:
 
-1. Commit the exact in-scope change, then run `super-harness review prepare
-   <change> --reviewer <name>` once.
-2. Run `super-harness review begin <change> --reviewer <name>` to freeze the
-   automated round. The command returns per-run prompt, schema, output, and
-   invocation files; it never invokes the producer.
-3. The caller runs every issued invocation outside super-harness, unchanged and in
-   listed order. Apply the source's explicit model and agent-specific options
-   verbatim. Do not edit while any issued run is pending.
-4. Import each completed output with `super-harness review result import ...`; if a
-   producer crashes, record it once with `super-harness review run fail ...`.
-   Collect every source before responding to findings, even if one reports a
-   blocker. Then batch the fixes and prepare one follow-up round.
+1. Commit the exact in-scope change and preserve the complete plan/code subject.
+2. Obtain a conclusion from the owner-recognized external process. The conclusion
+   must identify the current subject, explicit decision, provenance, and retained
+   original evidence; the core does not infer approval from a model, failed call,
+   empty result, or skip.
+3. Import that exact record with `super-harness review import <change>
+   --evidence <path>`. Review execution, retries, and substantive judgment stay
+   outside super-harness.
+4. Batch code-only fixes after `implementation reopen <change> --reason "<why>"`;
+   if the plan, scope, or requirements changed, require a new plan
+   candidate and review. A skipped review is disclosure, not approval.
 
-The frozen inspection target is strict: findings may address only its exact range
-and files. A reviewer may read unchanged repository material as supporting context.
-It must continue the whole target after finding a blocker. If the target itself is
-insufficient, return `scope_sufficient: false` with a finding; never widen it to the
-whole PR ad hoc. A code-only finding fix does not trigger plan review unless the
-approved plan, scope, or requirements changed; use `plan redeclare` when they did.
-If the change is already frozen at `READY_TO_MERGE` or `AWAITING_CODE_REVIEW`, fold
-the fix in with `implementation reopen <change> --reason "<why>"`, which returns it to
-`IMPLEMENTATION_IN_PROGRESS` and voids the code review it was under or had passed — do not
-`plan redeclare` for a code-only fix, which costs a whole plan cycle.
-
-Human review is first-class: use `review human inspect`, validate a verdict with
-`review human draft`, then leave `review human confirm` to a human in a TTY. An
-agent must never confirm the human nonce. `review skip` remains a disclosed escape
-hatch; a skipped review — plan or code — needs an explicit override and reason to
-pass attestation.
+The imported evidence must cover the exact frozen subject. A reviewer may read
+unchanged repository material as supporting context, but a finding never widens
+the target implicitly. Do not edit while an external review is pending.
 
 #### Turn-end authoring check
 

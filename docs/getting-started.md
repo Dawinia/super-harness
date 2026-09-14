@@ -60,14 +60,14 @@ super-harness init --setup-github
 The guided setup has five stages:
 
 1. **Preflight** resolves the workspace and detects coding-agent integrations
-   and review-producer executables without writing.
-2. **Configuration** selects integrations and producers, chooses from reviewer
-   models already configured in the relevant CLI, and resolves existing-file
-   conflicts.
-3. **Review before writes** shows the selected integrations, producers, models,
-   GitHub choice, grouped create/update/preserve actions, and any local settings
-   files that will receive a backup. In an interactive mode, the workspace is
-   unchanged until this plan is accepted.
+   without writing. Review execution is not discovered or configured here.
+2. **Configuration** selects coding-agent integrations and resolves existing-file
+   conflicts. The generated external-review recognition policy is disabled until
+   an owner later recognizes one concrete process.
+3. **Review before writes** shows the selected integrations, disabled recognition
+   policy, GitHub choice, grouped create/update/preserve actions, and any local
+   settings files that will receive a backup. In an interactive mode, the
+   workspace is unchanged until this plan is accepted.
 4. **Apply** performs the named operations. Fast writes become completed rows;
    genuinely long or external operations may show activity, but the wizard does
    not invent percentages.
@@ -81,25 +81,12 @@ On a full interactive terminal, use the arrow keys to move, Space to toggle a
 choice, and Enter to accept it. The filled or empty indicator shows whether an
 option is selected; with color enabled, only the selected indicator turns green
 so labels remain easy to scan. At the final review, **Back** returns to
-configuration. **Ctrl+C** interrupts setup. Detected integrations and producers
-are preselected and labeled `detected · recommended` on a fresh init. An
-unavailable coding integration remains selectable but is not preselected; an
-unavailable review producer is disabled, and selecting it explicitly is a
-pre-write validation error. For each available reviewer, the wizard reads model
-identifiers from the existing workspace profile and that reviewer's native CLI
-configuration. One candidate is selected automatically; multiple candidates
-are presented as a choice with their origin. If no model is configured, that
-reviewer is disabled and setup can continue with another reviewer or human-only
-review. The wizard never asks users to type a model identifier.
-
-Interactive discovery reads `.harness/review-profiles.local.yaml`,
-`~/.codex/config.toml`, and `~/.claude/settings.json` as applicable. It retains
-only model identifiers and their display origins: credentials and unrelated
-provider settings are never copied or shown. A malformed provider file disables
-only that provider, remains byte-for-byte unchanged, and does not prevent init
-from continuing. Scripts can bypass discovery with explicit
-`--review-model SOURCE=MODEL` values; non-interactive init uses explicit flags
-and persisted workspace defaults and does not inspect user CLI configuration.
+configuration. **Ctrl+C** interrupts setup. Detected coding integrations are
+preselected and labeled `detected · recommended` on a fresh init. An unavailable
+coding integration remains selectable but is not preselected. Init does not scan
+review CLIs, select models, start producers, or write a local producer profile.
+Existing governance/profile files are preserved as historical data and are not
+used to authorize a new Change.
 
 A representative guided terminal session looks like this (paths and selections
 will reflect your machine):
@@ -112,7 +99,7 @@ $ super-harness init --setup-github
 │
 ◇  Integrations  Codex, Claude Code
 │
-◇  Automated reviewers  Codex (gpt-5.6-sol), Claude (opus[1m])
+◇  External review recognition  Disabled until owner configuration
 │
 ◇  GitHub  Workflow and PR template
 │
@@ -167,8 +154,7 @@ characters remain identifiable as deterministic escapes such as `\u9879\u76ee`
 rather than being dropped or causing setup to crash.
 
 `--yes` skips only the final confirmation in an interactive mode. It does not
-select integrations or producers, choose among multiple model candidates, or
-resolve conflicts with existing files. When stdin is not a TTY, `init` preserves
+select integrations or resolve conflicts with existing files. When stdin is not a TTY, `init` preserves
 the scriptable behavior: it does not prompt or read user CLI configuration and
 applies immediately from explicit flags and existing workspace defaults, so CI
 and redirected scripts do not need `--yes`.
@@ -188,14 +174,12 @@ What `init --setup-github` applies after interactive confirmation (or
 immediately when stdin is not a TTY):
 
 1. Creates `.harness/` with `events.jsonl` (the append-only lifecycle log),
-   tracked skeleton configuration, and `review-governance.yaml`. The derived
-   `state.yaml` cache appears after the first lifecycle event, while
-   `adapters.yaml` is created only when an integration is selected. Explicit
-   selected review models are written to the gitignored, user-editable
-   `review-profiles.local.yaml`. Selecting no producer creates a fully usable
-   human-only review configuration and explicitly removes an existing local
-   producer profile after the reviewed plan shows that deletion. Init never
-   installs a third-party agent or producer binary.
+   tracked skeleton configuration, and a disabled `review-recognition.yaml`.
+   The derived `state.yaml` cache appears after the first lifecycle event, while
+   `adapters.yaml` is created only when an integration is selected. Existing
+   `review-governance.yaml` and `review-profiles.local.yaml` are preserved and
+   inert for new Changes. Init never installs a third-party agent or reviewer
+   producer binary.
 2. Writes `AGENTS.md` (or extends an existing one) with a `super-harness`
    section your AI agent will read.
    Selected integrations install their existing local gate hooks as one atomic
@@ -322,196 +306,76 @@ starts editing. The hot-path gate enforces lifecycle rules:
   emits `plan_ready` automatically → `AWAITING_PLAN_REVIEW`. Everything else
   (source files) stays blocked until then. Working notes that aren't part of
   the plan itself go in `.harness/scratch/<slug>/`, writable in every state.
-- The plan is then reviewed. super-harness **does not run the review** — it
-  compiles immutable contracts and enforces that all configured independent
-  sources produce valid receipts. Reviewer **roles** are lifecycle positions
-  such as `plan-reviewer` and `code-reviewer`; reviewer **sources** are evidence
-  labels, not commands or subagent APIs.
-
-  Shared requirements live in tracked `.harness/review-governance.yaml`:
-
-  ```yaml
-  version: 1
-  review:
-    base_branch: main
-    sources:
-      codex:
-        kind: automated
-      claude:
-        kind: automated
-      human:
-        kind: human
-    roles:
-      plan-reviewer:
-        participants: [codex, claude]
-        min_independent: 2
-        max_automatic_rounds: 6   # optional; default 6 for this role
-      code-reviewer:
-        participants: [codex, claude]
-        min_independent: 2
-        max_automatic_rounds: 4   # optional; default 4 for this role
-        blocking_severity: major   # optional; blocker|major|minor (default major)
-    require_distinct_model_families: false
-  ```
-
-  `max_automatic_rounds` is the number of automatic rounds a role may start **for one
-  change** before a human has to fund the next one. Per change, not per epoch: a
-  rejected plan re-fires `plan_ready`, so an epoch-scoped budget resets exactly when it
-  should start biting. A round whose runs failed still counts — it cost money and
-  produced no findings, which is the worst kind of round to hide from a brake.
-
-  Defaults differ per role — **6** for `plan-reviewer`, **4** for `code-reviewer`, and 2
-  for any other role name — because their histories differ. Four on the code path is
-  not a softer brake: a restart (`plan redeclare`, `implementation_restarted`) now
-  carries earlier code rounds forward where the old per-epoch counter washed them, so
-  keeping 2 would have tightened that path under what is otherwise a rename. Omit the key to take the
-  default. The old `max_automatic_rounds_per_epoch` is a hard error rather than a silent
-  alias: the same number now means something different.
-
-  When the budget is reached, `review begin` refuses the round, prints the round
-  history, cumulative token cost and any reviewer that has been failing, and records a
-  state-preserving `review_budget_exceeded` event that `super-harness report` and the
-  merge attestation both surface — `attest verify` prints one
-  `round budget: held N automatic round(s) …` line per attestation that hit it, and
-  carries the same per-change figure in `--json` as `budget_holds`. It is deliberately
-  separate from the `code review independence:` / `plan review independence:` lines: it
-  counts holds whatever role raised them, so attaching it to either row would read as a
-  claim about that one reviewer — and would now print twice.
-  Authorizing another round is `review authorize`, one round at a time. If a rejection
-  has landed by the time you run it, the refusal now names the step back —
-  `plan ready` — instead of only the state it wanted you in.
-
-  Each user's explicit producer choices stay out of Git:
-
-  ```yaml
-  # .harness/review-profiles.local.yaml
-  version: 1
-  sources:
-    codex:
-      protocol: codex-cli
-      model: <your-codex-model>
-      cost_class: standard
-      agent_options:
-        reasoning_effort: medium
-        sandbox: read-only
-    claude:
-      protocol: claude-cli
-      model: <your-claude-model>
-      cost_class: standard
-      agent_options:
-        effort: medium
-  ```
-
-  Model and option names are producer-specific and explicit. A profile marked
-  `cost_class: expensive` requires one-shot human authorization before begin;
-  unavailable token telemetry never blocks review.
-
-  `blocking_severity` (per role, default `major`) tunes how strict a
-  **code-review** round is: it rejects only when a finding is at or above that
-  severity, and findings below it pass with the finding left open — still
-  recorded and surfaced by `super-harness report`, but no longer forcing a full
-  re-review round. Set it to `minor` to reject on any finding, or `blocker` to
-  let `major` findings pass-with-open too. Plan review always rejects on any
-  checklist fail regardless (its findings are not tracked in the report), so
-  `blocking_severity` on `plan-reviewer` has no effect.
-
-  What a plan round is asked to judge is the checklist, and its four items carry
-  definitions that go into the frozen prompt: `architecture`, `tech-choices`,
-  `conventions`, `spec-coverage`. Replace the items per project in
-  `.harness/review-checklists.yaml` — ids without a built-in definition render as
-  bare ids and work exactly as before. An id must be non-blank, printable, single-line
-  text: it goes into a prompt line, a JSON-schema `enum` and the bundle digest at once,
-  so a blank id, a newline, or any other non-printable character is rejected loudly
-  rather than smuggled into the prompt.
-
-  Two prompt instructions come with them. **Both** roles are asked for an
-  exhaustive pass rather than the single worst finding. **Only plan review** also
-  gets the consequence gate — a finding counts only if following the document
-  literally would make the implementer build the wrong thing, get stuck, or make
-  two implementers build different things — because that gate suppresses findings
-  and its wording was measured on plan review alone; a code delta reviewed under
-  it could lose a genuine arithmetic bug. Upgrading moves `prompt_digest` and
-  `contract_digest` for **both** roles, so a packet prepared before the upgrade
-  is stale: re-run `review prepare`, including for an in-flight code-review
-  round.
-
-  The automated plan-review protocol is prepare → begin → caller execution →
-  import/fail:
+- The plan must be submitted for review before implementation. super-harness does
+  not run, retry, or configure a reviewer. `plan ready --plan <path>` snapshots
+  the finite adopted document set (including the matching spec and
+  `docs/product-foundations.md` when present) and the binding commitments.
 
   ```bash
-  super-harness review prepare my-first-change --reviewer plan-reviewer
-  super-harness review begin my-first-change --reviewer plan-reviewer
-  # Run every argv/stdin contract printed by begin outside super-harness, unchanged.
-  super-harness review result import my-first-change --reviewer plan-reviewer \
-    --run-id <codex-run-id> --result-file <codex-output-path>
-  super-harness review result import my-first-change --reviewer plan-reviewer \
-    --run-id <claude-run-id> --result-file <claude-output-path>
-  super-harness implementation start my-first-change  # after → PLAN_APPROVED
+  super-harness plan ready my-first-change \
+    --scope "[docs/plans/my-first-change.md, src/app.py]" \
+    --plan docs/plans/my-first-change.md \
+    --commitment O1="observable behavior"
   ```
 
-  `begin` never launches Codex, Claude, a Task subagent, or any other producer.
-  If an external process crashes, record that exact run with `review run fail`;
-  the harness never retries it silently. Wait for every issued run before editing,
-  even after an early blocker. `super-harness status` reports pending/failed/
-  retained sources, round budget, authorizations, packet digests, and the next
-  legal command. Direct `review approve|reject` cannot create new evidence.
+  The resulting plan subject is the authority boundary. An external process may
+  produce a JSON conclusion, but it becomes lifecycle evidence only when the
+  owner has enabled `.harness/review-recognition.yaml` for that exact process,
+  issuer, version, and evidence form. The shipped policy is disabled. Import
+  the retained original evidence with:
 
-  For a human participant, use `review human inspect`, write the structured
-  verdict, validate it with `review human draft`, and have the human run
-  TTY-only `review human confirm --nonce <nonce>`. A code agent must not confirm
-  that nonce. `review skip` remains the disclosed escape hatch; a skipped review —
-  plan or code — requires `--override --reason <why>` to pass attestation.
+  ```bash
+  super-harness review import my-first-change --evidence plan-review.json
+  ```
+
+  The recognition policy is the only active review configuration. The old
+  governance and local producer-profile files are retained unchanged for
+  historical readers; they do not select a producer, model, round, retry, or
+  TTY workflow for a new Change.
+
+  The imported record must name the exact subject, contain an explicit
+  `approve` or `reject`, preserve provenance and original evidence, and use the
+  recognized process. Empty output, a failed producer, an old skip, or a stale
+  subject is not approval. A rejected or superseded revision must be withdrawn
+  explicitly before the previously approved plan can reach completion:
+
+  ```bash
+  super-harness plan withdraw my-first-change \
+    --candidate <subject-id> --reason "revision not adopted"
+  ```
 - Now in `IMPLEMENTATION_IN_PROGRESS`, the agent can edit source code. If it
   tries to `Edit` before the lifecycle permits it, the `PreToolUseGate` blocks
   the tool call.
-- After `done` (→ `AWAITING_CODE_REVIEW`), code review uses the same source
-  protocol. Commit the in-scope files first, then freeze the round:
+- After `done` (→ `AWAITING_CODE_REVIEW`), code review uses the same external
+  evidence boundary. Record the implementation assessment and complete coverage
+  manifest, then import code evidence for the exact committed code subject:
 
   ```bash
-  super-harness review prepare my-first-change --reviewer code-reviewer
-  super-harness review begin my-first-change --reviewer code-reviewer
-  # Caller runs each frozen invocation, then imports every result as above.
+  super-harness implementation record my-first-change --assessment implementation.json
+  super-harness review import my-first-change --evidence code-review.json
   ```
 
-  Each run binds source, explicit requested model/options, exact target commit,
-  Git range/files/argv, prompt/checklist, and contract digest. Reviewers may read
-  unchanged repository material for architecture context, but findings stay on
-  the frozen target. A reviewer that cannot complete the target returns
-  `scope_sufficient: false` with a finding; it does not widen to the whole PR.
+  Evidence is not a claim that a particular model or TTY was used; it is an
+  owner-recognized external conclusion bound to the exact subject. Code-only
+  fixes can use `implementation reopen`; changes to the approved commitment,
+  scope, or explicit limit require `plan redeclare --plan ...`, a new plan
+  subject, and a new plan conclusion. Do not use this new design to bypass the
+  currently effective scope or delivery gate.
 
-  After a code-review rejection, batch all finding fixes and docs follow-ups into
-  commits, then run `review prepare` once. Each source receives everything since
-  its latest trustworthy baseline. Do not repeat `done` or plan review for a
-  code-only fix. Use `plan redeclare` only when the approved plan, scope, or
-  requirements changed; the CLI rejects undeclared plan/spec drift. When the change is
-  already frozen at `READY_TO_MERGE` or `AWAITING_CODE_REVIEW` — a finding you decided
-  to fold in, whether the round passed or is still out —
-  `implementation reopen <change> --reason "<why>"`
-  returns it to `IMPLEMENTATION_IN_PROGRESS` without a plan cycle. It voids the code
-  review the change was under or had passed, so `done` and another round are required
-  before merge, and
-  `super-harness report` counts every reopen with its reason. A scoped
-  A started round consumes the automatic-round budget even if a producer crashes.
-  The default ceiling is two automated rounds per epoch; exhaustion requires a
-  human reviewer or one-shot authorization for an exact additional round.
+> **Note**: `plan_approved` and `code_review_passed` are lifecycle milestones,
+> but the active core can emit them only from imported, recognized evidence. A
+> review skip remains a disclosed historical escape hatch and cannot create new
+> plan authority. Plain-mode advances past `INTENT_DECLARED` with the manual
+> `super-harness plan ready` command; framework adapters may emit `plan_ready`
+> from their artifacts.
 
-> **Note**: the three reviewer-driven transitions (`plan_approved`,
-> `implementation_started`, `code_review_passed`) are still lifecycle milestones;
-> review milestones are emitted by deterministic round closure after valid
-> receipts, not by direct approve/reject. super-harness deliberately does not ship
-> a headless reviewer executor. Plain-mode advances past
-> `INTENT_DECLARED` with the manual verb `super-harness plan ready`; framework
-> adapters emit `plan_ready` automatically from their artifacts.
-
-> **Revising a rejected plan without leaving the gate.** `plan ready --scope`
-> records any scope file that is a marked `.md` (its frontmatter carries
-> `change: <slug>`) as the change's *plan artifact*. In `PLAN_REJECTED` the gate
-> then allows editing that plan document through the normal `Edit`/`Write` tools —
-> so the reject → revise → re-submit loop needs no shell workaround. Source files
-> remain blocked. Recording currently happens only for the manual `plan ready`
-> verb; framework-adapter auto-recording is deferred. (Codex has no per-file hook
-> input, so Codex-driven plan revision still uses the draft-before-`change start`
-> path.)
+> **Revising a plan without silently expanding authority.** In `PLAN_REJECTED`,
+> the gate allows editing the marked plan documents through the normal
+> `Edit`/`Write` tools; source files remain blocked. Re-submit the revised
+> subject and conclusion with `plan ready --plan ...` for the initial plan, or
+> `plan redeclare --plan ...` when an already-approved plan's commitments, scope,
+> or explicit limits change. A pending B2 candidate must be explicitly
+> withdrawn if it is not adopted; a late conclusion never reactivates it.
 
 You don't have to do anything — the hooks installed by
 `adapter install claude-code` handle this transparently. The gate enforces
@@ -587,24 +451,26 @@ Change: 2026-06-01-add-greeting
 Make sure the `Change:` line names your slug. The bundled CI workflow uses
 this to link the PR to the change.
 
-When the PR opens, the CI workflow runs seven jobs:
+When the PR opens, the CI workflow runs eight jobs:
 
 1. **`pr-decorate`** — calls `super-harness pr emit-opened` to emit a
    `pr_opened` event and inject the metadata block if missing.
 2. **`pr-validate`** — calls `super-harness pr validate <PR>` to check the
    metadata block + lifecycle position.
 3. **`verification`** — runs `super-harness verify <slug>` (same checks as
-   the local `verify` you ran in step 6, but in CI for reviewer
-   confidence).
+   the local `verify` you ran in step 6).
 4. **`attest-verify`** — runs `super-harness attest verify --base ... --head ...`;
-   blocks unless every changed file is covered by a complete, ordered lifecycle
-   attestation (see [§10](#10-bind-decisions-to-code-optional) on the attestation
-   trail).
-5. **`decision-check`** — runs `super-harness decision check` (referential
+   from a verifier installed from the trusted `BASE_SHA`, and blocks unless
+   every changed file is covered by a complete, ordered lifecycle attestation
+   and matching new-contract subjects.
+5. **`candidate-acceptance`** — installs the candidate package separately and
+   runs the new-contract acceptance tests; it cannot approve the candidate's
+   own attestation.
+6. **`decision-check`** — runs `super-harness decision check` (referential
    integrity + text-lock + executable checks; see §10).
-6. **`doc-check`** — runs `super-harness doc check`; blocks if a derivable doc
+7. **`doc-check`** — runs `super-harness doc check`; blocks if a derivable doc
    drifted from its generator.
-7. **`on-merge`** — gated on the merge event; runs `super-harness on-merge`
+8. **`on-merge`** — gated on the merge event; runs `super-harness on-merge`
    after the PR lands.
 
 If any non-`on-merge` job fails, the PR cannot be merged (assuming you've
@@ -614,8 +480,8 @@ enabled branch protection). All jobs are visible as required checks on the PR.
 
 ## 8. Merge
 
-A reviewer approves; you (or auto-merge) squash-merges to `main`. The
-`on-merge` job fires:
+After the applicable external code evidence is imported and all required checks
+pass, you (or auto-merge) squash-merge to `main`. The `on-merge` job fires:
 
 ```bash
 super-harness on-merge --commit ${{ github.sha }}

@@ -230,11 +230,9 @@ def test_init_creates_harness_dir(tmp_path: Path):
     assert (tmp_path / ".harness" / "source-paths.yaml").exists()
 
 
-def test_init_non_tty_configures_explicit_codex_review_producer(
+def test_init_non_tty_rejects_explicit_reviewer_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/bin/{name}")
-
     result = CliRunner().invoke(
         main,
         [
@@ -248,26 +246,10 @@ def test_init_non_tty_configures_explicit_codex_review_producer(
         ],
     )
 
-    assert result.exit_code == 0, result.output
-    governance = yaml.safe_load((tmp_path / ".harness" / "review-governance.yaml").read_text())[
-        "review"
-    ]
-    assert governance["sources"] == {
-        "codex": {"kind": "automated"},
-        "human": {"kind": "human"},
-    }
-    assert governance["roles"]["plan-reviewer"]["participants"] == ["codex"]
-    assert governance["roles"]["code-reviewer"]["participants"] == ["codex"]
-    profiles = yaml.safe_load((tmp_path / ".harness" / "review-profiles.local.yaml").read_text())
-    assert profiles["sources"]["codex"] == {
-        "protocol": "codex-cli",
-        "model": "gpt-review",
-        "cost_class": "standard",
-        "agent_options": {
-            "reasoning_effort": "medium",
-            "sandbox": "read-only",
-        },
-    }
+    assert result.exit_code != 0, result.output
+    assert "review producer/model configuration is retired" in result.output
+    assert "review-recognition.yaml" in result.output
+    assert not (tmp_path / ".harness").exists()
 
 
 def test_init_non_tty_configures_multiple_agent_integrations(
@@ -794,7 +776,7 @@ def test_init_guided_compacts_github_apply_warning(
     assert result.output.count("Repository guidance") == 1
 
 
-def test_init_guided_uses_configured_reviewer_models_without_text_input(
+def test_init_guided_does_not_discover_reviewer_models(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = tmp_path / "home"
@@ -831,10 +813,14 @@ def test_init_guided_uses_configured_reviewer_models_without_text_input(
 
     assert result.exit_code == 0, result.output
     assert answers.text_calls == []
-    profiles = yaml.safe_load((tmp_path / ".harness" / "review-profiles.local.yaml").read_text())
-    assert profiles["sources"]["codex"]["model"] == "gpt-5.2-codex"
-    assert profiles["sources"]["claude"]["model"] == "claude-opus-4-1"
-    assert "never-copy-me" not in json.dumps(profiles)
+    recognition = yaml.safe_load(
+        (tmp_path / ".harness" / "review-recognition.yaml").read_text(encoding="utf-8")
+    )
+    assert recognition["enabled"] is False
+    assert not (tmp_path / ".harness" / "review-profiles.local.yaml").exists()
+    assert "gpt-5.2-codex" not in (
+        tmp_path / ".harness" / "review-recognition.yaml"
+    ).read_text(encoding="utf-8")
 
 
 def test_init_guided_without_configured_models_uses_human_only_review(
@@ -907,9 +893,11 @@ def test_init_guided_isolates_malformed_provider_config(
     result = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init"])
 
     assert result.exit_code == 0, result.output
-    profiles = yaml.safe_load((tmp_path / ".harness" / "review-profiles.local.yaml").read_text())
-    assert set(profiles["sources"]) == {"claude"}
-    assert profiles["sources"]["claude"]["model"] == "claude-sonnet-4"
+    recognition = yaml.safe_load(
+        (tmp_path / ".harness" / "review-recognition.yaml").read_text(encoding="utf-8")
+    )
+    assert recognition["enabled"] is False
+    assert not (tmp_path / ".harness" / "review-profiles.local.yaml").exists()
     assert codex_config.read_bytes() == malformed
 
 
@@ -941,6 +929,13 @@ def test_init_keyboard_interrupt_during_apply_keeps_completed_ledger(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name: f"/abs/bin/{name}"
+        if name in {"codex", "super-harness-hook", "super-harness"}
+        else None,
+    )
+    monkeypatch.setattr(
         "super_harness.cli.init.install_agent_integration",
         lambda *_a, **_kw: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
@@ -957,23 +952,16 @@ def test_init_keyboard_interrupt_during_apply_keeps_completed_ledger(
     assert not (tmp_path / "AGENTS.md").exists()
 
 
-def test_init_force_guided_edits_valid_persisted_review_configuration(
+def test_init_force_guided_preserves_persisted_review_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/bin/{name}")
-    first = CliRunner().invoke(
-        main,
-        [
-            "--workspace",
-            str(tmp_path),
-            "init",
-            "--review-producer",
-            "codex-cli",
-            "--review-model",
-            "codex=gpt-review",
-        ],
-    )
-    assert first.exit_code == 0, first.output
+    harness = tmp_path / ".harness"
+    harness.mkdir()
+    (harness / "events.jsonl").touch()
+    governance = b"historical governance\n"
+    profile = b"historical profile\n"
+    (harness / "review-governance.yaml").write_bytes(governance)
+    (harness / "review-profiles.local.yaml").write_bytes(profile)
 
     capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, False, 80)
     monkeypatch.setattr(
@@ -983,7 +971,7 @@ def test_init_force_guided_edits_valid_persisted_review_configuration(
     renderer = _PlanCaptureRenderer()
     ui = InteractiveInitUI(
         prompt_adapter=_GuidedAnswers(
-            checkboxes=[(), ("codex-cli",)],
+            checkboxes=[()],
             selects=["skip", "confirm"],
         ),
         renderer=renderer,
@@ -996,30 +984,21 @@ def test_init_force_guided_edits_valid_persisted_review_configuration(
     )
 
     assert forced.exit_code == 0, forced.output
-    assert renderer.plans[-1].review_write.value == "update"
-    assert renderer.plans[-1].review_producers == ("codex-cli",)
-    assert dict(renderer.plans[-1].review_models) == {"codex": "gpt-review"}
+    assert renderer.plans[-1].review_write.value == "preserve"
+    assert renderer.plans[-1].review_producers == ()
+    assert dict(renderer.plans[-1].review_models) == {}
+    assert (harness / "review-governance.yaml").read_bytes() == governance
+    assert (harness / "review-profiles.local.yaml").read_bytes() == profile
 
 
-def test_init_force_guided_human_only_review_applies_frozen_profile_delete(
+def test_init_force_guided_does_not_delete_persisted_review_configuration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/bin/{name}")
-    first = CliRunner().invoke(
-        main,
-        [
-            "--workspace",
-            str(tmp_path),
-            "init",
-            "--review-producer",
-            "codex-cli",
-            "--review-model",
-            "codex=gpt-review",
-        ],
-    )
-    assert first.exit_code == 0, first.output
-    profile = tmp_path / ".harness" / "review-profiles.local.yaml"
-    assert profile.exists()
+    harness = tmp_path / ".harness"
+    harness.mkdir()
+    (harness / "events.jsonl").touch()
+    profile = harness / "review-profiles.local.yaml"
+    profile.write_bytes(b"historical profile\n")
 
     capabilities = TerminalCapabilities(InteractionMode.GUIDED, False, False, 80)
     monkeypatch.setattr(
@@ -1029,7 +1008,7 @@ def test_init_force_guided_human_only_review_applies_frozen_profile_delete(
     renderer = _PlanCaptureRenderer()
     ui = InteractiveInitUI(
         prompt_adapter=_GuidedAnswers(
-            checkboxes=[(), ()],
+            checkboxes=[()],
             selects=["skip", "confirm"],
         ),
         renderer=renderer,
@@ -1039,35 +1018,12 @@ def test_init_force_guided_human_only_review_applies_frozen_profile_delete(
     forced = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
 
     assert forced.exit_code == 0, forced.output
-    action = next(
-        item
-        for item in renderer.plans[-1].file_actions
-        if item.path.as_posix() == ".harness/review-profiles.local.yaml"
-    )
-    assert action.action is FileAction.DELETE
-    assert action.content is None
-    assert not profile.exists()
-
-    second_renderer = _PlanCaptureRenderer()
-    second_ui = InteractiveInitUI(
-        prompt_adapter=_GuidedAnswers(
-            checkboxes=[(), ()],
-            selects=["skip", "confirm"],
-        ),
-        renderer=second_renderer,
-    )
-    monkeypatch.setattr("super_harness.cli.init.create_init_ui", lambda *_a, **_kw: second_ui)
-
-    repeated = CliRunner().invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
-
-    assert repeated.exit_code == 0, repeated.output
-    repeated_action = next(
-        item
-        for item in second_renderer.plans[-1].file_actions
-        if item.path.as_posix() == ".harness/review-profiles.local.yaml"
-    )
-    assert repeated_action.action is FileAction.SKIP
-    assert not profile.exists()
+    assert forced.exit_code == 0, forced.output
+    action = next(item for item in renderer.plans[-1].file_actions if item.path == Path(
+        ".harness/review-profiles.local.yaml"
+    ))
+    assert action.action is FileAction.PRESERVE
+    assert profile.read_bytes() == b"historical profile\n"
 
 
 def test_init_scaffolds_derived_docs_skeleton(tmp_path: Path):
@@ -1304,32 +1260,19 @@ def test_init_force_overwrites(tmp_path: Path):
     assert r2.exit_code == 0
 
 
-def test_init_force_preserves_review_selection_without_new_flags(
+def test_init_force_preserves_review_files_without_new_flags(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(shutil, "which", lambda name: f"/abs/bin/{name}")
     runner = CliRunner()
-    first = runner.invoke(
-        main,
-        [
-            "--workspace",
-            str(tmp_path),
-            "init",
-            "--review-producer",
-            "codex-cli",
-            "--review-model",
-            "codex=gpt-review",
-        ],
-    )
+    first = runner.invoke(main, ["--workspace", str(tmp_path), "init"])
     assert first.exit_code == 0, first.output
     governance = tmp_path / ".harness" / "review-governance.yaml"
-    profiles = tmp_path / ".harness" / "review-profiles.local.yaml"
-    before = (governance.read_bytes(), profiles.read_bytes())
+    before = governance.read_bytes()
 
     forced = runner.invoke(main, ["--workspace", str(tmp_path), "init", "--force"])
 
     assert forced.exit_code == 0, forced.output
-    assert (governance.read_bytes(), profiles.read_bytes()) == before
+    assert governance.read_bytes() == before
 
 
 def test_init_creates_all_subdirs(tmp_path: Path):

@@ -14,7 +14,9 @@ Generated from `super_harness.core.transitions`. Each row is a legal `(from, eve
 | `AWAITING_CODE_REVIEW` | `implementation_withdrawn` | `READY_TO_MERGE` |
 | `AWAITING_CODE_REVIEW` | `intent_abandoned` | `ABANDONED` |
 | `AWAITING_CODE_REVIEW` | `intent_redeclared` | `INTENT_DECLARED` |
+| `AWAITING_CODE_REVIEW` | `plan_approved` | `IMPLEMENTATION_IN_PROGRESS` |
 | `AWAITING_CODE_REVIEW` | `plan_redeclared` | `INTENT_DECLARED` |
+| `AWAITING_CODE_REVIEW` | `plan_rejected` | `AWAITING_CODE_REVIEW` |
 | `AWAITING_CODE_REVIEW` | `review_verdict_recorded` | `AWAITING_CODE_REVIEW` |
 | `AWAITING_PLAN_REVIEW` | `implementation_invalidated` | `IMPLEMENTATION_IN_PROGRESS` |
 | `AWAITING_PLAN_REVIEW` | `implementation_restarted` | `PLAN_APPROVED` |
@@ -30,14 +32,18 @@ Generated from `super_harness.core.transitions`. Each row is a legal `(from, eve
 | `CODE_REVIEW_REJECTED` | `implementation_restarted` | `PLAN_APPROVED` |
 | `CODE_REVIEW_REJECTED` | `intent_abandoned` | `ABANDONED` |
 | `CODE_REVIEW_REJECTED` | `intent_redeclared` | `INTENT_DECLARED` |
+| `CODE_REVIEW_REJECTED` | `plan_approved` | `IMPLEMENTATION_IN_PROGRESS` |
 | `CODE_REVIEW_REJECTED` | `plan_redeclared` | `INTENT_DECLARED` |
+| `CODE_REVIEW_REJECTED` | `plan_rejected` | `CODE_REVIEW_REJECTED` |
 | `CODE_REVIEW_REJECTED` | `review_verdict_recorded` | `CODE_REVIEW_REJECTED` |
 | `IMPLEMENTATION_IN_PROGRESS` | `implementation_complete` | `AWAITING_CODE_REVIEW` |
 | `IMPLEMENTATION_IN_PROGRESS` | `implementation_invalidated` | `IMPLEMENTATION_IN_PROGRESS` |
 | `IMPLEMENTATION_IN_PROGRESS` | `implementation_restarted` | `PLAN_APPROVED` |
 | `IMPLEMENTATION_IN_PROGRESS` | `intent_abandoned` | `ABANDONED` |
 | `IMPLEMENTATION_IN_PROGRESS` | `intent_redeclared` | `INTENT_DECLARED` |
+| `IMPLEMENTATION_IN_PROGRESS` | `plan_approved` | `IMPLEMENTATION_IN_PROGRESS` |
 | `IMPLEMENTATION_IN_PROGRESS` | `plan_redeclared` | `INTENT_DECLARED` |
+| `IMPLEMENTATION_IN_PROGRESS` | `plan_rejected` | `IMPLEMENTATION_IN_PROGRESS` |
 | `INTENT_DECLARED` | `implementation_invalidated` | `IMPLEMENTATION_IN_PROGRESS` |
 | `INTENT_DECLARED` | `implementation_restarted` | `PLAN_APPROVED` |
 | `INTENT_DECLARED` | `intent_abandoned` | `ABANDONED` |
@@ -62,7 +68,9 @@ Generated from `super_harness.core.transitions`. Each row is a legal `(from, eve
 | `READY_TO_MERGE` | `intent_abandoned` | `ABANDONED` |
 | `READY_TO_MERGE` | `intent_redeclared` | `INTENT_DECLARED` |
 | `READY_TO_MERGE` | `merged` | `ARCHIVED` |
+| `READY_TO_MERGE` | `plan_approved` | `IMPLEMENTATION_IN_PROGRESS` |
 | `READY_TO_MERGE` | `plan_redeclared` | `INTENT_DECLARED` |
+| `READY_TO_MERGE` | `plan_rejected` | `READY_TO_MERGE` |
 
 ## Events that never change state
 
@@ -70,9 +78,13 @@ These events are legal but leave the state unchanged (informational sensor signa
 
 - `gate_bypass_disclosed`
 - `gate_bypassed`
+- `implementation_recorded`
 - `merged_reverted`
+- `plan_revision_submitted`
+- `plan_withdrawn`
 - `pr_opened`
 - `review_budget_exceeded`
+- `review_evidence_imported`
 - `review_result_imported`
 - `review_round_authorized`
 - `review_round_closed`

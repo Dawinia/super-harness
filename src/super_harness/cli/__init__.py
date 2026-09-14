@@ -79,7 +79,7 @@ COMMAND_SPECS = {
     ),
     "review": CommandSpec(
         "super_harness.cli.review:review_group",
-        "Compile contracts, import receipts, or disclose a review skip.",
+        "Import externally produced, user-recognized review evidence.",
     ),
     "sensor": CommandSpec(
         "super_harness.cli.sensor:sensor_group",

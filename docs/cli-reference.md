@@ -568,6 +568,24 @@ Implementation-phase lifecycle verbs.
 super-harness implementation COMMAND [ARGS...]
 ```
 
+## super-harness implementation record
+
+Record implementation reasoning and the actual coverage manifest.
+
+```
+super-harness implementation record [OPTIONS] SLUG
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `SLUG` | text | *required* |  |
+| `--assessment` | file | *required* |  |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
+
 ## super-harness implementation reopen
 
 Emit `implementation_invalidated` — reopen a frozen change for a code-only fix.
@@ -619,8 +637,8 @@ super-harness init [OPTIONS]
 | `--force` | flag | `False` |  |
 | `--no-agent` | flag | `False` | Skip auto-installing the detected agent's gate hook. |
 | `--integration` | {codex\|claude-code} | — | Coding-agent integration to configure; repeat for multiple selections. |
-| `--review-producer` | {claude-cli\|codex-cli} | — | Local review producer protocol to configure; repeat for multiple selections. |
-| `--review-model` | text (repeatable) | — | Explicit model for a selected review source; repeat per source. |
+| `--review-producer` | text (repeatable) | — | Retired; reviewer producers are configured outside super-harness. |
+| `--review-model` | text (repeatable) | — | Retired; super-harness does not select reviewer models. |
 | `--yes` | flag | `False` | Skip the final confirmation in interactive mode. |
 
 **Exit codes:**
@@ -718,6 +736,8 @@ super-harness plan ready [OPTIONS] SLUG
 | `SLUG` | text | *required* |  |
 | `--scope` | text | — | scope.files as an inline yaml list, or `@<path>` to read the yaml from a file. |
 | `--tier-hint` | {Micro\|Normal\|Large} | — | Optional tier estimate (Micro/Normal/Large); recorded as tier_hint → cs.tier. |
+| `--plan` | text | — | Plan artifact to snapshot into a new-contract plan subject. |
+| `--commitment` | text (repeatable) | — | Binding commitment as ID=TEXT (repeatable). |
 
 **Exit codes:**
 
@@ -739,6 +759,8 @@ super-harness plan redeclare [OPTIONS] SLUG
 |-------|------|---------|-------------|
 | `SLUG` | text | *required* |  |
 | `--reason` | text | `''` | Optional reason for reopening the change (recorded in redeclaration_history). |
+| `--plan` | text | — | Submit a revision candidate as a new-contract plan subject. |
+| `--commitment` | text (repeatable) | — | Binding revision commitment as ID=TEXT (repeatable). |
 
 **Exit codes:**
 
@@ -746,6 +768,25 @@ super-harness plan redeclare [OPTIONS] SLUG
 - `1` generic error
 - `2` illegal lifecycle transition (terminal state / not-yet-started slug)
 - `3` no `.harness/`
+
+## super-harness plan withdraw
+
+Withdraw one pending or rejected plan revision without approving it.
+
+```
+super-harness plan withdraw [OPTIONS] SLUG
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `SLUG` | text | *required* |  |
+| `--candidate` | text | *required* | Exact pending candidate subject id. |
+| `--reason` | text | *required* | Why this unapproved candidate is not adopted. |
+
+**Exit codes:**
+
+- `0` success
+- `1` generic error
 
 ## super-harness pr
 
@@ -816,7 +857,7 @@ super-harness report [OPTIONS]
 
 ## super-harness review
 
-Compile contracts, import receipts, or disclose a review skip.
+Import externally produced plan/code evidence.
 
 ```
 super-harness review COMMAND [ARGS...]
@@ -824,7 +865,7 @@ super-harness review COMMAND [ARGS...]
 
 ## super-harness review approve
 
-Fail loudly: direct PASS evidence is disabled; import a receipt.
+Retired; external evidence must be imported instead.
 
 ```
 super-harness review approve [OPTIONS] CHANGE
@@ -833,21 +874,15 @@ super-harness review approve [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--reason` | text | `'approved'` | Compatibility option; no evidence is recorded. |
-| `--verdict-file` | text | — | Compatibility option; use `review result import`. |
-| `--base` | text | — | Compatibility option; direct evidence is disabled. |
-| `--source` | text | — | Reviewer source label from review-governance.yaml. |
-| `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
-- `2` direct evidence is disabled; use `review result import` or the human draft/confirm workflow
-- `3` no `.harness/`
+- `0` success
+- `1` generic error
 
 ## super-harness review authorize
 
-Authorize one exact expensive or over-budget round.
+Retired; the core no longer authorizes reviewer retries.
 
 ```
 super-harness review authorize [OPTIONS] CHANGE
@@ -856,19 +891,15 @@ super-harness review authorize [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--source` | text (repeatable) | — |  |
-| `--reason` | text | *required* |  |
 
 **Exit codes:**
 
-- `0` one-shot authorization recorded
-- `2` stale contract, invalid source set, or invalid lifecycle state
-- `3` no `.harness/`
+- `0` success
+- `1` generic error
 
 ## super-harness review begin
 
-Freeze one automated round and return caller-owned invocation contracts.
+Retired; the core no longer begins reviewer runs.
 
 ```
 super-harness review begin [OPTIONS] CHANGE
@@ -877,18 +908,15 @@ super-harness review begin [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--source` | text (repeatable) | — | Retry source; repeat for the complete currently failed subset. |
 
 **Exit codes:**
 
-- `0` round and caller-owned invocation contracts frozen; no producer executed
-- `2` stale/missing packet, open round, incomplete retry set, exhausted or unauthorized budget, or invalid profile
-- `3` no `.harness/`
+- `0` success
+- `1` generic error
 
 ## super-harness review human
 
-Inspect and explicitly confirm first-class human review receipts.
+Retired historical TTY review namespace.
 
 ```
 super-harness review human COMMAND [ARGS...]
@@ -896,7 +924,7 @@ super-harness review human COMMAND [ARGS...]
 
 ## super-harness review human confirm
 
-Confirm a nonce-bound human verdict in a human-owned interactive TTY.
+Retired; the core no longer runs a human nonce flow.
 
 ```
 super-harness review human confirm [OPTIONS] CHANGE
@@ -905,19 +933,15 @@ super-harness review human confirm [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--nonce` | text | *required* |  |
 
 **Exit codes:**
 
-- `0` human receipt recorded (already-confirmed nonce is idempotent)
-- `1` human declined the interactive confirmation
-- `2` non-TTY, invalid/expired/stale nonce, or invalid lifecycle state
-- `3` no `.harness/`
+- `0` success
+- `1` generic error
 
 ## super-harness review human draft
 
-Validate a human verdict and create a short-lived confirmation nonce.
+Retired; the core no longer runs a human nonce flow.
 
 ```
 super-harness review human draft [OPTIONS] CHANGE
@@ -926,19 +950,15 @@ super-harness review human draft [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--source` | text | — |  |
-| `--verdict-file` | file | *required* |  |
 
 **Exit codes:**
 
-- `0` validated human verdict and short-lived confirmation nonce written
-- `2` invalid source/verdict/checklist/dispositions, stale packet, or invalid state
-- `3` no `.harness/`
+- `0` success
+- `1` generic error
 
 ## super-harness review human inspect
 
-Show compact packet metadata or page its human-readable inspection contract.
+Retired; the core no longer runs a human nonce flow.
 
 ```
 super-harness review human inspect [OPTIONS] CHANGE
@@ -947,18 +967,34 @@ super-harness review human inspect [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--pager` | flag | `False` | Render the review packet through a pager. |
 
 **Exit codes:**
 
-- `0` compact packet metadata shown, or packet paged in a human TTY
-- `2` missing packet, invalid lifecycle state, or `--pager` without a TTY
+- `0` success
+- `1` generic error
+
+## super-harness review import
+
+Import one exact, externally produced plan or code conclusion.
+
+```
+super-harness review import [OPTIONS] CHANGE
+```
+
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `CHANGE` | text | *required* |  |
+| `--evidence` | file | *required* | JSON conclusion produced by a user-recognized external process. |
+
+**Exit codes:**
+
+- `0` recognized conclusion imported (same evidence id/content is idempotent)
+- `2` unrecognized process, malformed/stale/conflicting evidence, or invalid state
 - `3` no `.harness/`
 
 ## super-harness review prepare
 
-Compile the review bundle and per-source scoped assignments → disk.
+Retired; the core no longer prepares reviewer runs.
 
 ```
 super-harness review prepare [OPTIONS] CHANGE
@@ -967,18 +1003,15 @@ super-harness review prepare [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--base` | text | — | Base branch for the in-scope diff (default: tracked review governance, else main). |
 
 **Exit codes:**
 
-- `0` draft packet written
-- `2` governance/profile/lifecycle/clean-tree/Git validation failure
-- `3` no `.harness/`
+- `0` success
+- `1` generic error
 
 ## super-harness review reject
 
-Fail loudly: direct FAIL evidence is disabled; import a receipt.
+Retired; external evidence must be imported instead.
 
 ```
 super-harness review reject [OPTIONS] CHANGE
@@ -987,20 +1020,15 @@ super-harness review reject [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--reason` | text | `'rejected'` | Compatibility option; no evidence is recorded. |
-| `--verdict-file` | text | — | Compatibility option; use `review result import`. |
-| `--source` | text | — | Reviewer source label from review-governance.yaml. |
-| `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
-- `2` direct evidence is disabled; use `review result import` or the human draft/confirm workflow
-- `3` no `.harness/`
+- `0` success
+- `1` generic error
 
 ## super-harness review result
 
-Import completed caller-owned reviewer results.
+Retired historical result namespace.
 
 ```
 super-harness review result COMMAND [ARGS...]
@@ -1008,7 +1036,7 @@ super-harness review result COMMAND [ARGS...]
 
 ## super-harness review result import
 
-Parse and record one completed external result; never run its producer.
+Retired; import the external conclusion with review import.
 
 ```
 super-harness review result import [OPTIONS] CHANGE
@@ -1017,19 +1045,15 @@ super-harness review result import [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--run-id` | text | *required* | Frozen reviewer run identifier. |
-| `--result-file` | file | *required* | Completed raw producer output file. |
 
 **Exit codes:**
 
-- `0` result and receipt imported (byte-identical duplicate is idempotent)
-- `2` unknown/terminal run, conflicting duplicate, malformed or stale result, binding/checklist/model/disposition failure, or invalid lifecycle state
-- `3` no `.harness/`
+- `0` success
+- `1` generic error
 
 ## super-harness review run
 
-Record failures for caller-owned reviewer runs.
+Retired historical run namespace.
 
 ```
 super-harness review run COMMAND [ARGS...]
@@ -1037,7 +1061,7 @@ super-harness review run COMMAND [ARGS...]
 
 ## super-harness review run fail
 
-Record an external producer failure without retrying it.
+Retired; producer failures are external evidence-process concerns.
 
 ```
 super-harness review run fail [OPTIONS] CHANGE
@@ -1046,19 +1070,15 @@ super-harness review run fail [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--run-id` | text | *required* |  |
-| `--reason` | text | *required* |  |
 
 **Exit codes:**
 
-- `0` external producer failure recorded (same reason is idempotent)
-- `2` unknown/imported run, conflicting failure, or invalid lifecycle state
-- `3` no `.harness/`
+- `0` success
+- `1` generic error
 
 ## super-harness review skip
 
-Escape hatch — PASS a stuck reviewer (== approve with reason=manual_skip).
+Retired; skips cannot create new-contract authority.
 
 ```
 super-harness review skip [OPTIONS] CHANGE
@@ -1067,19 +1087,11 @@ super-harness review skip [OPTIONS] CHANGE
 | Param | Type | Default | Description |
 |-------|------|---------|-------------|
 | `CHANGE` | text | *required* |  |
-| `--reviewer` | {code-reviewer\|plan-reviewer} | *required* | plan-reviewer or code-reviewer. |
-| `--reason` | text | — | Audit reason recorded on the event (default: manual_skip; REQUIRED with --override). |
-| `--override` | flag | `False` | Deliberate, disclosed override: a bare skip blocks at the merge gate; --override (with --reason) passes-with-disclosure. |
-| `--stuck-source` | text | — | Audit label only: which configured participant was stuck. It does NOT narrow the skip — skip always passes the whole role. To retire a single producer, use `review run fail --run-id <id> --reason "<why>"`. |
-| `--as` | text | — | Reviewer identity recorded on the event (default: env SUPER_HARNESS_ACTOR, else `git config user.email`, else `cli`). |
 
 **Exit codes:**
 
-- `0` skip recorded (`code_review_passed` / `plan_approved` emitted, `skipped=True`)
-- `2` --override without --reason
-- `2` no round was ever frozen for a role whose automated producers resolve (nobody was asked, so there is no stuck reviewer to skip)
-- `2` the latest round is still open with pending run(s) — retire them with `review result import` or `review run fail --run-id <id>`
-- `3` no `.harness/`
+- `0` success
+- `1` generic error
 
 ## super-harness sensor
 

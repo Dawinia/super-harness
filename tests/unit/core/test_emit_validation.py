@@ -54,7 +54,7 @@ def _seed_raw(tmp_path: Path, change_id: str, types: list[str]) -> Path:
     f = tmp_path / "events.jsonl"
     w = EventWriter(f)
     for t in types:
-        w.emit(_make_event(change_id, t), skip_validation=True)
+        w.emit(_make_event(change_id, t), skip_validation=True, historical_replay=True)
     return f
 
 
@@ -139,8 +139,8 @@ def test_find_ordering_violations_filters_by_change_id(tmp_path: Path):
     f = tmp_path / "events.jsonl"
     w = EventWriter(f)
     # c1 is clean; c2 has an illegal first event. Only c2 should report.
-    w.emit(_make_event("c1", "intent_declared"), skip_validation=True)
-    w.emit(_make_event("c2", "plan_ready"), skip_validation=True)
+    w.emit(_make_event("c1", "intent_declared"), skip_validation=True, historical_replay=True)
+    w.emit(_make_event("c2", "plan_ready"), skip_validation=True, historical_replay=True)
     assert find_ordering_violations(f, "c1") == []
     c2 = find_ordering_violations(f, "c2")
     assert [v.event_type for v in c2] == ["plan_ready"]

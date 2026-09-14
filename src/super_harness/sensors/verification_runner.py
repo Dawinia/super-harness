@@ -42,9 +42,11 @@ import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
+from super_harness.core.approval import ApprovalError, make_code_subject, resolve_contract_base
 from super_harness.core.clock import utc_now_iso
 from super_harness.core.emit_validation import find_ordering_violations
 from super_harness.core.events import Actor, Event
@@ -54,6 +56,7 @@ from super_harness.core.paths import (
     verification_yaml_path,
 )
 from super_harness.core.reducer import derive_state
+from super_harness.core.scope_match import GitScopeError
 from super_harness.core.shell_runner import run_command, scrubbed_environ
 from super_harness.engineering.attestation import canonical_path
 from super_harness.engineering.verification_config import (
@@ -562,13 +565,9 @@ def baseline_check_tasks(
             context: WorkspaceContext = context,
             archive: Path = archive,
         ) -> CheckResult:
-            return _baseline_lifecycle_ordering(
-                change_id, context=context, archive=archive
-            )
+            return _baseline_lifecycle_ordering(change_id, context=context, archive=archive)
 
-        tasks.append(
-            CheckTask(id=_BASELINE_LIFECYCLE, must_pass=True, run=_run_lifecycle)
-        )
+        tasks.append(CheckTask(id=_BASELINE_LIFECYCLE, must_pass=True, run=_run_lifecycle))
 
     if _included(_BASELINE_SCOPE):
 
@@ -577,13 +576,9 @@ def baseline_check_tasks(
             context: WorkspaceContext = context,
             archive: Path = archive,
         ) -> CheckResult:
-            return _baseline_scope_vs_plan(
-                change_id, context=context, archive=archive
-            )
+            return _baseline_scope_vs_plan(change_id, context=context, archive=archive)
 
-        tasks.append(
-            CheckTask(id=_BASELINE_SCOPE, must_pass=False, run=_run_scope)
-        )
+        tasks.append(CheckTask(id=_BASELINE_SCOPE, must_pass=False, run=_run_scope))
 
     return tasks
 
@@ -618,9 +613,7 @@ def _config_check_task(
         else:
             existing_path = merged_env.get("PATH", "")
             merged_env["PATH"] = (
-                f"{toolchain}{os.pathsep}{existing_path}"
-                if existing_path
-                else str(toolchain)
+                f"{toolchain}{os.pathsep}{existing_path}" if existing_path else str(toolchain)
             )
 
     # The default args snapshot this iteration's values to dodge late-binding.
@@ -713,17 +706,13 @@ def collect_checks(
 
     if want_adapter and cfg.layers.framework_adapter:
         tasks.extend(
-            _config_check_task(
-                spec, context=context, cfg=cfg, archive=archive, variables=variables
-            )
+            _config_check_task(spec, context=context, cfg=cfg, archive=archive, variables=variables)
             for spec in cfg.adapter_provided
         )
 
     if want_user and cfg.layers.user_checks:
         tasks.extend(
-            _config_check_task(
-                spec, context=context, cfg=cfg, archive=archive, variables=variables
-            )
+            _config_check_task(spec, context=context, cfg=cfg, archive=archive, variables=variables)
             for spec in cfg.checks
         )
 
@@ -738,9 +727,7 @@ def collect_checks(
     return tasks
 
 
-def collectable_check_ids(
-    cfg: VerificationConfig, *, layer: str | None = None
-) -> set[str]:
+def collectable_check_ids(cfg: VerificationConfig, *, layer: str | None = None) -> set[str]:
     """The set of check ids `collect_checks` WOULD collect for `cfg` + `layer`.
 
     Mirrors `collect_checks`'s layer selection exactly: a layer contributes its
@@ -958,6 +945,7 @@ def make_verification_event(
     change_id: str,
     results: list[CheckResult],
     archive: Path,
+    verification: dict[str, Any] | None = None,
 ) -> Event:
     """Build the `verification_passed` / `verification_failed` event to emit.
 
@@ -1005,6 +993,8 @@ def make_verification_event(
                 "then re-run `super-harness verify`."
             ),
         }
+    if verification is not None:
+        payload["verification"] = dict(verification)
 
     return Event(
         # event_id / timestamp left blank — the dispatcher stamps them.
@@ -1022,6 +1012,81 @@ def make_verification_event(
 def _all_pass_must(results: list[CheckResult]) -> bool:
     """True iff every *must_pass* check passed (advisory checks are ignored)."""
     return all(r.status == "pass" for r in results if r.must_pass)
+
+
+def _git_bytes(root: Path, *args: str) -> bytes:
+    """Run a Git query without decoding arbitrary workspace bytes."""
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise GitScopeError(f"`git {' '.join(args)}` failed: {exc}") from exc
+    return proc.stdout
+
+
+def _working_tree_digest(root: Path, declared_paths: list[str]) -> str:
+    """Hash relevant dirty state and untracked content for verification."""
+    if not declared_paths:
+        return sha256(b"").hexdigest()
+    parts = [
+        _git_bytes(
+            root,
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--",
+            *sorted(declared_paths),
+        ),
+        _git_bytes(root, "diff", "--binary", "HEAD", "--", *sorted(declared_paths)),
+    ]
+    untracked = _git_bytes(
+        root,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        *sorted(declared_paths),
+    )
+    for raw_path in untracked.split(b"\0"):
+        if not raw_path:
+            continue
+        path = root / os.fsdecode(raw_path)
+        try:
+            content = path.read_bytes()
+        except OSError as exc:
+            raise GitScopeError(f"cannot read untracked file {path}: {exc}") from exc
+        parts.extend((raw_path, b"\0", content))
+    return sha256(b"\0".join(parts)).hexdigest()
+
+
+def _verification_identity_snapshot(
+    root: Path,
+    *,
+    change_id: str,
+    approval_id: str,
+    declared_paths: list[str],
+) -> dict[str, Any]:
+    """Capture the identity that a new-contract verification actually tests."""
+    code_subject = make_code_subject(
+        root,
+        change_id=change_id,
+        approval_id=approval_id,
+        base=resolve_contract_base(root),
+    )
+    config_digest = sha256(
+        verification_yaml_path(root).read_bytes()
+    ).hexdigest()
+    return {
+        "subject_id": code_subject["subject_id"],
+        "code_subject": code_subject,
+        "config_digest": config_digest,
+        "working_tree_digest": _working_tree_digest(root, declared_paths),
+    }
 
 
 class VerificationRunner(Sensor):
@@ -1046,9 +1111,7 @@ class VerificationRunner(Sensor):
     )
     determinism: ClassVar[Determinism] = "computational"
 
-    def check(
-        self, trigger: Event | Activity, context: WorkspaceContext
-    ) -> SensorResult:
+    def check(self, trigger: Event | Activity, context: WorkspaceContext) -> SensorResult:
         change_id = getattr(trigger, "change_id", None) or context.active_change_id
         if change_id is None:
             # Defensive: no change to verify (neither the trigger nor the
@@ -1058,16 +1121,35 @@ class VerificationRunner(Sensor):
                 summary="verification skipped: no change_id available",
             )
 
-        cfg = load_verification_config(verification_yaml_path(context.workspace_root))
+        root = context.workspace_root
+        cfg = load_verification_config(verification_yaml_path(root))
         variables = build_variables(change_id, context)
         payload = getattr(trigger, "payload", {}) or {}
         layer = payload.get("layer")
         only_ids = payload.get("checks")
 
+        state_before = derive_state(events_path(root)).get(change_id)
+        approval_before = state_before.effective_approval if state_before is not None else None
+        before_snapshot: dict[str, Any] | None = None
+        snapshot_error: str | None = None
+        if isinstance(approval_before, dict):
+            try:
+                declared_paths = [
+                    path
+                    for path in (state_before.scope.get("files", []) if state_before else [])
+                    if isinstance(path, str)
+                ]
+                before_snapshot = _verification_identity_snapshot(
+                    root,
+                    change_id=change_id,
+                    approval_id=str(approval_before["approval_id"]),
+                    declared_paths=declared_paths,
+                )
+            except (ApprovalError, GitScopeError, KeyError, OSError, ValueError) as exc:
+                snapshot_error = str(exc)
+
         archive_timestamp = utc_now_iso().replace(":", "-")
-        archive = verification_results_dir(
-            context.workspace_root, change_id, archive_timestamp
-        )
+        archive = verification_results_dir(root, change_id, archive_timestamp)
         tasks = collect_checks(
             cfg,
             context=context,
@@ -1085,6 +1167,73 @@ class VerificationRunner(Sensor):
 
         must_pass_failed = [r for r in results if r.must_pass and r.status != "pass"]
         verdict = "passed" if not must_pass_failed else "failed"
+
+        verification: dict[str, Any] | None = None
+        if isinstance(approval_before, dict):
+            if before_snapshot is None:
+                verdict = "failed"
+                verification = {
+                    "outcome": "failed",
+                    "snapshot_unchanged": False,
+                    "snapshot_error": snapshot_error or "unable to capture verification subject",
+                    "checks": [result.id for result in results],
+                }
+            else:
+                try:
+                    state_after = derive_state(events_path(root)).get(change_id)
+                    approval_after = (
+                        state_after.effective_approval if state_after is not None else None
+                    )
+                    declared_paths_after = [
+                        path
+                        for path in (state_after.scope.get("files", []) if state_after else [])
+                        if isinstance(path, str)
+                    ]
+                    after_snapshot = _verification_identity_snapshot(
+                        root,
+                        change_id=change_id,
+                        approval_id=str(approval_before["approval_id"]),
+                        declared_paths=declared_paths_after,
+                    )
+                    unchanged = (
+                        isinstance(approval_after, dict)
+                        and approval_after.get("approval_id") == approval_before.get("approval_id")
+                        and before_snapshot["subject_id"] == after_snapshot["subject_id"]
+                        and before_snapshot["config_digest"] == after_snapshot["config_digest"]
+                        and before_snapshot["working_tree_digest"]
+                        == after_snapshot["working_tree_digest"]
+                    )
+                except (ApprovalError, GitScopeError, KeyError, OSError, ValueError) as exc:
+                    after_snapshot = None
+                    unchanged = False
+                    snapshot_error = str(exc)
+                if not unchanged:
+                    verdict = "failed"
+                subject_snapshot = after_snapshot or before_snapshot
+                verification = {
+                    "subject_id": subject_snapshot["subject_id"],
+                    "code_subject": subject_snapshot["code_subject"],
+                    "config_digest": subject_snapshot["config_digest"],
+                    "outcome": verdict,
+                    "checks": [result.id for result in results],
+                    "snapshot_unchanged": unchanged,
+                    "before_subject_id": before_snapshot["subject_id"],
+                    "after_subject_id": (
+                        after_snapshot["subject_id"] if after_snapshot is not None else None
+                    ),
+                    "before_config_digest": before_snapshot["config_digest"],
+                    "after_config_digest": (
+                        after_snapshot["config_digest"] if after_snapshot is not None else None
+                    ),
+                    "before_working_tree_digest": before_snapshot["working_tree_digest"],
+                    "after_working_tree_digest": (
+                        after_snapshot["working_tree_digest"]
+                        if after_snapshot is not None
+                        else None
+                    ),
+                    **({"snapshot_error": snapshot_error} if snapshot_error else {}),
+                }
+
         write_summary_json(archive, results, verdict)
 
         evt_type: Literal["verification_passed", "verification_failed"] = (
@@ -1094,11 +1243,16 @@ class VerificationRunner(Sensor):
         return SensorResult(
             status=status,
             summary=(
-                f"verification {verdict} "
-                f"({len(results)} checks, {len(must_pass_failed)} failed)"
+                f"verification {verdict} ({len(results)} checks, {len(must_pass_failed)} failed)"
             ),
-            details=verify_data_block(
-                change_id, results, archive, context.workspace_root
-            ),
-            emit_events=[make_verification_event(evt_type, change_id, results, archive)],
+            details=verify_data_block(change_id, results, archive, root),
+            emit_events=[
+                make_verification_event(
+                    evt_type,
+                    change_id,
+                    results,
+                    archive,
+                    verification=verification,
+                )
+            ],
         )

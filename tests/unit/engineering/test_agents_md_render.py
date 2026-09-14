@@ -240,5 +240,5 @@ def test_agents_md_states_the_route_back_and_both_skippable_roles(tmp_path) -> N
 
     text = agents.read_text()
     assert text.count("implementation reopen") >= 2   # both adapters carry it
-    assert "plan or code" in text          # the skip sentence covers both roles
-    assert "a code-review skip needs" not in text   # the narrower wording is gone
+    assert text.count("A skipped review is disclosure") >= 2
+    assert "review prepare" not in text
